@@ -14913,8 +14913,13 @@ function InitializeFrames()
                 -- An applied Visibility override replaces the whole setting, so the tail
                 -- is a constant and the shared selection never reaches the driver.
                 local visOv = EllesmereUI.VisOverrideValue(s)
+                local visCustom = EllesmereUI.VisCustomDriverString and EllesmereUI.VisCustomDriverString(s, "")
                 if visOv then
                     visTail = (visOv == "never") and "hide" or "show"
+                elseif visCustom then
+                    -- A custom conditional is driver grammar already; the engine
+                    -- flips the frame natively, like a compiled checklist.
+                    visTail = visCustom
                 elseif s.visibilityMatch == "any" and EllesmereUI.BuildAnyMatchTail then
                     local tail, _, liveAxes = EllesmereUI.BuildAnyMatchTail(s, "barVisibility", drvSet)
                     -- Gated on liveAxes: with no soft-target edge here, target/enemy axes
@@ -15164,6 +15169,16 @@ function InitializeFrames()
         ns.SyncHealthVisibilityEvents()
     end
     ns.UpdateFrameVisibility = UpdateFrameVisibility
+    -- Custom conditionals report their edges through the shared dispatcher; nothing
+    -- here runs until a unit frame store carries one.
+    if not frames._visCustomUpdater and EllesmereUI.RegisterVisibilityUpdater then
+        frames._visCustomUpdater = true
+        EllesmereUI.RegisterVisibilityUpdater(function()
+            if EllesmereUI.VisCustomActive and EllesmereUI.VisCustomActive() then
+                UpdateFrameVisibility()
+            end
+        end)
+    end
 
     if not frames._visFrame then
         frames._visFrame = CreateFrame("Frame")

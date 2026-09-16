@@ -5226,6 +5226,9 @@ local function MinimapDriverString(p, vm)
     -- shared selection underneath never reaches the driver.
     local visOv = EllesmereUI.VisOverrideValue(p)
     if visOv then return (visOv == "never") and "hide" or "show" end
+    -- A custom conditional is already driver grammar: use it as-is.
+    local custom = EllesmereUI.VisCustomDriverString and EllesmereUI.VisCustomDriverString(p, "")
+    if custom then return custom end
     -- Any match: Lua-only lanes (instances, housing, skyriding mount) are resolved at
     -- build time (caller runs out of combat only); a later zone/mount edge re-runs the
     -- dispatcher and re-registers the string.

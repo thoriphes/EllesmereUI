@@ -1214,6 +1214,7 @@ initFrame:SetScript("OnEvent", function(self)
 
         local v = src.barVisibility or "always"
         dst.barVisibility = v
+        dst.visCustom = src.visCustom or nil
         dst.visibilityMatch = src.visibilityMatch or nil
         dst.alwaysHidden = src.alwaysHidden
         dst.mouseoverEnabled = src.mouseoverEnabled

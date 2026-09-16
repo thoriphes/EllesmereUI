@@ -7919,7 +7919,7 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
             -- isModifier rows (the Visibility match toggle) are not conditions: excluded
             -- from the summary and from the "All" shortcut. item.excludeFromSummaryFn
             -- opts a row out the same way (e.g. locked behind an unlearned talent).
-            if not item.isHeader and not item.isTopAction and not item.isModifier
+            if not item.isHeader and not item.isTopAction and not item.isModifier and not item.isInput
                and not (item.excludeFromSummaryFn and item.excludeFromSummaryFn()) then
                 total = total + 1
                 if getFn(item.key) then names[#names + 1] = EllesmereUI.L(item.label) end
@@ -7948,6 +7948,7 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
         if menu then return end
         local ITEM_H = 28
         local HDR_H = 22
+        local INPUT_H = 34
         -- Opt-in top-action rows (item.isTopAction with label + onClick): accent clickable entries pinned ABOVE the search box with a divider under the group -- the "Custom Spell ID at the top" pattern from the CDM spell pickers. Excluded from the scroll list, the checkable count, and the summary label.
         local topActions = {}
         -- Top-action locked tints refresh in the same sweeps as _allRows. They can't JOIN _allRows: the search relayout repositions every frame in that list, and top actions live above the search box.
@@ -7961,6 +7962,7 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
         for _, item in ipairs(items) do
             if item.isTopAction then -- rendered above the search box
             elseif item.isHeader then contentH = contentH + HDR_H
+            elseif item.isInput then contentH = contentH + INPUT_H
             else contentH = contentH + ITEM_H; checkableCount = checkableCount + 1 end
         end
         local SEARCH_H = searchable and 26 or 0
@@ -8260,6 +8262,64 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
                 end)
                 _allRows[#_allRows + 1] = { frame = row, isHeader = false, isAction = true, label = item.label, height = ITEM_H }
                 yOff = yOff - ITEM_H
+            elseif item.isInput then
+                -- Input item (item.isInput with get/set): a free-text field spanning the
+                -- row. Commits on Enter and focus loss, Escape reverts. set(text) returns
+                -- false to reject, in which case the field reverts to get().
+                local row = CreateFrame("Frame", nil, itemParent)
+                row:SetHeight(INPUT_H)
+                row:SetPoint("TOPLEFT", child, "TOPLEFT", 1, yOff)
+                row:SetPoint("TOPRIGHT", child, "TOPRIGHT", -1, yOff)
+                row:SetFrameLevel(menu:GetFrameLevel() + 2)
+                local box = CreateFrame("EditBox", nil, row)
+                box:SetPoint("LEFT", row, "LEFT", 10, 0)
+                box:SetPoint("RIGHT", row, "RIGHT", -10, 0)
+                box:SetHeight(INPUT_H - 8)
+                box:SetFrameLevel(row:GetFrameLevel() + 1)
+                box:SetFont(fontPath, 11, "")
+                box:SetTextColor(1, 1, 1, 0.9)
+                box:SetAutoFocus(false)
+                box:SetTextInsets(6, 6, 0, 0)
+                local boxBg = box:CreateTexture(nil, "BACKGROUND")
+                boxBg:SetAllPoints()
+                boxBg:SetColorTexture(0, 0, 0, 0.35)
+                EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, PP)
+                local placeholder = box:CreateFontString(nil, "OVERLAY")
+                placeholder:SetFont(fontPath, 11, "")
+                placeholder:SetTextColor(0.5, 0.5, 0.5, 0.6)
+                placeholder:SetPoint("LEFT", box, "LEFT", 6, 0)
+                placeholder:SetText(EllesmereUI.L(item.placeholder or item.label or ""))
+                local function Load()
+                    local v = item.get and item.get() or ""
+                    box:SetText(v)
+                    box:SetCursorPosition(0)
+                    placeholder:SetShown(v == "")
+                end
+                Load()
+                local reverting = false
+                local function Commit()
+                    if reverting then return end
+                    local ok = item.set and item.set(box:GetText())
+                    if ok == false then Load() end
+                    if box:HasFocus() then box:ClearFocus() end
+                end
+                box:SetScript("OnTextChanged", function(self) placeholder:SetShown(self:GetText() == "") end)
+                box:SetScript("OnEnterPressed", Commit)
+                box:SetScript("OnEditFocusLost", Commit)
+                box:SetScript("OnEscapePressed", function(self)
+                    reverting = true
+                    Load()
+                    self:ClearFocus()
+                    reverting = false
+                end)
+                if item.tooltip then
+                    box:HookScript("OnEnter", function(self) EllesmereUI.ShowWidgetTooltip(self, item.tooltip) end)
+                    box:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                end
+                -- Refresh sweeps reload the field unless the user is typing in it.
+                row._updateCheck = function() if not box:HasFocus() then Load() end end
+                _allRows[#_allRows + 1] = { frame = row, isHeader = false, isInput = true, label = item.label, height = INPUT_H }
+                yOff = yOff - INPUT_H
             else
 
             local row = CreateFrame("Button", nil, itemParent)
@@ -8789,8 +8849,29 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
             else
                 ApplyNormal()
             end
+            -- An in-place rebuild (ddBtn:RebuildMenu) hides the old menu only to
+            -- replace it; that is not a close for the caller.
+            if self._rebuilding then return end
             if onMenuClosed then onMenuClosed() end
         end)
+    end
+
+    -- Dynamic menus (itemsFn) normally re-evaluate on the next OPEN. A row that
+    -- changes which rows exist (the Visibility "Custom" state) asks for it right
+    -- away so the menu swaps under the cursor instead of on the next click.
+    function ddBtn:RebuildMenu()
+        if not itemsFn then return end
+        local wasShown = menu and menu:IsShown()
+        items = itemsFn() or {}
+        if menu then
+            menu._rebuilding = true
+            menu:Hide()
+            menu:SetParent(nil)
+            menu = nil
+            ddBtn._ddMenu = nil
+        end
+        UpdateLabel()
+        if wasShown then ShowMenu() end
     end
 
     ddBtn:SetScript("OnClick", function() ShowMenu() end)
@@ -8850,6 +8931,12 @@ EllesmereUI.VIS_ROW_ITEMS = {
     { key = "mouseover", label = "Mouseover",
       tooltip = "Reveal on hover only. Combines with the conditions below: hover-reveals while they all pass, stays hidden while any fails.",
       tooltipAny = "Combines with the conditions below: shows outright once at least one passes, otherwise still reveals on hover. A checked Hide state still hides it, hover included." },
+    -- Custom: a raw macro-conditional show/hide string replaces the whole checklist
+    -- (the rows below are a builder for exactly this grammar). Exclusive like Never
+    -- and Always; while it is active the menu shows only the four states and the
+    -- expression field.
+    { key = "custom", label = "Custom",
+      tooltip = "Write the visibility as a macro conditional, e.g. [combat][exists] show; hide. Replaces every condition below. The field starts with what the current selection compiles to." },
     -- Modifiers, not conditions: they decide how the rows below combine, so they stay
     -- out of the summary and the Show/Hide lane pairs. Radio pair (matchValue) over one
     -- scalar: picking one unpicks the other, there is no "neither" state.
@@ -8942,9 +9029,11 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
 
     -- Per-module row list. `listed` collects the legacy SCALAR values this row can
     -- actually reach, so the orphan rule below only fires for genuinely foreign ones.
+    -- Built by BuildItems on every menu open (and on the Custom flip): while a Custom
+    -- conditional is stored the list is just the four states plus the expression field.
     local items, defs, listed = {}, {}, {}
     -- Defined below, forward-declared because the rows built here close over them.
-    local GetMatchAny
+    local GetMatchAny, CustomActive, CustomInputItem
 
     -- The stored scalar when it is a legacy alias this row cannot express, else nil.
     -- Read at build (the orphan's own row) and live by the Match Mode rows, which lock
@@ -8962,8 +9051,13 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
         return nil
     end
     local function OrphanActive() return OrphanScalar() ~= nil end
+    local function BuildItems()
+    items, defs, listed = {}, {}, {}
+    local customOn = CustomActive()
     for _, def in ipairs(EllesmereUI.VIS_ROW_ITEMS) do
-        if def.isHeader then
+        if customOn and def.key ~= "never" and def.key ~= "always" and def.key ~= "mouseover" and def.key ~= "custom" then
+            -- Custom owns the setting: no condition rows, no headers, no modifiers.
+        elseif def.isHeader then
             items[#items + 1] = def
         elseif not (def.key == "mouseover" and caps.noMouseover) then
             local item = { key = def.key, label = def.label, tooltip = def.tooltip,
@@ -8972,7 +9066,11 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
             -- Never / Always / Mouseover are the exclusive states: each one writes the
             -- legacy scalar on its own, which an override CAN hold. Everything else is
             -- the compound half.
-            if def.key ~= "never" and def.key ~= "always" and def.key ~= "mouseover" then
+            if def.key ~= "never" and def.key ~= "always" and def.key ~= "mouseover" and def.key ~= "custom" then
+                item.ovLockedFn = OvSessionActive
+                item.ovLockedTooltip = OV_LOCK_TIP
+            elseif def.key == "custom" then
+                -- Not an override state: an override holds Never/Always/Mouseover only.
                 item.ovLockedFn = OvSessionActive
                 item.ovLockedTooltip = OV_LOCK_TIP
             elseif def.key == "mouseover" and caps.noOverrideMouseover then
@@ -9019,15 +9117,19 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
                 listed[def.show] = true; listed[def.hide] = true
             elseif def.axis == "group" then
                 listed[def.key] = true
-            elseif def.modifier then
+            elseif def.modifier or def.key == "custom" then
                 -- Never a stored scalar, so it must not shadow the orphan rule.
             elseif not def.axis then
                 listed[def.key] = true
             end
+            -- The expression field sits right under its state.
+            if def.key == "custom" and customOn then
+                items[#items + 1] = CustomInputItem()
+            end
         end
     end
 
-    if opts.extraItems then
+    if not customOn and opts.extraItems then
         for _, ex in ipairs(opts.extraItems) do
             items[#items + 1] = { key = ex.key, label = ex.label, tooltip = ex.tooltip }
             defs[ex.key] = { key = ex.key, axis = "extra", get = ex.get, set = ex.set }
@@ -9036,12 +9138,14 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
 
     -- Legacy-orphan rule, unchanged from the old checklist: a stored scalar this row
     -- cannot reach renders as a checked entry only while it is the current value.
-    do
+    if not customOn then
         local cur = OrphanScalar()
         if cur then
             items[#items + 1] = { key = cur, label = cur }
             defs[cur] = { key = cur, orphan = true }
         end
+    end
+    return items
     end
 
     -- Legacy group Hide encoding: before the Hide lanes had keys of their own, "Hide: In
@@ -9236,9 +9340,66 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
         if closeMenu and cbDD and cbDD._ddMenu then cbDD._ddMenu:Hide() end
     end
 
+    CustomActive = function()
+        local store = opts.getStore()
+        return (EllesmereUI.GetVisCustom and EllesmereUI.GetVisCustom(store)) ~= nil
+    end
+
+    -- What the current checklist selection compiles to, as the starting expression
+    -- when Custom is picked: the user sees their setting in the grammar and edits it.
+    local function SeedExpression(store)
+        local vm = EllesmereUI.GetActiveVisibilityModes and EllesmereUI.GetActiveVisibilityModes(store, legacyKey)
+        if vm and not vm.mouseover and EllesmereUI.BuildVisibilityDriverString then
+            local s = EllesmereUI.BuildVisibilityDriverString("", vm)
+            if type(s) == "string" and s ~= "" then return s end
+        end
+        local scalar = store[legacyKey]
+        if scalar == "never" then return "hide" end
+        if scalar == "in_combat" then return "[combat] show; hide" end
+        if scalar == "out_of_combat" then return "[nocombat] show; hide" end
+        return "show"
+    end
+
+    local function SetCustomAll(text)
+        local stores = OvStores()
+        for i = 1, #stores do
+            if not EllesmereUI.SetVisCustom(stores[i], text, legacyKey, opts.applyScalarFn) then
+                return false
+            end
+        end
+        return true
+    end
+
+    CustomInputItem = function()
+        return { isInput = true, key = "customText", label = "Custom Conditional",
+          placeholder = "[combat][exists] show; hide",
+          tooltip = "Macro-conditional clauses ending in a bare show or hide. Enter or click away to apply, Escape to revert.",
+          get = function()
+              local store = opts.getStore()
+              return (store and store.visCustom) or ""
+          end,
+          set = function(text)
+              local store = opts.getStore()
+              if not store then return false end
+              local trimmed = strtrim(text or "")
+              if trimmed == "" then return false end  -- empty is not a state: use Never/Always
+              if trimmed == store.visCustom then return true end
+              if not SetCustomAll(trimmed) then
+                  EllesmereUI.Print("Custom Conditional rejected: use macro-conditional clauses ending in a bare \"show\" or \"hide\", e.g. [combat][exists] show; hide")
+                  return false
+              end
+              AfterChange(false, false, true)
+              return true
+          end }
+    end
+
     local function GetChecked(k, neg)
         local def = defs[k]
         if not def then return false end
+        if k == "custom" then return CustomActive() end
+        -- While Custom holds the setting the scalar underneath reads Always; the
+        -- state rows must not echo that.
+        if CustomActive() and (k == "never" or k == "always" or k == "mouseover") then return false end
         if def.modifier then
             return (def.matchValue == "any") == GetMatchAny()
         end
@@ -9268,6 +9429,30 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
     local function SetChecked(k, checked, neg)
         local def = defs[k]
         if not def then return end
+
+        if k == "custom" then
+            if OvSessionActive() then return end
+            local store = opts.getStore()
+            if not store then return end
+            if CustomActive() then
+                -- Clicking the active state again leaves it: back to Always.
+                SetCustomAll("")
+            else
+                if not SetCustomAll(SeedExpression(store)) then return end
+            end
+            AfterChange(false, false, true)
+            if cbDD and cbDD.RebuildMenu then cbDD:RebuildMenu() end
+            return
+        end
+        -- Any other state click leaves Custom first, then applies as usual. Never and
+        -- Always close the menu (the next open rebuilds it); Mouseover keeps it open,
+        -- so it regains its rows right after the write below lands.
+        if CustomActive() and (k == "never" or k == "always" or k == "mouseover") then
+            SetCustomAll("")
+            if k == "mouseover" and cbDD and cbDD.RebuildMenu then
+                C_Timer.After(0, function() if cbDD and cbDD.RebuildMenu then cbDD:RebuildMenu() end end)
+            end
+        end
 
         -- Inside an override session the three exclusive states are the only thing an
         -- override can carry, and they REPLACE the configuration instead of editing it.
@@ -9408,9 +9593,10 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
 
     local leftRgn = region
     if leftRgn._control then leftRgn._control:Hide() end
+    BuildItems()
     cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
         leftRgn, opts.width or 210, leftRgn:GetFrameLevel() + 2,
-        items, GetChecked, SetChecked, nil, 12, nil, nil, OnMenuClosed,
+        BuildItems, GetChecked, SetChecked, nil, 12, nil, nil, OnMenuClosed,
         { emptyLabel = "Always",
           -- Override sessions have to see each click as it happens: parts of this
           -- control are excluded from them and the session says so per write.

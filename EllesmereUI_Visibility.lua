@@ -141,6 +141,133 @@ end
 
 EUI.RequestVisibilityUpdate = RequestVisibilityUpdate
 
+-------------------------------------------------------------------------------
+--  Custom Conditional
+--  store.visCustom = a raw macro-conditional show/hide string ("[combat][exists]
+--  show; hide") that replaces the shared checklist for that store. The checklist
+--  is a builder for exactly this grammar, so this is the escape hatch beside it.
+--
+--  Secure consumers (action bars, minimap, unit frames) prepend their own safety
+--  prefix through VisCustomDriverString. Lua consumers get the answer through
+--  EvalVisibilityExtended, which is the one path they all run: it reads the
+--  current state of a tiny SecureHandlerStateTemplate proxy that carries the
+--  string as a state driver, so the engine evaluates the conditional natively
+--  and every edge it knows ([exists], [mod:...], [bonusbar:N]...) fires the
+--  shared dispatcher. Proxies exist only for stores that carry a string, are
+--  created on first evaluation and unregistered when the string is cleared.
+--  Nothing here runs for a store without one: one field read.
+-------------------------------------------------------------------------------
+local customProxies = setmetatable({}, { __mode = "k" })  -- store -> proxy frame
+local customCount = 0
+
+function EUI.GetVisCustom(store)
+    local c = store and store.visCustom
+    if type(c) == "string" and c ~= "" then return c end
+    return nil
+end
+
+-- Entry check for the options field. Accepted when the secure parser resolves
+-- the string to show/hide right now AND its last clause is a bare show/hide
+-- (no bracket), so a driver built from it can never land on nil. Returns the
+-- trimmed string, "" for an empty entry, nil when rejected.
+function EUI.ValidateVisCustom(str)
+    if type(str) ~= "string" then return nil end
+    str = strtrim(str)
+    if str == "" then return "" end
+    local last = str:match("([^;]*)$") or ""
+    if last:find("[", 1, true) then return nil end
+    local ok, res = pcall(SecureCmdOptionParse, str)
+    if not ok or type(res) ~= "string" then return nil end
+    res = strtrim(res):lower()
+    if res ~= "show" and res ~= "hide" then return nil end
+    return str
+end
+
+-- Secure consumers: the full driver string with the caller's prefix in front,
+-- or nil when the store has no custom conditional.
+function EUI.VisCustomDriverString(store, prefix)
+    local c = EUI.GetVisCustom(store)
+    if not c then return nil end
+    return (prefix or "") .. c
+end
+
+-- True while at least one store carries a custom conditional. Lua consumers
+-- that are not dispatcher subscribers gate a cheap updater on this so the
+-- dispatcher costs them nothing until someone opts in.
+function EUI.VisCustomActive()
+    return customCount > 0
+end
+
+local function OnCustomProxyState(proxy, state)
+    proxy._visState = state
+    RequestVisibilityUpdate()
+end
+
+local function ReleaseCustomProxy(store)
+    local proxy = customProxies[store]
+    if not proxy then return end
+    if proxy._visDriver then
+        UnregisterStateDriver(proxy, "viscustom")
+        proxy._visDriver = nil
+        customCount = customCount - 1
+    end
+    proxy._visState = nil
+end
+
+-- Lua consumers: true/false for a store with a custom conditional, nil without.
+function EUI.VisCustomState(store)
+    local custom = EUI.GetVisCustom(store)
+    if not custom then
+        if customProxies[store] then ReleaseCustomProxy(store) end
+        return nil
+    end
+    local proxy = customProxies[store]
+    -- Secure frame creation and driver registration stay out of combat (the
+    -- vehicle proxies in the modules follow the same rule); until then the
+    -- parser answers directly and the regen edge re-runs this through the
+    -- dispatcher.
+    if (not proxy or proxy._visDriver ~= custom) and InCombatLockdown() then
+        local ok, res = pcall(SecureCmdOptionParse, custom)
+        return ok and type(res) == "string" and res:lower() == "show" or false
+    end
+    if not proxy then
+        proxy = CreateFrame("Frame", nil, UIParent, "SecureHandlerStateTemplate")
+        proxy:SetAttribute("_onstate-viscustom", [[ self:CallMethod("OnVisCustomState", newstate) ]])
+        proxy.OnVisCustomState = OnCustomProxyState
+        customProxies[store] = proxy
+    end
+    if proxy._visDriver ~= custom then
+        if not proxy._visDriver then customCount = customCount + 1 end
+        proxy._visDriver = custom
+        -- Seed from the parser so the first read is right; the driver's own
+        -- first evaluation follows on the next state-driver tick.
+        local ok, res = pcall(SecureCmdOptionParse, custom)
+        proxy._visState = ok and res or nil
+        RegisterStateDriver(proxy, "viscustom", custom)
+    end
+    local st = proxy._visState
+    return type(st) == "string" and st:lower() == "show"
+end
+
+-- Options-side writer: validates, stores (nil for empty), parks the shared
+-- selection on Always so the Lua-side mode paths stay quiet, and drops the
+-- proxy when cleared. Returns true when stored, false when rejected.
+function EUI.SetVisCustom(store, str, legacyKey, applyScalarFn)
+    if not store then return false end
+    local ok = EUI.ValidateVisCustom(str)
+    if ok == nil then return false end
+    if ok == "" then
+        store.visCustom = nil
+        ReleaseCustomProxy(store)
+        return true
+    end
+    store.visCustom = ok
+    if legacyKey and EUI.SetVisibilitySelection then
+        EUI.SetVisibilitySelection(store, legacyKey, {}, applyScalarFn)
+    end
+    return true
+end
+
 -- Deferred callback so we don't re-allocate a closure on every event
 local function DeferredRequest()
     RequestVisibilityUpdate()
@@ -487,6 +614,8 @@ function EUI.VisDependsOnCombat(store, legacyKey)
     if not store then return false end
     -- None of the three override states can flip on a combat edge.
     if EUI.VisOverrideValue(store) then return false end
+    -- A custom conditional is a driver string: treat it as combat-dependent.
+    if EUI.GetVisCustom(store) then return true end
     local vm = ActiveModes(store, legacyKey)
     if vm then
         return (vm.in_combat or vm.out_of_combat
@@ -726,6 +855,9 @@ function EUI.EvalVisibilityExtended(store, legacyKey, state, caps)
         if ov == "mouseover" then return "mouseover" end
         return true
     end
+    -- A custom conditional owns the verdict outright (see the Custom Conditional block).
+    local custom = EUI.VisCustomState(store)
+    if custom ~= nil then return custom end
     local vm = ActiveModes(store, legacyKey)
     -- Any owns the whole verdict (option lanes included, even with no mode set). The one
     -- case handed back is a legacy ORPHAN scalar: the caller's chain resolves the mode
@@ -1178,6 +1310,8 @@ end
 -- module's scalar side effects, same contract as SetVisibilitySelection.
 function EUI.VisCopySelection(dst, src, legacyKey, dstCaps, applyScalarFn)
     if not dst or not src then return end
+    -- The custom conditional travels with the copy (nil clears the target's).
+    dst.visCustom = EUI.GetVisCustom(src)
     -- The match travels with every copy, mode-only ones included.
     dst.visibilityMatch = (src.visibilityMatch == "any") and "any" or nil
     -- The shared selection, not what an override on the source currently replaces it with.
@@ -1239,6 +1373,7 @@ end
 
 function EUI.VisFullEquals(a, aKey, b, bKey)
     if not a or not b then return false end
+    if (a.visCustom or "") ~= (b.visCustom or "") then return false end
     if not EUI.VisSelectionEquals(a, aKey, b, bKey) then return false end
     local keys = EUI.VIS_OPT_KEYS
     if not keys then return true end
