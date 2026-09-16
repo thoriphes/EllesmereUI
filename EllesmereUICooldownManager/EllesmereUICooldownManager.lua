@@ -7299,6 +7299,15 @@ _CDMApplyVisibility = function()
     end
 end
 ns.CDMApplyVisibility = _CDMApplyVisibility
+-- Custom conditionals report their edges through the shared dispatcher; nothing
+-- here runs until a CDM bar carries one.
+if EllesmereUI.RegisterVisibilityUpdater then
+    EllesmereUI.RegisterVisibilityUpdater(function()
+        if EllesmereUI.VisCustomActive and EllesmereUI.VisCustomActive() then
+            _CDMApplyVisibility()
+        end
+    end)
+end
 _G._ECME_ApplyVisibility = _CDMApplyVisibility
 
 -- Live-apply bar opacity to a bar's frame + icons. Skips hidden bars so visibility state is never overridden (hidden stays at alpha 0).

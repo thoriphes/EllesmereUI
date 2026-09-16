@@ -9057,6 +9057,17 @@ function ERB:ApplyAll()
     if ns.MigrateLegacyAnchorTo then ns.MigrateLegacyAnchorTo() end
     if ns.AS_Apply then ns.AS_Apply() end
 
+    -- Custom conditionals report their edges through the shared dispatcher; nothing
+    -- here runs until a resource bar store carries one.
+    if not ERB._visCustomUpdater and EllesmereUI.RegisterVisibilityUpdater then
+        ERB._visCustomUpdater = true
+        EllesmereUI.RegisterVisibilityUpdater(function()
+            if EllesmereUI.VisCustomActive and EllesmereUI.VisCustomActive() then
+                UpdateVisibility()
+            end
+        end)
+    end
+
     -- Vehicle proxy: hide resource bars during full vehicle UI ([vehicleui]
     -- condition). Secure frame creation + RegisterStateDriver both need combat OOC.
     if not ERB._vehicleProxy then
