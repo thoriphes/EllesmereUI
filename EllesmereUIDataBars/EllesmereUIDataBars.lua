@@ -2476,6 +2476,15 @@ do
         return true
     end
 
+    -- Custom conditionals report their edges through the shared dispatcher; nothing
+    -- here runs until a data bar carries one.
+    if EllesmereUI.RegisterVisibilityUpdater then
+        EllesmereUI.RegisterVisibilityUpdater(function()
+            if EllesmereUI.VisCustomActive and EllesmereUI.VisCustomActive() then
+                ns.UpdateAllBarVisibility()
+            end
+        end)
+    end
     function ns.UpdateAllBarVisibility()
         local profile = ns.GetProfile()
         if not profile then return end

@@ -528,6 +528,9 @@ for _, info in ipairs(BAR_CONFIG) do
         combatHideEnabled = false,
         housingHideEnabled = false,
         barVisibility = "always",
+        -- visCustom: raw macro-conditional show/hide string (shared Custom
+        -- Conditional, EllesmereUI_Visibility.lua). nil = checklist.
+        visCustom = nil,
         dragShow = false,
         visHideHousing = false,
         visOnlyInstances = false,
@@ -9120,6 +9123,14 @@ local function BuildVisibilityString(info, s, visOverride)
 
     -- Pet bar has unique logic: it only shows when a pet is active and
     -- the player is not in a vehicle/override/possess state.
+    if info.isPetBar and not visOverride and not visOv then
+        -- Custom conditional on the pet bar: the wrapper below cannot AND a whole
+        -- expression into its bracket, so its terms lead as hide gates instead
+        -- (adjacent brackets are OR: any of them hides), then the user's clauses decide.
+        local custom = EllesmereUI.VisCustomDriverString and EllesmereUI.VisCustomDriverString(s,
+            "[petbattle][nopet][vehicleui][overridebar][possessbar] hide; ")
+        if custom then return custom end
+    end
     if info.isPetBar then
         -- Both paths fold the mode's AND terms INTO the pet wrapper bracket. Adjacent
         -- bracket groups are OR in macro grammar, so a mode clause beside the wrapper
@@ -9165,6 +9176,14 @@ local function BuildVisibilityString(info, s, visOverride)
         hidePrefix = "[vehicleui][petbattle] hide; "
     else
         hidePrefix = "[vehicleui][petbattle][overridebar] hide; "
+    end
+
+    -- Custom conditional: replaces the checklist and the option lanes outright.
+    -- The runtime toggle keybind (visOverride) and an applied Visibility
+    -- override (visOv) still win, the same way they win over the saved mode.
+    if not visOverride and not visOv then
+        local custom = EllesmereUI.VisCustomDriverString and EllesmereUI.VisCustomDriverString(s, hidePrefix)
+        if custom then return custom end
     end
 
     -- Inject visibility-option hide clauses after the standard hide-prefix
