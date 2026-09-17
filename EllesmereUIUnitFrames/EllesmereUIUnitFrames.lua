@@ -3261,6 +3261,17 @@ function ns.GetMiniDonorSettings()
 end
 local GetMiniDonorSettings = ns.GetMiniDonorSettings
 
+-- Effective border value for a mini frame (pet/tot/focustarget). The donor's
+-- value, unless the mini frame's Advanced borders toggle is on AND it carries
+-- its own value for that key (settings.borderOverride[key]). Both nil by
+-- default, so with the toggle off this is one field read + the donor lookup
+-- the callers did before. Shared by the live frames and the options preview.
+ns.ResolveMiniBorderValue = function(ownSettings, key, donorSettings)
+    local ov = ownSettings.borderAdvanced and ownSettings.borderOverride
+    if ov and ov[key] ~= nil then return ov[key] end
+    return donorSettings[key]
+end
+
 -- Boss "Simple Debuff Display" mode: "none"|"left"|"right". Tolerates legacy booleans
 -- (true/nil="left", false="none") so existing/imported profiles read correctly with no
 -- migration pass. "left"/"right" both force the frame-height-matched single column;
@@ -7548,9 +7559,16 @@ local function FrameBorderEnter(self)
     -- Per-mini-frame opt-out: with "Show Highlight Border" off, a mini frame never
     -- recolors on hover even when the donor (main frame) highlight is enabled. (When the
     -- donor highlight is off we already returned above, so this has no effect then.)
-    if isMini and GetSettingsForUnit(unit).showHighlightBorder == false then return end
-    local hc = settings.highlightColor or { r = 1, g = 1, b = 1 }
-    local ha = settings.highlightAlpha or 1
+    local hc, ha = settings.highlightColor, settings.highlightAlpha
+    if isMini then
+        local own = GetSettingsForUnit(unit)
+        if own.showHighlightBorder == false then return end
+        -- Advanced borders: the mini frame may carry its own highlight color.
+        hc = ns.ResolveMiniBorderValue(own, "highlightColor", settings)
+        ha = ns.ResolveMiniBorderValue(own, "highlightAlpha", settings)
+    end
+    hc = hc or { r = 1, g = 1, b = 1 }
+    ha = ha or 1
     EllesmereUI.SetBorderStyleColor(self.unifiedBorder, hc.r, hc.g, hc.b, ha)
 end
 local function FrameBorderLeave(self)
@@ -7564,8 +7582,14 @@ local function FrameBorderLeave(self)
     end
     local isMini = (unit == "pet" or unit == "targettarget" or unit == "focustarget")
     local settings = isMini and GetMiniDonorSettings() or GetSettingsForUnit(unit)
-    local bc = settings.borderColor or { r = 0, g = 0, b = 0 }
-    local ba = settings.borderAlpha or 1
+    local bc, ba = settings.borderColor, settings.borderAlpha
+    if isMini then
+        local own = GetSettingsForUnit(unit)
+        bc = ns.ResolveMiniBorderValue(own, "borderColor", settings)
+        ba = ns.ResolveMiniBorderValue(own, "borderAlpha", settings)
+    end
+    bc = bc or { r = 0, g = 0, b = 0 }
+    ba = ba or 1
     EllesmereUI.SetBorderStyleColor(self.unifiedBorder, bc.r, bc.g, bc.b, ba)
 end
 
@@ -12717,22 +12741,36 @@ ReloadFramesBody = function()
 
             if frame.unifiedBorder then
                 frame.unifiedBorder:ClearAllPoints()
-                -- Mini frames (ToT/Focus Target/Pet) may override ONLY the border
-                -- size per frame (settings.borderSizeOverride); color and texture
-                -- still inherit from the donor. nil = inherit the donor size.
+                -- Mini frames (ToT/Focus Target/Pet) may override the border size
+                -- per frame (settings.borderSizeOverride, nil = donor size). The
+                -- rest of the border inherits from the donor unless the mini
+                -- frame's Advanced borders toggle is on and it carries its own
+                -- value (ns.ResolveMiniBorderValue, per key). Boss frames have no
+                -- toggle, so they keep reading the donor as before.
+                -- Size: an Advanced borderOverride.borderSize (style pick / slider
+                -- while the toggle is on) wins over borderSizeOverride, so that
+                -- switching the toggle off returns to exactly the pre-Advanced size.
                 -- ns.UF_FrameBorderPad mirrors this apply for size matching: change the two together.
-                local bs = settings.borderSizeOverride or donorSettings.borderSize or 1
-                local bc = donorSettings.borderColor or { r = 0, g = 0, b = 0 }
-                local btex = donorSettings.borderTexture or "solid"
-                -- The donor's exact size rides along only while the size IS the
-                -- donor's own; a per-frame override is a substitute step (legacy path).
+                local ov = settings.borderAdvanced and settings.borderOverride
+                local bs = (ov and ov.borderSize) or settings.borderSizeOverride or donorSettings.borderSize or 1
+                local bc = ns.ResolveMiniBorderValue(settings, "borderColor", donorSettings) or { r = 0, g = 0, b = 0 }
+                local ba = ns.ResolveMiniBorderValue(settings, "borderAlpha", donorSettings) or 1
+                local btex = ns.ResolveMiniBorderValue(settings, "borderTexture", donorSettings) or "solid"
+                -- The donor's exact pixel size rides along only while the size IS
+                -- the donor's own; a per-frame override, or an Advanced size while
+                -- the toggle is on, is a substitute step (legacy path).
                 local bpx = nil
-                if not settings.borderSizeOverride then
+                if not (settings.borderSizeOverride or (ov and ov.borderSize)) then
                     bpx = EllesmereUI.BorderPx(donorSettings.borderSizePx, bs, btex)
                 end
                 PP.Point(frame.unifiedBorder, "TOPLEFT", frame, "TOPLEFT", 0, 0)
                 PP.Point(frame.unifiedBorder, "BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-                EllesmereUI.ApplyBorderStyle(frame.unifiedBorder, bs, bc.r, bc.g, bc.b, donorSettings.borderAlpha or 1, btex, donorSettings.borderTextureOffset, donorSettings.borderTextureOffsetY, donorSettings.borderTextureShiftX, donorSettings.borderTextureShiftY, "unitframes", bs, nil, bpx)
+                EllesmereUI.ApplyBorderStyle(frame.unifiedBorder, bs, bc.r, bc.g, bc.b, ba, btex,
+                    ns.ResolveMiniBorderValue(settings, "borderTextureOffset", donorSettings),
+                    ns.ResolveMiniBorderValue(settings, "borderTextureOffsetY", donorSettings),
+                    ns.ResolveMiniBorderValue(settings, "borderTextureShiftX", donorSettings),
+                    ns.ResolveMiniBorderValue(settings, "borderTextureShiftY", donorSettings),
+                    "unitframes", bs, nil, bpx)
             end
 
             -- Helper: set font on a FontString, using donor font for mini frames
