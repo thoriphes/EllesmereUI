@@ -1794,10 +1794,12 @@ local function CreateStatusBar(parent, name, w, h, borderSize, borderR, borderG,
     bar:SetSize(w, h)
     bar:EnableMouse(false)
 
-    -- Inner StatusBar: clips its fill. Inset by half a physical pixel so
-    -- the fill can never bleed past the border at any resolution.
+    -- Inner StatusBar: clips its fill. Inset by a quarter of a physical pixel so
+    -- the fill can never bleed past the border at any resolution. A quarter, not
+    -- a half: an edge on a pixel centre hits the rasteriser's tie rule and the
+    -- fill covers one more pixel on one side than the other.
     local sb = CreateFrame("StatusBar", nil, bar)
-    local halfPx = PP.mult * 0.5
+    local halfPx = PP.mult * 0.25
     sb:SetPoint("TOPLEFT", bar, "TOPLEFT", halfPx, -halfPx)
     sb:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", -halfPx, halfPx)
     sb:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")

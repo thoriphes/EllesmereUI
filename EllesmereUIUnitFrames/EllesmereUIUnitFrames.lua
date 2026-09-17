@@ -4182,13 +4182,16 @@ local function UpdateBordersForScale(frame, unit)
         end
     end
 
-    -- 9) Inset the clip container by half a physical pixel (sub-pixel, invisible),
+    -- 9) Inset the clip container by a quarter of a physical pixel (sub-pixel, invisible),
     -- guaranteeing the GPU clips any StatusBar texture rounding past the frame edge.
+    -- A quarter, not a half: an edge exactly on a pixel centre hits the rasteriser's
+    -- tie rule and the bar covers one more column/row on one side than the other,
+    -- which shows as an uneven border wherever the bar sits over it (Show Behind).
     -- Skip the inset on the portrait side so the health bar stays flush with the
     -- portrait (which anchors to the frame, not _barClip).
     if frame._barClip and frame.Health then
         local es = frame:GetEffectiveScale()
-        local halfPixel = es > 0 and (PP.perfect / es) * 0.5 or PP.mult * 0.5
+        local halfPixel = es > 0 and (PP.perfect / es) * 0.25 or PP.mult * 0.25
         local clipL, clipR = halfPixel, halfPixel
         if showPortrait and isAttached and frame.Portrait and frame.Portrait.backdrop then
             if effectiveSide == "left" then clipL = 0
