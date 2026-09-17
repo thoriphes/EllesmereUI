@@ -3367,6 +3367,18 @@ do
                 offsetX = adjX
                 offsetY = adjY
             end
+            -- Snap the four anchor offsets to whole physical pixels at the backdrop's own
+            -- scale. Offset/shift are units, and at any UI scale where a unit is not a whole
+            -- pixel (1.75 px/unit: 2 units = 3.5 px) the backdrop's edges land between pixels;
+            -- a rect on half pixels is rasterised with the top-left fill rule, so the top and
+            -- left edges read one pixel thicker than the bottom and right. The owner is
+            -- already on the grid (PP.Point/PP.Size); this keeps the border there with it.
+            local sok, ses = pcall(bdFrame.GetEffectiveScale, bdFrame)
+            if not (sok and ses and ses > 0.01) then ses = UIParent and UIParent:GetEffectiveScale() or 1 end
+            -- Snap the offset once and mirror it (not each corner: round-half-up would put
+            -- -3.5 at -3 and +3.5 at +4, one pixel more on the right/top than the left/bottom).
+            offsetX, offsetY = PP.SnapForES(offsetX, ses), PP.SnapForES(offsetY, ses)
+            sx, sy = PP.SnapForES(sx, ses), PP.SnapForES(sy, ses)
             bdFrame:ClearAllPoints()
             bdFrame:SetPoint("TOPLEFT", borderFrame, "TOPLEFT", -offsetX + sx, offsetY + sy)
             bdFrame:SetPoint("BOTTOMRIGHT", borderFrame, "BOTTOMRIGHT", offsetX + sx, -offsetY + sy)
@@ -3451,14 +3463,22 @@ do
         if EllesmereUI.BorderTextureUsesScaleOffset(textureKey) then
             ox, oy = edgeSize / 2 + ox, edgeSize / 2 + oy
         end
+        -- Same pixel snap as ApplyBorderStyle's backdrop anchors (see there): the
+        -- corner pieces carry the outer edges, so their four anchor offsets go on the grid.
+        local sok, ses = pcall(borderFrame.GetEffectiveScale, borderFrame)
+        if not (sok and ses and ses > 0.01) then ses = UIParent and UIParent:GetEffectiveScale() or 1 end
+        local PP = EllesmereUI.PP
+        ox, oy = PP.SnapForES(ox, ses), PP.SnapForES(oy, ses)
+        sx, sy = PP.SnapForES(sx, ses), PP.SnapForES(sy, ses)
+        local aL, aT, aR, aB = -ox + sx, oy + sy, ox + sx, -oy + sy
         for _, tex in pairs(edges) do
             tex:SetTexture(path, true, true); tex:SetVertexColor(r, g, b, a or 1)
             tex:ClearAllPoints(); tex:Show()
         end
-        edges.topLeft:SetSize(edgeSize, edgeSize); edges.topLeft:SetPoint("TOPLEFT", borderFrame, "TOPLEFT", -ox + sx, oy + sy)
-        edges.topRight:SetSize(edgeSize, edgeSize); edges.topRight:SetPoint("TOPRIGHT", borderFrame, "TOPRIGHT", ox + sx, oy + sy)
-        edges.bottomLeft:SetSize(edgeSize, edgeSize); edges.bottomLeft:SetPoint("BOTTOMLEFT", borderFrame, "BOTTOMLEFT", -ox + sx, -oy + sy)
-        edges.bottomRight:SetSize(edgeSize, edgeSize); edges.bottomRight:SetPoint("BOTTOMRIGHT", borderFrame, "BOTTOMRIGHT", ox + sx, -oy + sy)
+        edges.topLeft:SetSize(edgeSize, edgeSize); edges.topLeft:SetPoint("TOPLEFT", borderFrame, "TOPLEFT", aL, aT)
+        edges.topRight:SetSize(edgeSize, edgeSize); edges.topRight:SetPoint("TOPRIGHT", borderFrame, "TOPRIGHT", aR, aT)
+        edges.bottomLeft:SetSize(edgeSize, edgeSize); edges.bottomLeft:SetPoint("BOTTOMLEFT", borderFrame, "BOTTOMLEFT", aL, aB)
+        edges.bottomRight:SetSize(edgeSize, edgeSize); edges.bottomRight:SetPoint("BOTTOMRIGHT", borderFrame, "BOTTOMRIGHT", aR, aB)
         edges.top:SetHeight(edgeSize); edges.top:SetPoint("TOPLEFT", edges.topLeft, "TOPRIGHT"); edges.top:SetPoint("TOPRIGHT", edges.topRight, "TOPLEFT")
         edges.bottom:SetHeight(edgeSize); edges.bottom:SetPoint("BOTTOMLEFT", edges.bottomLeft, "BOTTOMRIGHT"); edges.bottom:SetPoint("BOTTOMRIGHT", edges.bottomRight, "BOTTOMLEFT")
         edges.left:SetWidth(edgeSize); edges.left:SetPoint("TOPLEFT", edges.topLeft, "BOTTOMLEFT"); edges.left:SetPoint("BOTTOMLEFT", edges.bottomLeft, "TOPLEFT")
