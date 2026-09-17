@@ -3673,7 +3673,17 @@ ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fromCa
     -- Compute child center
     local cx, cy
     local ai = GetAnchorInfo(childKey)
-    if ai and ai.offsetX ~= nil and ai.offsetY ~= nil then
+    -- Explicit points (cog menu): ai.point on this element sits ai.offsetX/Y from
+    -- ai.relPoint on the target, both any of the nine frame points. Replaces the
+    -- side/centre geometry below outright and needs no growth-edge pin: the own
+    -- point IS the fixed edge, so a resize grows away from it by construction.
+    local pointed = ai and ai.point and ai.relPoint and ai.offsetX ~= nil and ai.offsetY ~= nil
+    if pointed then
+        local px, py = EllesmereUI.AnchorPointXY(ai.relPoint, tL, tR, tT, tB)
+        local hx, hy = EllesmereUI.AnchorPointHalf(ai.point)
+        cx = px + ai.offsetX - hx * cW / 2
+        cy = py + ai.offsetY - hy * cH / 2
+    elseif ai and ai.offsetX ~= nil and ai.offsetY ~= nil then
         -- Edge-to-edge offset mode: the offset runs from the child's near edge to
         -- the target's anchor edge, so a resized child keeps that near edge fixed.
         local edgeX, edgeY
@@ -3765,7 +3775,10 @@ ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fromCa
     -- current position; while frames lack bounds the legacy pin below still
     -- applies, so early-login frames degrade gracefully.
     local growPinned = false
-    if isCdmOrAB and ai and ai.target and ai.offsetX ~= nil and ai.offsetY ~= nil then
+    if pointed then
+        -- Explicit points: no pin, no edge preservation (see above).
+        growPinned = true
+    elseif isCdmOrAB and ai and ai.target and ai.offsetX ~= nil and ai.offsetY ~= nil then
         local gd = GetBarGrowDirActual(childKey)
         if gd and gd ~= "CENTER" then
             -- Lazy capture ONLY at provable quiescence: the settle pass (trusted by
@@ -4291,6 +4304,88 @@ end
 -- Recursively propagate anchor repositioning from a moved parent down the chain.
 -- visited guards circular anchor loops. changedAxis: "width", "height", or nil
 -- (nil = all axes, e.g. from a drag).
+-- Frame-point helpers for explicit anchors. AnchorPointXY: the point's screen
+-- position from a rect. AnchorPointHalf: the point's offset from the rect centre
+-- in half-widths/half-heights (-1 left/bottom, 0 centre, +1 right/top).
+EllesmereUI.ANCHOR_POINTS = { "TOPLEFT", "TOP", "TOPRIGHT", "LEFT", "CENTER", "RIGHT", "BOTTOMLEFT", "BOTTOM", "BOTTOMRIGHT" }
+EllesmereUI.ANCHOR_POINT_LABEL = {
+    TOPLEFT = "Top Left", TOP = "Top", TOPRIGHT = "Top Right",
+    LEFT = "Left", CENTER = "Center", RIGHT = "Right",
+    BOTTOMLEFT = "Bottom Left", BOTTOM = "Bottom", BOTTOMRIGHT = "Bottom Right",
+}
+function EllesmereUI.AnchorPointHalf(point)
+    local hx = (point:find("LEFT", 1, true) and -1) or (point:find("RIGHT", 1, true) and 1) or 0
+    local hy = (point:find("TOP", 1, true) and 1) or (point:find("BOTTOM", 1, true) and -1) or 0
+    return hx, hy
+end
+function EllesmereUI.AnchorPointXY(point, l, r, t, b)
+    local hx, hy = EllesmereUI.AnchorPointHalf(point)
+    return (l + r) / 2 + hx * (r - l) / 2, (t + b) / 2 + hy * (t - b) / 2
+end
+-- The side a point pair expresses, for the parts of the anchor system that read
+-- ai.side (chain extents, mover captions, fallback picks).
+function EllesmereUI._SideFromPoints(point, relPoint)
+    local px, py = EllesmereUI.AnchorPointHalf(point)
+    local rx, ry = EllesmereUI.AnchorPointHalf(relPoint)
+    if rx == 1 and px == -1 then return "RIGHT" end
+    if rx == -1 and px == 1 then return "LEFT" end
+    if ry == 1 and py == -1 then return "TOP" end
+    if ry == -1 and py == 1 then return "BOTTOM" end
+    return "CENTER"
+end
+-- The point pair a classic side means (child's near edge on the target's edge,
+-- centred across), so a record without points reads back the same way.
+function EllesmereUI._PointsFromSide(side)
+    if side == "LEFT" then return "RIGHT", "LEFT" end
+    if side == "RIGHT" then return "LEFT", "RIGHT" end
+    if side == "TOP" then return "BOTTOM", "TOP" end
+    if side == "BOTTOM" then return "TOP", "BOTTOM" end
+    return "CENTER", "CENTER"
+end
+function EllesmereUI.GetAnchorPoints(childKey)
+    local ai = GetAnchorInfo(childKey)
+    if not (ai and ai.target) then return nil end
+    if ai.point and ai.relPoint then return ai.point, ai.relPoint end
+    return EllesmereUI._PointsFromSide(ai.side)
+end
+
+-- Cog-menu editing of an existing anchor: own point, target point and the two
+-- offsets. A point change keeps the element where it is (the offset is
+-- re-derived from live bounds for the new pair); a typed offset moves it.
+-- Returns true when applied.
+function EllesmereUI.SetAnchorParams(childKey, p)
+    local ai = GetAnchorInfo(childKey)
+    if not (ai and ai.target) or InCombatLockdown() then return false end
+    local childBar, targetBar = GetBarFrame(childKey), GetBarFrame(ai.target)
+    if p.point or p.relPoint then
+        if not (childBar and targetBar and childBar:GetLeft() and targetBar:GetLeft()) then return false end
+        local curP, curR = EllesmereUI.GetAnchorPoints(childKey)
+        local point, relPoint = p.point or curP, p.relPoint or curR
+        local uiS = UIParent:GetEffectiveScale()
+        local cS, tS = childBar:GetEffectiveScale() / uiS, targetBar:GetEffectiveScale() / uiS
+        local ox, oy = EllesmereUI.AnchorPointXY(point,
+            childBar:GetLeft() * cS, childBar:GetRight() * cS, childBar:GetTop() * cS, childBar:GetBottom() * cS)
+        local px, py = EllesmereUI.AnchorPointXY(relPoint,
+            targetBar:GetLeft() * tS, targetBar:GetRight() * tS, targetBar:GetTop() * tS, targetBar:GetBottom() * tS)
+        local snap = (EllesmereUI.PP and EllesmereUI.PP.Snap) or function(v) return math.floor(v + 0.5) end
+        ai.point, ai.relPoint = point, relPoint
+        ai.side = EllesmereUI._SideFromPoints(point, relPoint)
+        ai.offsetX, ai.offsetY = snap(ox - px), snap(oy - py)
+        ai.refFor, ai.refX, ai.refY, ai.edgeOffX, ai.edgeOffY = nil, nil, nil, nil, nil
+    end
+    if p.offsetX then ai.offsetX = p.offsetX end
+    if p.offsetY then ai.offsetY = p.offsetY end
+    ApplyAnchorPosition(childKey, ai.target, ai.side)
+    C_Timer.After(0, function() PropagateAnchorChain(childKey) end)
+    hasChanges = true
+    local m = movers[childKey]
+    if m then
+        if m.RefreshAnchoredText then m:RefreshAnchoredText() end
+        DeferMoverSync(m, function(mm) mm:Sync() end, childBar)
+    end
+    return true
+end
+
 PropagateAnchorChain = function(parentKey, visited, changedAxis)
     visited = visited or {}
     if visited[parentKey] then return end
@@ -8306,6 +8401,12 @@ local function CreateMover(barKey)
                         ai.offsetX = cCX - tCX
                         ai.offsetY = cCY - tCY
                     end
+                    -- Explicit points (cog menu): the offset is point to point.
+                    if ai.point and ai.relPoint then
+                        local ox, oy = EllesmereUI.AnchorPointXY(ai.point, cL, cR, cT, cB)
+                        local px, py = EllesmereUI.AnchorPointXY(ai.relPoint, tL, tR, tT, tB)
+                        ai.offsetX, ai.offsetY = ox - px, oy - py
+                    end
                 end
             end
             -- The cross-axis screen edge rides the same recapture, else the next
@@ -9802,6 +9903,17 @@ local function CreateMover(barKey)
 
                 local xBox = MakePosRow("X", AxisToPx("X") or 0)
                 local yBox = MakePosRow("Y", AxisToPx("Y") or 0)
+                -- Anchored elements: the anchor owns the position, so these only
+                -- report it (edit the anchor's offsets below instead).
+                do
+                    local aiP = GetAnchorInfo(barKey)
+                    if aiP and aiP.target then
+                        for _, b in ipairs({ xBox, yBox }) do
+                            b:EnableMouse(false)
+                            b:SetTextColor(0.55, 0.55, 0.55, 0.9)
+                        end
+                    end
+                end
                 -- Let arrow-key nudges (while the cog is open) refresh these boxes
                 -- so they stay in lockstep with the element and the floating overlay.
                 mover._syncCogPos = function()
@@ -9819,6 +9931,199 @@ local function CreateMover(barKey)
             sizeDiv:SetPoint("TOPLEFT", cogMenu, "TOPLEFT", 1, yOff - 4)
             sizeDiv:SetPoint("TOPRIGHT", cogMenu, "TOPRIGHT", -1, yOff - 4)
             yOff = yOff - 9
+        end
+
+        -- Anchor rows (anchored elements only): which point of THIS element sits on
+        -- which point of the target, and the offset between the two, editable in
+        -- place. Picking a point keeps the element where it is; typing an offset
+        -- moves it.
+        do
+            local aiM = GetAnchorInfo(barKey)
+            if aiM and aiM.target and not InCombatLockdown() then
+                local AROW_H, AINPUT_W, AINPUT_H, ADD_W = 22, 52, 18, 96
+                local POINTS, PLABEL = EllesmereUI.ANCHOR_POINTS, EllesmereUI.ANCHOR_POINT_LABEL
+                local ownName = GetBarLabel(barKey) or barKey
+                local tgtName = GetBarLabel(aiM.target) or aiM.target
+                local function Reopen()
+                    CloseCogMenu()
+                    if mover._openCogMenu then mover._openCogMenu() end
+                end
+                local function MakeAnchorRow(text)
+                    local rowFrame = CreateFrame("Frame", nil, cogMenu)
+                    rowFrame:SetHeight(AROW_H)
+                    rowFrame:SetPoint("TOPLEFT", cogMenu, "TOPLEFT", 1, yOff)
+                    rowFrame:SetPoint("TOPRIGHT", cogMenu, "TOPRIGHT", -1, yOff)
+                    rowFrame:SetFrameLevel(cogMenu:GetFrameLevel() + 2)
+                    local lbl = rowFrame:CreateFontString(nil, "OVERLAY")
+                    if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(lbl, true) end
+                    lbl:SetFont(FONT_PATH, 11, "")
+                    lbl:SetTextColor(0.75, 0.75, 0.75, 0.9)
+                    lbl:SetJustifyH("LEFT")
+                    lbl:SetWordWrap(false)
+                    lbl:SetPoint("LEFT", rowFrame, "LEFT", 10, 0)
+                    lbl:SetText(text)
+                    yOff = yOff - AROW_H
+                    return rowFrame, lbl
+                end
+                do
+                    local _, lbl = MakeAnchorRow(EllesmereUI.L("Anchored to") .. ": " .. tgtName)
+                    lbl:SetTextColor(0.55, 0.55, 0.55, 0.9)
+                end
+                -- Point dropdown: the value button opens a nine-entry list under it.
+                local function MakePointRow(text, current, onPick)
+                    local rowFrame, lbl = MakeAnchorRow(text)
+                    local btn = CreateFrame("Button", nil, rowFrame)
+                    btn:SetSize(ADD_W, AINPUT_H)
+                    btn:SetPoint("RIGHT", rowFrame, "RIGHT", -8, 0)
+                    btn:SetFrameLevel(cogMenu:GetFrameLevel() + 3)
+                    lbl:SetPoint("RIGHT", btn, "LEFT", -6, 0)
+                    local bg = btn:CreateTexture(nil, "BACKGROUND")
+                    bg:SetAllPoints()
+                    bg:SetColorTexture(0, 0, 0, 0.4)
+                    local val = btn:CreateFontString(nil, "OVERLAY")
+                    val:SetFont(FONT_PATH, 10, "")
+                    val:SetTextColor(1, 1, 1, 0.9)
+                    val:SetPoint("LEFT", btn, "LEFT", 6, 0)
+                    val:SetText(EllesmereUI.L(PLABEL[current] or current))
+                    local arrow = btn:CreateFontString(nil, "OVERLAY")
+                    arrow:SetFont(FONT_PATH, 9, "")
+                    arrow:SetTextColor(0.7, 0.7, 0.7, 0.9)
+                    arrow:SetPoint("RIGHT", btn, "RIGHT", -5, 0)
+                    arrow:SetText("v")
+                    local list
+                    btn:SetScript("OnEnter", function() bg:SetColorTexture(1, 1, 1, 0.08) end)
+                    btn:SetScript("OnLeave", function() bg:SetColorTexture(0, 0, 0, 0.4) end)
+                    btn:SetScript("OnClick", function()
+                        if list and list:IsShown() then list:Hide() return end
+                        if not list then
+                            list = CreateFrame("Frame", nil, cogMenu)
+                            list:SetFrameLevel(cogMenu:GetFrameLevel() + 20)
+                            list:SetSize(ADD_W, #POINTS * AROW_H + 4)
+                            list:SetClampedToScreen(true)
+                            list:EnableMouse(true)
+                            local lbg = list:CreateTexture(nil, "BACKGROUND")
+                            lbg:SetAllPoints()
+                            lbg:SetColorTexture(EllesmereUI.DD_BG_R or 0.06, EllesmereUI.DD_BG_G or 0.08, EllesmereUI.DD_BG_B or 0.10, 0.98)
+                            EllesmereUI.MakeBorder(list, 1, 1, 1, 0.15, PP)
+                            for i, pt in ipairs(POINTS) do
+                                local e = CreateFrame("Button", nil, list)
+                                e:SetHeight(AROW_H)
+                                e:SetPoint("TOPLEFT", list, "TOPLEFT", 1, -2 - (i - 1) * AROW_H)
+                                e:SetPoint("TOPRIGHT", list, "TOPRIGHT", -1, -2 - (i - 1) * AROW_H)
+                                e:SetFrameLevel(list:GetFrameLevel() + 1)
+                                local ehl = e:CreateTexture(nil, "ARTWORK")
+                                ehl:SetAllPoints()
+                                ehl:SetColorTexture(1, 1, 1, pt == current and 0.10 or 0)
+                                local et = e:CreateFontString(nil, "OVERLAY")
+                                et:SetFont(FONT_PATH, 10, "")
+                                et:SetTextColor(1, 1, 1, pt == current and 1 or 0.85)
+                                et:SetPoint("LEFT", e, "LEFT", 6, 0)
+                                et:SetText(EllesmereUI.L(PLABEL[pt]))
+                                e:SetScript("OnEnter", function() ehl:SetColorTexture(1, 1, 1, 0.14) end)
+                                e:SetScript("OnLeave", function() ehl:SetColorTexture(1, 1, 1, pt == current and 0.10 or 0) end)
+                                e:SetScript("OnClick", function() list:Hide(); onPick(pt) end)
+                            end
+                        end
+                        -- Open downward, or upward when the list would run past the
+                        -- bottom of the screen (the cog menu itself may sit low).
+                        list:ClearAllPoints()
+                        local listH = list:GetHeight() * list:GetEffectiveScale()
+                        local btnBottom = (btn:GetBottom() or 0) * btn:GetEffectiveScale()
+                        if btnBottom - listH - 2 < 0 then
+                            list:SetPoint("BOTTOMRIGHT", btn, "TOPRIGHT", 0, 1)
+                        else
+                            list:SetPoint("TOPRIGHT", btn, "BOTTOMRIGHT", 0, -1)
+                        end
+                        list:Show()
+                    end)
+                    return btn
+                end
+                local curP, curR = EllesmereUI.GetAnchorPoints(barKey)
+                MakePointRow(ownName .. " " .. EllesmereUI.L("point"), curP, function(v)
+                    if EllesmereUI.SetAnchorParams(barKey, { point = v }) then Reopen() end
+                end)
+                MakePointRow(tgtName .. " " .. EllesmereUI.L("point"), curR, function(v)
+                    if EllesmereUI.SetAnchorParams(barKey, { relPoint = v }) then Reopen() end
+                end)
+                -- Offset X / Offset Y: typed values, Enter applies, Escape reverts
+                local function MakeOffsetRow(text, key)
+                    local rowFrame = MakeAnchorRow(EllesmereUI.L(text))
+                    local box = CreateFrame("EditBox", nil, rowFrame)
+                    box:SetSize(AINPUT_W, AINPUT_H)
+                    box:SetPoint("RIGHT", rowFrame, "RIGHT", -8, 0)
+                    box:SetFrameLevel(cogMenu:GetFrameLevel() + 3)
+                    box:SetFont(FONT_PATH, 10, "")
+                    box:SetTextColor(1, 1, 1, 0.9)
+                    box:SetJustifyH("CENTER")
+                    local boxBg = box:CreateTexture(nil, "BACKGROUND")
+                    boxBg:SetAllPoints()
+                    boxBg:SetColorTexture(0, 0, 0, 0.4)
+                    box:SetAutoFocus(false)
+                    box:SetMaxLetters(7)
+                    -- Physical pixels in the box, units in the record, like the X/Y
+                    -- Position boxes (AxisToPx): +1 here is one pixel, one nudge, and
+                    -- the number matches the pixel sliders (Button Spacing 10 = Offset 10).
+                    local PPo = EllesmereUI and EllesmereUI.PP
+                    local function Cur()
+                        local a = GetAnchorInfo(barKey)
+                        local v = a and a[key] or 0
+                        if PPo and PPo.ToPixels then v = PPo.ToPixels(v) end
+                        return tostring(math.floor(v + 0.5))
+                    end
+                    box:SetText(Cur())
+                    local function Commit(self)
+                        local v = tonumber(self:GetText())
+                        if not v then self:SetText(Cur()) return end
+                        if PPo and PPo.FromPixels then v = PPo.FromPixels(v) end
+                        local a = GetAnchorInfo(barKey)
+                        if a and a[key] == v then return end
+                        local params = {}
+                        params[key] = v
+                        EllesmereUI.SetAnchorParams(barKey, params)
+                        self:SetText(Cur())
+                        -- The bar just moved: the X/Y Position boxes follow right away.
+                        if mover._syncCogPos then mover._syncCogPos() end
+                    end
+                    box:SetScript("OnEnterPressed", function(self)
+                        self:ClearFocus()
+                        Commit(self)
+                    end)
+                    box:SetScript("OnEditFocusLost", Commit)
+                    box:SetScript("OnEscapePressed", function(self)
+                        self:SetText(Cur())
+                        self:ClearFocus()
+                    end)
+                    return box
+                end
+                local oxBox = MakeOffsetRow("Offset X", "offsetX")
+                local oyBox = MakeOffsetRow("Offset Y", "offsetY")
+                -- Arrow-key nudges move the offsets underneath: keep these boxes in
+                -- lockstep, the same way the X/Y boxes are.
+                local prevSync = mover._syncCogPos
+                mover._syncCogPos = function()
+                    if prevSync then prevSync() end
+                    local a = GetAnchorInfo(barKey)
+                    if not a then return end
+                    -- Same pixel conversion as the boxes' own Cur(): a units value here
+                    -- would be read back as pixels by the next commit and shrink by the
+                    -- scale factor every Enter.
+                    local PPs = EllesmereUI and EllesmereUI.PP
+                    local function px(v)
+                        if PPs and PPs.ToPixels then v = PPs.ToPixels(v) end
+                        return tostring(math.floor(v + 0.5))
+                    end
+                    if oxBox and not oxBox:HasFocus() then oxBox:SetText(px(a.offsetX or 0)) end
+                    if oyBox and not oyBox:HasFocus() then oyBox:SetText(px(a.offsetY or 0)) end
+                end
+                local aDiv = cogMenu:CreateTexture(nil, "ARTWORK")
+                local aDivPx = PP and PP.mult or 1
+                aDiv:SetHeight(aDivPx)
+                if aDiv.SetSnapToPixelGrid then aDiv:SetSnapToPixelGrid(false); aDiv:SetTexelSnappingBias(0) end
+                aDiv:SetColorTexture(1, 1, 1, 0.10)
+                aDiv:SetPoint("TOPLEFT", cogMenu, "TOPLEFT", 1, yOff - 4)
+                aDiv:SetPoint("TOPRIGHT", cogMenu, "TOPRIGHT", -1, yOff - 4)
+                yOff = yOff - 9
+            end
         end
         -- Snap Target: enter pick mode or clear existing target
         local selElemItem = CreateFrame("Button", nil, cogMenu)
@@ -11283,13 +11588,16 @@ local function SnapshotPositions()
 
     -- Snapshot anchor data so we can revert on discard (includes the
     -- growth-edge pin fields; losing them on cancel would force a lazy
-    -- recapture from whatever position the session left the bar at)
+    -- recapture from whatever position the session left the bar at, and the
+    -- explicit points: without them a pointed record reverts as a side record
+    -- whose point-to-point offsets mean something else, and the element jumps)
     wipe(snapshotAnchors)
     local anchorDB = GetAnchorDB()
     if anchorDB then
         for childKey, info in pairs(anchorDB) do
             snapshotAnchors[childKey] = {
                 target = info.target, side = info.side,
+                point = info.point, relPoint = info.relPoint,
                 offsetX = info.offsetX, offsetY = info.offsetY,
                 refX = info.refX, refY = info.refY,
                 edgeOffX = info.edgeOffX, edgeOffY = info.edgeOffY,
@@ -11609,6 +11917,7 @@ local function RevertPositions()
         for childKey, info in pairs(snapshotAnchors) do
             anchorDB[childKey] = {
                 target = info.target, side = info.side,
+                point = info.point, relPoint = info.relPoint,
                 offsetX = info.offsetX, offsetY = info.offsetY,
                 refX = info.refX, refY = info.refY,
                 edgeOffX = info.edgeOffX, edgeOffY = info.edgeOffY,
