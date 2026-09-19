@@ -13,6 +13,7 @@
 EllesmereUIResourceBars.lua
 EUI_ResourceBars_EbonMight121.lua
 EUI_ResourceBars_ArcaneSoul.lua
+EUI_ResourceBars_SwingTimer.lua
 EUI_ResourceBars_WarriorCharges.lua
 
 # Options
