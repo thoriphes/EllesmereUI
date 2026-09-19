@@ -9317,10 +9317,11 @@ ns._partyFramesVisible = false
 ns._PARTY_KEY_SECTION = {}
 
 ns._PARTY_SECTION_ORDER = {
-    "healthBar", "absorbs", "powerBar", "textDisplay", "indicators", "dispels", "topNameBar",
-    "rangeTooltip",
+    "border", "healthBar", "absorbs", "powerBar", "textDisplay", "indicators", "dispels",
+    "topNameBar", "rangeTooltip",
 }
 ns._PARTY_SECTION_LABELS = {
+    border        = "Border",
     healthBar     = "Health Bar",
     absorbs       = "Absorbs",
     powerBar      = "Power Bar",
@@ -9380,6 +9381,12 @@ do
             "showLeaderIcon", "showLeaderIconInCombat", "leaderIconPosition", "leaderIconSize", "leaderIconOffsetX", "leaderIconOffsetY",
             "showCombatIndicator", "combatIndicatorStyle", "combatIndicatorColor", "combatIndicatorCustomColor",
             "combatIndicatorSize", "combatIndicatorPosition", "combatIndicatorOffsetX", "combatIndicatorOffsetY",
+        },
+        -- The frame border (style, size, colour, offsets, hover/target highlight). Its own
+        -- section so a party layout can carry a different border without unsyncing every
+        -- indicator with it; was filed under indicators before, see
+        -- _NormalizePartySyncSections for the carry-over.
+        border = {
             "borderSize", "borderColor", "borderAlpha", "borderTexture",
             "borderBehind", "borderTextureOffset", "borderTextureOffsetY",
             "borderTextureShiftX", "borderTextureShiftY",
@@ -9475,6 +9482,11 @@ ns._NormalizePartySyncSections = function()
     local ss = db.profile.partySyncSections
     if ss and ss.absorbs == nil and ss.healthBar == false then
         ss.absorbs = false
+    end
+    -- Same for the Border section split out of Indicators: a profile that had
+    -- Indicators custom keeps its party border exactly as it rendered.
+    if ss and ss.border == nil and ss.indicators == false then
+        ss.border = false
     end
     -- Enable/profile-swap chokepoint: recompute the proxy fast modes against
     -- the (possibly new) profile table and section state.
