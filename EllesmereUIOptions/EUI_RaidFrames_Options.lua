@@ -676,6 +676,213 @@ initFrame:SetScript("OnEvent", function(self)
 
 
     ---------------------------------------------------------------------------
+    --  Border rows (shared by the raid Frames page and the party Border section)
+    --  Border Style (+ offset cog) | Border Size (+ swatch), then hoverLeftSlot |
+    --  Hover Borders (+ hover/target swatches, highlight-size cog). The raid page
+    --  passes its Show When Solo toggle as hoverLeftSlot; the party page a spacer.
+    --  SGet/SSet/SWrite/SVal are context-aware, so on the party tab the rows
+    --  read and write party_<key> once the Border section is unsynced.
+    ---------------------------------------------------------------------------
+    local function BuildBorderRows(parent, y, W, hoverLeftSlot)
+        local _, h
+        -- Border Style (+ offset cog) | Border Size (+ Border swatch). Mirrors Unit Frames: ONE border recolored by state (hover/target), full SharedMedia support. Hover/Target swatches live on the row below.
+        local bdrTexValues, bdrTexOrder = EllesmereUI.GetBorderTextureDropdown()
+        local borderStyleRow
+        borderStyleRow, h = W:DualRow(parent, y,
+            { type="dropdown", text="Border Style", values=bdrTexValues, order=bdrTexOrder,
+              getValue=function() return SGet("borderTexture") or "solid" end,
+              setValue=function(v)
+                  SWrite("borderTexture", v)
+                  SWrite("borderTextureOffset", nil)
+                  SWrite("borderTextureOffsetY", nil)
+                  SWrite("borderTextureShiftX", nil)
+                  SWrite("borderTextureShiftY", nil)
+                  local _bcol, _bbehind = EllesmereUI.GetBorderStyleSelectDefaults(v)
+                  SWrite("borderColor", _bcol)
+                  SWrite("borderBehind", _bbehind)
+                  local defSz = EllesmereUI.GetBorderDefaultSize("unitframes", v)
+                  if defSz then SWrite("borderSize", defSz) end
+                  ReloadAndUpdate(); EllesmereUI:RefreshPage()
+              end },
+            { type="slider", text="Border Size", min=0, max=4, step=1,
+              getValue=function() return SVal("borderSize", 1) end,
+              setValue=function(v) SSet("borderSize", v) end });  y = y - h
+        if not EllesmereUI._prebuilding then
+            local rgn = borderStyleRow._leftRegion
+            local _, cogShow = EllesmereUI.BuildCogPopup({
+                title = "Border Offset",
+                rows = {
+                    { type="slider", label="Offset X", min=-10, max=10, step=1,
+                      get=function()
+                          local v = SGet("borderTextureOffset"); if v then return v end
+                          local dox = EllesmereUI.GetBorderDefaults("unitframes", SGet("borderTexture") or "solid", SVal("borderSize", 1))
+                          return dox
+                      end,
+                      set=function(v) SSet("borderTextureOffset", v) end },
+                    { type="slider", label="Offset Y", min=-10, max=10, step=1,
+                      get=function()
+                          local v = SGet("borderTextureOffsetY"); if v then return v end
+                          local _, doy = EllesmereUI.GetBorderDefaults("unitframes", SGet("borderTexture") or "solid", SVal("borderSize", 1))
+                          return doy
+                      end,
+                      set=function(v) SSet("borderTextureOffsetY", v) end },
+                    { type="slider", label="Shift X", min=-10, max=10, step=1,
+                      get=function()
+                          local v = SGet("borderTextureShiftX"); if v then return v end
+                          local _, _, dsx = EllesmereUI.GetBorderDefaults("unitframes", SGet("borderTexture") or "solid", SVal("borderSize", 1))
+                          return dsx
+                      end,
+                      set=function(v) SSet("borderTextureShiftX", v) end },
+                    { type="slider", label="Shift Y", min=-10, max=10, step=1,
+                      get=function()
+                          local v = SGet("borderTextureShiftY"); if v then return v end
+                          local _, _, _, dsy = EllesmereUI.GetBorderDefaults("unitframes", SGet("borderTexture") or "solid", SVal("borderSize", 1))
+                          return dsy
+                      end,
+                      set=function(v) SSet("borderTextureShiftY", v) end },
+                    { type="toggle", label="Show Behind",
+                      get=function() return SVal("borderBehind", false) end,
+                      set=function(v) SSet("borderBehind", v) end },
+                },
+            })
+            local cogBtn = CreateFrame("Button", nil, rgn)
+            cogBtn:SetSize(26, 26)
+            cogBtn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+            rgn._lastInline = cogBtn
+            cogBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
+            cogBtn:SetAlpha(0.4)
+            local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
+            cogTex:SetAllPoints(); cogTex:SetTexture(EllesmereUI.DIRECTIONS_ICON)
+            cogBtn:SetScript("OnEnter", function(s) s:SetAlpha(0.7) end)
+            cogBtn:SetScript("OnLeave", function(s) s:SetAlpha(0.4) end)
+            cogBtn:SetScript("OnClick", function(s) cogShow(s) end)
+            local function UpdateCogVis()
+                local tex = SGet("borderTexture") or "solid"
+                if tex == "solid" then cogBtn:Hide() else cogBtn:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+            UpdateCogVis()
+        end
+        if not EllesmereUI._prebuilding then
+            local rgn = borderStyleRow._rightRegion
+            local lvl = borderStyleRow:GetFrameLevel() + 3
+            local borderSwatch, updBorder = EllesmereUI.BuildColorSwatch(
+                rgn, lvl,
+                function()
+                    local c = SGet("borderColor") or { r = 0, g = 0, b = 0 }
+                    return c.r, c.g, c.b, SVal("borderAlpha", 1)
+                end,
+                function(r, g, b, a)
+                    SWrite("borderColor", { r=r, g=g, b=b }); SWrite("borderAlpha", a); ReloadAndUpdate()
+                end, true, 20)
+            borderSwatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+            rgn._lastInline = borderSwatch
+            borderSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(borderSwatch, "Border") end)
+            borderSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            EllesmereUI.RegisterWidgetRefresh(function() updBorder() end)
+        end
+
+        -- <hoverLeftSlot> | Hover Borders: which highlight states are active. Disabling one skips that recolor entirely and the frame keeps its normal border. Hover + Target swatches are inline here.
+        local hoverBordersRow
+        hoverBordersRow, h = W:DualRow(parent, y,
+            hoverLeftSlot,
+            { type="dropdown", text="Hover Borders",
+              values={ __placeholder = "All" }, order={ "__placeholder" },
+              getValue=function() return "__placeholder" end,
+              setValue=function() end });  y = y - h
+        if not EllesmereUI._prebuilding then
+            local rightRgn = hoverBordersRow._rightRegion
+            if rightRgn._control then rightRgn._control:Hide() end
+            local hbItems = {
+                { key = "hover",  label = "Hover Border" },
+                { key = "target", label = "Target Border" },
+            }
+            local hbKeyMap = { hover = "hoverBorderEnabled", target = "targetBorderEnabled" }
+            local UpdateHBSwatchVis  -- forward declare; assigned after swatches
+            local cbDD = EllesmereUI.BuildVisOptsCBDropdown(
+                rightRgn, 170, rightRgn:GetFrameLevel() + 2,
+                hbItems,
+                function(k) return SVal(hbKeyMap[k], true) end,
+                function(k, v)
+                    SSet(hbKeyMap[k], v)
+                    if UpdateHBSwatchVis then UpdateHBSwatchVis() end
+                end)
+            PP.Point(cbDD, "RIGHT", rightRgn, "RIGHT", -20, 0)
+            rightRgn._control = cbDD
+            rightRgn._lastInline = nil
+
+            -- Hover sits nearest the dropdown, Target to its left.
+            local lvl = hoverBordersRow:GetFrameLevel() + 3
+            local hoverSwatch, updHover = EllesmereUI.BuildColorSwatch(
+                rightRgn, lvl,
+                function()
+                    local c = SGet("hoverBorderColor") or { r = 1, g = 1, b = 1 }
+                    return c.r, c.g, c.b, SVal("hoverBorderAlpha", 1)
+                end,
+                function(r, g, b, a)
+                    SWrite("hoverBorderColor", { r=r, g=g, b=b }); SWrite("hoverBorderAlpha", a); ReloadAndUpdate()
+                end, true, 20)
+            hoverSwatch:SetPoint("RIGHT", rightRgn._lastInline or rightRgn._control, "LEFT", -8, 0)
+            rightRgn._lastInline = hoverSwatch
+            hoverSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(hoverSwatch, "Hover") end)
+            hoverSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            local targetSwatch, updTarget = EllesmereUI.BuildColorSwatch(
+                rightRgn, lvl,
+                function()
+                    local c = SGet("targetBorderColor") or { r = 1, g = 1, b = 1 }
+                    return c.r, c.g, c.b, SVal("targetBorderAlpha", 1)
+                end,
+                function(r, g, b, a)
+                    SWrite("targetBorderColor", { r=r, g=g, b=b }); SWrite("targetBorderAlpha", a); ReloadAndUpdate()
+                end, true, 20)
+            targetSwatch:SetPoint("RIGHT", rightRgn._lastInline, "LEFT", -8, 0)
+            rightRgn._lastInline = targetSwatch
+            targetSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(targetSwatch, "Target") end)
+            targetSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            -- Highlight thickness. Shown only while the frame is borderless (Border Size 0):
+            -- with a border drawn the highlight recolors THAT and these sizes do nothing.
+            local _, hlCogShow = EllesmereUI.BuildCogPopup({
+                title = "Highlight Border",
+                rows = {
+                    { type="slider", label="Hover Border Size", min=1, max=4, step=1,
+                      get=function() return SVal("hoverBorderSize", 1) end,
+                      set=function(v) SSet("hoverBorderSize", v) end },
+                    { type="slider", label="Target Border Size", min=1, max=4, step=1,
+                      get=function() return SVal("targetBorderSize", 1) end,
+                      set=function(v) SSet("targetBorderSize", v) end },
+                },
+            })
+            local hlCog = CreateFrame("Button", nil, rightRgn)
+            hlCog:SetSize(26, 26)
+            hlCog:SetPoint("RIGHT", rightRgn._lastInline, "LEFT", -8, 0)
+            rightRgn._lastInline = hlCog
+            hlCog:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
+            hlCog:SetAlpha(0.4)
+            local hlCogTex = hlCog:CreateTexture(nil, "OVERLAY")
+            hlCogTex:SetAllPoints(); hlCogTex:SetTexture(EllesmereUI.DIRECTIONS_ICON)
+            hlCog:SetScript("OnEnter", function(s) s:SetAlpha(0.7) end)
+            hlCog:SetScript("OnLeave", function(s) s:SetAlpha(0.4) end)
+            hlCog:SetScript("OnClick", function(s) hlCogShow(s) end)
+            local function UpdateHLCogVis()
+                if SVal("borderSize", 1) > 0 then hlCog:Hide() else hlCog:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdateHLCogVis)
+            UpdateHLCogVis()
+
+            -- Gray a swatch when its border state is off but keep it clickable so the color can be pre-set (matches the Heal Prediction swatch).
+            UpdateHBSwatchVis = function()
+                hoverSwatch:SetAlpha(SVal("hoverBorderEnabled", true) and 1 or 0.3)
+                targetSwatch:SetAlpha(SVal("targetBorderEnabled", true) and 1 or 0.3)
+            end
+            EllesmereUI.RegisterWidgetRefresh(function() updHover(); updTarget(); UpdateHBSwatchVis() end)
+            UpdateHBSwatchVis()
+        end
+        return y
+    end
+
+    ---------------------------------------------------------------------------
     --  Visual settings sections (shared by raid + party pages)
     ---------------------------------------------------------------------------
     local function BuildVisualSections(parent, y, W, onSection)
@@ -687,6 +894,17 @@ initFrame:SetScript("OnEvent", function(self)
         ns._eye = ns._eye or {}
         ns._eye[_eyeCtx] = ns._eye[_eyeCtx] or {}
         local EYE = ns._eye[_eyeCtx]
+        -------------------------------------------------------------------
+        --  BORDER (party tab only: on the raid Frames page these rows sit in
+        --  FRAME DISPLAY). Its own sync section so a party layout can carry a
+        --  different border without unsyncing Indicators.
+        -------------------------------------------------------------------
+        if _partyCtx then
+            _secY = y
+            _, h = W:SectionHeader(parent, "BORDER", y); y = y - h
+            y = BuildBorderRows(parent, y, W, { type="spacer" })
+            if onSection then onSection("border", _secY, y) end
+        end
         -------------------------------------------------------------------
         --  HEALTH BAR
         -------------------------------------------------------------------
@@ -4750,106 +4968,7 @@ initFrame:SetScript("OnEvent", function(self)
               getValue=function() return SVal("groupSpacing", 8) end,
               setValue=function(v) SSet("groupSpacing", v) end });  y = y - h
 
-        -- Border Style (+ offset cog) | Border Size (+ Border swatch). Mirrors Unit Frames: ONE border recolored by state (hover/target), full SharedMedia support. Hover/Target swatches live on the row below.
-        local bdrTexValues, bdrTexOrder = EllesmereUI.GetBorderTextureDropdown()
-        local borderStyleRow
-        borderStyleRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Border Style", values=bdrTexValues, order=bdrTexOrder,
-              getValue=function() return SGet("borderTexture") or "solid" end,
-              setValue=function(v)
-                  SWrite("borderTexture", v)
-                  SWrite("borderTextureOffset", nil)
-                  SWrite("borderTextureOffsetY", nil)
-                  SWrite("borderTextureShiftX", nil)
-                  SWrite("borderTextureShiftY", nil)
-                  local _bcol, _bbehind = EllesmereUI.GetBorderStyleSelectDefaults(v)
-                  SWrite("borderColor", _bcol)
-                  SWrite("borderBehind", _bbehind)
-                  local defSz = EllesmereUI.GetBorderDefaultSize("unitframes", v)
-                  if defSz then SWrite("borderSize", defSz) end
-                  ReloadAndUpdate(); EllesmereUI:RefreshPage()
-              end },
-            { type="slider", text="Border Size", min=0, max=4, step=1,
-              getValue=function() return SVal("borderSize", 1) end,
-              setValue=function(v) SSet("borderSize", v) end });  y = y - h
-        if not EllesmereUI._prebuilding then
-            local rgn = borderStyleRow._leftRegion
-            local _, cogShow = EllesmereUI.BuildCogPopup({
-                title = "Border Offset",
-                rows = {
-                    { type="slider", label="Offset X", min=-10, max=10, step=1,
-                      get=function()
-                          local v = SGet("borderTextureOffset"); if v then return v end
-                          local dox = EllesmereUI.GetBorderDefaults("unitframes", SGet("borderTexture") or "solid", SVal("borderSize", 1))
-                          return dox
-                      end,
-                      set=function(v) SSet("borderTextureOffset", v) end },
-                    { type="slider", label="Offset Y", min=-10, max=10, step=1,
-                      get=function()
-                          local v = SGet("borderTextureOffsetY"); if v then return v end
-                          local _, doy = EllesmereUI.GetBorderDefaults("unitframes", SGet("borderTexture") or "solid", SVal("borderSize", 1))
-                          return doy
-                      end,
-                      set=function(v) SSet("borderTextureOffsetY", v) end },
-                    { type="slider", label="Shift X", min=-10, max=10, step=1,
-                      get=function()
-                          local v = SGet("borderTextureShiftX"); if v then return v end
-                          local _, _, dsx = EllesmereUI.GetBorderDefaults("unitframes", SGet("borderTexture") or "solid", SVal("borderSize", 1))
-                          return dsx
-                      end,
-                      set=function(v) SSet("borderTextureShiftX", v) end },
-                    { type="slider", label="Shift Y", min=-10, max=10, step=1,
-                      get=function()
-                          local v = SGet("borderTextureShiftY"); if v then return v end
-                          local _, _, _, dsy = EllesmereUI.GetBorderDefaults("unitframes", SGet("borderTexture") or "solid", SVal("borderSize", 1))
-                          return dsy
-                      end,
-                      set=function(v) SSet("borderTextureShiftY", v) end },
-                    { type="toggle", label="Show Behind",
-                      get=function() return SVal("borderBehind", false) end,
-                      set=function(v) SSet("borderBehind", v) end },
-                },
-            })
-            local cogBtn = CreateFrame("Button", nil, rgn)
-            cogBtn:SetSize(26, 26)
-            cogBtn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-            rgn._lastInline = cogBtn
-            cogBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-            cogBtn:SetAlpha(0.4)
-            local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
-            cogTex:SetAllPoints(); cogTex:SetTexture(EllesmereUI.DIRECTIONS_ICON)
-            cogBtn:SetScript("OnEnter", function(s) s:SetAlpha(0.7) end)
-            cogBtn:SetScript("OnLeave", function(s) s:SetAlpha(0.4) end)
-            cogBtn:SetScript("OnClick", function(s) cogShow(s) end)
-            local function UpdateCogVis()
-                local tex = SGet("borderTexture") or "solid"
-                if tex == "solid" then cogBtn:Hide() else cogBtn:Show() end
-            end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-            UpdateCogVis()
-        end
-        if not EllesmereUI._prebuilding then
-            local rgn = borderStyleRow._rightRegion
-            local lvl = borderStyleRow:GetFrameLevel() + 3
-            local borderSwatch, updBorder = EllesmereUI.BuildColorSwatch(
-                rgn, lvl,
-                function()
-                    local c = SGet("borderColor") or { r = 0, g = 0, b = 0 }
-                    return c.r, c.g, c.b, SVal("borderAlpha", 1)
-                end,
-                function(r, g, b, a)
-                    SWrite("borderColor", { r=r, g=g, b=b }); SWrite("borderAlpha", a); ReloadAndUpdate()
-                end, true, 20)
-            borderSwatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-            rgn._lastInline = borderSwatch
-            borderSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(borderSwatch, "Border") end)
-            borderSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            EllesmereUI.RegisterWidgetRefresh(function() updBorder() end)
-        end
-
-        -- Show When Solo | Hover Borders: which highlight states are active. Disabling one skips that recolor entirely and the frame keeps its normal border. Hover + Target swatches are inline here.
-        local hoverBordersRow
-        hoverBordersRow, h = W:DualRow(parent, y,
+        y = BuildBorderRows(parent, y, W,
             { type="toggle", text="Show When Solo",
               -- Disabled only while Party's is the ONE that is on: a profile holding both
               -- flags (older profile, override swap, import) shows the player twice, and
@@ -4862,100 +4981,7 @@ initFrame:SetScript("OnEvent", function(self)
                   if ns.UpdateVisibility then ns.UpdateVisibility() end
                   if ns._UpdatePartyVisibility then ns._UpdatePartyVisibility() end
                   EllesmereUI:RefreshPage()
-              end },
-            { type="dropdown", text="Hover Borders",
-              values={ __placeholder = "All" }, order={ "__placeholder" },
-              getValue=function() return "__placeholder" end,
-              setValue=function() end });  y = y - h
-        if not EllesmereUI._prebuilding then
-            local rightRgn = hoverBordersRow._rightRegion
-            if rightRgn._control then rightRgn._control:Hide() end
-            local hbItems = {
-                { key = "hover",  label = "Hover Border" },
-                { key = "target", label = "Target Border" },
-            }
-            local hbKeyMap = { hover = "hoverBorderEnabled", target = "targetBorderEnabled" }
-            local UpdateHBSwatchVis  -- forward declare; assigned after swatches
-            local cbDD = EllesmereUI.BuildVisOptsCBDropdown(
-                rightRgn, 170, rightRgn:GetFrameLevel() + 2,
-                hbItems,
-                function(k) return SVal(hbKeyMap[k], true) end,
-                function(k, v)
-                    SSet(hbKeyMap[k], v)
-                    if UpdateHBSwatchVis then UpdateHBSwatchVis() end
-                end)
-            PP.Point(cbDD, "RIGHT", rightRgn, "RIGHT", -20, 0)
-            rightRgn._control = cbDD
-            rightRgn._lastInline = nil
-
-            -- Hover sits nearest the dropdown, Target to its left.
-            local lvl = hoverBordersRow:GetFrameLevel() + 3
-            local hoverSwatch, updHover = EllesmereUI.BuildColorSwatch(
-                rightRgn, lvl,
-                function()
-                    local c = SGet("hoverBorderColor") or { r = 1, g = 1, b = 1 }
-                    return c.r, c.g, c.b, SVal("hoverBorderAlpha", 1)
-                end,
-                function(r, g, b, a)
-                    SWrite("hoverBorderColor", { r=r, g=g, b=b }); SWrite("hoverBorderAlpha", a); ReloadAndUpdate()
-                end, true, 20)
-            hoverSwatch:SetPoint("RIGHT", rightRgn._lastInline or rightRgn._control, "LEFT", -8, 0)
-            rightRgn._lastInline = hoverSwatch
-            hoverSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(hoverSwatch, "Hover") end)
-            hoverSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            local targetSwatch, updTarget = EllesmereUI.BuildColorSwatch(
-                rightRgn, lvl,
-                function()
-                    local c = SGet("targetBorderColor") or { r = 1, g = 1, b = 1 }
-                    return c.r, c.g, c.b, SVal("targetBorderAlpha", 1)
-                end,
-                function(r, g, b, a)
-                    SWrite("targetBorderColor", { r=r, g=g, b=b }); SWrite("targetBorderAlpha", a); ReloadAndUpdate()
-                end, true, 20)
-            targetSwatch:SetPoint("RIGHT", rightRgn._lastInline, "LEFT", -8, 0)
-            rightRgn._lastInline = targetSwatch
-            targetSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(targetSwatch, "Target") end)
-            targetSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            -- Highlight thickness. Shown only while the frame is borderless (Border Size 0):
-            -- with a border drawn the highlight recolors THAT and these sizes do nothing.
-            local _, hlCogShow = EllesmereUI.BuildCogPopup({
-                title = "Highlight Border",
-                rows = {
-                    { type="slider", label="Hover Border Size", min=1, max=4, step=1,
-                      get=function() return SVal("hoverBorderSize", 1) end,
-                      set=function(v) SSet("hoverBorderSize", v) end },
-                    { type="slider", label="Target Border Size", min=1, max=4, step=1,
-                      get=function() return SVal("targetBorderSize", 1) end,
-                      set=function(v) SSet("targetBorderSize", v) end },
-                },
-            })
-            local hlCog = CreateFrame("Button", nil, rightRgn)
-            hlCog:SetSize(26, 26)
-            hlCog:SetPoint("RIGHT", rightRgn._lastInline, "LEFT", -8, 0)
-            rightRgn._lastInline = hlCog
-            hlCog:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
-            hlCog:SetAlpha(0.4)
-            local hlCogTex = hlCog:CreateTexture(nil, "OVERLAY")
-            hlCogTex:SetAllPoints(); hlCogTex:SetTexture(EllesmereUI.DIRECTIONS_ICON)
-            hlCog:SetScript("OnEnter", function(s) s:SetAlpha(0.7) end)
-            hlCog:SetScript("OnLeave", function(s) s:SetAlpha(0.4) end)
-            hlCog:SetScript("OnClick", function(s) hlCogShow(s) end)
-            local function UpdateHLCogVis()
-                if SVal("borderSize", 1) > 0 then hlCog:Hide() else hlCog:Show() end
-            end
-            EllesmereUI.RegisterWidgetRefresh(UpdateHLCogVis)
-            UpdateHLCogVis()
-
-            -- Gray a swatch when its border state is off but keep it clickable so the color can be pre-set (matches the Heal Prediction swatch).
-            UpdateHBSwatchVis = function()
-                hoverSwatch:SetAlpha(SVal("hoverBorderEnabled", true) and 1 or 0.3)
-                targetSwatch:SetAlpha(SVal("targetBorderEnabled", true) and 1 or 0.3)
-            end
-            EllesmereUI.RegisterWidgetRefresh(function() updHover(); updTarget(); UpdateHBSwatchVis() end)
-            UpdateHBSwatchVis()
-        end
+              end })
 
         -------------------------------------------------------------------
         --  LAYOUT
@@ -6349,6 +6375,7 @@ initFrame:SetScript("OnEvent", function(self)
     -- Party Frames search excludes raid-synced sections (their controls live on the Raid tabs). Maps section HEADER TEXT to sync key:
     -- KEEP IN SYNC with the SectionHeader names in the builders and ns._PARTY_SECTION_ORDER.
     ns._PARTY_SEARCH_SECTION_KEY = {
+        ["BORDER"]                 = "border",
         ["HEALTH BAR"]             = "healthBar",
         ["ABSORBS"]                = "absorbs",
         ["POWER BAR"]              = "powerBar",
