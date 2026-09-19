@@ -525,9 +525,12 @@ function ns.ST_Apply()
     shell:SetFrameStrata(cfg.frameStrata or "MEDIUM")
     shell:Show()
     RegisterEvents()
-    ApplyLook(cfg)
+    -- Size and stack the rows BEFORE styling them: the textured border is a
+    -- BackdropTemplate nine-slice keyed on first setup, and set up on a 0x0
+    -- row it never paints (cast/GCD bars size first for the same reason).
     RefreshRows(cfg)
     ApplyPosition(cfg)
+    ApplyLook(cfg)
     if S.sample then
         for i = 1, #S.rows do
             S.rows[i]._bar:SetValue(0.6)
