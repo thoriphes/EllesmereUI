@@ -10125,6 +10125,24 @@ ns._UpdatePartyVisibility = function()
             ns._SuppressBlizzParty()
         end
 
+        -- Size heal: a styled party button still at the raid size _StyleButtonSecure
+        -- gave it at creation never received its party sizing (the header's
+        -- initialConfigFunction cannot run on a client without secure snippets, and
+        -- the deferred login reload can be missed). Runs once per mismatch; a
+        -- no-op when the sizes already agree.
+        do
+            local s = db.profile
+            local bw = PixelSnap(s.partyFrameWidth or s.frameWidth or 125)
+            local bh = PixelSnap(s.partyFrameHeight or s.frameHeight or 60)
+            for _, btn in ipairs(ns._partyAllButtons) do
+                local w, h = btn:GetSize()
+                if GetFFD(btn).styled and (math.abs(w - bw) > 0.5 or math.abs(h - bh) > 0.5) then
+                    ns.ReloadPartyFrames()
+                    break
+                end
+            end
+        end
+
         ns._LayoutPartyFrames()
         ns._RebuildPartyUnitMap()
         if ns.UpdatePowerEventRegistration then ns.UpdatePowerEventRegistration() end
