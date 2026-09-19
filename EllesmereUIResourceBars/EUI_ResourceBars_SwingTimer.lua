@@ -144,13 +144,17 @@ local function BuildRow(def)
     local textFrame = CreateFrame("Frame", nil, row)
     textFrame:SetAllPoints(row)
     textFrame:SetFrameLevel(bar:GetFrameLevel() + 3)
+    -- Font before any SetText: a FontString with no font errors on SetText
+    -- ("Font not set", seen on the Forever client). ApplyRowLook re-sizes it.
     local tag = textFrame:CreateFontString(nil, "OVERLAY")
+    ns.SetRBFont(tag, ns.GetRBFont(), 11)
     tag:SetPoint("LEFT", row, "LEFT", 4, 0)
     tag:SetJustifyH("LEFT")
     tag:SetWordWrap(false)
     tag:SetText(def.tag)
     row._tag = tag
     local time = textFrame:CreateFontString(nil, "OVERLAY")
+    ns.SetRBFont(time, ns.GetRBFont(), 11)
     time:SetPoint("RIGHT", row, "RIGHT", -4, 0)
     time:SetJustifyH("RIGHT")
     time:SetWordWrap(false)
