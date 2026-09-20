@@ -64,7 +64,9 @@ end
 
 local function IsFriendlyNPCEnabled()
     local fp = FP()
-    return fp and (fp.showFriendlyNPCs == true)
+    -- ns._tfFriendlyNPCForced: Force Nameplate on Current Target is holding
+    -- friendly NPC plates on for the target; style them as if the toggle were on.
+    return fp and (fp.showFriendlyNPCs == true or ns._tfFriendlyNPCForced == true)
 end
 
 -- Per-unit gate for friendly NPC nameplates. On top of our own toggle, respect
@@ -546,6 +548,7 @@ local function HideNPCOverlay(nameplate)
     local overlay = npcOverlays[nameplate]
     if not overlay then return end
     overlay:UnregisterAllEvents()
+    if overlay._tfHidden then overlay._tfHidden = nil; overlay:SetAlpha(1) end
     overlay:Hide()
     overlay.title:Hide()
     overlay:SetParent(UIParent)
@@ -553,6 +556,19 @@ local function HideNPCOverlay(nameplate)
     overlay.unit = nil
     npcOverlays[nameplate] = nil
     table.insert(npcOverlayPool, overlay)
+end
+
+-- Force Nameplate on Current Target: hide / show one plate's name-only NPC
+-- overlay (the table is file-local). Flag-guarded; HideNPCOverlay resets it so
+-- a pooled overlay never comes back at alpha 0.
+function ns.TF_SetNPCOverlayHidden(nameplate, hidden)
+    local overlay = npcOverlays[nameplate]
+    if not overlay then return end
+    if hidden then
+        if not overlay._tfHidden then overlay._tfHidden = true; overlay:SetAlpha(0) end
+    elseif overlay._tfHidden then
+        overlay._tfHidden = nil; overlay:SetAlpha(1)
+    end
 end
 
 -- Refresh all visible NPC overlays (called when Show NPC Titles is toggled)
@@ -1243,6 +1259,8 @@ end
 
 function FriendlyFrame:ClearUnit()
     self:UnregisterAllEvents()
+    -- Force Nameplate on Current Target: pooled frames go back at full alpha.
+    if self._tfHidden then self._tfHidden = nil; self:SetAlpha(1) end
     self.name:SetText("")
     -- Clear sub text only if any was drawn (_subOff 4/nil = already empty).
     -- _subOff itself survives the pool round-trip: the next UpdateSubText
