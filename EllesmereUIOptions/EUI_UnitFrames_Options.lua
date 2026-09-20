@@ -5296,7 +5296,7 @@ initFrame:SetScript("OnEvent", function(self)
                 row, row:GetFrameLevel() + 2, advanced.get, advanced.set)
             if advanced.tooltip then
                 advToggle:SetScript("OnEnter", function(self)
-                    EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.L(advanced.tooltip), { width = 260 })
+                    EllesmereUI.ShowWidgetTooltip(self, advanced.tooltip, { width = 260 })
                 end)
                 advToggle:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
             end
@@ -14076,11 +14076,13 @@ initFrame:SetScript("OnEvent", function(self)
         -- Default: Border Size only (borderSizeOverride, nil = inherit donor
         -- size until set); color/texture/offsets inherit from the main frames.
         -- With the header's Advanced toggle on (settingsTable.borderAdvanced) the
-        -- main frames' border block is repeated here for this frame: Border Style
-        -- (+ offset cog) row above, inline Border / Highlight swatches on this row.
-        -- Values live in settingsTable.borderOverride under the main-frame key
-        -- names; a key left nil keeps reading the donor (ns.ResolveMiniBorderValue),
-        -- so switching the toggle on changes nothing until a row is edited.
+        -- main frames' border block is repeated here for this frame, in the Main
+        -- Frames row shape: Border Style (+ offset cog) | Border Size (+ inline
+        -- Border swatch), then Show Highlight Border (+ inline Highlight swatch)
+        -- as the section's last row. Values live in settingsTable.borderOverride
+        -- under the main-frame key names; a key left nil keeps reading the donor
+        -- (ns.ResolveMiniBorderValue), so switching the toggle on changes nothing
+        -- until a row is edited.
         if unitKey ~= "boss" then
             local adv = settingsTable.borderAdvanced == true
             local function BGet(key)
@@ -14101,13 +14103,30 @@ initFrame:SetScript("OnEvent", function(self)
                 return settingsTable.borderSizeOverride or (donor and donor.borderSize) or 1
             end
 
+            -- Border Size slot: the same slider in both states; only where it
+            -- writes changes with the toggle.
+            local sizeSlot = EllesmereUI.BlizzStyle.Gate("unitframes", { type="slider", text="Border Size", min=0, max=4, step=1,
+                  tooltip=adv and "Overrides the border size from the main frames for this frame only."
+                      or "Overrides the border size from the main frames for this frame only. Border color and texture still follow the main frames.",
+                  getValue=BSize,
+                  setValue=function(v)
+                      if adv then BSet("borderSize", v) else settingsTable.borderSizeOverride = v end
+                      ReloadAndUpdate()
+                  end })
+            local hlSlot = { type="toggle", text="Show Highlight Border",
+                  tooltip="Show the main frames' hover highlight border on this frame. Turn off so this frame never recolors on mouseover. No effect when Highlight is off in the main frames' Hover Borders.",
+                  getValue=function() return settingsTable.showHighlightBorder ~= false end,
+                  setValue=function(v) settingsTable.showHighlightBorder = v end }
+
+            -- The rows the inline swatches hang on (Advanced only).
+            local styleRow, hlRow
             if adv then
-                -- Border Style (+ cog) | empty. Mirrors the Main Frames row: picking a
-                -- style resets offsets and takes that style's color/behind/size defaults.
-                local styleRow
+                -- Border Style (+ cog) | Border Size (+ swatch). Mirrors the Main Frames
+                -- row: picking a style resets offsets and takes that style's
+                -- color/behind/size defaults.
                 local texValues, texOrder = EllesmereUI.GetBorderTextureDropdown()
                 styleRow, h = W:DualRow(parent, y,
-                    { type="dropdown", text="Border Style",
+                    EllesmereUI.BlizzStyle.Gate("unitframes", { type="dropdown", text="Border Style",
                       tooltip="Border texture for this frame only. Picking a style resets its offsets, color and size to that style's defaults, as on the main frames.",
                       values=texValues, order=texOrder,
                       getValue=function() return BGet("borderTexture") or "solid" end,
@@ -14124,8 +14143,8 @@ initFrame:SetScript("OnEvent", function(self)
                           local defSz = EllesmereUI.GetBorderDefaultSize("unitframes", v)
                           if defSz then BSet("borderSize", defSz) end
                           ReloadAndUpdate()
-                      end },
-                    { type="label", text="" });  y = y - h
+                      end }),
+                    sizeSlot);  y = y - h
                 -- Inline cog for border offset (left region), as on the Main Frames row.
                 if not EllesmereUI._prebuilding then
                     local rgn = styleRow._leftRegion
@@ -14158,35 +14177,24 @@ initFrame:SetScript("OnEvent", function(self)
                     })
                     local cogBtn = MCogBtn(rgn, cogShow, EllesmereUI.DIRECTIONS_ICON)
                     local function UpdateCogVis()
-                        if (BGet("borderTexture") or "solid") == "solid" then cogBtn:Hide() else cogBtn:Show() end
+                        local tex = BGet("borderTexture") or "solid"
+                        if tex == "solid" or EllesmereUI.BlizzStyle.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
                     end
                     EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
                     UpdateCogVis()
                 end
+                -- Show Highlight Border (+ swatch) | empty: last row of the section.
+                hlRow, h = W:DualRow(parent, y, hlSlot, { type="label", text="" });  y = y - h
+            else
+                _, h = W:DualRow(parent, y, sizeSlot, hlSlot);  y = y - h
             end
-
-            local sizeRow
-            sizeRow, h = W:DualRow(parent, y,
-                EllesmereUI.BlizzStyle.Gate("unitframes", { type="slider", text="Border Size", min=0, max=4, step=1,
-                  tooltip=adv and "Overrides the border size from the main frames for this frame only."
-                      or "Overrides the border size from the main frames for this frame only. Border color and texture still follow the main frames.",
-                  getValue=BSize,
-                  setValue=function(v)
-                      if adv then BSet("borderSize", v) else settingsTable.borderSizeOverride = v end
-                      ReloadAndUpdate()
-                  end }),
-                { type="toggle", text="Show Highlight Border",
-                  tooltip="Show the main frames' hover highlight border on this frame. Turn off so this frame never recolors on mouseover. No effect when Highlight is off in the main frames' Hover Borders.",
-                  getValue=function() return settingsTable.showHighlightBorder ~= false end,
-                  setValue=function(v) settingsTable.showHighlightBorder = v end });  y = y - h
 
             -- Advanced: inline Border color swatch on Border Size and Highlight
             -- color swatch on Show Highlight Border (Main Frames swatch pattern).
             if adv and not EllesmereUI._prebuilding then
-                local lvl = sizeRow:GetFrameLevel() + 3
-                local leftRgn = sizeRow._leftRegion
+                local sizeRgn = styleRow._rightRegion
                 local borderSwatch, updBorder = EllesmereUI.BuildColorSwatch(
-                    leftRgn, lvl,
+                    sizeRgn, styleRow:GetFrameLevel() + 3,
                     function()
                         local c = BGet("borderColor") or { r = 0, g = 0, b = 0 }
                         return c.r, c.g, c.b, BGet("borderAlpha") or 1
@@ -14196,15 +14204,15 @@ initFrame:SetScript("OnEvent", function(self)
                         BSet("borderAlpha", a)
                         ReloadAndUpdate()
                     end, true, 20)
-                borderSwatch:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
-                leftRgn._lastInline = borderSwatch
+                borderSwatch:SetPoint("RIGHT", sizeRgn._lastInline or sizeRgn._control, "LEFT", -8, 0)
+                sizeRgn._lastInline = borderSwatch
                 borderSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(borderSwatch, "Border") end)
                 borderSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
 
                 -- Highlight is read on hover (FrameBorderEnter): no reload needed.
-                local rightRgn = sizeRow._rightRegion
+                local hlRgn = hlRow._leftRegion
                 local hlSwatch, updHl = EllesmereUI.BuildColorSwatch(
-                    rightRgn, lvl,
+                    hlRgn, hlRow:GetFrameLevel() + 3,
                     function()
                         local c = BGet("highlightColor") or { r = 1, g = 1, b = 1 }
                         return c.r, c.g, c.b, BGet("highlightAlpha") or 1
@@ -14213,8 +14221,8 @@ initFrame:SetScript("OnEvent", function(self)
                         BSet("highlightColor", { r=r, g=g, b=b })
                         BSet("highlightAlpha", a)
                     end, true, 20)
-                hlSwatch:SetPoint("RIGHT", rightRgn._lastInline or rightRgn._control, "LEFT", -8, 0)
-                rightRgn._lastInline = hlSwatch
+                hlSwatch:SetPoint("RIGHT", hlRgn._lastInline or hlRgn._control, "LEFT", -8, 0)
+                hlRgn._lastInline = hlSwatch
                 hlSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(hlSwatch, "Highlight") end)
                 hlSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
 
