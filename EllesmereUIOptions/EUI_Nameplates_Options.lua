@@ -2944,17 +2944,6 @@ initFrame:SetScript("OnEvent", function(self)
               end,
               tooltip="Toggle visibility of enemy pet nameplates." });  y = y - h
 
-        -- Last row of the section: Force Nameplate on Current Target | (empty)
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Force Nameplate on Current Target",
-              tooltip="Force the nameplate on your current target regardless of visibility rules: always show your current target's nameplate, even when its kind of nameplate is hidden: enemies out of combat, friendly NPCs, enemy pets, minor enemies, or anything switched off in Blizzard's Nameplate settings.\n\nWhile such a unit is targeted its nameplate kind is switched on for the target alone; every other nameplate of that kind stays hidden, and the setting is handed back when the target changes.\n\nFriendly nameplates cannot be forced inside dungeons, raids or battlegrounds (the game locks them there).",
-              getValue=function() return DBVal("forceTargetPlate") == true end,
-              setValue=function(v)
-                DB().forceTargetPlate = v
-                if ns.TF_Refresh then ns.TF_Refresh() end
-              end },
-            { type="label", text="" });  y = y - h
-
         -- Inline DIRECTIONS cog on Friendly Name Size: name-only vertical distance
         if not EllesmereUI._prebuilding then
             EllesmereUI.BuildInlineCog(npcRow._rightRegion, {
@@ -4168,9 +4157,17 @@ initFrame:SetScript("OnEvent", function(self)
                 if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
               end });  y = y - h
 
-        -- Row 6 (Blood Death Knight only): Hide Copies of Blood Plague. The row
-        -- is not built at all for anyone else -- the setting only affects a
-        -- debuff Blood spec applies.
+        -- Row 6: Force Nameplate on Current Target. Shares its row with Hide
+        -- Copies of Blood Plague on a Blood Death Knight (that row is not built
+        -- at all for anyone else -- the setting only affects a debuff Blood spec
+        -- applies); otherwise it is the section's last row with an empty slot.
+        local forceTargetCfg = { type="toggle", text="Force Nameplate on Current Target",
+              tooltip="Force the nameplate on your current target regardless of visibility rules: always show your current target's nameplate, even when its kind of nameplate is hidden: enemies out of combat, friendly NPCs, enemy pets, minor enemies, or anything switched off in Blizzard's Nameplate settings.\n\nWhile such a unit is targeted its nameplate kind is switched on for the target alone; every other nameplate of that kind stays hidden, and the setting is handed back when the target changes.\n\nFriendly nameplates cannot be forced inside dungeons, raids or battlegrounds (the game locks them there).",
+              getValue=function() return DBVal("forceTargetPlate") == true end,
+              setValue=function(v)
+                DB().forceTargetPlate = v
+                if ns.TF_Refresh then ns.TF_Refresh() end
+              end }
         do
             local _, classFile = UnitClass("player")
             local specIdx = GetSpecialization and GetSpecialization()
@@ -4184,7 +4181,9 @@ initFrame:SetScript("OnEvent", function(self)
                         DB().hideBloodPlagueCopies = v
                         if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
                       end },
-                    { type="label", text="" });  y = y - h
+                    forceTargetCfg);  y = y - h
+            else
+                _, h = W:DualRow(parent, y, forceTargetCfg, { type="label", text="" });  y = y - h
             end
         end
 
