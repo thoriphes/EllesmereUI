@@ -25,8 +25,9 @@ if not ns then return end
 --
 --  Cost off: nothing (no events registered, one nil test in NT_Apply).
 --  Cost on: PLAYER_TARGET_CHANGED + plate add/remove + CVAR_UPDATE (one table
---  lookup); a handful of Unit* calls per plate on a target change. No
---  OnUpdate, no timers beyond a 0-delay coalesce.
+--  lookup); a handful of Unit* calls per plate on a target change, and only
+--  while a category is held or a plate is still hidden. No OnUpdate, no
+--  wall-clock timers; two next-frame defers (world entry, hand-back sweep).
 --
 --  Instances: friendly nameplate frames are forbidden to addons there, so a
 --  forced friendly category could never be hidden again. Friendly categories
@@ -34,8 +35,8 @@ if not ns then return end
 -------------------------------------------------------------------------------
 
 local CVAR_NAMES = {
-    -- Newer clients register nameplateShowFriendlyPlayers, older ones
-    -- nameplateShowFriends (a master that also gates NPC / minion plates).
+    -- Same two-name resolve as the friendly module's LiveFriendlyVisCVar: the
+    -- client registers one of each pair, reading the other just gives nil.
     friendPlayers   = { "nameplateShowFriendlyPlayers", "nameplateShowFriends" },
     friendNPC       = { "nameplateShowFriendlyNPCs", "nameplateShowFriendlyNpcs" },
     friendMinions   = { "nameplateShowFriendlyMinions" },
@@ -75,16 +76,11 @@ local function LiveCVar(key)
     return nil
 end
 
-local function CVarOn(name)
-    local v = GetCVar(name)
-    return v == "1" or v == 1
-end
-
 -- Category keys a unit's plate depends on (every one must be 1 for the client
--- to spawn it). The lists must be EXACT per category: a non-target plate is
--- hidden when any key it depends on is held, so an over-wide list would hide
--- plates the user's own rules show. nil = never forced: the player's own
--- plate, widget-only plates.
+-- to spawn it). The lists should be exact per category: a non-target plate is
+-- hidden when any key it depends on is held, so a wider list hides plates the
+-- user's own rules show (the hand-back sweep below unhides them again). nil =
+-- never forced: the player's own plate, widget-only plates.
 local DEPS_ENEMY, DEPS_ENEMY_MINUS, DEPS_ENEMY_PET, DEPS_ENEMY_GUARDIAN
 local DEPS_FRIEND_PLAYER, DEPS_FRIEND_NPC, DEPS_FRIEND_PET, DEPS_FRIEND_GUARDIAN
 local function EnsureDeps()
@@ -136,18 +132,23 @@ end
 -------------------------------------------------------------------------------
 local active = false      -- setting on, events registered
 local forced = {}         -- key -> true while we hold that category on
-local releasing = {}      -- key -> GetTime() of our last hand-back (client despawn pending)
 local ownWrites = {}      -- lower-cased CVar name -> pending count of our own SetCVar calls
 local parkedUF = {}       -- unit -> { uf, np }: Blizzard UnitFrames we parked (no EUI plate on them)
-local parkFrame = CreateFrame("Frame")
-parkFrame:Hide()
+local parkFrame           -- hidden parent for parked UnitFrames; built on first park
 local ctl = CreateFrame("Frame")
-local evalPending = false
+local evalPending, sweepPending = false, false
 
-local function WriteCVar(name, value)
+local function WriteCVar(name, on)
     local lname = string.lower(name)
     ownWrites[lname] = (ownWrites[lname] or 0) + 1
-    SetCVar(name, value)
+    -- pcall as the friendly module writes these CVars. A refused write fires
+    -- no CVAR_UPDATE: take the count back so it cannot swallow the next
+    -- external update (an accepted write has already been counted down when
+    -- the event is synchronous, and still reads back as ours when it is not).
+    pcall(SetCVar, name, on and "1" or "0")
+    if GetCVarBool(name) ~= on and ownWrites[lname] > 0 then
+        ownWrites[lname] = ownWrites[lname] - 1
+    end
 end
 
 local function ForceKey(key)
@@ -155,13 +156,13 @@ local function ForceKey(key)
     if not name then return end
     if forced[key] then
         -- Held, but someone wrote 0 under us (CVAR_UPDATE brought us here): re-assert.
-        if not CVarOn(name) then WriteCVar(name, "1") end
+        if not GetCVarBool(name) then WriteCVar(name, true) end
         return
     end
-    if CVarOn(name) then return end   -- the rule already shows it: nothing to force
+    if GetCVarBool(name) then return end   -- the rule already shows it: nothing to force
     forced[key] = true
     if key == "friendNPC" then ns._tfFriendlyNPCForced = true end   -- friendly module styles NPC plates while held
-    WriteCVar(name, "1")
+    WriteCVar(name, true)
 end
 
 local function ReleaseKey(key)
@@ -169,31 +170,46 @@ local function ReleaseKey(key)
     forced[key] = nil
     if key == "friendNPC" then ns._tfFriendlyNPCForced = nil end
     local name = LiveCVar(key)
-    if name then
-        releasing[key] = GetTime()
-        -- Already 0 = someone else turned it off under us; nothing to hand back.
-        if CVarOn(name) then WriteCVar(name, "0") end
-    end
+    -- Already 0 = someone else turned it off under us; nothing to hand back.
+    if name and GetCVarBool(name) then WriteCVar(name, false) end
 end
 
 -------------------------------------------------------------------------------
 --  Per-plate hide / show
 -------------------------------------------------------------------------------
--- A non-target plate is hidden when any category it depends on is held by us,
--- or was handed back within the last second (the client is despawning those
--- plates; keeping them hidden avoids a one-frame flash of the whole category).
-local RELEASE_GRACE = 1
-local function ShouldHide(unit)
+local ApplyAll   -- forward: the sweep below re-applies every plate
+
+-- Next-frame re-apply after a hand-back. The client despawns a released
+-- category's plates on its next update; unhiding them in the same pass would
+-- flash the whole category for a frame, so a hidden plate stays hidden through
+-- the pass that released it and the sweep unhides whatever is still there
+-- (a plate whose dependency list was wider than its real category).
+local function RequestSweep()
+    if sweepPending then return end
+    sweepPending = true
+    C_Timer.After(0, function()
+        sweepPending = false
+        if active then ApplyAll(nil, true) end
+    end)
+end
+
+-- A non-target plate is hidden when any category it depends on is held by us.
+-- sweep = the deferred pass: an already hidden plate no longer gets the one
+-- frame of grace.
+local function ShouldHide(unit, sweep)
     if UnitIsUnit(unit, "target") then return false end
+    local hidden = ns._tfHidden
+    local wasHidden = hidden and hidden[unit]
+    if not wasHidden and not next(forced) then return false end
     EnsureDeps()
     local deps = Deps(unit)
     if not deps then return false end
-    local now = GetTime()
     for i = 1, #deps do
-        local key = deps[i]
-        if forced[key] then return true end
-        local t = releasing[key]
-        if t and now - t < RELEASE_GRACE then return true end
+        if forced[deps[i]] then return true end
+    end
+    if wasHidden and not sweep then
+        RequestSweep()
+        return true
     end
     return false
 end
@@ -232,6 +248,10 @@ local function ApplyUnit(unit, nameplate, hide)
         local entry = parkedUF[unit]
         if hide then
             if not entry and uf:GetParent() == nameplate then
+                if not parkFrame then
+                    parkFrame = CreateFrame("Frame")
+                    parkFrame:Hide()
+                end
                 uf:SetParent(parkFrame)
                 parkedUF[unit] = { uf = uf, np = nameplate }
             end
@@ -251,14 +271,19 @@ local function ForgetUnit(unit)
     end
 end
 
-local function ApplyAll(unhideAll)
+-- unhideAll: setting turned off, everything comes back now. sweep: see
+-- RequestSweep. With nothing held and nothing hidden there is nothing to do,
+-- so a target change between plates the rules already show costs no loop.
+ApplyAll = function(unhideAll, sweep)
+    local hidden = ns._tfHidden
+    if not unhideAll and not next(forced) and not (hidden and next(hidden)) then return end
     local plates = C_NamePlate.GetNamePlates()
     if plates then
         for i = 1, #plates do
             local np = plates[i]
             local unit = np.namePlateUnitToken
             if unit then
-                ApplyUnit(unit, np, (not unhideAll) and ShouldHide(unit))
+                ApplyUnit(unit, np, (not unhideAll) and ShouldHide(unit, sweep))
             end
         end
     end
@@ -306,7 +331,7 @@ local function RequestEvaluate()
     end)
 end
 
-ctl:SetScript("OnEvent", function(self, event, arg1, arg2)
+ctl:SetScript("OnEvent", function(self, event, arg1)
     if event == "PLAYER_TARGET_CHANGED" then
         Evaluate()
     elseif event == "NAME_PLATE_UNIT_ADDED" then
@@ -325,14 +350,14 @@ ctl:SetScript("OnEvent", function(self, event, arg1, arg2)
             ownWrites[lname] = n - 1
             return
         end
-        -- Someone else wrote a category we care about: their value supersedes
-        -- any hand-back of ours still despawning. A 1 while held means the rules
-        -- want it on now: adopt, so nothing is handed back later and the hidden
-        -- plates return. A 0 is re-asserted right here, in the same frame, so
-        -- the client never sees the 0 and the target's plate does not blink
-        -- (e.g. Hide Enemy Nameplates out of Combat writing 0 at combat end).
-        releasing[key] = nil
-        if forced[key] and (arg2 == "1" or arg2 == 1 or arg2 == true) then
+        -- Someone else wrote a category we care about. A 1 while held means
+        -- the rules want it on now: adopt, so nothing is handed back later and
+        -- the hidden plates return. A 0 is re-asserted right here, in the same
+        -- frame, so the client never sees the 0 and the target's plate does
+        -- not blink (e.g. Hide Enemy Nameplates out of Combat writing 0 at
+        -- combat end). The value is read back rather than taken from the
+        -- event payload.
+        if forced[key] and GetCVarBool(arg1) then
             forced[key] = nil
             if key == "friendNPC" then ns._tfFriendlyNPCForced = nil end
         end
@@ -369,17 +394,13 @@ function ns.TF_Refresh()
         ctl:UnregisterEvent("CVAR_UPDATE")
         ctl:UnregisterEvent("PLAYER_ENTERING_WORLD")
         for key in pairs(forced) do ReleaseKey(key) end
-        -- Released plates stay hidden until the client despawns them; a short
-        -- sweep then clears whatever is left so no stale hide can outlive the
-        -- setting (NT_Apply reads ns._tfHidden with the feature off too).
-        ApplyAll()
-        C_Timer.After(0.5, function()
-            if active then return end
-            ApplyAll(true)
-            for unit in pairs(parkedUF) do ForgetUnit(unit) end
-            ns._tfHidden = nil
-            ns._tfFriendlyNPCForced = nil
-        end)
+        -- Everything hidden comes back now: NAME_PLATE_UNIT_REMOVED no longer
+        -- reaches us, so a plate the client is about to despawn must not stay
+        -- flagged for the pooled frame that inherits its unit token.
+        ApplyAll(true)
+        for unit in pairs(parkedUF) do ForgetUnit(unit) end
+        ns._tfHidden = nil
+        ns._tfFriendlyNPCForced = nil
     elseif on then
         Evaluate()
     end
