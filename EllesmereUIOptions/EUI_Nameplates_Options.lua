@@ -4161,14 +4161,14 @@ initFrame:SetScript("OnEvent", function(self)
         -- Copies of Blood Plague on a Blood Death Knight (that row is not built
         -- at all for anyone else -- the setting only affects a debuff Blood spec
         -- applies); otherwise it is the section's last row with an empty slot.
-        local forceTargetCfg = { type="toggle", text="Force Nameplate on Current Target",
-              tooltip="Force the nameplate on your current target regardless of visibility rules: always show your current target's nameplate, even when its kind of nameplate is hidden: enemies out of combat, friendly NPCs, enemy pets, minor enemies, or anything switched off in Blizzard's Nameplate settings.\n\nWhile such a unit is targeted its nameplate kind is switched on for the target alone; every other nameplate of that kind stays hidden, and the setting is handed back when the target changes.\n\nFriendly nameplates cannot be forced inside dungeons, raids or battlegrounds (the game locks them there).",
-              getValue=function() return DBVal("forceTargetPlate") == true end,
-              setValue=function(v)
-                DB().forceTargetPlate = v
-                if ns.TF_Refresh then ns.TF_Refresh() end
-              end }
         do
+            local forceTargetCfg = { type="toggle", text="Force Nameplate on Current Target",
+                  tooltip="Force the nameplate on your current target regardless of visibility rules: always show your current target's nameplate, even when its kind of nameplate is hidden: enemies out of combat, friendly NPCs, enemy pets, minor enemies, or anything switched off in Blizzard's Nameplate settings.\n\nWhile such a unit is targeted its nameplate kind is switched on for the target alone; every other nameplate of that kind stays hidden, and the setting is handed back when the target changes.\n\nFriendly nameplates cannot be forced inside dungeons, raids or battlegrounds (the game locks them there).",
+                  getValue=function() return DBVal("forceTargetPlate") == true end,
+                  setValue=function(v)
+                    DB().forceTargetPlate = v
+                    if ns.TF_Refresh then ns.TF_Refresh() end
+                  end }
             local _, classFile = UnitClass("player")
             local specIdx = GetSpecialization and GetSpecialization()
             local specID = specIdx and GetSpecializationInfo(specIdx)
