@@ -3614,6 +3614,7 @@ end
 -- its own value for that key (settings.borderOverride[key]). Both nil by
 -- default, so with the toggle off this is one field read + the donor lookup
 -- the callers did before. Shared by the live frames and the options preview.
+-- On ns for the 200-locals cap.
 ns.ResolveMiniBorderValue = function(ownSettings, key, donorSettings)
     local ov = ownSettings.borderAdvanced and ownSettings.borderOverride
     if ov and ov[key] ~= nil then return ov[key] end
@@ -14069,6 +14070,18 @@ ReloadFramesBody = function()
                     ns.ResolveMiniBorderValue(settings, "borderTextureShiftX", bsrc),
                     ns.ResolveMiniBorderValue(settings, "borderTextureShiftY", bsrc),
                     "unitframes", bs, nil, bpx)
+                -- Show Behind. Mini borders never inherited it: the level comes from
+                -- the mini's own borderBehind (which nothing writes: above the bars),
+                -- as the portrait pass above computes it. Once the frame carries a
+                -- borderOverride table, re-set the level here from the same own flag,
+                -- or the Advanced override when on, so the toggle changes nothing
+                -- until the row is edited and switching it off is a full revert
+                -- regardless of what ran earlier in this refresh. A frame without
+                -- the table (the default) keeps the level it already has.
+                if settings.borderOverride and (unit == "pet" or unit == "targettarget" or unit == "focustarget") then
+                    local behind = ns.ResolveMiniBorderValue(settings, "borderBehind", settings)
+                    frame.unifiedBorder:SetFrameLevel(behind and math.max(0, frame:GetFrameLevel() - 1) or (frame:GetFrameLevel() + 10))
+                end
             end
             -- Boss Hover/Target border: the border was just restyled to its normal
             -- color above, so re-apply the hover/target recolor (both default off,
