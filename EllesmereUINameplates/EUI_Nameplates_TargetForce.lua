@@ -285,7 +285,13 @@ ApplyAll = function(unhideAll, sweep)
     if plates then
         for i = 1, #plates do
             local np = plates[i]
-            local unit = np.namePlateUnitToken
+            -- namePlateUnitToken is written by Blizzard's driver frame and is
+            -- not on every client's plate base; the UnitFrame's own unit is
+            -- (the module resolves base -> unit the same way). Without a
+            -- token the pass would skip the plate and a hide could never be
+            -- taken back.
+            local uf = np.UnitFrame
+            local unit = np.namePlateUnitToken or (uf and uf.unit)
             if unit then
                 ApplyUnit(unit, np, (not unhideAll) and ShouldHide(unit, sweep))
             end
