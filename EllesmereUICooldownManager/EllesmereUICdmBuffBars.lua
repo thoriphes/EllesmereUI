@@ -1729,7 +1729,7 @@ local TBB_STYLE_KEYS = {
     "opacity", "hideWhenInactive", "onlyInCombat",
     -- Visibility rides along because the onlyInCombat toggle it replaced already did: a new
     -- bar inheriting a neighbour's style, or one joining a group, kept that gate before.
-    "barVisibility", "visibilityModes", "visibilityMatch",
+    "barVisibility", "visibilityModes", "visibilityMatch", "visCustom",
     -- The option lanes themselves are appended from the shared list below.
     "showTimer", "timerPosition", "timerSize", "timerX", "timerY",
     "timerTextR", "timerTextG", "timerTextB", "timerTextA",
@@ -5372,6 +5372,8 @@ end
 -- already wakes on. Option keys come from the shared list so a new one is covered here too.
 local function TBBUsesVisCondition(cfg)
     if not cfg then return false end
+    -- A custom conditional parks the scalar on "always" and decides on its own.
+    if cfg.visCustom then return true end
     local vis = cfg.barVisibility
     if vis and vis ~= "always" then return true end
     local vm = cfg.visibilityModes

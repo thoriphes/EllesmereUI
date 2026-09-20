@@ -215,12 +215,11 @@ local function ReleaseCustomProxy(store)
 end
 
 -- Lua consumers: true/false for a store with a custom conditional, nil without.
+-- Callers test store.visCustom first so a store without one pays one field read;
+-- the writers (SetVisCustom, VisCopySelection) release the proxy on clear.
 function EUI.VisCustomState(store)
     local custom = EUI.GetVisCustom(store)
-    if not custom then
-        if customProxies[store] then ReleaseCustomProxy(store) end
-        return nil
-    end
+    if not custom then return nil end
     local proxy = customProxies[store]
     -- Secure frame creation and driver registration stay out of combat (the
     -- vehicle proxies in the modules follow the same rule); until then the
@@ -855,9 +854,12 @@ function EUI.EvalVisibilityExtended(store, legacyKey, state, caps)
         if ov == "mouseover" then return "mouseover" end
         return true
     end
-    -- A custom conditional owns the verdict outright (see the Custom Conditional block).
-    local custom = EUI.VisCustomState(store)
-    if custom ~= nil then return custom end
+    -- A custom conditional owns the verdict outright (see the Custom Conditional
+    -- block). One field read for every store without one: this is the hot path.
+    if store.visCustom then
+        local custom = EUI.VisCustomState(store)
+        if custom ~= nil then return custom end
+    end
     local vm = ActiveModes(store, legacyKey)
     -- Any owns the whole verdict (option lanes included, even with no mode set). The one
     -- case handed back is a legacy ORPHAN scalar: the caller's chain resolves the mode
@@ -1310,8 +1312,10 @@ end
 -- module's scalar side effects, same contract as SetVisibilitySelection.
 function EUI.VisCopySelection(dst, src, legacyKey, dstCaps, applyScalarFn)
     if not dst or not src then return end
-    -- The custom conditional travels with the copy (nil clears the target's).
+    -- The custom conditional travels with the copy (nil clears the target's, and
+    -- with it the proxy a Lua consumer may have built for it).
     dst.visCustom = EUI.GetVisCustom(src)
+    if not dst.visCustom then ReleaseCustomProxy(dst) end
     -- The match travels with every copy, mode-only ones included.
     dst.visibilityMatch = (src.visibilityMatch == "any") and "any" or nil
     -- The shared selection, not what an override on the source currently replaces it with.

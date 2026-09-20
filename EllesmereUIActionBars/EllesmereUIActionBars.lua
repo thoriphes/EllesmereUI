@@ -9124,6 +9124,27 @@ local function BuildVisibilityString(info, s, visOverride)
         vm = EllesmereUI.GetActiveVisibilityModes(s, "barVisibility")
     end
 
+    -- Custom conditional: replaces the checklist, the match mode and the option lanes
+    -- outright, so it settles before the Any tail below. The runtime toggle keybind
+    -- (visOverride) and an applied Visibility override (visOv) still win, the same way
+    -- they win over the saved mode. Each bar type keeps its safety prefix in front; the
+    -- pet bar's wrapper cannot AND a whole expression into its bracket, so its terms
+    -- lead as hide gates instead (adjacent brackets are OR: any of them hides).
+    if not visOverride and not visOv and EllesmereUI.VisCustomDriverString then
+        local customPrefix
+        if info.isPetBar then
+            customPrefix = "[petbattle][nopet][vehicleui][overridebar][possessbar] hide; "
+        elseif key == "MainBar" then
+            customPrefix = "[petbattle] hide; "
+        elseif info.isStance then
+            customPrefix = "[vehicleui][petbattle] hide; "
+        else
+            customPrefix = "[vehicleui][petbattle][overridebar] hide; "
+        end
+        local custom = EllesmereUI.VisCustomDriverString(s, customPrefix)
+        if custom then return custom end
+    end
+
     -- Any match: the shared builder compiles the whole tail; Lua-only lanes (instances,
     -- housing, skyriding mount) are resolved at build time, so their verdict is only as
     -- fresh as the last driver rebuild. Explicit overrides keep the legacy path.
@@ -9144,14 +9165,6 @@ local function BuildVisibilityString(info, s, visOverride)
 
     -- Pet bar has unique logic: it only shows when a pet is active and
     -- the player is not in a vehicle/override/possess state.
-    if info.isPetBar and not visOverride and not visOv then
-        -- Custom conditional on the pet bar: the wrapper below cannot AND a whole
-        -- expression into its bracket, so its terms lead as hide gates instead
-        -- (adjacent brackets are OR: any of them hides), then the user's clauses decide.
-        local custom = EllesmereUI.VisCustomDriverString and EllesmereUI.VisCustomDriverString(s,
-            "[petbattle][nopet][vehicleui][overridebar][possessbar] hide; ")
-        if custom then return custom end
-    end
     if info.isPetBar then
         -- Both paths fold the mode's AND terms INTO the pet wrapper bracket. Adjacent
         -- bracket groups are OR in macro grammar, so a mode clause beside the wrapper
@@ -9197,14 +9210,6 @@ local function BuildVisibilityString(info, s, visOverride)
         hidePrefix = "[vehicleui][petbattle] hide; "
     else
         hidePrefix = "[vehicleui][petbattle][overridebar] hide; "
-    end
-
-    -- Custom conditional: replaces the checklist and the option lanes outright.
-    -- The runtime toggle keybind (visOverride) and an applied Visibility
-    -- override (visOv) still win, the same way they win over the saved mode.
-    if not visOverride and not visOv then
-        local custom = EllesmereUI.VisCustomDriverString and EllesmereUI.VisCustomDriverString(s, hidePrefix)
-        if custom then return custom end
     end
 
     -- Inject visibility-option hide clauses after the standard hide-prefix
@@ -9844,6 +9849,8 @@ local MYSLOT_VIS_FIELDS = {
     -- The Match Mode scalar is its own store key outside visibilityModes; a
     -- surviving "any" makes the compiler build from the emptied set.
     "visibilityMatch",
+    -- A surviving custom conditional would keep driving the bar past the forced "always".
+    "visCustom",
 }
 -- The option LANES (target/enemy/mounted macro lanes AND the Lua-only
 -- instance/housing/skyriding/resting/VEHICLE lanes) are enumerated by the
@@ -9907,6 +9914,7 @@ function EAB:SetMyslotForceShow(on)
                 -- the forced "always"; the backup above already captured it.
                 s.visibilityModes = nil
                 s.visibilityMatch = nil
+                s.visCustom = nil
                 -- EVERY option lane off, macro and Lua-only alike (the live
                 -- VIS_OPT_KEYS list): visOnlyVehicle and friends otherwise
                 -- keep feeding CheckVisibilityOptionsNonMacro a hide verdict

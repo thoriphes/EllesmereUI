@@ -13340,6 +13340,9 @@ end
 function EllesmereUI.CheckVisibilityOptionsNonMacro(opts, skipMountAxis)
     if not opts then return false end
     if EllesmereUI.VisOverrideValue and EllesmereUI.VisOverrideValue(opts) then return false end
+    -- A custom conditional replaces the whole configuration the same way (the Visibility
+    -- menu hides the lanes while it holds); a lane set before it must not veto from underneath.
+    if opts.visCustom then return false end
 
     -- Any match: only the SHOW lanes are disjuncts, owned by EvalVisibilityExtended (or
     -- the secure driver build path). The HIDE lanes stay vetoes in every match mode, so
@@ -13448,6 +13451,8 @@ function EllesmereUI.CheckVisibilityOptions(opts)
     -- An override replaces the whole Visibility configuration, option lanes included:
     -- "Always" set on an override means always, whatever the shared value hides.
     if EllesmereUI.VisOverrideValue and EllesmereUI.VisOverrideValue(opts) then return false end
+    -- So does a custom conditional (EllesmereUI_Visibility.lua, Custom Conditional block).
+    if opts.visCustom then return false end
 
     -- Any match: only the SHOW lanes are disjuncts; the HIDE lanes veto here as they do
     -- under All (EllesmereUI.VisOptionHideVeto), which is what makes "Hide when X" mean

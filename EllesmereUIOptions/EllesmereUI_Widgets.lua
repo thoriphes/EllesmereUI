@@ -9052,100 +9052,100 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
     end
     local function OrphanActive() return OrphanScalar() ~= nil end
     local function BuildItems()
-    items, defs, listed = {}, {}, {}
-    local customOn = CustomActive()
-    for _, def in ipairs(EllesmereUI.VIS_ROW_ITEMS) do
-        if customOn and def.key ~= "never" and def.key ~= "always" and def.key ~= "mouseover" and def.key ~= "custom" then
-            -- Custom owns the setting: no condition rows, no headers, no modifiers.
-        elseif def.isHeader then
-            items[#items + 1] = def
-        elseif not (def.key == "mouseover" and caps.noMouseover) then
-            local item = { key = def.key, label = def.label, tooltip = def.tooltip,
-                           dual = def.axis and true or nil,
-                           isModifier = def.modifier }
-            -- Never / Always / Mouseover are the exclusive states: each one writes the
-            -- legacy scalar on its own, which an override CAN hold. Everything else is
-            -- the compound half.
-            if def.key ~= "never" and def.key ~= "always" and def.key ~= "mouseover" and def.key ~= "custom" then
-                item.ovLockedFn = OvSessionActive
-                item.ovLockedTooltip = OV_LOCK_TIP
-            elseif def.key == "custom" then
-                -- Not an override state: an override holds Never/Always/Mouseover only.
-                item.ovLockedFn = OvSessionActive
-                item.ovLockedTooltip = OV_LOCK_TIP
-            elseif def.key == "mouseover" and caps.noOverrideMouseover then
-                -- Joins the sealed run: this row sits directly above the section header
-                -- the block starts at, so it simply grows by one and stays contiguous,
-                -- with Never and Always left outside it.
-                item.ovLockedFn = OvSessionActive
-                item.ovLockedTooltip = OV_LOCK_TIP_MO
-            end
-            if caps.noGroupModes and def.axis == "group" then
-                item.locked = true
-                item.lockedTooltip = (caps.lockedTooltips and caps.lockedTooltips[def.key])
-                    or "This element cannot use group-based visibility."
-            end
-            -- Only the two airborne rows need the takeoff/landing edge; the mount row
-            -- rides PLAYER_CAN_GLIDE_CHANGED, which is always registered.
-            if caps.luaDragonriding and (def.key == "skyAirborne" or def.key == "notSkyAirborne") then
-                item.lockedFn = function() return not EllesmereUI._hasGlidingEvent end
-                item.lockedTooltip = "Requires a client with gliding events."
-            end
-            if def.modifier then
-                item.lockedFn = OrphanActive
-                item.lockedTooltip = "Not available while a legacy visibility value is selected. Pick Never or Always first."
-            end
-            -- Rows whose tooltip states a combining rule have to restate it under Any.
-            if def.tooltipAny then
-                item.tooltip = function()
-                    return GetMatchAny() and def.tooltipAny or def.tooltip
+        items, defs, listed = {}, {}, {}
+        local customOn = CustomActive()
+        for _, def in ipairs(EllesmereUI.VIS_ROW_ITEMS) do
+            if customOn and def.key ~= "never" and def.key ~= "always" and def.key ~= "mouseover" and def.key ~= "custom" then
+                -- Custom owns the setting: no condition rows, no headers, no modifiers.
+            elseif def.isHeader then
+                items[#items + 1] = def
+            elseif not (def.key == "mouseover" and caps.noMouseover) then
+                local item = { key = def.key, label = def.label, tooltip = def.tooltip,
+                               dual = def.axis and true or nil,
+                               isModifier = def.modifier }
+                -- Never / Always / Mouseover are the exclusive states: each one writes the
+                -- legacy scalar on its own, which an override CAN hold. Everything else is
+                -- the compound half.
+                -- Custom is not an override state either: an override holds Never/Always/
+                -- Mouseover only, so it locks with the compound half.
+                if def.key ~= "never" and def.key ~= "always" and def.key ~= "mouseover" then
+                    item.ovLockedFn = OvSessionActive
+                    item.ovLockedTooltip = OV_LOCK_TIP
+                elseif def.key == "mouseover" and caps.noOverrideMouseover then
+                    -- Joins the sealed run: this row sits directly above the section header
+                    -- the block starts at, so it simply grows by one and stays contiguous,
+                    -- with Never and Always left outside it.
+                    item.ovLockedFn = OvSessionActive
+                    item.ovLockedTooltip = OV_LOCK_TIP_MO
+                end
+                if caps.noGroupModes and def.axis == "group" then
+                    item.locked = true
+                    item.lockedTooltip = (caps.lockedTooltips and caps.lockedTooltips[def.key])
+                        or "This element cannot use group-based visibility."
+                end
+                -- Only the two airborne rows need the takeoff/landing edge; the mount row
+                -- rides PLAYER_CAN_GLIDE_CHANGED, which is always registered.
+                if caps.luaDragonriding and (def.key == "skyAirborne" or def.key == "notSkyAirborne") then
+                    item.lockedFn = function() return not EllesmereUI._hasGlidingEvent end
+                    item.lockedTooltip = "Requires a client with gliding events."
+                end
+                if def.modifier then
+                    item.lockedFn = OrphanActive
+                    item.lockedTooltip = "Not available while a legacy visibility value is selected. Pick Never or Always first."
+                end
+                -- Rows whose tooltip states a combining rule have to restate it under Any.
+                if def.tooltipAny then
+                    item.tooltip = function()
+                        return GetMatchAny() and def.tooltipAny or def.tooltip
+                    end
+                end
+                -- The three exclusive states behave differently inside a session, so they
+                -- say so instead of showing their normal text.
+                if def.key == "never" or def.key == "always" or def.key == "mouseover" then
+                    local baseTip = item.tooltip
+                    item.tooltip = function()
+                        if OvSessionActive() then return OV_PICK_TIP end
+                        if type(baseTip) == "function" then return baseTip() end
+                        return baseTip
+                    end
+                end
+                items[#items + 1] = item
+                defs[def.key] = def
+                if def.axis == "mode" then
+                    listed[def.show] = true; listed[def.hide] = true
+                elseif def.axis == "group" then
+                    listed[def.key] = true
+                elseif def.modifier or def.key == "custom" then
+                    -- Never a stored scalar, so it must not shadow the orphan rule.
+                elseif not def.axis then
+                    listed[def.key] = true
+                end
+                -- The expression field sits right under its state. Not during an override
+                -- session: a commit would write the shared string (and park the scalar the
+                -- session captures), which the locked Custom row above says cannot happen.
+                if def.key == "custom" and customOn and not OvSessionActive() then
+                    items[#items + 1] = CustomInputItem()
                 end
             end
-            -- The three exclusive states behave differently inside a session, so they
-            -- say so instead of showing their normal text.
-            if def.key == "never" or def.key == "always" or def.key == "mouseover" then
-                local baseTip = item.tooltip
-                item.tooltip = function()
-                    if OvSessionActive() then return OV_PICK_TIP end
-                    if type(baseTip) == "function" then return baseTip() end
-                    return baseTip
-                end
-            end
-            items[#items + 1] = item
-            defs[def.key] = def
-            if def.axis == "mode" then
-                listed[def.show] = true; listed[def.hide] = true
-            elseif def.axis == "group" then
-                listed[def.key] = true
-            elseif def.modifier or def.key == "custom" then
-                -- Never a stored scalar, so it must not shadow the orphan rule.
-            elseif not def.axis then
-                listed[def.key] = true
-            end
-            -- The expression field sits right under its state.
-            if def.key == "custom" and customOn then
-                items[#items + 1] = CustomInputItem()
-            end
         end
-    end
 
-    if not customOn and opts.extraItems then
-        for _, ex in ipairs(opts.extraItems) do
-            items[#items + 1] = { key = ex.key, label = ex.label, tooltip = ex.tooltip }
-            defs[ex.key] = { key = ex.key, axis = "extra", get = ex.get, set = ex.set }
+        if not customOn and opts.extraItems then
+            for _, ex in ipairs(opts.extraItems) do
+                items[#items + 1] = { key = ex.key, label = ex.label, tooltip = ex.tooltip }
+                defs[ex.key] = { key = ex.key, axis = "extra", get = ex.get, set = ex.set }
+            end
         end
-    end
 
-    -- Legacy-orphan rule, unchanged from the old checklist: a stored scalar this row
-    -- cannot reach renders as a checked entry only while it is the current value.
-    if not customOn then
-        local cur = OrphanScalar()
-        if cur then
-            items[#items + 1] = { key = cur, label = cur }
-            defs[cur] = { key = cur, orphan = true }
+        -- Legacy-orphan rule, unchanged from the old checklist: a stored scalar this row
+        -- cannot reach renders as a checked entry only while it is the current value.
+        if not customOn then
+            local cur = OrphanScalar()
+            if cur then
+                items[#items + 1] = { key = cur, label = cur }
+                defs[cur] = { key = cur, orphan = true }
+            end
         end
-    end
-    return items
+        return items
     end
 
     -- Legacy group Hide encoding: before the Hide lanes had keys of their own, "Hide: In
@@ -9349,6 +9349,11 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
     -- when Custom is picked: the user sees their setting in the grammar and edits it.
     local function SeedExpression(store)
         local vm = EllesmereUI.GetActiveVisibilityModes and EllesmereUI.GetActiveVisibilityModes(store, legacyKey)
+        -- Any compiles to disjuncts, a different string from the All conjuncts below.
+        if store.visibilityMatch == "any" and EllesmereUI.BuildAnyMatchTail then
+            local tail = EllesmereUI.BuildAnyMatchTail(store, legacyKey, vm)
+            if type(tail) == "string" and tail ~= "" then return tail end
+        end
         if vm and not vm.mouseover and EllesmereUI.BuildVisibilityDriverString then
             local s = EllesmereUI.BuildVisibilityDriverString("", vm)
             if type(s) == "string" and s ~= "" then return s end
@@ -9379,6 +9384,7 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
               return (store and store.visCustom) or ""
           end,
           set = function(text)
+              if OvSessionActive() then return false end
               local store = opts.getStore()
               if not store then return false end
               local trimmed = strtrim(text or "")
@@ -9446,12 +9452,11 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
         end
         -- Any other state click leaves Custom first, then applies as usual. Never and
         -- Always close the menu (the next open rebuilds it); Mouseover keeps it open,
-        -- so it regains its rows right after the write below lands.
+        -- so its write below rebuilds the menu in place to bring the rows back.
+        local leftCustom = false
         if CustomActive() and (k == "never" or k == "always" or k == "mouseover") then
             SetCustomAll("")
-            if k == "mouseover" and cbDD and cbDD.RebuildMenu then
-                C_Timer.After(0, function() if cbDD and cbDD.RebuildMenu then cbDD:RebuildMenu() end end)
-            end
+            leftCustom = true
         end
 
         -- Inside an override session the three exclusive states are the only thing an
@@ -9546,6 +9551,7 @@ function EllesmereUI.AttachVisibilityChecklist(region, opts)
             sel.mouseover = checked or nil
             WriteSel(sel, store)
             AfterChange(false)
+            if leftCustom and cbDD and cbDD.RebuildMenu then cbDD:RebuildMenu() end
             return
         end
 

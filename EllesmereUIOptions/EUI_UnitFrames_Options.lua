@@ -5168,8 +5168,9 @@ initFrame:SetScript("OnEvent", function(self)
         if type(key) ~= "string" then return false end
         -- visibilityMatch only modifies barVisibility's selection, so it has to stay
         -- with the frame for the same reason: copying the modifier to a frame that kept
-        -- its own mode changes how that mode reads.
-        if key == "barVisibility" or key == "visibilityMatch" or key:sub(1, 1) == "_" then return false end
+        -- its own mode changes how that mode reads. visCustom replaces that selection.
+        if key == "barVisibility" or key == "visibilityMatch" or key == "visCustom"
+           or key:sub(1, 1) == "_" then return false end
         -- WoW Forever: the pet's power bar position has no counterpart on the
         -- other small frames (theirs never shows), so it stays with the pet.
         if key == "powerPosition" and ns.UF_PetHasPower and groupUnits == MINI_GROUP_ORDER then return false end
