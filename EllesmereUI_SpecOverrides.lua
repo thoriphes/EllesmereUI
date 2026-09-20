@@ -464,6 +464,9 @@ for i = 1, #VIS_OV_FOLDERS do
     if not set then set = {}; SETTING_BLACKLIST[folder] = set end
     set.visibilityModes = true
     set.visibilityMatch = true
+    -- The custom conditional replaces the selection outright; an override holds the
+    -- scalar states only, so it is never captured.
+    set.visCustom = true
 end
 
 -- The lanes come from the shared VIS_OPT_KEYS, never a copy, so one added later
