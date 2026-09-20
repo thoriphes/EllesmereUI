@@ -25,9 +25,10 @@ if not ns then return end
 --
 --  Cost off: nothing (no events registered, one nil test in NT_Apply).
 --  Cost on: PLAYER_TARGET_CHANGED + plate add/remove + CVAR_UPDATE (one table
---  lookup); a handful of Unit* calls per plate on a target change, and only
---  while a category is held or a plate is still hidden. No OnUpdate, no
---  wall-clock timers; two next-frame defers (world entry, hand-back sweep).
+--  lookup) + the two combat edges; a handful of Unit* calls per plate on a
+--  target change, and only while a category is held or a plate is still
+--  hidden. No OnUpdate, no wall-clock timers; two next-frame defers (world
+--  entry, hand-back sweep).
 --
 --  Instances: friendly nameplate frames are forbidden to addons there, so a
 --  forced friendly category could never be hidden again. Friendly categories
@@ -110,6 +111,9 @@ end
 
 local function Deps(unit)
     if UnitIsUnit(unit, "player") then return nil end
+    -- A corpse has no plate to force, and UnitCanAttack reads it as friendly:
+    -- the target left on a kill must not flip the friendly NPC category on.
+    if UnitIsDeadOrGhost(unit) then return nil end
     if UnitNameplateShowsWidgetsOnly and UnitNameplateShowsWidgetsOnly(unit) then return nil end
     local isPlayer = UnitIsPlayer(unit)
     if UnitCanAttack("player", unit) then
@@ -362,6 +366,19 @@ ctl:SetScript("OnEvent", function(self, event, arg1)
             if key == "friendNPC" then ns._tfFriendlyNPCForced = nil end
         end
         Evaluate()
+    elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+        -- Hide Enemy Nameplates out of Combat writes nameplateShowEnemies at
+        -- both edges. Re-evaluate here rather than trusting CVAR_UPDATE to
+        -- carry that write: entering combat the rule wants the category on,
+        -- so a held "enemies" is adopted (the hidden plates come back);
+        -- leaving combat its 0 is re-asserted for the target. The rule's frame
+        -- normally runs first; if it has not written yet, the next-frame pass
+        -- catches it.
+        if event == "PLAYER_REGEN_DISABLED" and forced.enemies and ns._oocPlatesOwned then
+            forced.enemies = nil
+        end
+        Evaluate()
+        RequestEvaluate()
     elseif event == "PLAYER_ENTERING_WORLD" then
         RequestEvaluate()
     elseif event == "PLAYER_LOGIN" then
@@ -384,6 +401,8 @@ function ns.TF_Refresh()
         ctl:RegisterEvent("NAME_PLATE_UNIT_ADDED")
         ctl:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
         ctl:RegisterEvent("CVAR_UPDATE")
+        ctl:RegisterEvent("PLAYER_REGEN_DISABLED")
+        ctl:RegisterEvent("PLAYER_REGEN_ENABLED")
         ctl:RegisterEvent("PLAYER_ENTERING_WORLD")
         Evaluate()
     elseif not on and active then
@@ -392,6 +411,8 @@ function ns.TF_Refresh()
         ctl:UnregisterEvent("NAME_PLATE_UNIT_ADDED")
         ctl:UnregisterEvent("NAME_PLATE_UNIT_REMOVED")
         ctl:UnregisterEvent("CVAR_UPDATE")
+        ctl:UnregisterEvent("PLAYER_REGEN_DISABLED")
+        ctl:UnregisterEvent("PLAYER_REGEN_ENABLED")
         ctl:UnregisterEvent("PLAYER_ENTERING_WORLD")
         for key in pairs(forced) do ReleaseKey(key) end
         -- Everything hidden comes back now: NAME_PLATE_UNIT_REMOVED no longer
