@@ -224,8 +224,11 @@ function EUI.VisCustomState(store)
     -- Secure frame creation and driver registration stay out of combat (the
     -- vehicle proxies in the modules follow the same rule); until then the
     -- parser answers directly and the regen edge re-runs this through the
-    -- dispatcher.
-    if (not proxy or proxy._visDriver ~= custom) and InCombatLockdown() then
+    -- dispatcher. A client that cannot compile secure snippets never gets a
+    -- proxy at all (same SecureSnippetsOK gate as those vehicle proxies): the
+    -- parser stays the answer, on the events the caller already runs.
+    if (not proxy or proxy._visDriver ~= custom)
+        and (InCombatLockdown() or not EUI.SecureSnippetsOK()) then
         local ok, res = pcall(SecureCmdOptionParse, custom)
         return ok and type(res) == "string" and res:lower() == "show" or false
     end
