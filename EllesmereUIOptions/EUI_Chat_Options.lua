@@ -1650,14 +1650,18 @@ initFrame:SetScript("OnEvent", function(self)
         end
         y = y - h
 
-        -- Row 3b/3c: Timestamp Column | (spacer), then its font and size.
+        -- Row 3b: Timestamp Column | Timestamp Font (+ cog: Font Size).
         -- The column draws stamps beside the text, so they can take a font
         -- of their own (a chat line is one font end to end).
         do
             local function ColOff()
                 return Cfg("timestampColumn") ~= true or (Cfg("timestampFormat") or "%I:%M ") == "none"
             end
-            _, h = W:DualRow(parent, y,
+            local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
+            fontValues.__chat = "Chat Font"
+            table.insert(fontOrder, 1, "__chat")
+            local colRow
+            colRow, h = W:DualRow(parent, y,
                 { type="toggle", text="Timestamp Column",
                   tooltip="Draws timestamps in their own column to the left of the text, where they can use their own font and size. The chat panel grows to the left to make room.",
                   disabled=function() return (Cfg("timestampFormat") or "%I:%M ") == "none" end,
@@ -1668,13 +1672,6 @@ initFrame:SetScript("OnEvent", function(self)
                       if ECHAT.ApplyTimestampCVar then ECHAT.ApplyTimestampCVar() end
                       EllesmereUI:RefreshPage()
                   end },
-                { type="spacer" })
-            y = y - h
-
-            local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
-            fontValues.__chat = "Chat Font"
-            table.insert(fontOrder, 1, "__chat")
-            _, h = W:DualRow(parent, y,
                 { type="dropdown", text="Timestamp Font",
                   values=fontValues, order=fontOrder,
                   disabled=ColOff, disabledTooltip="Turn on Timestamp Column first",
@@ -1682,19 +1679,44 @@ initFrame:SetScript("OnEvent", function(self)
                   setValue=function(v)
                       Set("timestampFont", v)
                       if ECHAT.StampColumnApply then ECHAT.StampColumnApply() end
-                  end },
-                { type="slider", text="Timestamp Font Size", min=8, max=24, step=1,
-                  disabled=ColOff, disabledTooltip="Turn on Timestamp Column first",
-                  getValue=function()
-                      if Cfg("timestampFontSize") then return Cfg("timestampFontSize") end
-                      local size
-                      if FCF_GetChatWindowInfo then size = select(2, FCF_GetChatWindowInfo(1)) end
-                      return (size and size > 0) and size or 12
-                  end,
-                  setValue=function(v)
-                      Set("timestampFontSize", v)
-                      if ECHAT.StampColumnApply then ECHAT.StampColumnApply() end
                   end })
+            -- Cog for the stamp size (defaults to each window's own size)
+            if not EllesmereUI._prebuilding then
+                local rrgn = colRow._rightRegion
+                local _, cogShow = EllesmereUI.BuildCogPopup({
+                    title = "Timestamp Font",
+                    rows = {
+                        { type="slider", label="Font Size", min=8, max=24, step=1,
+                          get=function()
+                              if Cfg("timestampFontSize") then return Cfg("timestampFontSize") end
+                              local size
+                              if FCF_GetChatWindowInfo then size = select(2, FCF_GetChatWindowInfo(1)) end
+                              return (size and size > 0) and size or 12
+                          end,
+                          set=function(v)
+                              Set("timestampFontSize", v)
+                              if ECHAT.StampColumnApply then ECHAT.StampColumnApply() end
+                          end },
+                    },
+                })
+                local cogBtn = CreateFrame("Button", nil, rrgn)
+                cogBtn:SetSize(26, 26)
+                cogBtn:SetPoint("RIGHT", rrgn._lastInline or rrgn._control, "LEFT", -8, 0)
+                rrgn._lastInline = cogBtn
+                cogBtn:SetFrameLevel(rrgn:GetFrameLevel() + 5)
+                local function UpdateCogAlpha()
+                    cogBtn:SetAlpha(ColOff() and 0.15 or 0.4)
+                end
+                UpdateCogAlpha(); EllesmereUI.RegisterWidgetRefresh(UpdateCogAlpha)
+                local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
+                cogTex:SetAllPoints()
+                cogTex:SetTexture(EllesmereUI.COGS_ICON)
+                cogBtn:SetScript("OnEnter", function(s) s:SetAlpha(0.7) end)
+                cogBtn:SetScript("OnLeave", function() UpdateCogAlpha() end)
+                cogBtn:SetScript("OnClick", function(s)
+                    if not ColOff() then cogShow(s) end
+                end)
+            end
             y = y - h
         end
 
