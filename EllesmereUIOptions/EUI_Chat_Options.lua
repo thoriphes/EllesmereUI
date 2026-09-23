@@ -1650,6 +1650,54 @@ initFrame:SetScript("OnEvent", function(self)
         end
         y = y - h
 
+        -- Row 3b/3c: Timestamp Column | (spacer), then its font and size.
+        -- The column draws stamps beside the text, so they can take a font
+        -- of their own (a chat line is one font end to end).
+        do
+            local function ColOff()
+                return Cfg("timestampColumn") ~= true or (Cfg("timestampFormat") or "%I:%M ") == "none"
+            end
+            _, h = W:DualRow(parent, y,
+                { type="toggle", text="Timestamp Column",
+                  tooltip="Draws timestamps in their own column to the left of the text, where they can use their own font and size. The chat panel grows to the left to make room.",
+                  disabled=function() return (Cfg("timestampFormat") or "%I:%M ") == "none" end,
+                  disabledTooltip="Set a Timestamps format first",
+                  getValue=function() return Cfg("timestampColumn") == true end,
+                  setValue=function(v)
+                      Set("timestampColumn", v)
+                      if ECHAT.ApplyTimestampCVar then ECHAT.ApplyTimestampCVar() end
+                      EllesmereUI:RefreshPage()
+                  end },
+                { type="spacer" })
+            y = y - h
+
+            local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
+            fontValues.__chat = "Chat Font"
+            table.insert(fontOrder, 1, "__chat")
+            _, h = W:DualRow(parent, y,
+                { type="dropdown", text="Timestamp Font",
+                  values=fontValues, order=fontOrder,
+                  disabled=ColOff, disabledTooltip="Turn on Timestamp Column first",
+                  getValue=function() return Cfg("timestampFont") or "__chat" end,
+                  setValue=function(v)
+                      Set("timestampFont", v)
+                      if ECHAT.StampColumnApply then ECHAT.StampColumnApply() end
+                  end },
+                { type="slider", text="Timestamp Font Size", min=8, max=24, step=1,
+                  disabled=ColOff, disabledTooltip="Turn on Timestamp Column first",
+                  getValue=function()
+                      if Cfg("timestampFontSize") then return Cfg("timestampFontSize") end
+                      local size
+                      if FCF_GetChatWindowInfo then size = select(2, FCF_GetChatWindowInfo(1)) end
+                      return (size and size > 0) and size or 12
+                  end,
+                  setValue=function(v)
+                      Set("timestampFontSize", v)
+                      if ECHAT.StampColumnApply then ECHAT.StampColumnApply() end
+                  end })
+            y = y - h
+        end
+
         -- Row 4: Shortened Channel Names (+ Use Letters cog) | Class Colored Names
         local abbrevRow
         abbrevRow, h = W:DualRow(parent, y,

@@ -77,6 +77,8 @@ local CHAT_DEFAULTS = {
             bgTexture  = "none",  -- chat background texture key (Unit Frames bar texture catalogue)
             timestampFormat = "%I:%M ",
             timestampAll = false,
+            timestampColumn = false,   -- stamps in their own column (EllesmereUIChat_StampColumn.lua)
+            timestampFont = "__chat",
             font = "__global",
             outlineMode = "__global",
             fontSize = 12,
@@ -3165,9 +3167,14 @@ function ECHAT.ApplyInputPosition()
             local eb = _G[name .. "EditBox"]
             local bg = CFD(cf).bg
             local div = CFD(cf).inputDiv
+            -- Timestamp Column: the panel (and the input across it) grows
+            -- left by the column's width; the text area never moves, so
+            -- Blizzard's invisible hit-zones stay under our lines.
+            local colW = ECHAT.StampGutterWidth and ECHAT.StampGutterWidth(cf) or 0
+            local edgeX = -10 - colW
 
             if stock then
-                CFD(cf)._bgIns = { l = -stockX, r = stockX, t = 7, b = -10 }
+                CFD(cf)._bgIns = { l = -stockX - colW, r = stockX, t = 7, b = -10 }
                 ECHAT.ApplyInputTopStrip(cf)
                 if ECHAT.PositionChatPanel then ECHAT.PositionChatPanel(cf) end
             else
@@ -3183,14 +3190,14 @@ function ECHAT.ApplyInputPosition()
                     -- unaffected because chat renders bottom-up from a
                     -- shared bottom edge, and the input covers the
                     -- hit-zones of the lines it hides.
-                    eb:SetPoint("TOPLEFT", cf, "TOPLEFT", -10, -INPUT_TOP_DROP)
+                    eb:SetPoint("TOPLEFT", cf, "TOPLEFT", edgeX, -INPUT_TOP_DROP)
                     eb:SetPoint("TOPRIGHT", cf, "TOPRIGHT", 5, -INPUT_TOP_DROP)
                     local bgLvl = CFD(cf).bg:GetFrameLevel() or 1
                     if eb:GetFrameLevel() < bgLvl + 5 then
                         eb:SetFrameLevel(bgLvl + 5)
                     end
                 else
-                    eb:SetPoint("TOPLEFT", cf, "BOTTOMLEFT", -10, -8)
+                    eb:SetPoint("TOPLEFT", cf, "BOTTOMLEFT", edgeX, -8)
                     eb:SetPoint("TOPRIGHT", cf, "BOTTOMRIGHT", 5, -8)
                 end
                 eb:SetHeight(inputHeight)
@@ -3203,10 +3210,10 @@ function ECHAT.ApplyInputPosition()
                     -- INPUT_TOP_DROP down from cf's top and runs inputHeight
                     -- tall -- miss the drop and the line cuts through the box.
                     local divY = -(inputHeight + INPUT_TOP_DROP)
-                    div:SetPoint("TOPLEFT", cf, "TOPLEFT", -10, divY)
+                    div:SetPoint("TOPLEFT", cf, "TOPLEFT", edgeX, divY)
                     div:SetPoint("TOPRIGHT", cf, "TOPRIGHT", 10, divY)
                 else
-                    div:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", -10, -8)
+                    div:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", edgeX, -8)
                     div:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", 10, -8)
                 end
             end
@@ -3220,7 +3227,7 @@ function ECHAT.ApplyInputPosition()
                 -- edge may expand; horizontal geometry stays independent.
                 local d = CFD(cf)
                 d._bgIns = {
-                    l = -10,
+                    l = edgeX,
                     r = 10,
                     t = 3,
                     b = onTop and -6 or (eb and -(12 + inputHeight) or -6),
@@ -5449,6 +5456,7 @@ initFrame:SetScript("OnEvent", function(self)
     if p.classColorNames == true then
         ECHAT.ApplyClassColorNames(true)
     end
+    if ECHAT.StampColumnSeed then ECHAT.StampColumnSeed() end
     if ECHAT.EngineIntegrateAll then ECHAT.EngineIntegrateAll() end
     -- Owned tab strip: hides Blizzard's strip, builds ours from the same
     -- window storage, and starts mirroring selection/flash from the engine.
@@ -6045,17 +6053,38 @@ initFrame:SetScript("OnEvent", function(self)
             end)
             fmt = (ok and type(f) == "string" and f ~= "" and f ~= "none") and f or nil
         end
-        ECHAT.EngineSetStampAll(cfg.timestampAll == true and fmt ~= nil, fmt)
+        -- The Timestamp Column stamps every line itself (text untouched).
+        local col = ECHAT.StampColumnOn and ECHAT.StampColumnOn()
+        ECHAT.EngineSetStampAll(not col and cfg.timestampAll == true and fmt ~= nil, fmt)
     end
     ECHAT.ApplyStampAll = ApplyStampAll
 
     local function ApplyTimestampCVar()
-        ApplyStampAll()
-        if not SetCVar then return end
         local cfg = ECHAT.DB()
         local fmt = cfg.timestampFormat or "%I:%M "
-        if fmt == "__blizzard" then return end
-        SetCVar("showTimestamps", fmt)
+        -- Timestamp Column: stamps leave the text, so Blizzard's formatter is
+        -- parked at "none" while the column draws them. Under "Use Blizzard
+        -- Setting" the value it parked stands in for Blizzard's choice, and
+        -- goes back to the CVar when the column is turned off.
+        if fmt ~= "__blizzard" then cfg.timestampColumnParked = nil end
+        local col = ECHAT.StampColumnOn and ECHAT.StampColumnOn()
+        if SetCVar then
+            if col then
+                if fmt == "__blizzard" and not cfg.timestampColumnParked then
+                    cfg.timestampColumnParked = GetCVar("showTimestamps")
+                end
+                SetCVar("showTimestamps", "none")
+            elseif fmt == "__blizzard" then
+                if cfg.timestampColumnParked then
+                    SetCVar("showTimestamps", cfg.timestampColumnParked)
+                    cfg.timestampColumnParked = nil
+                end
+            else
+                SetCVar("showTimestamps", fmt)
+            end
+        end
+        ApplyStampAll()
+        if ECHAT.StampColumnApply then ECHAT.StampColumnApply() end
     end
     ApplyTimestampCVar()
     C_Timer.After(2, ApplyTimestampCVar)

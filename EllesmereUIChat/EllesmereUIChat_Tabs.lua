@@ -616,7 +616,9 @@ local function RefreshNow()
         local tabLeft = firstTab and firstTab:GetLeft()
         if bgLeft and tabLeft then
             local delta = bgLeft - tabLeft
-            if delta < 0 and delta > -60 then leftExtend = delta end
+            -- The Timestamp Column widens the panel to the left by its width.
+            local colW = ECHAT.StampGutterWidth and ECHAT.StampGutterWidth(cf1) or 0
+            if delta < 0 and delta > -(60 + colW) then leftExtend = delta end
         end
     end
     if leftExtend ~= 0 then

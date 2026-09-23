@@ -211,6 +211,8 @@ local function RestoreDisplayMessage(entry)
     local body = MessageForStorage(entry and entry.message)
     if not body then return nil end
     body = StripTimestampPrefix(body)
+    -- Timestamp Column: the column draws the stamp from serverTime instead.
+    if ECHAT.StampColumnOn and ECHAT.StampColumnOn() then return body end
     local prefix = FormatTimestampPrefix(entry.serverTime)
     if prefix ~= "" then return prefix .. body end
     return body
@@ -465,7 +467,7 @@ local function RestoreWindow(cf, frameName, log)
             local norm = NormalizeForDedup(entry.message)
             if not (norm and existingSet[norm]) then
                 local text = RestoreDisplayMessage(entry)
-                if text and ECHAT.EngineBackfillLine(cf, text, entry.r, entry.g, entry.b, entry.id) then
+                if text and ECHAT.EngineBackfillLine(cf, text, entry.r, entry.g, entry.b, entry.id, entry.serverTime) then
                     pushed = pushed + 1
                 end
             end
