@@ -1614,22 +1614,26 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end
         -- Inline preview of the SELECTED whisper sound, next to the closed
-        -- dropdown (the open list already previews each entry). Same icon and
-        -- channel as the list's preview; dimmed and inert on None.
+        -- dropdown (the open list already previews each entry). Same channel
+        -- as the live alert; EUI's own play icon with the cog's alpha steps
+        -- (an atlas-only button draws nothing on a client without that atlas,
+        -- which is how the first version showed up on the Forever beta).
+        -- Dimmed and inert on None.
         if not EllesmereUI._prebuilding then
             local rrgn = extrasBorderRow._rightRegion
             local function SelectedPath()
                 return whisperSoundPaths[Cfg("whisperSoundKey") or "none"]
             end
             local play = CreateFrame("Button", nil, rrgn)
-            play:SetSize(20, 20)
+            play:SetSize(22, 22)
             play:SetPoint("RIGHT", rrgn._lastInline or rrgn._control, "LEFT", -8, 0)
             rrgn._lastInline = play
             play:SetFrameLevel(rrgn:GetFrameLevel() + 5)
-            play:SetNormalAtlas("common-icon-sound")
-            play:SetPushedAtlas("common-icon-sound-pressed")
+            local playTex = play:CreateTexture(nil, "OVERLAY")
+            playTex:SetAllPoints()
+            playTex:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\play.png")
             RefreshSoundPlay = function()
-                play:SetAlpha(SelectedPath() and 0.6 or 0.15)
+                play:SetAlpha(SelectedPath() and 0.4 or 0.15)
             end
             RefreshSoundPlay()
             EllesmereUI.RegisterWidgetRefresh(RefreshSoundPlay)
@@ -1638,7 +1642,7 @@ initFrame:SetScript("OnEvent", function(self)
                 if path then PlaySoundFile(path, "Master") end
             end)
             play:SetScript("OnEnter", function(s)
-                if SelectedPath() then s:SetAlpha(1) end
+                if SelectedPath() then s:SetAlpha(0.7) end
                 EllesmereUI.ShowWidgetTooltip(play, "Preview Sound")
             end)
             play:SetScript("OnLeave", function()
