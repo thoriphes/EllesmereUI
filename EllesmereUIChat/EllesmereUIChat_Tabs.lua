@@ -106,6 +106,32 @@ local function SelectedWindow()
         and FCFDock_GetSelectedWindow(GENERAL_CHAT_DOCK)
 end
 
+-- Whisper Tab Names: two-word character names ("Maltheus Nregath", WoW
+-- Forever) contracted on the ghost label only -- the window name, Blizzard's
+-- tab text and its tooltip keep the full name. "initial" = "M. Nregath",
+-- "surname" = "Maltheus N."; a one-word name, a BattleTag window and any
+-- secret label pass through untouched (callers test issecretvalue first).
+-- A realm suffix is dropped in the short forms.
+local UTF8_CHAR = "^[%z\1-\127\194-\244][\128-\191]*"
+local function WhisperTabLabel(cf, label)
+    local mode = DB().whisperTabNames
+    if (mode ~= "initial" and mode ~= "surname") or cf.chatType ~= "WHISPER"
+        or type(label) ~= "string" then
+        return label
+    end
+    local name = label:match("^([^%-]+)%-") or label
+    local first, rest = name:match("^(%S+)%s+(.+)$")
+    if not first then return label end
+    if mode == "initial" then
+        return (first:match(UTF8_CHAR) or first) .. ". " .. rest
+    end
+    local initials = {}
+    for word in rest:gmatch("%S+") do
+        initials[#initials + 1] = (word:match(UTF8_CHAR) or word) .. "."
+    end
+    return first .. " " .. table.concat(initials, " ")
+end
+
 -------------------------------------------------------------------------------
 --  Strip: a pure visual layer mirroring the dock manager's rect. It hosts the
 --  ghosts (clipping them exactly where Blizzard clips scrolled-out tabs),
@@ -555,7 +581,7 @@ local function RefreshFloatGhost(cf, height, fontPath, fontSize, padX, labelY, s
         if issecretvalue and issecretvalue(label) then
             fs:SetText(label)
         elseif label ~= nil then
-            fs:SetText(label)
+            fs:SetText(WhisperTabLabel(cf, label))
         else
             fs:SetText("...")
         end
@@ -720,7 +746,7 @@ local function RefreshNow()
                     if issecretvalue and issecretvalue(label) then
                         fs:SetText(label)
                     elseif label ~= nil then
-                        fs:SetText(label)
+                        fs:SetText(WhisperTabLabel(cf, label))
                     else
                         fs:SetText("...")
                     end

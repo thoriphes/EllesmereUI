@@ -892,6 +892,20 @@ initFrame:SetScript("OnEvent", function(self)
                           if ECHAT.ApplyTabLayout then ECHAT.ApplyTabLayout() end
                       end })
                 y = y - h
+
+                -- Whisper Tab Names | (empty)
+                _, h = W:DualRow(parent, y,
+                    { type="dropdown", text="Whisper Tab Names",
+                      values={ full="Full Name", initial="M. Surname", surname="Name S." },
+                      order={ "full", "initial", "surname" },
+                      tooltip="How whisper tabs show two-word character names. The window keeps the full name; one-word names and Battle.net whispers are never shortened.",
+                      getValue=function() return Cfg("whisperTabNames") or "full" end,
+                      setValue=function(v)
+                          Set("whisperTabNames", v)
+                          if ECHAT.ApplyTabAppearance then ECHAT.ApplyTabAppearance() end
+                      end },
+                    { type="spacer" })
+                y = y - h
             end
 
             local function FontColorSwatch(active)
