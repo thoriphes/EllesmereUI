@@ -967,6 +967,12 @@ initFrame:SetScript("OnEvent", function(self)
     --  SGet/SSet/SWrite/SVal are context-aware, so on the party tab the rows
     --  read and write party_<key> once the Border section is unsynced.
     ---------------------------------------------------------------------------
+    -- Same gate as the raid page's own local StockGate (Blizzard Style greys the
+    -- EllesmereUI-only border rows); that one is scoped to the page builder below.
+    local function StockGate(cfg)
+        if EllesmereUI.BlizzStyle then return EllesmereUI.BlizzStyle.Gate("raidframes", cfg) end
+        return cfg
+    end
     local function BuildBorderRows(parent, y, W, soloSlot)
         local _, h
         -- Border Style (+ options cog) | Border Size (+ Border swatch). Mirrors Unit Frames: ONE border recolored by state (hover/target), full SharedMedia support. Hover/Target swatches live on the row below.
