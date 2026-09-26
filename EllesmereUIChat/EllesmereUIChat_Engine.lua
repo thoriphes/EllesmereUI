@@ -299,6 +299,16 @@ local _abbrevOn = false     -- Shortened Channel Names user setting
 local _stampAllOn = false   -- Timestamp All Messages user setting (resolved)
 local _stampFmt = nil       -- its resolved format string
 local _protActive = false   -- protected content / dev mode: transforms dormant
+-- Timestamp Column (opt-in, EllesmereUIChat_StampColumn.lua). The column is
+-- not a width transform: stamps leave the text on BOTH surfaces (the
+-- showTimestamps CVar is parked at "none" while it is on) and each line
+-- carries its server time as the 4th extra arg of our SMF entry instead
+-- (after chatTypeID, lineID, event), which the column reads to draw a label
+-- beside the line. Nothing reads the message, so secret lines get their
+-- stamp too, and it stays active in protected content.
+local _colOn = false        -- column drawing the stamps
+local _colAll = false       -- ...for every line, not just the ones Blizzard stamps
+local _colFmt = nil         -- its resolved format (Copy Chat prefix)
 
 local function CreateWindowSMF(cf)
     local d = CFD(cf)
@@ -332,7 +342,11 @@ local function CreateWindowSMF(cf)
     WINS[cf] = win
     BuildScrollbar(win)
     smf:SetOnScrollChangedCallback(function() UpdateScrollbar(win) end)
-    smf:AddOnDisplayRefreshedCallback(function() UpdateScrollbar(win) end)
+    smf:AddOnDisplayRefreshedCallback(function()
+        UpdateScrollbar(win)
+        -- Timestamp Column: labels follow the visible lines (nil when off).
+        if win.stampCol then ECHAT.StampColumnRefresh(win) end
+    end)
     LayoutWindowSMF(cf)
     ECHAT.EngineApplyFontTo(cf)
     return win
@@ -444,6 +458,8 @@ function ECHAT.EngineApplyFontTo(cf)
         win.smf:SetShadowOffset(1, -1)
         win.smf:SetShadowColor(0, 0, 0, 0.8)
     end
+    -- The column's width and label alignment derive from this window's size.
+    if ECHAT.StampColumnRelayout then ECHAT.StampColumnRelayout(cf) end
 end
 
 function ECHAT.EngineApplyFonts()
@@ -798,11 +814,48 @@ end
 -- Same prefix patterns as the session-history stripper (keep in sync): any
 -- line already starting with a rendered stamp is left alone, so Blizzard's
 -- baked stamps never double up.
+local STAMP_PREFIXES = {
+    "^%d%d?:%d%d:%d%d%s*[AP]M%s",
+    "^%d%d?:%d%d:%d%d%s",
+    "^%d%d?:%d%d%s*[AP]M%s",
+    "^%d%d?:%d%d%s",
+}
 local function HasTimestampPrefix(msg)
-    return msg:find("^%d%d?:%d%d:%d%d%s*[AP]M%s") ~= nil
-        or msg:find("^%d%d?:%d%d:%d%d%s") ~= nil
-        or msg:find("^%d%d?:%d%d%s*[AP]M%s") ~= nil
-        or msg:find("^%d%d?:%d%d%s") ~= nil
+    for i = 1, #STAMP_PREFIXES do
+        if msg:find(STAMP_PREFIXES[i]) then return true end
+    end
+    return false
+end
+
+-- Timestamp Column: a stamp still baked into a line (lines from before the
+-- CVar was parked, the two seconds after login before it is) leaves the
+-- text, since the column draws it. Same lane as the transforms above: the
+-- write-back lands the unstamped form in Blizzard's entry too. Secret lines
+-- pass through whole; with the CVar parked Blizzard never stamps them.
+local function UnstampDisplay(msg)
+    if not _colOn or type(msg) ~= "string" then return msg end
+    if issecretvalue and issecretvalue(msg) then return msg end
+    for i = 1, #STAMP_PREFIXES do
+        local _, e = msg:find(STAMP_PREFIXES[i])
+        if e then return msg:sub(e + 1) end
+    end
+    return msg
+end
+
+-- The time the column shows for a line, nil = no stamp. Blizzard's own
+-- formatter stamps exactly the lines it passes an event name for (player
+-- chat); everything else needs Timestamp All Messages. when: server time,
+-- nil = now.
+local function ColumnStamp(event, when)
+    if not _colOn then return nil end
+    if event == nil and not _colAll then return nil end
+    return when and math.floor(when) or time()
+end
+
+function ECHAT.EngineSetStampColumn(on, all, fmt)
+    _colOn = on == true
+    _colAll = _colOn and all == true
+    _colFmt = _colOn and fmt or nil
 end
 
 -- when: server time for the stamp; nil = now. date() (not BetterDate) to
@@ -834,7 +887,7 @@ local function EngineTail(cf, msg, r, g, b, chatTypeID, accessID, typeID, event,
     -- zone-in edge (dev mode toggles) before the next line renders.
     if EngineUpdateProtectedState then EngineUpdateProtectedState() end
     local win = WINS[cf]
-    local display = StampDisplay(DisplayText(msg, event))
+    local display = UnstampDisplay(StampDisplay(DisplayText(msg, event)))
     -- Zone-alignment write-back (doctrine block above the transform section).
     -- Secrecy gate FIRST: comparing two secret strings throws, so display~=msg
     -- may only run once msg is known plain. The e.message==msg identity check
@@ -852,7 +905,8 @@ local function EngineTail(cf, msg, r, g, b, chatTypeID, accessID, typeID, event,
         end
     end
     if win then
-        win.smf:AddMessage(display, r, g, b, chatTypeID, ExtractLineID(eventArgs), event)
+        win.smf:AddMessage(display, r, g, b, chatTypeID, ExtractLineID(eventArgs), event,
+            ColumnStamp(event))
         -- Scrolled-view DOUBLE-PIN fix (field report 2026-08-16: "chat moves
         -- one line on a new message while scrolled, every zone off by one
         -- message after"): SMF:AddMessage auto-pins a scrolled view via an
@@ -994,18 +1048,20 @@ local function RebuildWindowFromBuffer(cf)
     local hb = cf.historyBuffer
     if not (hb and hb.GetEntryAtIndex and hb.GetNumElements) then hb = nil end
     local nowT, nowG
-    if _stampAllOn and not _protActive then
+    if (_stampAllOn and not _protActive) or _colOn then
         nowT, nowG = time(), GetTime()
     end
     for i = 1, n do
         local msg, r, g, b, chatTypeID, accessID, typeID, event, eventArgs = cf:GetMessageInfo(i)
         if msg ~= nil then
-            local display = DisplayText(msg, event)
+            local display = UnstampDisplay(DisplayText(msg, event))
             local entry = hb and hb:GetEntryAtIndex(hb:GetNumElements() - i + 1)
+            local colStamp
             if nowT then
                 local ts = entry and entry.timestamp
                 if type(ts) == "number" then
                     display = StampDisplay(display, nowT - (nowG - ts))
+                    colStamp = ColumnStamp(event, nowT - (nowG - ts))
                 end
             end
             if entry and not (issecretvalue and issecretvalue(msg))
@@ -1015,7 +1071,7 @@ local function RebuildWindowFromBuffer(cf)
                 and entry.message == msg then
                 entry.message = display
             end
-            smf:AddMessage(display, r, g, b, chatTypeID, ExtractLineID(eventArgs), event)
+            smf:AddMessage(display, r, g, b, chatTypeID, ExtractLineID(eventArgs), event, colStamp)
         end
     end
     smf:ScrollToBottom()
@@ -1238,7 +1294,15 @@ function ECHAT.EngineGetMessageLines(cf, out)
     local smf = win.smf
     local n = smf:GetNumMessages()
     for i = 1, n do
-        out[#out + 1] = smf:GetMessageInfo(i)
+        local msg, _, _, _, _, _, _, stamp = smf:GetMessageInfo(i)
+        -- Timestamp Column: the stamp is not in the text, so the copy
+        -- gets it back in front (plain lines only; the caller skips secrets).
+        if stamp and _colFmt and type(msg) == "string"
+            and not (issecretvalue and issecretvalue(msg)) then
+            local ok, ts = pcall(date, _colFmt, stamp)
+            if ok and type(ts) == "string" then msg = ts .. msg end
+        end
+        out[#out + 1] = msg
     end
     return n
 end
@@ -1260,7 +1324,9 @@ end
 -- BackFillMessage is one of the ScrollingMessageFrame methods Blizzard
 -- exposes to addons through the secure mixin, which elevates the call, so the
 -- replayed line is stored exactly as one of its own.
-function ECHAT.EngineBackfillLine(cf, text, r, g, b, id)
+-- when: the line's server time, which the Timestamp Column draws beside it
+-- (replay passes the text unstamped while the column is on).
+function ECHAT.EngineBackfillLine(cf, text, r, g, b, id, when)
     local win = WINS[cf]
     if not win then return false end
     -- DisplayText keeps replayed history consistent with the current
@@ -1269,7 +1335,9 @@ function ECHAT.EngineBackfillLine(cf, text, r, g, b, id)
     -- surfaces, which is what keeps the zones under the rendered glyphs.
     local display = StripBNetLinks(DisplayText(text))
     cf:BackFillMessage(display, r, g, b, id)
-    win.smf:BackFillMessage(display, r, g, b, id)
+    -- Replay only ever holds captured player chat, so every row is stamped.
+    local stamp = (_colOn and when) and math.floor(when) or nil
+    win.smf:BackFillMessage(display, r, g, b, id, nil, nil, stamp)
     return true
 end
 
