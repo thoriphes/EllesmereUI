@@ -15,5 +15,6 @@ EUI_Nameplates_AuraContainers.lua
 EllesmereUINameplatesFriendly.lua
 EllesmereUINameplates_Faction.lua
 EllesmereUINameplates_CastOverlay.lua
+EUI_Nameplates_TargetForce.lua
 
 # Options

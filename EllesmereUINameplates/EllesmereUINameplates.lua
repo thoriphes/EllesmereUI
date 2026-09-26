@@ -226,6 +226,7 @@ local defaults = {
     friendlyBelowNameClassColor = false,
     friendlyBelowNameGuildBrackets = true,
     showEnemyPets = false,
+    forceTargetPlate = false,  -- Force Nameplate on Current Target (EUI_Nameplates_TargetForce.lua)
     font = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF",
     textSlotTop = "enemyName",
     textSlotRight = "healthPercent",
@@ -4147,6 +4148,8 @@ function ns.RefreshAllSettings()
     if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
     -- Friendly faction badges: redraw for this profile's faction settings.
     ns.NP_RefreshFriendlyFaction()
+    -- Force Nameplate on Current Target: same shape (event-driven, self-guarded).
+    if ns.TF_Refresh then ns.TF_Refresh() end
 end
 
 -------------------------------------------------------------------------------
@@ -4166,14 +4169,21 @@ function ns.NT_Apply(plate)
     local unit = plate.unit
     if not unit then return end
     local a = 1
-    local nt = ns._ntAlpha
-    if nt < 1 and UnitExists("target")
-       and not UnitIsUnit(unit, "target")
-       and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus"))
-       and not UnitIsUnit(unit, "player") then
-        a = nt
+    local tfHidden = ns._tfHidden
+    if tfHidden and tfHidden[unit] then
+        -- Force Nameplate on Current Target: a plate in a category held on for
+        -- the target alone (EUI_Nameplates_TargetForce.lua). Fully hidden.
+        a = 0
+    else
+        local nt = ns._ntAlpha
+        if nt < 1 and UnitExists("target")
+           and not UnitIsUnit(unit, "target")
+           and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus"))
+           and not UnitIsUnit(unit, "player") then
+            a = nt
+        end
+        a = a * (plate._oorCurAlpha or 1)
     end
-    a = a * (plate._oorCurAlpha or 1)
     if (plate._ntCurAlpha or 1) ~= a then
         plate._ntCurAlpha = a
         plate:SetAlpha(a)
@@ -6907,7 +6917,7 @@ function NameplateFrame:SetUnit(unit, nameplate)
     -- Attach a pooled aura-container bundle for this unit.
     if ns.NPC_AttachPlate then ns.NPC_AttachPlate(self, unit) end
     -- Non-Target Opacity (zero cost while off: one numeric compare).
-    if ns._ntAlpha < 1 then ns.NT_Apply(self) end
+    if ns._ntAlpha < 1 or ns._tfHidden then ns.NT_Apply(self) end
     -- Execute glow is per-spawn state, not appearance: ApplyAppearance is generation-cached
     -- (skipped on recycled plates) and the threshold watcher only reaches plates active at flip
     -- time, so a plate pooled during a no-execute window would return glowless. Re-assert.
