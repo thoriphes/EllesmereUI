@@ -5721,7 +5721,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- (The Party Frames kit keeps its own spacing, set in its Frame
             -- Scale cog, so the Raid Frames layout's value survives a switch
             -- between the two.)
-            ns.RF_PartyKitGate({ type="slider", pixel=true, text="Frame Spacing", min=-1, max=15, step=1,
+            ns.RF_PartyKitGate({ type="slider", pixel=true, text="Frame Spacing", min=-1, max=50, step=1,
               getValue=function()
                   if ns.RF_PartyKit() then return db.profile.partyKitSpacing or ns.RF_KIT_SPACING or 6 end
                   return SVal("partyCellSpacing", db.profile.cellSpacing or 2)
