@@ -3788,17 +3788,26 @@ initFrame:SetScript("OnEvent", function(self)
                 end
             end
 
-            -- Border size and color (encompasses health+power+BTB+above pips)
-            local bs = ds.borderSize or 1
-            local bc = ds.borderColor or { r = 0, g = 0, b = 0 }
-            local bTexKey = ds.borderTexture or "solid"
+            -- Border size and color (encompasses health+power+BTB+above pips).
+            -- Mini frames: per-key donor/override resolution, same as the live
+            -- frame (ns.ResolveMiniBorderValue is a plain ds read when s == ds or
+            -- the frame's Advanced borders are off).
+            local function PB(key) return ns.ResolveMiniBorderValue(s, key, ds) end
+            -- Size as the live mini frame resolves it (Advanced override, else the
+            -- per-frame Border Size, else the donor); main frames: s == ds.
+            local pov = s.borderAdvanced and s.borderOverride
+            local bs = (pov and pov.borderSize) or s.borderSizeOverride or ds.borderSize or 1
+            local bc = PB("borderColor") or { r = 0, g = 0, b = 0 }
+            local bTexKey = PB("borderTexture") or "solid"
             local borderH = bh2 + (s.bottomTextBar and btbIsAtt and (s.bottomTextBarHeight or 16) or 0)
             border:ClearAllPoints()
             border:SetPoint("TOPLEFT", barArea, "TOPLEFT", 0, 0)
             border:SetPoint("TOPRIGHT", barArea, "TOPRIGHT", 0, 0)
             border:SetHeight(borderH)
-            EllesmereUI.ApplyBorderStyle(border, bs, bc.r, bc.g, bc.b, ds.borderAlpha or 1, bTexKey, ds.borderTextureOffset, ds.borderTextureOffsetY, ds.borderTextureShiftX, ds.borderTextureShiftY, "unitframes", bs, nil,
-                EllesmereUI.BorderPx(ds.borderSizePx, bs, bTexKey))
+            -- Donor's exact pixel size rides along only while this frame is not
+            -- setting the size itself (Advanced borderSize, or borderSizeOverride).
+            EllesmereUI.ApplyBorderStyle(border, bs, bc.r, bc.g, bc.b, PB("borderAlpha") or 1, bTexKey, PB("borderTextureOffset"), PB("borderTextureOffsetY"), PB("borderTextureShiftX"), PB("borderTextureShiftY"), "unitframes", bs, nil,
+                (not ((pov and pov.borderSize) or s.borderSizeOverride)) and EllesmereUI.BorderPx(ds.borderSizePx, bs, bTexKey) or nil)
 
             -- Class Power Pips update (player only)
             if cpPipContainer and cpPips then
@@ -4479,10 +4488,11 @@ initFrame:SetScript("OnEvent", function(self)
 
             -- Recalculate border sizes after scale change so they stay pixel-perfect
             if border then
-                local bs2 = ds.borderSize or 1
-                local bTex2 = ds.borderTexture or "solid"
-                EllesmereUI.ApplyBorderStyle(border, bs2, (ds.borderColor or {r=0,g=0,b=0}).r, (ds.borderColor or {r=0,g=0,b=0}).g, (ds.borderColor or {r=0,g=0,b=0}).b, ds.borderAlpha or 1, bTex2, ds.borderTextureOffset, ds.borderTextureOffsetY, ds.borderTextureShiftX, ds.borderTextureShiftY, "unitframes", bs2, nil,
-                    EllesmereUI.BorderPx(ds.borderSizePx, bs2, bTex2))
+                local bs2 = bs
+                local bc2 = PB("borderColor") or { r = 0, g = 0, b = 0 }
+                local bTex2 = PB("borderTexture") or "solid"
+                EllesmereUI.ApplyBorderStyle(border, bs2, bc2.r, bc2.g, bc2.b, PB("borderAlpha") or 1, bTex2, PB("borderTextureOffset"), PB("borderTextureOffsetY"), PB("borderTextureShiftX"), PB("borderTextureShiftY"), "unitframes", bs2, nil,
+                    (not ((pov and pov.borderSize) or s.borderSizeOverride)) and EllesmereUI.BorderPx(ds.borderSizePx, bs2, bTex2) or nil)
             end
             if castbar then
                 if PP.GetBorders(castbar) then PP.SetBorderSize(castbar, 1) end
@@ -5223,7 +5233,11 @@ initFrame:SetScript("OnEvent", function(self)
     -- be acknowledged once before it overwrites anything. The acknowledgment
     -- is account-wide (EllesmereUIDB root, not per-profile) and covers every
     -- frame's row -- it educates the user, not a profile.
-    local function BuildApplyAllRow(parent, y, groupUnits, curUnit)
+    --
+    -- advanced (optional): { get, set, tooltip } builds an "Advanced" toggle to
+    -- the right of the dropdown (Mini Frames: per-frame border block, see
+    -- BuildMiniTextAndSize). The pair stays centered as one line.
+    local function BuildApplyAllRow(parent, y, groupUnits, curUnit, advanced)
         local ddValues = { [""] = "Choose Frame..." }
         local ddOrder = {}
         for _, key in ipairs(groupUnits) do
@@ -5273,10 +5287,32 @@ initFrame:SetScript("OnEvent", function(self)
         ddBtn._ttText = "Copy every shared setting from another frame in this group to this frame."
         EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
 
-        -- Center the label + dropdown pair as one line
-        local totalW = label:GetStringWidth() + GAP + DD_W
+        local advLabel, advToggle, advW
+        if advanced then
+            advLabel = EllesmereUI.MakeFont(row, 14, nil, 1, 1, 1)
+            advLabel:SetText(EllesmereUI.L("Advanced"))
+            advLabel:SetTextColor(1, 1, 1, 0.6)
+            local _, advSnap
+            advToggle, _, advSnap = EllesmereUI.BuildToggleControl(
+                row, row:GetFrameLevel() + 2, advanced.get, advanced.set)
+            if advanced.tooltip then
+                advToggle:SetScript("OnEnter", function(self)
+                    EllesmereUI.ShowWidgetTooltip(self, advanced.tooltip, { width = 260 })
+                end)
+                advToggle:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            end
+            EllesmereUI.RegisterWidgetRefresh(advSnap)
+            advW = GAP * 2 + advLabel:GetStringWidth() + GAP + advToggle:GetWidth()
+        end
+
+        -- Center the label + dropdown pair (+ Advanced) as one line
+        local totalW = label:GetStringWidth() + GAP + DD_W + (advW or 0)
         label:SetPoint("LEFT", row, "CENTER", -totalW / 2, 0)
         ddBtn:SetPoint("LEFT", label, "RIGHT", GAP, 0)
+        if advanced then
+            advLabel:SetPoint("LEFT", ddBtn, "RIGHT", GAP * 2, 0)
+            advToggle:SetPoint("LEFT", advLabel, "RIGHT", GAP, 0)
+        end
 
         return row, ROW_H
     end
@@ -13831,6 +13867,22 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  Shared mini frame settings builder
     ---------------------------------------------------------------------------
+    -- "Advanced" toggle config for a mini frame's Apply All row (BuildApplyAllRow).
+    -- settingsTable.borderAdvanced (nil = off) gates the per-frame border block
+    -- in BuildMiniTextAndSize: off, only Border Size shows and any stored
+    -- borderOverride is ignored (the frames read the donor as before); on, the
+    -- full block appears, every row reading the donor's value until edited.
+    local function MiniAdvancedToggle(settingsTable)
+        return {
+            get = function() return settingsTable.borderAdvanced == true end,
+            set = function(v)
+                settingsTable.borderAdvanced = v or nil
+                ReloadAndUpdate()
+                EllesmereUI:RefreshPage(true)
+            end,
+            tooltip = "Show the full border block (style, color, offsets, Show Behind, highlight color) for this frame. Off, everything but Border Size follows the main frames. Turning it on changes nothing until you edit a row.",
+        }
+    end
     local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enableRow, afterSizeRow, opts)
         local _, h
         opts = opts or {}
@@ -14019,22 +14071,164 @@ initFrame:SetScript("OnEvent", function(self)
                 { type="label", text="" });  y = y - h
         end
 
-        -- DISPLAY bottom row: per-frame Border Size override for ToT/Focus Target/Pet.
-        -- Size only, no color/texture (those still inherit from main frames);
-        -- borderSizeOverride nil = inherit donor size until set. Boss frames excluded (not mini frames).
+        -- DISPLAY bottom rows: per-frame border for ToT/Focus Target/Pet. Boss
+        -- frames excluded (not mini frames).
+        --
+        -- Default: Border Size only (borderSizeOverride, nil = inherit donor
+        -- size until set); color/texture/offsets inherit from the main frames.
+        -- With the header's Advanced toggle on (settingsTable.borderAdvanced) the
+        -- main frames' border block is repeated here for this frame, in the Main
+        -- Frames row shape: Border Style (+ offset cog) | Border Size (+ inline
+        -- Border swatch), then Show Highlight Border (+ inline Highlight swatch)
+        -- as the section's last row. Values live in settingsTable.borderOverride
+        -- under the main-frame key names; a key left nil keeps reading the donor
+        -- (ns.ResolveMiniBorderValue), so switching the toggle on changes nothing
+        -- until a row is edited.
         if unitKey ~= "boss" then
-            _, h = W:DualRow(parent, y,
-                EllesmereUI.BlizzStyle.Gate("unitframes", { type="slider", text="Border Size", min=0, max=4, step=1,
-                  tooltip="Overrides the border size from the main frames for this frame only. Border color and texture still follow the main frames.",
-                  getValue=function()
-                      local donor = GetMiniDonorSettings()
-                      return settingsTable.borderSizeOverride or (donor and donor.borderSize) or 1
-                  end,
-                  setValue=function(v) settingsTable.borderSizeOverride = v; ReloadAndUpdate() end }),
-                { type="toggle", text="Show Highlight Border",
+            local adv = settingsTable.borderAdvanced == true
+            local function BGet(key)
+                return ns.ResolveMiniBorderValue(settingsTable, key, GetMiniDonorSettings())
+            end
+            local function BSet(key, v)
+                local ov = settingsTable.borderOverride
+                if not ov then ov = {}; settingsTable.borderOverride = ov end
+                ov[key] = v
+            end
+            -- Size: Advanced edits (slider, style pick) go to borderOverride.borderSize
+            -- like every other Advanced value, so switching the toggle off returns to
+            -- the pre-Advanced size (borderSizeOverride, else the donor's).
+            local function BSize()
+                local ov = adv and settingsTable.borderOverride
+                if ov and ov.borderSize then return ov.borderSize end
+                local donor = GetMiniDonorSettings()
+                return settingsTable.borderSizeOverride or (donor and donor.borderSize) or 1
+            end
+
+            -- Border Size slot: the same slider in both states; only where it
+            -- writes changes with the toggle.
+            local sizeSlot = EllesmereUI.BlizzStyle.Gate("unitframes", { type="slider", text="Border Size", min=0, max=4, step=1,
+                  tooltip=adv and "Overrides the border size from the main frames for this frame only."
+                      or "Overrides the border size from the main frames for this frame only. Border color and texture still follow the main frames.",
+                  getValue=BSize,
+                  setValue=function(v)
+                      if adv then BSet("borderSize", v) else settingsTable.borderSizeOverride = v end
+                      ReloadAndUpdate()
+                  end })
+            local hlSlot = { type="toggle", text="Show Highlight Border",
                   tooltip="Show the main frames' hover highlight border on this frame. Turn off so this frame never recolors on mouseover. No effect when Highlight is off in the main frames' Hover Borders.",
                   getValue=function() return settingsTable.showHighlightBorder ~= false end,
-                  setValue=function(v) settingsTable.showHighlightBorder = v end });  y = y - h
+                  setValue=function(v) settingsTable.showHighlightBorder = v end }
+
+            -- The rows the inline swatches hang on (Advanced only).
+            local styleRow, hlRow
+            if adv then
+                -- Border Style (+ cog) | Border Size (+ swatch). Mirrors the Main Frames
+                -- row: picking a style resets offsets and takes that style's
+                -- color/behind/size defaults.
+                local texValues, texOrder = EllesmereUI.GetBorderTextureDropdown()
+                styleRow, h = W:DualRow(parent, y,
+                    EllesmereUI.BlizzStyle.Gate("unitframes", { type="dropdown", text="Border Style",
+                      tooltip="Border texture for this frame only. Picking a style resets its offsets, color and size to that style's defaults, as on the main frames.",
+                      values=texValues, order=texOrder,
+                      getValue=function() return BGet("borderTexture") or "solid" end,
+                      setValue=function(v)
+                          BSet("borderTexture", v)
+                          BSet("borderTextureOffset", nil)
+                          BSet("borderTextureOffsetY", nil)
+                          BSet("borderTextureShiftX", nil)
+                          BSet("borderTextureShiftY", nil)
+                          local _bcol, _bbehind = EllesmereUI.GetBorderStyleSelectDefaults(v)
+                          BSet("borderColor", _bcol)
+                          BSet("borderAlpha", 1)
+                          BSet("borderBehind", _bbehind)
+                          local defSz = EllesmereUI.GetBorderDefaultSize("unitframes", v)
+                          if defSz then BSet("borderSize", defSz) end
+                          ReloadAndUpdate()
+                      end }),
+                    sizeSlot);  y = y - h
+                -- Inline cog for border offset (left region), as on the Main Frames row.
+                if not EllesmereUI._prebuilding then
+                    local rgn = styleRow._leftRegion
+                    local function OffsetDefault(idx)
+                        local tex = BGet("borderTexture") or "solid"
+                        return (select(idx, EllesmereUI.GetBorderDefaults("unitframes", tex, BSize())))
+                    end
+                    local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
+                        icon = EllesmereUI.DIRECTIONS_ICON,
+                        title = "Border Offset",
+                        rows = {
+                            { type = "slider", label = "Offset X", min = -10, max = 10, step = 1,
+                              get = function() return BGet("borderTextureOffset") or OffsetDefault(1) end,
+                              set = function(v) BSet("borderTextureOffset", v); ReloadAndUpdate() end },
+                            { type = "slider", label = "Offset Y", min = -10, max = 10, step = 1,
+                              get = function() return BGet("borderTextureOffsetY") or OffsetDefault(2) end,
+                              set = function(v) BSet("borderTextureOffsetY", v); ReloadAndUpdate() end },
+                            { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
+                              get = function() return BGet("borderTextureShiftX") or OffsetDefault(3) end,
+                              set = function(v) BSet("borderTextureShiftX", v == 0 and nil or v); ReloadAndUpdate() end },
+                            { type = "slider", label = "Shift Y", min = -10, max = 10, step = 1,
+                              get = function() return BGet("borderTextureShiftY") or OffsetDefault(4) end,
+                              set = function(v) BSet("borderTextureShiftY", v == 0 and nil or v); ReloadAndUpdate() end },
+                            { type = "toggle", label = "Show Behind",
+                              -- Fallback is this frame's own flag (nothing writes it: off), not the
+                              -- donor's -- mini borders never inherited Show Behind, so the
+                              -- toggle must not start behind just because the donor is.
+                              get = function() return ns.ResolveMiniBorderValue(settingsTable, "borderBehind", settingsTable) or false end,
+                              set = function(v) BSet("borderBehind", v); ReloadAndUpdate(); EllesmereUI:RefreshPage() end },
+                        },
+                    })
+                    local function UpdateCogVis()
+                        local tex = BGet("borderTexture") or "solid"
+                        if tex == "solid" or EllesmereUI.BlizzStyle.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+                    end
+                    EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                    UpdateCogVis()
+                end
+                -- Show Highlight Border (+ swatch) | empty: last row of the section.
+                hlRow, h = W:DualRow(parent, y, hlSlot, { type="label", text="" });  y = y - h
+            else
+                _, h = W:DualRow(parent, y, sizeSlot, hlSlot);  y = y - h
+            end
+
+            -- Advanced: inline Border color swatch on Border Size and Highlight
+            -- color swatch on Show Highlight Border (Main Frames swatch pattern).
+            if adv and not EllesmereUI._prebuilding then
+                local sizeRgn = styleRow._rightRegion
+                local borderSwatch, updBorder = EllesmereUI.BuildColorSwatch(
+                    sizeRgn, styleRow:GetFrameLevel() + 3,
+                    function()
+                        local c = BGet("borderColor") or { r = 0, g = 0, b = 0 }
+                        return c.r, c.g, c.b, BGet("borderAlpha") or 1
+                    end,
+                    function(r, g, b, a)
+                        BSet("borderColor", { r=r, g=g, b=b })
+                        BSet("borderAlpha", a)
+                        ReloadAndUpdate()
+                    end, true, 20)
+                borderSwatch:SetPoint("RIGHT", sizeRgn._lastInline or sizeRgn._control, "LEFT", -8, 0)
+                sizeRgn._lastInline = borderSwatch
+                borderSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(borderSwatch, "Border") end)
+                borderSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                -- Highlight is read on hover (FrameBorderEnter): no reload needed.
+                local hlRgn = hlRow._leftRegion
+                local hlSwatch, updHl = EllesmereUI.BuildColorSwatch(
+                    hlRgn, hlRow:GetFrameLevel() + 3,
+                    function()
+                        local c = BGet("highlightColor") or { r = 1, g = 1, b = 1 }
+                        return c.r, c.g, c.b, BGet("highlightAlpha") or 1
+                    end,
+                    function(r, g, b, a)
+                        BSet("highlightColor", { r=r, g=g, b=b })
+                        BSet("highlightAlpha", a)
+                    end, true, 20)
+                hlSwatch:SetPoint("RIGHT", hlRgn._lastInline or hlRgn._control, "LEFT", -8, 0)
+                hlRgn._lastInline = hlSwatch
+                hlSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(hlSwatch, "Highlight") end)
+                hlSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                EllesmereUI.RegisterWidgetRefresh(function() updBorder(); updHl() end)
+            end
         end
 
         -- Optional extra rows after enable (e.g. portrait, cast icon, indicators)
@@ -15209,7 +15403,7 @@ initFrame:SetScript("OnEvent", function(self)
         local enableText = (unitKey == "focustarget") and "Enable Focus Target" or "Enable Target of Target"
         local _, h
 
-        _, h = BuildApplyAllRow(parent, y, MINI_GROUP_ORDER, unitKey); y = y - h
+        _, h = BuildApplyAllRow(parent, y, MINI_GROUP_ORDER, unitKey, MiniAdvancedToggle(settingsTable)); y = y - h
 
         local portraitRow
         local function enableRow(Ww, pp, yy)
@@ -15268,7 +15462,7 @@ initFrame:SetScript("OnEvent", function(self)
     BuildPetOptions = function(W, parent, y)
         local _, h
 
-        _, h = BuildApplyAllRow(parent, y, MINI_GROUP_ORDER, "pet"); y = y - h
+        _, h = BuildApplyAllRow(parent, y, MINI_GROUP_ORDER, "pet", MiniAdvancedToggle(db.profile.pet)); y = y - h
 
         local portraitRow
         local function enableRow(Ww, pp, yy)
