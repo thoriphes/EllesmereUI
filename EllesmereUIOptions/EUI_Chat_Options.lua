@@ -1424,12 +1424,16 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         if BS then BS.Gate("chat", hideBordersCfg) end
         local extrasBorderRow
+        local RefreshSoundPlay -- inline preview button, built below
         extrasBorderRow, h = W:DualRow(parent, y,
             hideBordersCfg,
             { type="dropdown", text="Whisper Sound",
               values=whisperSoundValues, order=whisperSoundOrder,
               getValue=function() return Cfg("whisperSoundKey") or "none" end,
-              setValue=function(v) Set("whisperSoundKey", v) end })
+              setValue=function(v)
+                  Set("whisperSoundKey", v)
+                  if RefreshSoundPlay then RefreshSoundPlay() end
+              end })
         if not EllesmereUI._prebuilding then
             local rgn = extrasBorderRow._leftRegion
             local ctrl = rgn._control
@@ -1494,6 +1498,43 @@ initFrame:SetScript("OnEvent", function(self)
                 BS.BlockInline("chat", swatch)
                 BS.BlockInline("chat", accentSw)
             end
+        end
+        -- Inline preview of the SELECTED whisper sound, next to the closed
+        -- dropdown (the open list already previews each entry). Same channel
+        -- as the live alert; EUI's own play icon with the cog's alpha steps
+        -- (an atlas-only button draws nothing on a client without that atlas,
+        -- which is how the first version showed up on the Forever beta).
+        -- Dimmed and inert on None.
+        if not EllesmereUI._prebuilding then
+            local rrgn = extrasBorderRow._rightRegion
+            local function SelectedPath()
+                return whisperSoundPaths[Cfg("whisperSoundKey") or "none"]
+            end
+            local play = CreateFrame("Button", nil, rrgn)
+            play:SetSize(22, 22)
+            play:SetPoint("RIGHT", rrgn._lastInline or rrgn._control, "LEFT", -8, 0)
+            rrgn._lastInline = play
+            play:SetFrameLevel(rrgn:GetFrameLevel() + 5)
+            local playTex = play:CreateTexture(nil, "OVERLAY")
+            playTex:SetAllPoints()
+            playTex:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\play.png")
+            RefreshSoundPlay = function()
+                play:SetAlpha(SelectedPath() and 0.4 or 0.15)
+            end
+            RefreshSoundPlay()
+            EllesmereUI.RegisterWidgetRefresh(RefreshSoundPlay)
+            play:SetScript("OnClick", function()
+                local path = SelectedPath()
+                if path then PlaySoundFile(path, "Master") end
+            end)
+            play:SetScript("OnEnter", function(s)
+                if SelectedPath() then s:SetAlpha(0.7) end
+                EllesmereUI.ShowWidgetTooltip(play, "Preview Sound")
+            end)
+            play:SetScript("OnLeave", function()
+                RefreshSoundPlay()
+                EllesmereUI.HideWidgetTooltip()
+            end)
         end
         y = y - h
 
