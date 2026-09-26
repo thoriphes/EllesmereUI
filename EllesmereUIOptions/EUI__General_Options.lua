@@ -2130,8 +2130,9 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     local function SetCVarSafe(cvar, value)
-        if InCombatLockdown() then return end
+        if InCombatLockdown() then return false end
         SetCVar(cvar, value)
+        return true
     end
 
     --- Returns current, default as strings (nil-safe)
@@ -2147,7 +2148,13 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
-    --  EUI preferred defaults -- only applied when CVar == Blizzard default
+    --  EUI preferred defaults -- applied once per CVar, and only when the
+    --  CVar still sits at Blizzard's default.
+    --
+    --  The applied set is remembered in EllesmereUIDB.cvarDefaultsApplied:
+    --  a player who later sets a CVar back to Blizzard's value (Cast Actions
+    --  on Key Down off IS Blizzard's default) would otherwise be overridden
+    --  again at every login.
     --
     --  { cvarName, euiPreferred }
     ---------------------------------------------------------------------------
@@ -2158,10 +2165,19 @@ initFrame:SetScript("OnEvent", function(self)
 
     --- Walk the table once at login and apply only where safe.
     local function ApplySmartDefaults()
+        local applied = EllesmereUIDB and EllesmereUIDB.cvarDefaultsApplied
+        if EllesmereUIDB and not applied then
+            applied = {}
+            EllesmereUIDB.cvarDefaultsApplied = applied
+        end
         for _, entry in ipairs(EUI_DEFAULTS) do
             local cvar, preferred = entry[1], entry[2]
-            if IsAtBlizzardDefault(cvar) then
-                SetCVarSafe(cvar, preferred)
+            if not (applied and applied[cvar]) then
+                local done = true
+                if IsAtBlizzardDefault(cvar) then
+                    done = SetCVarSafe(cvar, preferred)
+                end
+                if done and applied then applied[cvar] = true end
             end
         end
     end
