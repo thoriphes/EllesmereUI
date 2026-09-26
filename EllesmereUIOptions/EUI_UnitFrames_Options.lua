@@ -14152,7 +14152,8 @@ initFrame:SetScript("OnEvent", function(self)
                         local tex = BGet("borderTexture") or "solid"
                         return (select(idx, EllesmereUI.GetBorderDefaults("unitframes", tex, BSize())))
                     end
-                    local _, cogShow = EllesmereUI.BuildCogPopup({
+                    local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
+                        icon = EllesmereUI.DIRECTIONS_ICON,
                         title = "Border Offset",
                         rows = {
                             { type = "slider", label = "Offset X", min = -10, max = 10, step = 1,
@@ -14175,7 +14176,6 @@ initFrame:SetScript("OnEvent", function(self)
                               set = function(v) BSet("borderBehind", v); ReloadAndUpdate(); EllesmereUI:RefreshPage() end },
                         },
                     })
-                    local cogBtn = MCogBtn(rgn, cogShow, EllesmereUI.DIRECTIONS_ICON)
                     local function UpdateCogVis()
                         local tex = BGet("borderTexture") or "solid"
                         if tex == "solid" or EllesmereUI.BlizzStyle.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
