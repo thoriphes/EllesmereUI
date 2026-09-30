@@ -563,6 +563,9 @@ for _, info in ipairs(BAR_CONFIG) do
         combatHideEnabled = false,
         housingHideEnabled = false,
         barVisibility = "always",
+        -- visCustom: raw macro-conditional show/hide string (shared Custom
+        -- Conditional, EllesmereUI_Visibility.lua). nil = checklist.
+        visCustom = nil,
         dragShow = false,
         -- Hide Bar When Using Gamepad: off by default; inert until a
         -- controller is connected with gamepad support enabled.
@@ -10253,6 +10256,27 @@ local function BuildVisibilityString(info, s, visOverride)
         vm = EllesmereUI.GetActiveVisibilityModes(s, "barVisibility")
     end
 
+    -- Custom conditional: replaces the checklist, the match mode and the option lanes
+    -- outright, so it settles before the Any tail below. The runtime toggle keybind
+    -- (visOverride) and an applied Visibility override (visOv) still win, the same way
+    -- they win over the saved mode. Each bar type keeps its safety prefix in front; the
+    -- pet bar's wrapper cannot AND a whole expression into its bracket, so its terms
+    -- lead as hide gates instead (adjacent brackets are OR: any of them hides).
+    if not visOverride and not visOv and EllesmereUI.VisCustomDriverString then
+        local customPrefix
+        if info.isPetBar then
+            customPrefix = "[petbattle][nopet][vehicleui][overridebar][possessbar] hide; "
+        elseif key == "MainBar" then
+            customPrefix = "[petbattle] hide; "
+        elseif info.isStance then
+            customPrefix = "[vehicleui][petbattle] hide; "
+        else
+            customPrefix = "[vehicleui][petbattle][overridebar] hide; "
+        end
+        local custom = EllesmereUI.VisCustomDriverString(s, customPrefix)
+        if custom then return custom end
+    end
+
     -- Any match: the shared builder compiles the whole tail; Lua-only lanes (instances,
     -- housing, skyriding mount) are resolved at build time, so their verdict is only as
     -- fresh as the last driver rebuild. Explicit overrides keep the legacy path.
@@ -11023,6 +11047,8 @@ local MYSLOT_VIS_FIELDS = {
     "visibilityMatch",
     -- Hide Bar When Using Gamepad would keep the bar hidden like Never.
     "gamepadHideBar",
+    -- A surviving custom conditional would keep driving the bar past the forced "always".
+    "visCustom",
 }
 -- The option LANES (target/enemy/mounted macro lanes AND the Lua-only
 -- instance/housing/skyriding/resting/VEHICLE lanes) are enumerated by the
@@ -11086,6 +11112,7 @@ function EAB:SetMyslotForceShow(on)
                 -- the forced "always"; the backup above already captured it.
                 s.visibilityModes = nil
                 s.visibilityMatch = nil
+                s.visCustom = nil
                 -- EVERY option lane off, macro and Lua-only alike (the live
                 -- VIS_OPT_KEYS list): visOnlyVehicle and friends otherwise
                 -- keep feeding CheckVisibilityOptionsNonMacro a hide verdict
