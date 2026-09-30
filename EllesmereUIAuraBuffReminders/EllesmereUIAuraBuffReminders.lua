@@ -4163,8 +4163,10 @@ local _refreshMissing = {}
 local UpdateDurationTicker  -- forward-declare; defined after RequestRefresh
 
 -- WoW Forever collector: the Camp Benefits campfire buff and the user's custom
--- spell IDs, absence only (no expiry thresholds). Entries are display-only
--- textures carrying the spell for the tooltip; presence goes through
+-- spell IDs, absence only (no expiry thresholds). A custom spell the player
+-- knows is a click-to-cast button (cast on the player); anything else (Camp
+-- Benefits, buffs from food or other players) stays a display-only texture
+-- carrying the spell for the tooltip. Presence goes through
 -- PlayerHasAuraByID, so combat falls back to the pre-pull snapshot exactly like
 -- the Auras section. Camp Benefits is skipped under the aura lock and in PvP.
 -- The one-slot id table and the dismiss-key memo keep the pass allocation-free.
@@ -4195,7 +4197,7 @@ function EABR.CollectForever(missing, inInstance, inPvP, restricted)
             local dk = keys[id]
             if not dk then dk = "forever:" .. id; keys[id] = dk end
             local e = AcquireEntry()
-            e.mode = "texture"; e.spellID = id
+            e.mode = Known(id) and "spell" or "texture"; e.spellID = id
             e.texture = Tex(id)
             e.label = ShortLabel(SpellName(id) or tostring(id))
             e.cat = "forever"; e.dismissKey = dk
