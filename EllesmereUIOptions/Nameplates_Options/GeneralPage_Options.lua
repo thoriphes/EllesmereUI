@@ -1187,6 +1187,17 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
           end });  y = y - h
 
+    -- Force Nameplate on Current Target takes the free slot of the class row
+    -- below that exists for this character (Blood Death Knight or WoW Forever
+    -- warrior); for everyone else it is the section's last row, with an empty slot.
+    local forceTargetCfg = { type="toggle", text="Force Nameplate on Current Target",
+          tooltip="Force the nameplate on your current target regardless of visibility rules: always show your current target's nameplate, even when its kind of nameplate is hidden: enemies out of combat, friendly NPCs, enemy pets, minor enemies, or anything switched off in Blizzard's Nameplate settings.\n\nWhile such a unit is targeted its nameplate kind is switched on for the target alone; every other nameplate of that kind stays hidden, and the setting is handed back when the target changes.\n\nFriendly nameplates cannot be forced inside dungeons, raids or battlegrounds (the game locks them there).",
+          getValue=function() return DBVal("forceTargetPlate") == true end,
+          setValue=function(v)
+            DB().forceTargetPlate = v
+            if ns.TF_Refresh then ns.TF_Refresh() end
+          end }
+
     -- Row 6 (Blood Death Knight only): Hide Copies of Blood Plague. The row
     -- is not built at all for anyone else -- the setting only affects a
     -- debuff Blood spec applies.
@@ -1203,7 +1214,8 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                     DB().hideBloodPlagueCopies = v
                     if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
                   end },
-                EllesmereUI.BlankRowCfg());  y = y - h
+                forceTargetCfg);  y = y - h
+            forceTargetCfg = nil
         end
     end
 
@@ -1217,7 +1229,12 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                 DB().showSunderArmor = v
                 if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
               end },
-            EllesmereUI.BlankRowCfg());  y = y - h
+            forceTargetCfg);  y = y - h
+        forceTargetCfg = nil
+    end
+
+    if forceTargetCfg then
+        _, h = W:DualRow(parent, y, forceTargetCfg, EllesmereUI.BlankRowCfg());  y = y - h
     end
 
     return math.abs(y)
