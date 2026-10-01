@@ -4,52 +4,17 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Custom minimap skin and layout for EllesmereUI.
 -------------------------------------------------------------------------------
 local ADDON_NAME = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
-EllesmereUI._ModuleNS[ADDON_NAME] = select(2, ...)  -- LOD options files read this module ns via the registry
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+local ns = select(2, ...)
+EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
+ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
 local EBS = EllesmereUI.Lite.NewAddon("EllesmereUIMinimap")
 
 local PP = EllesmereUI.PP
 
 -- Per-size offset/shift defaults for the textured border styles (same as unit frames).
-do
-    local ALL_SIZES = { [0] = true, [1] = true, [2] = true, [3] = true, [4] = true }
-    local function AllSizes(ox, oy, sx, sy)
-        local t = {}
-        for k in pairs(ALL_SIZES) do t[k] = { offsetX = ox, offsetY = oy, shiftX = sx, shiftY = sy } end
-        return t
-    end
-    EllesmereUI.RegisterBorderDefaults("minimap", {
-        ["glow"] = {
-            defaultSize = 1,
-            sizes = AllSizes(0, 0, 0, 0),
-        },
-        ["blizz"] = {
-            defaultSize = 4,
-            sizes = {
-                [0] = { offsetX = 0, offsetY = 0, shiftX = 0, shiftY = 0 },
-                [1] = { offsetX = 2, offsetY = 1, shiftX = 0, shiftY = 0 },
-                [2] = { offsetX = 3, offsetY = 1, shiftX = 1, shiftY = 0 },
-                [3] = { offsetX = 4, offsetY = 2, shiftX = 2, shiftY = 0 },
-                [4] = { offsetX = 5, offsetY = 3, shiftX = 2, shiftY = 0 },
-            },
-        },
-        ["dialog"] = {
-            defaultSize = 2,
-            sizes = {
-                [0] = { offsetX = 0, offsetY = 0, shiftX = 0, shiftY = 0 },
-                [1] = { offsetX = 2, offsetY = 2, shiftX = 0, shiftY = 0 },
-                [2] = { offsetX = 2, offsetY = 2, shiftX = 0, shiftY = 0 },
-                [3] = { offsetX = 4, offsetY = 4, shiftX = 0, shiftY = 0 },
-                [4] = { offsetX = 8, offsetY = 8, shiftX = 0, shiftY = 0 },
-            },
-        },
-        ["sm:Blizzard Achievement Wood"] = {
-            defaultSize = 1,
-            sizes = AllSizes(1, 1, 0, 0),
-        },
-    })
-end
+EllesmereUI.RegisterBorderDefaults("minimap", EllesmereUI.BORDER_DEFAULTS_FRAMES)
 
 local EG = EllesmereUI.ELLESMERE_GREEN
 
@@ -136,6 +101,7 @@ local defaults = {
             hideRaidDifficulty   = false,
             hideCraftingOrder    = false,
             friendsMaxRows       = 0,   -- 0 = no cap; else cap per section, show "...and N more"
+            friendsShowNotes     = false,  -- guild/friend note on a second line under each row
             hideExtraBtns        = { greatVault = false, portals = false, friendsOnline = false, groupButton = false },
             mouseoverExtraBtns   = false,  -- extra buttons only show on minimap mouseover
             greatVaultExtraInfo  = true,
@@ -184,6 +150,8 @@ local defaults = {
             lock          = false,
             position      = nil,
             visibility    = "always",
+            -- Opacity (Visibility cog), percent 10-100: the alpha of the shown map (EBS._MapAlpha).
+            opacity       = 100,
             visOnlyInstances = false,
             visHideHousing   = false,
             visHideMounted   = false,
@@ -222,22 +190,12 @@ end
 -------------------------------------------------------------------------------
 --  Combat safety
 -------------------------------------------------------------------------------
-local pendingApply = false
 local ApplyAll  -- forward declaration
 
+-- Keyed queue entry: repeat requests before regen collapse into one apply.
 local function QueueApplyAll()
-    if pendingApply then return end
-    pendingApply = true
+    ns.CombatQueue.Defer("ApplyAll", ApplyAll)
 end
-
-local combatFrame = CreateFrame("Frame")
-combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-combatFrame:SetScript("OnEvent", function()
-    if pendingApply then
-        pendingApply = false
-        ApplyAll()
-    end
-end)
 
 -------------------------------------------------------------------------------
 --  Minimap Skin
@@ -446,6 +404,33 @@ local function GetAddonBtnSize()
     return mp and mp.addonBtnSize or FLYOUT_BTN_SIZE
 end
 
+-- Raise popups an addon parents to its button after layout above the grid.
+function EBS._RaiseLateFlyoutChildren(btn)
+    if not flyoutPanel or btn:GetParent() ~= flyoutPanel then return end
+    local combat = InCombatLockdown()
+    local function raise(frame, level)
+        for _, child in ipairs({ frame:GetChildren() }) do
+            if not (combat and child:IsProtected()) then
+                child:SetFrameStrata("DIALOG")
+                child:SetFrameLevel(level)
+                raise(child, level + 1)
+            end
+        end
+    end
+    raise(btn, flyoutPanel:GetFrameLevel() + 6)
+end
+
+-- Keep the grid open for a press on anything parented under it (forbidden frames never).
+function EBS._MouseOverFlyoutChild(panel)
+    local focus = GetMouseFoci()[1]
+    while focus do
+        if focus:IsForbidden() then return false end
+        if focus == panel then return true end
+        focus = focus:GetParent()
+    end
+    return false
+end
+
 local function LayoutFlyoutButtons()
     if not flyoutPanel then return end
     local buttons = CollectFlyoutButtons()
@@ -525,6 +510,10 @@ local function LayoutFlyoutButtons()
             child:SetFrameStrata("DIALOG")
             child:SetFrameLevel(flyoutPanel:GetFrameLevel() + 6)
         end
+        if not GetFFD(btn).lateChildHook then
+            GetFFD(btn).lateChildHook = true
+            if btn:HasScript("OnClick") then btn:HookScript("OnClick", EBS._RaiseLateFlyoutChildren) end
+        end
         local icon = btn.icon or btn.Icon
         if not icon then
             for _, region in ipairs({ btn:GetRegions() }) do
@@ -595,7 +584,10 @@ local _flyoutBuilt = false
 
 local function EnsureFlyoutPanel()
     if not flyoutPanel then
-        flyoutPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+        -- Controller cursor: the shared overlay parent (UIParent without a
+        -- controller UI, so nothing changes then); tracked once scripts are set.
+        local overlayParent = EllesmereUI.OverlayParent()
+        flyoutPanel = CreateFrame("Frame", nil, overlayParent, "BackdropTemplate")
         flyoutPanel:SetFrameStrata("DIALOG")
         flyoutPanel:SetBackdrop({
             bgFile   = "Interface\\ChatFrame\\ChatFrameBackground",
@@ -621,7 +613,8 @@ local function EnsureFlyoutPanel()
             self:SetScript("OnUpdate", function(m)
                 if IsMouseButtonDown("LeftButton")
                    and not m:IsMouseOver()
-                   and not (flyoutToggle and flyoutToggle:IsMouseOver()) then
+                   and not (flyoutToggle and flyoutToggle:IsMouseOver())
+                   and not EBS._MouseOverFlyoutChild(m) then
                     m:Hide()
                 end
             end)
@@ -629,6 +622,12 @@ local function EnsureFlyoutPanel()
         flyoutPanel:HookScript("OnHide", function(self)
             self:SetScript("OnUpdate", nil)
         end)
+        -- Controller cursor: its cancel button presses the toggle (closing the
+        -- grid); the layer shows exactly while the grid does.
+        if overlayParent ~= UIParent then
+            flyoutPanel.CloseButton = flyoutToggle
+            EllesmereUI.TrackOverlay(flyoutPanel)
+        end
     end
 end
 
@@ -803,7 +802,7 @@ local function CreateFlyoutToggle()
     btn:SetScript("OnClick", function(self)
         if GetFFD(self).freeMoveJustDragged then return end
         -- Opening the grid replaces the label tooltip (same as M+ Portals)
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip(true) end
+        EllesmereUI.HideWidgetTooltip(true)
         ToggleFlyoutPanel()
     end)
     btn:SetScript("OnEnter", function(self)
@@ -813,7 +812,7 @@ local function CreateFlyoutToggle()
         end
     end)
     btn:SetScript("OnLeave", function(self)
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end)
 
     -- Blizzard/addon hooks on minimap children can disable mouse; re-assert on Show.
@@ -834,17 +833,7 @@ local locationFrame, locationBg
 local fpsBg
 local diffTextFrame
 
-local function GetMinimapFont()
-    local path = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("minimap") or STANDARD_TEXT_FONT
-    local flag = EllesmereUI.GetFontOutlineFlag and EllesmereUI.GetFontOutlineFlag("minimap") or "OUTLINE, SLUG"
-    return path, flag
-end
-
-local function ApplyMinimapFont(fs, size)
-    local path, flag = GetMinimapFont()
-    if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, EllesmereUI.GetFontUseShadow and EllesmereUI.GetFontUseShadow("minimap")) end
-    fs:SetFont(path, size, flag)
-end
+local function ApplyMinimapFont(fs, size) EllesmereUI.ApplyModuleFont(fs, nil, size, "minimap") end
 
 -- Description-text colour (clock AM/PM, the "fps"/"ms" suffixes): custom fpsColor swatch or the live accent; the dynamic values stay white. Returns r, g, b, hex.
 local function GetDescColor(mp)
@@ -1216,6 +1205,9 @@ local function HideMinimapChild(btn)
                 -- visible in our grid and a later Hide() would mark it unwanted.
                 if not (flyoutPanel and flyoutPanel:IsShown()) then
                     _addonVisible[self] = true
+                    -- The grid is cached across opens; a wanted-state change must rebuild
+                    -- it, or the button stays an alpha-0 gap in the old layout.
+                    InvalidateFlyout()
                 end
             end
             if InCombatLockdown() then return end
@@ -1237,18 +1229,11 @@ local function HideMinimapChild(btn)
                     return
                 end
                 _addonVisible[self] = false
+                InvalidateFlyout()
             end
         end)
         addonButtonHooks[btn] = true
     end
-end
-
-local function ShowMinimapChild(btn)
-    _suppressVisTrack = true
-    btn:SetAlpha(1)
-    btn:EnableMouse(true)
-    btn:Show()
-    _suppressVisTrack = false
 end
 
 -- Pin/POI frame patterns to exclude from the flyout (HandyNotes, TomTom, etc.)
@@ -1330,16 +1315,14 @@ local function GatherMinimapButtons()
             end
         end
     end
-    -- The lone grouped button, if the scan left exactly one: it shows on the
-    -- row ungrouped and no group toggle appears (IsUngrouped reads this). A
-    -- second button, or the user grouping one back, ends the solo state on
-    -- the next scan.
-    local mp = EBS.db and EBS.db.profile.minimap
-    local ug = mp and mp.ungroupedButtons
+    -- The only minimap button at all, if the scan found exactly one: it shows
+    -- on the row ungrouped and no group toggle appears (IsUngrouped reads
+    -- this). With two or more, grouping is the user's choice alone, even when
+    -- they ungroup all but one. A second button ends the solo state on the
+    -- next scan.
     local solo, count = nil, 0
     for _, btn in ipairs(cachedAddonButtons) do
-        local name = btn:GetName()
-        if _addonVisible[btn] ~= false and not (ug and name and ug[name]) then
+        if _addonVisible[btn] ~= false then
             count = count + 1
             solo = btn
         end
@@ -1366,13 +1349,6 @@ local function HideAllMinimapButtons()
             end
         end
     end
-end
-
-local function ShowAllMinimapButtons()
-    for _, btn in ipairs(cachedAddonButtons) do
-        ShowMinimapChild(btn)
-    end
-    wipe(cachedAddonButtons)
 end
 
 -------------------------------------------------------------------------------
@@ -1483,13 +1459,6 @@ end
 local _greatVaultBtn = nil
 local GREAT_VAULT_WHOLE_ATLAS = "greatVault-whole-normal"
 
-local function ColorizeVaultText(text, r, g, b)
-    r = math.floor(math.max(0, math.min(1, r or 1)) * 255 + 0.5)
-    g = math.floor(math.max(0, math.min(1, g or 1)) * 255 + 0.5)
-    b = math.floor(math.max(0, math.min(1, b or 1)) * 255 + 0.5)
-    return ("|cff%02x%02x%02x%s|r"):format(r, g, b, tostring(text or ""))
-end
-
 local function GetOrderedWeeklyActivities(activityType)
     if not C_WeeklyRewards or not C_WeeklyRewards.GetActivities then return nil end
 
@@ -1523,11 +1492,6 @@ local function GetVaultTokenColor(state)
     end
 
     return 0.58, 0.58, 0.58
-end
-
-local function FormatVaultToken(text, state)
-    local r, g, b = GetVaultTokenColor(state)
-    return ColorizeVaultText(text, r, g, b)
 end
 
 -- Build vault row data: { label, isRaid, tokens = { {text, state}, ... } }
@@ -1629,8 +1593,8 @@ local function ShowVaultTooltip(anchor)
     -- Scale the whole tooltip to the user's Custom Tooltip Size (re-applied each show).
     tt:SetScale(GetCustomTooltipScale())
 
-    local fontPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("minimap")) or "Fonts\\FRIZQT__.TTF"
-    local fontFlags = (EllesmereUI.GetFontOutlineFlag and EllesmereUI.GetFontOutlineFlag("minimap")) or ""
+    local fontPath = (EllesmereUI.GetFontPath("minimap")) or "Fonts\\FRIZQT__.TTF"
+    local fontFlags = (EllesmereUI.GetFontOutlineFlag("minimap")) or ""
     tt._title:SetFont(fontPath, 11, fontFlags)
     for r = 1, 3 do
         _vaultTTRows[r][0]:SetFont(fontPath, 11, fontFlags)
@@ -1698,17 +1662,6 @@ local function HideVaultTooltip()
     _vaultTT._fadeOutAG:Play()
 end
 
-local function ToggleGreatVault()
-    local IsLoaded = (C_AddOns and C_AddOns.IsAddOnLoaded) or _G.IsAddOnLoaded
-    local Load     = (C_AddOns and C_AddOns.LoadAddOn)     or _G.LoadAddOn
-    if Load and IsLoaded and not IsLoaded("Blizzard_WeeklyRewards") then
-        Load("Blizzard_WeeklyRewards")
-    end
-    if WeeklyRewardsFrame then
-        WeeklyRewardsFrame:SetShown(not WeeklyRewardsFrame:IsShown())
-    end
-end
-
 local function SizeGreatVaultBtn(btn, showBg)
     local btnSz = GetInteractableBtnSize()
     btn:SetSize(btnSz, btnSz)
@@ -1749,7 +1702,7 @@ local function CreateGreatVaultBtn(parent)
     btn:SetScript("OnLeave", function(self)
         self._whole:SetVertexColor(0.85, 0.85, 0.85, 1)
         HideVaultTooltip()
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end)
     btn:SetScript("OnMouseDown", function(self)
         self._whole:SetVertexColor(0.7, 0.7, 0.7, 1)
@@ -1761,7 +1714,7 @@ local function CreateGreatVaultBtn(parent)
     end)
     btn:SetScript("OnClick", function(self)
         if GetFFD(self).freeMoveJustDragged then return end
-        ToggleGreatVault()
+        EllesmereUI.ToggleGreatVault()
     end)
 
     -- Resting tint matches OnLeave state
@@ -1775,330 +1728,22 @@ end
 -------------------------------------------------------------------------------
 -- M+ Portal button. Identical flyout as Chat sidebar but anchored to minimap.
 -------------------------------------------------------------------------------
--- Built from the shared season list (EllesmereUI.SEASON_PORTALS): one place to update.
-local PORTAL_SPELLS, PORTAL_SHORT = {}, {}
-for _, e in ipairs(EllesmereUI.SEASON_PORTALS) do
-    PORTAL_SPELLS[#PORTAL_SPELLS + 1] = e.spellID
-    PORTAL_SHORT[e.spellID] = e.short
-end
-
 local _portalBtn = nil
-local _portalFlyout, _portalFlyoutBtns
-
-local function RefreshMinimapPortalButtons()
-    if not _portalFlyoutBtns then return end
-    for _, btn in ipairs(_portalFlyoutBtns) do
-        local spellID = btn.spellID
-        local known = IsPlayerSpell(spellID)
-        if btn._lastKnown ~= known then
-            btn._lastKnown = known
-            btn.icon:SetDesaturated(not known)
-            btn.icon:SetAlpha(known and 1 or 0.4)
-        end
-        if known then
-            local cdInfo = C_Spell.GetSpellCooldown(spellID)
-            if cdInfo and cdInfo.startTime and cdInfo.duration and cdInfo.duration > 0 then
-                btn.cooldown:SetCooldown(cdInfo.startTime, cdInfo.duration)
-            else
-                btn.cooldown:Clear()
-            end
-        else
-            btn.cooldown:Clear()
-        end
-    end
-end
-
-local function CreateMinimapPortalFlyout()
-    if _portalFlyout then return _portalFlyout end
-
-    local BTN_SIZE = 32
-    local SPACING = 1
-    local PADDING = 2
-    local COLS = 4
-    local ROWS = math.ceil(#PORTAL_SPELLS / COLS)
-
-    local portalW = PADDING * 2 + BTN_SIZE * COLS + SPACING * (COLS - 1)
-    local flyH = PADDING * 2 + BTN_SIZE * ROWS + SPACING * (ROWS - 1)
-    local HS_COUNT = 3
-    local HS_H = math.floor((flyH - PADDING * 2 - SPACING * (HS_COUNT - 1)) / HS_COUNT)
-    local hsX = PADDING + COLS * BTN_SIZE + (COLS - 1) * SPACING + SPACING
-    local flyW = hsX + HS_H + PADDING
-
-    local flyout = CreateFrame("Frame", "EUIMinimapPortalFlyout", UIParent)
-    flyout:SetSize(flyW, flyH)
-    flyout:SetFrameStrata("DIALOG")
-    flyout:SetFrameLevel(100)
-    flyout:SetClampedToScreen(true)
-    flyout:Hide()
-
-    local bg = flyout:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints()
-    bg:SetColorTexture(0.04, 0.04, 0.06, 0.95)
-
-    local PP = EllesmereUI and EllesmereUI.PP
-    if PP and PP.CreateBorder then
-        PP.CreateBorder(flyout, 1, 1, 1, 0.06, 1, "OVERLAY", 7)
-    end
-
-    local guard = CreateFrame("Frame")
-    guard:RegisterEvent("PLAYER_REGEN_DISABLED")
-    guard:SetScript("OnEvent", function() flyout:Hide() end)
-
-    _portalFlyoutBtns = {}
-    for i, spellID in ipairs(PORTAL_SPELLS) do
-        local col = (i - 1) % COLS
-        local row = math.floor((i - 1) / COLS)
-
-        local btn = CreateFrame("Button", "EUIMinimapPortal" .. i, flyout, "SecureActionButtonTemplate")
-        btn:SetSize(BTN_SIZE, BTN_SIZE)
-        btn:SetPoint("TOPLEFT", flyout, "TOPLEFT",
-            PADDING + col * (BTN_SIZE + SPACING),
-            -(PADDING + row * (BTN_SIZE + SPACING)))
-
-        btn.spellID = spellID
-
-        local icon = btn:CreateTexture(nil, "ARTWORK")
-        icon:SetAllPoints()
-        icon:SetTexCoord(6/64, 58/64, 6/64, 58/64)
-        local spellInfo = C_Spell.GetSpellInfo(spellID)
-        if spellInfo then icon:SetTexture(spellInfo.iconID) end
-        btn.icon = icon
-
-        if PP and PP.CreateBorder then
-            PP.CreateBorder(btn, 0, 0, 0, 1, 1, "OVERLAY", 7)
-        end
-
-        local cd = CreateFrame("Cooldown", nil, btn, "CooldownFrameTemplate")
-        cd:SetAllPoints()
-        cd:SetHideCountdownNumbers(true)
-        cd:SetDrawSwipe(true)
-        cd:SetDrawBling(false)
-        cd:SetDrawEdge(false)
-        btn.cooldown = cd
-
-        local short = PORTAL_SHORT[spellID]
-        if short then
-            local fontPath = (EllesmereUI and EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("minimap")) or "Fonts\\FRIZQT__.TTF"
-            local labelFrame = CreateFrame("Frame", nil, btn)
-            labelFrame:SetAllPoints()
-            labelFrame:SetFrameLevel(cd:GetFrameLevel() + 2)
-            local label = labelFrame:CreateFontString(nil, "OVERLAY", nil)
-            if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(label, true) end
-            label:SetFont(fontPath, 8, "OUTLINE")
-            label:SetPoint("BOTTOM", btn, "BOTTOM", 0, 2)
-            label:SetTextColor(1, 1, 1, 0.9)
-            label:SetText((EllesmereUI and EllesmereUI.L and EllesmereUI.L(short)) or short)
-        end
-
-        local hover = btn:CreateTexture(nil, "HIGHLIGHT")
-        hover:SetAllPoints()
-        hover:SetColorTexture(1, 1, 1, 0.20)
-
-        local castHL = btn:CreateTexture(nil, "OVERLAY", nil, 1)
-        castHL:SetAllPoints()
-        castHL:SetColorTexture(1, 1, 1, 0.4)
-        castHL:Hide()
-        btn._castHL = castHL
-
-        btn:RegisterForClicks("AnyUp", "AnyDown")
-        btn:SetAttribute("type", "spell")
-        btn:SetAttribute("spell", spellID)
-
-        btn:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetSpellByID(self.spellID)
-            GameTooltip:Show()
-        end)
-        btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-        _portalFlyoutBtns[i] = btn
-    end
-
-    -- Hearthstone column: 3 icons stacked vertically as a 5th column
-    local _hearthBtns = {}
-    for i = 1, HS_COUNT do
-        local btn = CreateFrame("Button", "EUIMinimapHearth" .. i, flyout, "SecureActionButtonTemplate")
-        btn:SetSize(HS_H, HS_H)
-        btn:SetPoint("TOPLEFT", flyout, "TOPLEFT",
-            hsX,
-            -(PADDING + (i - 1) * (HS_H + SPACING)))
-
-        local icon = btn:CreateTexture(nil, "ARTWORK")
-        icon:SetAllPoints()
-        icon:SetTexCoord(6/64, 58/64, 6/64, 58/64)
-        btn.icon = icon
-
-        if PP and PP.CreateBorder then
-            PP.CreateBorder(btn, 0, 0, 0, 1, 1, "OVERLAY", 7)
-        end
-
-        local cd = CreateFrame("Cooldown", nil, btn, "CooldownFrameTemplate")
-        cd:SetAllPoints()
-        cd:SetHideCountdownNumbers(true)
-        cd:SetDrawSwipe(true)
-        cd:SetDrawBling(false)
-        cd:SetDrawEdge(false)
-        btn.cooldown = cd
-
-        local hover = btn:CreateTexture(nil, "HIGHLIGHT")
-        hover:SetAllPoints()
-        hover:SetColorTexture(1, 1, 1, 0.20)
-
-        btn:RegisterForClicks("AnyUp", "AnyDown")
-
-        btn:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            if self._hsType == "spell" then
-                GameTooltip:SetSpellByID(self._hsID)
-            elseif self._hsType == "item" then
-                if self._hsID ~= 6948 and PlayerHasToy and PlayerHasToy(self._hsID) then
-                    GameTooltip:SetToyByItemID(self._hsID)
-                else
-                    GameTooltip:SetItemByID(self._hsID)
-                end
-            elseif self._hsType == "housing" then
-                GameTooltip:AddLine(EllesmereUI.L("Housing Dashboard"))
-            end
-            GameTooltip:Show()
-        end)
-        btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        local castHL = btn:CreateTexture(nil, "OVERLAY", nil, 1)
-        castHL:SetAllPoints()
-        castHL:SetColorTexture(1, 1, 1, 0.4)
-        castHL:Hide()
-        btn._castHL = castHL
-
-        btn:HookScript("PostClick", function(self)
-            if self._hsType == "housing" then
-                if HousingFramesUtil and HousingFramesUtil.ToggleHousingDashboard then
-                    HousingFramesUtil.ToggleHousingDashboard()
-                end
-                if _portalFlyout then _portalFlyout:Hide() end
-            else
-                self._castHL:Show()
-            end
-        end)
-
-        _hearthBtns[i] = btn
-    end
-
-
-    local function RefreshHearthCooldowns()
-        for _, btn in ipairs(_hearthBtns) do
-            local aType, id = btn._hsType, btn._hsID
-            if aType == "spell" and C_Spell and C_Spell.GetSpellCooldown then
-                local cdInfo = C_Spell.GetSpellCooldown(id)
-                if cdInfo and cdInfo.startTime and cdInfo.duration and cdInfo.duration > 0 then
-                    btn.cooldown:SetCooldown(cdInfo.startTime, cdInfo.duration)
-                else
-                    btn.cooldown:Clear()
-                end
-            elseif aType == "item" and GetItemCooldown then
-                local ok, start, dur = pcall(GetItemCooldown, id)
-                if ok and start and dur and dur > 0 then
-                    btn.cooldown:SetCooldown(start, dur)
-                else
-                    btn.cooldown:Clear()
-                end
-            else
-                btn.cooldown:Clear()
-            end
-        end
-    end
-
-    local function ResolveHearthButtons()
-        if InCombatLockdown() then return end
-        local EUI = EllesmereUI
-        local resolvers = {
-            EUI.ResolveHearthSlot,
-            EUI.ResolveDalaranSlot,
-            EUI.ResolveHousingSlot,
-        }
-        for i, btn in ipairs(_hearthBtns) do
-            local aType, id, iconTex = resolvers[i]()
-            btn._hsType = aType
-            btn._hsID = id
-            btn.icon:SetTexture(iconTex)
-            btn.icon:SetTexCoord(aType == "housing" and 0 or 6/64,
-                                 aType == "housing" and 1 or 58/64,
-                                 aType == "housing" and 0 or 6/64,
-                                 aType == "housing" and 1 or 58/64)
-            if aType == "housing" then
-                btn:SetAttribute("type", nil)
-                btn:SetAttribute("macrotext", nil)
-            elseif aType == "spell" then
-                btn:SetAttribute("type", "macro")
-                local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(id)
-                local name = info and info.name or ""
-                btn:SetAttribute("macrotext", "/cast " .. name)
-            else
-                btn:SetAttribute("type", "macro")
-                if id == 6948 then
-                    btn:SetAttribute("macrotext", "/use item:" .. id)
-                else
-                    local toyName
-                    if C_ToyBox and C_ToyBox.GetToyInfo then
-                        local _, tn = C_ToyBox.GetToyInfo(id)
-                        toyName = tn
-                    end
-                    btn:SetAttribute("macrotext", toyName and ("/use " .. toyName) or ("/use item:" .. id))
-                end
-            end
-        end
-        RefreshHearthCooldowns()
-    end
-
-    flyout:SetScript("OnShow", function(self)
-        self:RegisterEvent("SPELL_UPDATE_COOLDOWN")
-        self:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
-        self:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
-        self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-        self:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
-        self:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
-        RefreshMinimapPortalButtons()
-        ResolveHearthButtons()
-    end)
-    flyout:SetScript("OnHide", function(self)
-        self:UnregisterAllEvents()
-        for _, btn in ipairs(_portalFlyoutBtns) do
-            if btn._castHL then btn._castHL:Hide() end
-        end
-        for _, btn in ipairs(_hearthBtns) do
-            if btn._castHL then btn._castHL:Hide() end
-        end
-    end)
-    flyout:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
-        if event == "SPELL_UPDATE_COOLDOWN" then
-            RefreshMinimapPortalButtons()
-            RefreshHearthCooldowns()
-        elseif unit == "player" then
-            local casting = (event == "UNIT_SPELLCAST_START") and spellID or nil
-            for _, btn in ipairs(_portalFlyoutBtns) do
-                if btn._castHL then
-                    btn._castHL:SetShown(casting and casting == btn.spellID)
-                end
-            end
-            if not casting then
-                for _, btn in ipairs(_hearthBtns) do
-                    if btn._castHL then btn._castHL:Hide() end
-                end
-            end
-        end
-    end)
-
-    EllesmereUI.RegisterEscapeClose(flyout)
-
-    -- Keep the mouseover stack shown while open; re-evaluate on close so it can hide.
-    flyout:HookScript("OnShow", function() if MO_Evaluate then MO_Evaluate() end end)
-    flyout:HookScript("OnHide", function() if MO_Evaluate then MO_Evaluate() end end)
-
-    _portalFlyout = flyout
-    return flyout
-end
+local _portalFlyout
 
 local function ToggleMinimapPortalFlyout(anchorBtn)
     if InCombatLockdown() then return end
-    local flyout = CreateMinimapPortalFlyout()
+    if not _portalFlyout then
+        _portalFlyout = EllesmereUI.CreatePortalFlyout({
+            name = "EUIMinimap", bg = { 0.04, 0.04, 0.06 }, clamp = true, unitEvents = true,
+            labelFont = (EllesmereUI.GetFontPath("minimap")) or "Fonts\\FRIZQT__.TTF",
+            labelFlags = "OUTLINE",
+        })
+        -- Keep the mouseover stack shown while open; re-evaluate on close so it can hide.
+        _portalFlyout:HookScript("OnShow", function() if MO_Evaluate then MO_Evaluate() end end)
+        _portalFlyout:HookScript("OnHide", function() if MO_Evaluate then MO_Evaluate() end end)
+    end
+    local flyout = _portalFlyout
     -- Scale to the user's M+ Portals Scale (safe with secure children: combat
     -- early-returns above). Set before the anchor math so GetEffectiveScale reflects it.
     local _mp = EBS.db and EBS.db.profile.minimap
@@ -2164,11 +1809,11 @@ local function CreatePortalBtn(parent)
     btn:SetScript("OnEnter", function(self)
         self._icon:SetVertexColor(1, 1, 1, 1)
         if _portalFlyout and _portalFlyout:IsShown() then return end
-        if EllesmereUI.ShowWidgetTooltip then EllesmereUI.ShowWidgetTooltip(self, "M+ Portals", { anchor = EBS._Grow.TT(), scale = GetCustomTooltipScale() }) end
+        EllesmereUI.ShowWidgetTooltip(self, "M+ Portals", { anchor = EBS._Grow.TT(), scale = GetCustomTooltipScale() })
     end)
     btn:SetScript("OnLeave", function(self)
         self._icon:SetVertexColor(0.85, 0.85, 0.85, 1)
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end)
     btn:SetScript("OnMouseDown", function(self)
         self._icon:SetVertexColor(0.7, 0.7, 0.7, 1)
@@ -2180,7 +1825,7 @@ local function CreatePortalBtn(parent)
     end)
     btn:SetScript("OnClick", function(self)
         if GetFFD(self).freeMoveJustDragged then return end
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip(true) end
+        EllesmereUI.HideWidgetTooltip(true)
         ToggleMinimapPortalFlyout(self)
     end)
 
@@ -2201,16 +1846,17 @@ local function GatherOnlineFriends()
     local guild, favorites, friends = {}, {}, {}
     local seenBNet = {}
     local myName = UnitName("player")
+    -- Notes are stored raw: the tooltip cleans only the rows it shows, and only with Show Notes on.
 
     if IsInGuild and IsInGuild() then
         local total = GetNumGuildMembers() or 0
         for i = 1, total do
-            local name, _, _, level, _, zone, _, _, online, _, classFile = GetGuildRosterInfo(i)
+            local name, _, _, level, _, zone, publicNote, _, online, _, classFile = GetGuildRosterInfo(i)
             if online and name then
                 local short = name:match("^([^%-]+)") or name
                 if short ~= myName then
                     -- Fix "Name-Realm-Realm" to "Name-Realm"
-                    guild[#guild + 1] = { name = short, full = EllesmereUI.BuildFullName(name) or name, class = classFile, zone = zone or "", level = level, kind = "guild" }
+                    guild[#guild + 1] = { name = short, full = EllesmereUI.BuildFullName(name) or name, class = classFile, zone = zone or "", level = level, note = publicNote, kind = "guild" }
                 end
             end
         end
@@ -2310,7 +1956,7 @@ end
 -- lives in the do-block so locals release instead of eating main-chunk slots (200-local
 -- cap). Only ShowFriendsTooltip/HideFriendsTooltip are used outside, hence the forward declarations.
 local function FTT_FONT()
-    return (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("minimap")) or EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF"
+    return (EllesmereUI.GetFontPath("minimap")) or EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF"
 end
 local ShowFriendsTooltip, HideFriendsTooltip
 do
@@ -2323,6 +1969,9 @@ local FTT_ROW_H   = 14
 local FTT_HDR_H   = 16
 local FTT_GAP     = 2
 local FTT_DIV_PAD = 5   -- padding above and below the divider line
+local FTT_NOTE_H  = 12  -- height of the optional note line under a row
+local FTT_NOTE_INDENT = 8
+local FTT_NOTE_MAX_W  = 260  -- longer notes truncate instead of widening the tooltip
 
 -- Hover-stable hide: small grace period so cursor can travel from button to tooltip
 local _fttHideToken = 0
@@ -2346,7 +1995,7 @@ end
 -- EllesmereUI.InProtectedInstance(), the canonical EUI guard for taint-sensitive ops.
 -- Whispering is suppressed entirely there; invites stay allowed.
 local function FTTInProtectedContent()
-    return EllesmereUI.InProtectedInstance and EllesmereUI.InProtectedInstance() or false
+    return EllesmereUI.InProtectedInstance() or false
 end
 
 -- Open a whisper. BNet friends go via their Battle.net account (reaches any character/
@@ -2358,7 +2007,7 @@ local function FTTOpenWhisper(charName, bnetName)
     -- same secret-value environment as a real Mythic+). InProtectedInstance() itself
     -- reports true in dev mode; the separate branch exists only for the clearer message.
     local blocked
-    if EllesmereUI.IsDevModeActive and EllesmereUI.IsDevModeActive() then
+    if EllesmereUI.IsDevModeActive() then
         blocked = "This action is protected while dev mode (/euidev) is on."
     elseif FTTInProtectedContent() then
         blocked = "This action is protected in Mythic+ and raid combat."
@@ -2507,15 +2156,28 @@ local function EnsureFTTRow(idx)
             if _friendsTT then _friendsTT:Hide() end
         end
     end)
+    -- Name/zone are centred on the first line (not the button), so a note row can grow
+    -- the button downward without moving them.
     local nameFS = btn:CreateFontString(nil, "OVERLAY")
     nameFS:SetFont(FTT_FONT(), 10, "")
     nameFS:SetJustifyH("LEFT")
-    nameFS:SetPoint("LEFT", btn, "LEFT", 0, 0)
+    nameFS:SetPoint("LEFT", btn, "TOPLEFT", 0, -FTT_ROW_H / 2)
     local zoneFS = btn:CreateFontString(nil, "OVERLAY")
     zoneFS:SetFont(FTT_FONT(), 10, "")
     zoneFS:SetJustifyH("RIGHT")
-    zoneFS:SetPoint("RIGHT", btn, "RIGHT", 0, 0)
-    _friendsTTRows[idx] = { button = btn, name = nameFS, zone = zoneFS }
+    zoneFS:SetPoint("RIGHT", btn, "TOPRIGHT", 0, -FTT_ROW_H / 2)
+    -- Optional second line: guild/friend note, indented, truncated to the row width.
+    -- One line only: a line break inside a note would overlap the rows around it.
+    local noteFS = btn:CreateFontString(nil, "OVERLAY")
+    noteFS:SetFont(FTT_FONT(), 9, "")
+    noteFS:SetJustifyH("LEFT")
+    noteFS:SetWordWrap(false)
+    noteFS:SetMaxLines(1)
+    noteFS:SetTextColor(0.75, 0.75, 0.75, 0.9)
+    noteFS:SetPoint("LEFT", btn, "TOPLEFT", FTT_NOTE_INDENT, -FTT_ROW_H - FTT_NOTE_H / 2)
+    noteFS:SetPoint("RIGHT", btn, "TOPRIGHT", 0, -FTT_ROW_H - FTT_NOTE_H / 2)
+    noteFS:Hide()
+    _friendsTTRows[idx] = { button = btn, name = nameFS, zone = zoneFS, note = noteFS }
     return _friendsTTRows[idx]
 end
 
@@ -2564,6 +2226,7 @@ function ShowFriendsTooltip(anchor)
     if maxRows and maxRows < 0 then maxRows = 0 end
     -- Hard cap 30 rows per section, even at 0 ("no cap") or stale over-max values -- big guilds otherwise build enormous tooltips. Overflow gets "...and N more".
     if maxRows == 0 or maxRows > 30 then maxRows = 30 end
+    local showNotes = mp and mp.friendsShowNotes
 
     local font = FTT_FONT()
     for i = 1, #_friendsTTRows do
@@ -2579,8 +2242,10 @@ function ShowFriendsTooltip(anchor)
         local r = _friendsTTRows[i]
         r.name:Hide()
         r.zone:Hide()
+        r.note:Hide()
         if r.button then
             r.button:Hide()
+            r.button:SetHeight(FTT_ROW_H)
             r.button._entry = nil
             FTTSetRowTarget(r.button, nil)
             if r.button._hl then r.button._hl:Hide() end
@@ -2617,7 +2282,7 @@ function ShowFriendsTooltip(anchor)
     local rowIdx = 0
     local hdrIdx = 0
     local divIdx = 0
-    local maxNameW, maxZoneW = 0, 0
+    local maxNameW, maxZoneW, maxNoteW = 0, 0, 0
     local curY = -FTT_PAD
 
     for si, sec in ipairs(sections) do
@@ -2670,7 +2335,7 @@ function ShowFriendsTooltip(anchor)
 
             local zone = e.zone or ""
             if zone ~= "" then
-                row.zone:SetText("|cff888888" .. zone .. "|r")
+                row.zone:SetText(EllesmereUI.COLOR_CODES.DIM .. zone .. "|r")
             else
                 row.zone:SetText("")
             end
@@ -2689,7 +2354,20 @@ function ShowFriendsTooltip(anchor)
             if nw > maxNameW then maxNameW = nw end
             if zw > maxZoneW then maxZoneW = zw end
 
-            curY = curY - (FTT_ROW_H + FTT_GAP)
+            local rowH = FTT_ROW_H
+            local note = showNotes and EllesmereUI.StripFriendNoteTag(e.note)
+            if note then
+                row.note:SetFont(font, 9, "")
+                row.note:SetText(note)
+                row.note:Show()
+                local ntw = row.note:GetUnboundedStringWidth() or 0
+                if ntw > FTT_NOTE_MAX_W then ntw = FTT_NOTE_MAX_W end
+                if ntw > maxNoteW then maxNoteW = ntw end
+                rowH = FTT_ROW_H + FTT_NOTE_H
+            end
+            row.button:SetHeight(rowH)
+
+            curY = curY - (rowH + FTT_GAP)
         end
 
         if maxRows > 0 and #sec.list > maxRows then
@@ -2710,7 +2388,8 @@ function ShowFriendsTooltip(anchor)
     end
 
     local contentW = FTT_PAD + maxNameW + 16 + maxZoneW + FTT_PAD
-    local ttW = math.max(contentW, 160)
+    local noteW = FTT_PAD + FTT_NOTE_INDENT + maxNoteW + FTT_PAD
+    local ttW = math.max(contentW, noteW, 160)
     local ttH = -curY + FTT_PAD
 
     tt:SetSize(ttW, ttH)
@@ -3013,7 +2692,7 @@ local function BuildCustomIndicators(minimap)
     end)
     _customIndicators.tracking:SetScript("OnLeave", function(self)
         if trackBaseLeave then trackBaseLeave(self) end
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end)
 
     -- Calendar (day-of-month atlas)
@@ -3031,7 +2710,7 @@ local function BuildCustomIndicators(minimap)
         if calBaseEnter then calBaseEnter(self) end
         if GetFFD(self).freeMoveJustDragged then return end
         local lockoutEntries
-        if not (EllesmereUI.InProtectedInstance and EllesmereUI.InProtectedInstance()) then
+        if not (EllesmereUI.InProtectedInstance()) then
             lockoutEntries = GetCalendarLockoutEntries()
         end
         if lockoutEntries then
@@ -3043,7 +2722,7 @@ local function BuildCustomIndicators(minimap)
     _customIndicators.calendar:SetScript("OnLeave", function(self)
         if calBaseLeave then calBaseLeave(self) end
         HideCalendarTooltip()
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end)
 
     -- Mail (informational: tooltip + hover atlas only)
@@ -3060,7 +2739,7 @@ local function BuildCustomIndicators(minimap)
     end)
     _customIndicators.mail:SetScript("OnLeave", function(self)
         if mailBaseLeave then mailBaseLeave(self) end
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end)
 
     -- Crafting Order (informational: tooltip + hover atlas only)
@@ -3093,7 +2772,7 @@ local function BuildCustomIndicators(minimap)
     end)
     _customIndicators.crafting:SetScript("OnLeave", function(self)
         if craftBaseLeave then craftBaseLeave(self) end
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end)
 
     -- Friends Online button
@@ -3165,7 +2844,7 @@ local function SyncIndicatorVisibility()
         local hasMail = false
         if HasNewMail then
             local raw = HasNewMail()
-            if not issecretvalue or not issecretvalue(raw) then
+            if not issecretvalue(raw) then
                 hasMail = raw or false
             end
         end
@@ -3485,7 +3164,7 @@ local function LayoutIndicatorFrames(minimap, p, circleMode)
                 -- texture lives on it directly).
                 local ring = ci.tracking:CreateTexture(nil, "BACKGROUND")
                 ring:SetAllPoints(ci.tracking)
-                ring:SetAtlas("ui-hud-minimap-button")
+                EBS._StockAtlas(ring, "ui-hud-minimap-button")
                 ci.tracking._blizzRing = ring
             end
             ci.tracking:ClearAllPoints()
@@ -3678,6 +3357,15 @@ local function LayoutIndicatorFrames(minimap, p, circleMode)
         -- their own native dress (the common minimap-button library draws
         -- exactly that look).
         if arcR then EBS._ClassicRingButton(flyoutToggle, 0.12, flyoutToggle._norm, flyoutToggle._pushed, flyoutToggle._hl) end
+        -- WoW Forever: a row starting at the bottom-left corner starts past
+        -- the queue eye Action Bars parks there (half the 45px eye, the gap
+        -- and half a ring button, as arc length).
+        if arcR and EllesmereUI.IS_FOREVER and rowMode.arc == 225 then
+            local ab = EllesmereUI._ModuleNS.EllesmereUIActionBars
+            if ab and ab.AB_ForeverEyeParked() then
+                arcT = arcT + arcDir * (22.5 + rowGap + flyoutToggle:GetWidth() / 2) / arcR
+            end
+        end
         flyoutToggle:ClearAllPoints()
         local flyoutVisible = flyoutToggle:IsShown()
         if flyoutVisible then
@@ -3869,26 +3557,6 @@ local function LayoutIndicatorFrames(minimap, p, circleMode)
     MO_Refresh(p)
 end
 
-local function RestoreIndicatorFrames()
-    for _, btn in pairs(_customIndicators) do
-        if btn and btn.Hide then btn:Hide() end
-    end
-    -- Restore Blizzard originals
-    local tracking = MinimapCluster and MinimapCluster.Tracking
-    if tracking then
-        tracking:SetAlpha(1); tracking:EnableMouse(true)
-        if tracking.Button then tracking.Button:EnableMouse(true) end
-    end
-    local gameTime = _G.GameTimeFrame
-    if gameTime then gameTime:SetAlpha(1); gameTime:EnableMouse(true) end
-    local indicator = MinimapCluster and MinimapCluster.IndicatorFrame
-    if indicator then
-        if indicator.MailFrame then indicator.MailFrame:SetAlpha(1); indicator.MailFrame:EnableMouse(true) end
-        if indicator.CraftingOrderFrame then indicator.CraftingOrderFrame:SetAlpha(1); indicator.CraftingOrderFrame:EnableMouse(true) end
-    end
-    if indicatorBg then indicatorBg:Hide() end
-end
-
 -------------------------------------------------------------------------------
 -- Snapshot Blizzard minimap size and position on first install: native size and
 -- center so we start matching the user's Edit Mode setup. Once per profile.
@@ -3898,15 +3566,6 @@ local function CaptureBlizzardMinimap()
     if not minimap then return end
     local p = EBS.db.profile.minimap
     if p._capturedOnce then return end
-    -- WoW Forever starts every install from the base layout, never from a
-    -- snapshot of Blizzard's minimap (EllesmereUI_ForeverLayout.lua): the
-    -- map opens at the Forever size, and with no position it takes the
-    -- top-right default below.
-    if EllesmereUI.IS_FOREVER then
-        p.mapSize = EllesmereUI.FOREVER_MINIMAP_SIZE or 200
-        p._capturedOnce = true
-        return
-    end
 
     local uiScale = UIParent:GetEffectiveScale()
     local mScale  = minimap:GetEffectiveScale()
@@ -3929,6 +3588,19 @@ local function CaptureBlizzardMinimap()
             point = "CENTER", relPoint = "CENTER",
             x = cx - (uiW / 2), y = cy - (uiH / 2),
         }
+    end
+
+    -- WoW Forever: a new profile starts with our button, then the error-list
+    -- addon's (its LibDBIcon name; an absent button costs nothing), on the
+    -- button row out of the group. A first-capture seed, not a default: a
+    -- player's regroup clears the entry for good.
+    if EllesmereUI.IS_FOREVER == true then
+        local ug = p.ungroupedButtons
+        if type(ug) ~= "table" then ug = {}; p.ungroupedButtons = ug end
+        if next(ug) == nil then
+            ug.EllesmereUIMinimapButton = 1
+            ug.LibDBIcon10_BugSack = 2
+        end
     end
 
     p._capturedOnce = true
@@ -4340,6 +4012,11 @@ EBS._MinimapStyle = function()
         if not m then return "eui" end
         v = (m.useClassicStyle and "classic") or (m.useBlizzardStyle and "blizzard") or "eui"
         EBS._styleLatch = v
+        -- The WoW Forever variant of Blizzard Style, latched with it: the
+        -- Forever client, Blizzard Style, and the sibling useForeverStyle
+        -- flag set together with the Blizzard one.
+        EBS._foreverLatch = v == "blizzard" and EllesmereUI.IS_FOREVER == true
+            and m.useForeverStyle == true
     end
     return v
 end
@@ -4347,9 +4024,23 @@ end
 -- placement they share).
 EBS._MinimapBlizz = function() return EBS._MinimapStyle() ~= "eui" end
 EBS._MinimapClassic = function() return EBS._MinimapStyle() == "classic" end
+-- WoW Forever variant: the style still reads "blizzard" (every stock site
+-- stays as it is); this gates the Forever-only pieces. False off Forever.
+EBS._MinimapForever = function()
+    if EBS._styleLatch == nil then EBS._MinimapStyle() end
+    return EBS._foreverLatch == true
+end
+-- SetAtlas for a stock-look texture: EllesmereUI.StockAtlas (retail art
+-- where the Forever client swaps the name), native under the WoW Forever
+-- look. Plain SetAtlas on retail.
+EBS._StockAtlas = function(tex, name, ...)
+    if EBS._MinimapForever() then return tex:SetAtlas(name, ...) end
+    return EllesmereUI.StockAtlas(tex, name, ...)
+end
 -- Published on the module ns for the Style page and the profile-switch check.
 EllesmereUI._ModuleNS[ADDON_NAME].MinimapBlizz = EBS._MinimapBlizz
 EllesmereUI._ModuleNS[ADDON_NAME].MinimapStyle = EBS._MinimapStyle
+EllesmereUI._ModuleNS[ADDON_NAME].MinimapForever = EBS._MinimapForever
 
 -- Zoom button anchor, shared by the apply pass and the SetPoint re-assert
 -- hooks: EUI stacks them at the bottom-right corner; the stock styles place
@@ -4394,32 +4085,64 @@ end
 -- and moving Blizzard's frame here would drag the cluster children anchored
 -- to it (tracking, indicator frame, clock) along and inflate the cluster's
 -- Edit Mode layout rect. Idempotent per apply pass.
+-- On WoW Forever the same compass atlas draws that client's square ring, and
+-- Blizzard re-sizes the backdrop, the compass and its rotate-mode underlay to
+-- the atlas (unscaled) on every Rotate Minimap change: there the backdrop and
+-- compass are pinned by two corners round the map centre, which no SetSize
+-- can undo, and the underlay follows the compass rect.
 EBS._ApplyBlizzMinimapChrome = function(minimap, mapSize)
     local s = mapSize / 198
     local d = GetFFD(minimap)
     local compass = _G.MinimapCompassTexture
+    -- WoW Forever look only: plain Blizzard Style keeps its own geometry everywhere.
+    local fv = EBS._MinimapForever() == true
+    local hw, hh, barY = nil, nil, 24
+    if fv then
+        local rw, rh = EBS._ForeverRingSize()
+        hw, hh = rw * s / 2, rh * s / 2
+        barY = rh / 2 - 89
+    end
     -- MinimapBackdrop is the Minimap's own child frame carrying the compass ring
     -- (and the landing page button, which this module positions itself).
     local backdrop = _G.MinimapBackdrop
     if backdrop and backdrop ~= minimap then
         if backdrop:GetParent() ~= minimap then backdrop:SetParent(minimap) end
         backdrop:ClearAllPoints()
-        backdrop:SetPoint("CENTER", minimap, "CENTER", 0, 0)
-        backdrop:SetSize(215 * s, 226 * s)
+        if fv then
+            backdrop:SetPoint("TOPLEFT", minimap, "CENTER", -hw, hh)
+            backdrop:SetPoint("BOTTOMRIGHT", minimap, "CENTER", hw, -hh)
+        else
+            backdrop:SetPoint("CENTER", minimap, "CENTER", 0, 0)
+            backdrop:SetSize(215 * s, 226 * s)
+        end
         backdrop:SetFrameLevel(minimap:GetFrameLevel() + 3)
         backdrop:SetAlpha(1)
         backdrop:Show()
     end
     if compass then
         compass:ClearAllPoints()
-        compass:SetPoint("CENTER", minimap, "CENTER", 0, 0)
-        compass:SetSize(215 * s, 226 * s)
+        if fv then
+            compass:SetPoint("TOPLEFT", minimap, "CENTER", -hw, hh)
+            compass:SetPoint("BOTTOMRIGHT", minimap, "CENTER", hw, -hh)
+            -- Rotate mode: the fixed circle under the turning chevron (a
+            -- Forever-only region; Blizzard shows and hides it itself).
+            local underlay = _G.MinimapCompassTextureUnderlay
+            if underlay then
+                underlay:ClearAllPoints()
+                underlay:SetAllPoints(compass)
+            end
+        else
+            compass:SetPoint("CENTER", minimap, "CENTER", 0, 0)
+            compass:SetSize(215 * s, 226 * s)
+        end
         compass:SetAlpha(1)
         compass:Show()
     end
     -- Top bar: the stock 175x16 kit, bottom edge 24px above the map's top,
     -- centred 5px right of the map centre in the stock cluster; scaled, so
-    -- the offsets stay unscaled.
+    -- the offsets stay unscaled. Forever's taller ring grows the stock
+    -- container, which lifts the bar to (ring height / 2 - 89) above the map
+    -- (37.5 for the 253px ring), clear of the north chevron.
     local header = d.blizzHeader
     if not header then
         header = CreateFrame("Frame", nil, minimap)
@@ -4431,10 +4154,71 @@ EBS._ApplyBlizzMinimapChrome = function(minimap, mapSize)
         d.blizzHeader = header
     end
     header:ClearAllPoints()
-    header:SetPoint("BOTTOM", minimap, "TOP", 5, 24)
+    header:SetPoint("BOTTOM", minimap, "TOP", 5, barY)
     header:SetScale(s)
     header:SetFrameLevel(minimap:GetFrameLevel() + 4)
     header:Show()
+end
+
+-- WoW Forever's compass atlas size (a 253px square there), read once.
+EBS._ForeverRingSize = function()
+    if not EBS._fvRingW then
+        local info = C_Texture.GetAtlasInfo("UI-HUD-Minimap-Frame")
+        EBS._fvRingW = info and info.width or 253
+        EBS._fvRingH = info and info.height or 253
+    end
+    return EBS._fvRingW, EBS._fvRingH
+end
+
+-- WoW Forever: the queue eye's stock spot on the ring (Blizzard's Forever
+-- layout: 68 left of and 68 below the 198px map's centre, scaled with the
+-- map), for Action Bars to park the eye on. The map frame and the offsets;
+-- nil unless the map wears Blizzard's ring on that client (Blizzard Style or
+-- its WoW Forever variant).
+EBS._QueueEyeSpot = function()
+    if not EllesmereUI.IS_FOREVER or EBS._MinimapStyle() ~= "blizzard" then return nil end
+    local s = (EBS.db.profile.minimap.mapSize or 140) / 198
+    return Minimap, -68 * s, -68 * s
+end
+EllesmereUI._ModuleNS[ADDON_NAME].MinimapQueueEyeSpot = EBS._QueueEyeSpot
+
+-- WoW Forever look: the day/night orb Blizzard hangs on the ring's upper
+-- right (its own sits in the cluster this module hides). Stock geometry: a
+-- 42px bronze rim over a 33px sun or moon disc, centred 53 right of and 89
+-- above the 198px map's centre; never drawn below its native size, while the
+-- offset still scales with the map. Above the compass so the rotating chevron
+-- passes under it, below the ping blocker, mouse-transparent like the stock
+-- one; a child of the map, so it hides with it. Built once under the latch;
+-- the disc repaints only on DIEL_CYCLE_CHANGED.
+EBS._ApplyForeverDiel = function(minimap, mapSize)
+    local d = GetFFD(minimap)
+    local orb = d.foreverDiel
+    if not orb then
+        local rim = C_Texture.GetAtlasInfo("UI-HUD-Minimap-Frame-Cycle")
+        if not rim then return end
+        orb = CreateFrame("Frame", nil, minimap)
+        orb:SetSize(rim.width, rim.height)
+        orb:EnableMouse(false)
+        local disc = orb:CreateTexture(nil, "BACKGROUND", nil, 0)
+        disc:SetPoint("CENTER")
+        local border = orb:CreateTexture(nil, "OVERLAY", nil, 1)
+        border:SetAllPoints()
+        border:SetAtlas("UI-HUD-Minimap-Frame-Cycle")
+        local function Paint(isDay)
+            disc:SetAtlas(isDay and "UI-HUD-Minimap-DayCycle" or "UI-HUD-Minimap-NightCycle", true)
+        end
+        orb:RegisterEvent("DIEL_CYCLE_CHANGED")
+        orb:SetScript("OnEvent", function(_, _, isDay) Paint(isDay) end)
+        Paint(C_DateAndTime.IsDayTime())
+        d.foreverDiel = orb
+    end
+    local s = mapSize / 198
+    local k = math.max(1, s)
+    orb:SetScale(k)
+    orb:ClearAllPoints()
+    orb:SetPoint("CENTER", minimap, "CENTER", 53 * s / k, 89 * s / k)
+    orb:SetFrameLevel(minimap:GetFrameLevel() + 5)
+    orb:Show()
 end
 
 -- Classic WoW UI: the stock zoom button wearing the vanilla button files at
@@ -4538,6 +4322,8 @@ local function ApplyMinimap()
 
     -- Rotate Minimap: enforce the CVar to match our setting (out of combat only).
     SetCVar("rotateMinimap", p.rotateMinimap and "1" or "0")
+    -- Icon Size: nothing while unset (Edit Mode's value stands).
+    EBS._ApplyMinimapIconScale()
 
     local minimap = Minimap
     if not minimap then return end
@@ -4578,6 +4364,8 @@ local function ApplyMinimap()
                 MinimapCluster:SetAlpha(0)
                 MinimapCluster:EnableMouse(false)
             end
+            -- The cluster's Edit Mode selection box ignores that alpha.
+            EBS._SuppressMinimapSelection()
         end)
     end
     -- Blizzard reparents the minimap during housing transitions and other events; hook SetParent to force it back.
@@ -4605,15 +4393,14 @@ local function ApplyMinimap()
     -- settings-override transitions), before the deferred sweep corrects it. Render the profile's visibility directly instead.
     do
         local vis = EllesmereUI.EvalVisibility and p and EllesmereUI.EvalVisibility(p)
+        -- Opacity in every state: a hidden map carries it into its next Show().
+        EBS._WriteMapAlpha(minimap, p)
         if not EllesmereUI.EvalVisibility or vis == true then
-            minimap:SetAlpha(1)
             minimap:Show()
         elseif vis == "mouseover" then
             -- Idle state is a real Hide(), not alpha 0 -- see UpdateMinimapVisibility.
-            minimap:SetAlpha(1)
             if minimap:IsMouseOver() then minimap:Show() else minimap:Hide() end
         elseif vis then
-            minimap:SetAlpha(1)
             minimap:Show()
         else
             minimap:Hide()
@@ -4667,6 +4454,13 @@ local function ApplyMinimap()
         -- Blizzard Style keeps the stock compass ring (placed once the map has
         -- its size); Classic WoW UI draws its own ring and hides it like EUI.
         if frame and not (blizz and not EBS._MinimapClassic() and name == "MinimapCompassTexture") then frame:Hide() end
+    end
+    -- WoW Forever's Rotate Minimap shows a fixed ring under the compass, and
+    -- Blizzard re-shows it on every rotate change without touching its alpha;
+    -- the looks that hide the compass keep it invisible the same way.
+    if EllesmereUI.IS_FOREVER and EBS._MinimapStyle() ~= "blizzard" then
+        local underlay = _G.MinimapCompassTextureUnderlay
+        if underlay then underlay:SetAlpha(0) end
     end
     -- The addon compartment is placed (or parked) by EBS._ApplyAddonCompartment
     -- at the end of this pass, once the map has its final size and position.
@@ -4735,6 +4529,13 @@ local function ApplyMinimap()
             EBS._ApplyClassicMinimapChrome(minimap, mapSize)
         else
             EBS._ApplyBlizzMinimapChrome(minimap, mapSize)
+            if EllesmereUI.IS_FOREVER and EBS._MinimapForever() then EBS._ApplyForeverDiel(minimap, mapSize) end
+            -- WoW Forever: a queue eye Action Bars parks on the ring follows a
+            -- resize (its anchor on the map already follows a move).
+            if EllesmereUI.IS_FOREVER then
+                local ab = EllesmereUI._ModuleNS.EllesmereUIActionBars
+                if ab then ab.AB_ForeverEyeRelayout() end
+            end
         end
         if GetFFD(minimap).borderHost then GetFFD(minimap).borderHost:Hide() end
         if GetFFD(minimap).circBorder then GetFFD(minimap).circBorder:Hide() end
@@ -4874,8 +4675,9 @@ local function ApplyMinimap()
         if backdrop then
             local function CheckHousing()
                 local housingAtlas
-                for ri = 1, backdrop:GetNumRegions() do
-                    local rgn = select(ri, backdrop:GetRegions())
+                local regions = { backdrop:GetRegions() }
+                for ri = 1, #regions do
+                    local rgn = regions[ri]
                     if rgn and rgn.GetAtlas then
                         local atlas = rgn:GetAtlas()
                         if atlas and atlas:find("housing") then
@@ -5115,9 +4917,10 @@ local function ApplyMinimap()
             clockBg:RegisterForClicks("AnyUp")
             clockBg:SetScript("OnClick", function()
                 -- With the Great Vault hover tooltip assigned, clicking the clock opens the vault (same as the Great Vault button), not the clock config.
+                -- WoW Forever has no Great Vault: a saved "vault" reads as none there.
                 local mp = EBS.db and EBS.db.profile.minimap
-                if mp and mp.clockHoverTooltip == "vault" then
-                    ToggleGreatVault()
+                if mp and mp.clockHoverTooltip == "vault" and not EllesmereUI.IS_FOREVER then
+                    EllesmereUI.ToggleGreatVault()
                     return
                 end
                 if ToggleTimeManager then ToggleTimeManager() end
@@ -5183,8 +4986,9 @@ local function ApplyMinimap()
                 EBS._HVRevealMapHover()
                 local mp = EBS.db and EBS.db.profile.minimap
                 local mode = (mp and mp.clockHoverTooltip) or "none"
+                if EllesmereUI.IS_FOREVER and mode == "vault" then mode = "none" end
                 if mode == "lockouts" then
-                    if EllesmereUI.InProtectedInstance and EllesmereUI.InProtectedInstance() then return end
+                    if EllesmereUI.InProtectedInstance() then return end
                     local entries = GetCalendarLockoutEntries()
                     if entries then ShowCalendarTooltip(self, entries) end
                 elseif mode == "vault" then
@@ -5423,8 +5227,9 @@ local function ApplyMinimap()
                 EBS._HVRevealMapHover()
                 local mp = EBS.db and EBS.db.profile.minimap
                 local mode = (mp and mp.fpsHoverTooltip) or "none"
+                if EllesmereUI.IS_FOREVER and mode == "vault" then mode = "none" end
                 if mode == "lockouts" then
-                    if EllesmereUI.InProtectedInstance and EllesmereUI.InProtectedInstance() then return end
+                    if EllesmereUI.InProtectedInstance() then return end
                     local entries = GetCalendarLockoutEntries()
                     if entries then ShowCalendarTooltip(self, entries) end
                 elseif mode == "vault" then
@@ -5440,8 +5245,8 @@ local function ApplyMinimap()
             fpsBg:SetScript("OnMouseUp", function(_, button)
                 if button ~= "LeftButton" then return end
                 local mp = EBS.db and EBS.db.profile.minimap
-                if mp and mp.fpsHoverTooltip == "vault" then
-                    ToggleGreatVault()
+                if mp and mp.fpsHoverTooltip == "vault" and not EllesmereUI.IS_FOREVER then
+                    EllesmereUI.ToggleGreatVault()
                 end
             end)
         end
@@ -5458,7 +5263,9 @@ local function ApplyMinimap()
         fpsBg:SetScale(p.fpsScale or 1.0)
         _G._EBS_FpsBg = fpsBg
         -- Mouse only while a hover tooltip is assigned, so it never blocks map clicks
-        fpsBg:EnableMouse((p.fpsHoverTooltip or "none") ~= "none")
+        -- (WoW Forever reads a saved "vault" as none).
+        fpsBg:EnableMouse((p.fpsHoverTooltip or "none") ~= "none"
+            and not (EllesmereUI.IS_FOREVER and p.fpsHoverTooltip == "vault"))
         fpsBg:Show()
         fpsBg._updateNow()
     else
@@ -5623,6 +5430,94 @@ end
 -------------------------------------------------------------------------------
 --  Visibility (registered with the shared EllesmereUI visibility dispatcher)
 -------------------------------------------------------------------------------
+-- Opacity (the Visibility cog): the alpha every SHOWN state of the map uses. Hiding
+-- stays a real Show()/Hide() in every mode; this only dims a map that is on screen, so
+-- every path that shows the map (the apply pass, the visibility pass, the mouseover
+-- reveal) writes this value, never a bare 1. Frame alpha is inherited, so everything
+-- parented to the map (border, stock chrome, text boxes, buttons, other addons' pins)
+-- dims with it; the engine-drawn blips do not (see the mouseover note below).
+-- SetAlpha is not a protected call, so it is legal in combat too.
+-- Floor 10: below it the map is invisible yet still takes clicks, pings and the wheel;
+-- hiding it is Visibility's job. EBS fields: this file is near the main-chunk local cap.
+-- An open Farming HUD owns the reparented map, so it stays at full alpha until the
+-- HUD's hide edge hands the Opacity back.
+function EBS._MapAlpha(p)
+    if FarmHud and FarmHud:IsShown() then return 1 end
+    local o = p and p.opacity
+    if type(o) ~= "number" then return 1 end
+    return Clamp(o, 10, 100) / 100
+end
+
+-- Write the map alpha only when it differs from the stored one (GetAlpha returns the
+-- stored float, hence the tolerance); a secret stored alpha is simply overwritten.
+function EBS._WriteMapAlpha(mm, p)
+    local a = EBS._MapAlpha(p)
+    local cur = mm:GetAlpha()
+    if issecretvalue(cur) or math.abs(cur - a) > 0.001 then
+        mm:SetAlpha(a)
+    end
+end
+
+-- Opacity setting change or HUD edge: one alpha write, whatever the visibility state.
+function EBS._ApplyMapAlpha()
+    local p = EBS.db and EBS.db.profile and EBS.db.profile.minimap
+    if Minimap and p and p.enabled then EBS._WriteMapAlpha(Minimap, p) end
+end
+
+-- Icon Size (the Size row's cog): the scale of the icons on the map, the same
+-- property Blizzard's Edit Mode "Icon Size" sets through MinimapCluster:SetIconScale.
+-- Ours goes straight to the map, so the Edit Mode layout is never written; unset
+-- (nil) leaves Edit Mode's own value. Edit Mode re-applies its value on every
+-- layout apply, so a post-hook on that call puts ours back (installed with the
+-- first value; it returns at once while the setting is unset).
+-- Edit Mode's current Icon Size (percent), or nil before its layout is applied.
+function EBS._EditModeIconScale()
+    local c = MinimapCluster
+    local s = Enum and Enum.EditModeMinimapSetting and Enum.EditModeMinimapSetting.IconScale
+    if not (c and s ~= nil and c.GetSettingValue) then return nil end
+    local ok, v = pcall(c.GetSettingValue, c, s)
+    if ok and type(v) == "number" and v > 0 then return v end
+    return nil
+end
+function EBS._ApplyMinimapIconScale()
+    local p = EBS.db and EBS.db.profile and EBS.db.profile.minimap
+    local v = p and p.iconScale
+    if not (Minimap and Minimap.SetIconScale) then return end
+    local d = GetFFD(Minimap)
+    if not v then
+        -- Unset after a value (a profile swap): hand the map back Edit Mode's.
+        if d.iconScaleSet then
+            d.iconScaleSet = nil
+            local ev = EBS._EditModeIconScale()
+            if ev then Minimap:SetIconScale(ev / 100) end
+        end
+        return
+    end
+    Minimap:SetIconScale(v / 100)
+    d.iconScaleSet = true
+    if not d.iconScaleHooked and MinimapCluster and MinimapCluster.SetIconScale then
+        d.iconScaleHooked = true
+        hooksecurefunc(MinimapCluster, "SetIconScale", function()
+            local m = EBS.db and EBS.db.profile and EBS.db.profile.minimap
+            if m and m.iconScale then Minimap:SetIconScale(m.iconScale / 100) end
+        end)
+    end
+end
+
+-- Edit Mode's selection box on the minimap cluster ignores the cluster's alpha 0
+-- and stays mouse-enabled, so it would show and drag an empty Blizzard minimap:
+-- alpha 0 with the mouse off, on that one frame only. Edit Mode never resets
+-- either, so one write holds; the minimap stays ours until a reload.
+function EBS._SuppressMinimapSelection()
+    local sel = MinimapCluster and MinimapCluster.Selection
+    if not sel then return end
+    local d = GetFFD(sel)
+    if d.suppressed then return end
+    d.suppressed = true
+    sel:SetAlpha(0)
+    sel:EnableMouse(false)
+end
+
 -- Currently registered secure driver string, nil when none is registered.
 local _mmDriverStr
 
@@ -5630,7 +5525,7 @@ local _mmDriverStr
 local function MinimapDriverString(p, vm)
     -- An applied Visibility override replaces the whole setting: a constant, and the
     -- shared selection underneath never reaches the driver.
-    local visOv = EllesmereUI.VisOverrideValue and EllesmereUI.VisOverrideValue(p)
+    local visOv = EllesmereUI.VisOverrideValue(p)
     if visOv then return (visOv == "never") and "hide" or "show" end
     -- Any match: Lua-only lanes (instances, housing, skyriding mount) are resolved at
     -- build time (caller runs out of combat only); a later zone/mount edge re-runs the
@@ -5639,8 +5534,7 @@ local function MinimapDriverString(p, vm)
         return (EllesmereUI.BuildAnyMatchTail(p, "visibility", vm))
     end
     if vm then
-        return EllesmereUI.BuildVisibilityDriverString
-            and EllesmereUI.BuildVisibilityDriverString("", vm)
+        return EllesmereUI.BuildVisibilityDriverString("", vm)
     end
     local mode = p.visibility
     if mode == "in_combat" then return "[combat] show; hide" end
@@ -5661,16 +5555,18 @@ local function UpdateMinimapVisibility()
         return
     end
 
+    -- Opacity first, in every branch (the driver's, and in combat): the alpha is ours
+    -- whoever owns Show()/Hide(), and a hidden map carries it into its next Show().
+    EBS._WriteMapAlpha(minimap, p)
+
     -- Minimap:Show()/Hide() is protected during lockdown, and combat transitions deliver
     -- inside lockdown (PLAYER_REGEN_DISABLED already reports InCombatLockdown), so
     -- skipping the update would leave "Out of Combat" permanently visible and "In Combat"
-    -- permanently hidden. Alpha is no stand-in: engine-drawn map surface/blips ignore
-    -- frame alpha. A secure state driver is the only thing that can legally hide this frame mid-combat, so combat-dependent selections get one; others keep plain Show()/Hide().
-    local vm = EllesmereUI.GetActiveVisibilityModes
-        and EllesmereUI.GetActiveVisibilityModes(p, "visibility")
+    -- permanently hidden. Alpha is no stand-in: engine-drawn blips ignore frame alpha,
+    -- and a transparent map still takes the mouse. A secure state driver is the only thing that can legally hide this frame mid-combat, so combat-dependent selections get one; others keep plain Show()/Hide().
+    local vm = EllesmereUI.GetActiveVisibilityModes(p, "visibility")
     -- Mouseover cannot be expressed as a macro conditional, and the poll's own Show()/Hide() would fight a driver, so those selections stay on Lua.
-    local want = EllesmereUI.VisDependsOnCombat
-        and EllesmereUI.VisDependsOnCombat(p, "visibility")
+    local want = EllesmereUI.VisDependsOnCombat(p, "visibility")
         and not (vm and vm.mouseover)
         and MinimapDriverString(p, vm)
         or nil
@@ -5683,11 +5579,8 @@ local function UpdateMinimapVisibility()
         end
         _mmDriverStr = want
     end
-    if _mmDriverStr then
-        -- The driver owns Show()/Hide() from here. Alpha stays ours and must be full: leftover mouseover transparency would keep the frame invisible anyway.
-        minimap:SetAlpha(1)
-        return
-    end
+    -- The driver owns Show()/Hide() from here; the alpha set above is all this pass adds.
+    if _mmDriverStr then return end
 
     if InCombatLockdown() then return end
     local vis = EllesmereUI.EvalVisibility(p)
@@ -5697,10 +5590,8 @@ local function UpdateMinimapVisibility()
         -- screen until the first hover. Hide() is also exactly what the shared
         -- mouseover poll applies, so both ends of the mode agree. Shown (not hidden)
         -- while the cursor already sits on the map, so a re-apply mid-hover cannot blink.
-        minimap:SetAlpha(1)
         if minimap:IsMouseOver() then minimap:Show() else minimap:Hide() end
     elseif vis then
-        minimap:SetAlpha(1)
         minimap:Show()
     else
         minimap:Hide()
@@ -5766,6 +5657,9 @@ do
     end
 
     local function CreateMenuFrame()
+        -- Never register this with the controller cursor (nor the escape
+        -- proxy): it stays shown while parked off-screen, so the cursor would
+        -- count it as open forever and hold the D-pad.
         menuFrame = CreateFrame("Frame", "EllesmereUIMicroMenu", UIParent, "BackdropTemplate")
         menuFrame:SetFrameStrata("TOOLTIP")
         menuFrame:SetBackdrop({
@@ -5806,8 +5700,8 @@ do
                 hl:SetColorTexture(1, 1, 1, 0.08)
 
                 local label = btn:CreateFontString(nil, "OVERLAY")
-                if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(label, true) end
-                label:SetFont((EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("minimap"))
+                EllesmereUI.PrimeFontShadow(label, true)
+                label:SetFont((EllesmereUI.GetFontPath("minimap"))
                     or "Fonts\\FRIZQT__.TTF", 11, "")
                 label:SetPoint("LEFT", btn, "LEFT", 10, 0)
                 label:SetTextColor(0.9, 0.9, 0.9)
@@ -5820,9 +5714,8 @@ do
                 end)
 
                 y = y - BUTTON_H
-            elseif EllesmereUI.SecureSnippetsOK() then
-                -- Secure click passthrough to a Blizzard MicroButton (the
-                -- entry is skipped where snippets cannot compile: WoW Forever beta)
+            else
+                -- Secure click passthrough to a Blizzard MicroButton
                 local microRef = item.microButton and _G[item.microButton]
                 local btnName = "EUI_MicroMenu_" .. item.text:gsub("%s", "")
                 local btn = CreateFrame("Button", btnName, menuFrame, "SecureActionButtonTemplate,SecureHandlerStateTemplate")
@@ -5860,8 +5753,8 @@ do
                 hl:SetColorTexture(1, 1, 1, 0.08)
 
                 local label = btn:CreateFontString(nil, "OVERLAY")
-                if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(label, true) end
-                label:SetFont((EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("minimap"))
+                EllesmereUI.PrimeFontShadow(label, true)
+                label:SetFont((EllesmereUI.GetFontPath("minimap"))
                     or "Fonts\\FRIZQT__.TTF", 11, "")
                 label:SetPoint("LEFT", btn, "LEFT", 10, 0)
                 label:SetTextColor(0.9, 0.9, 0.9)
@@ -5913,14 +5806,6 @@ function EBS:OnInitialize()
                 mp.hidePortals = nil
             end
         end
-        -- WoW Forever has no Great Vault: a saved "vault" hover tooltip (clock or
-        -- FPS readout) falls back to none there, since both hover and click paths
-        -- would otherwise open a vault that does not exist. The options dropdowns
-        -- do not offer the choice on that client.
-        if EllesmereUI.IS_FOREVER then
-            if mp.clockHoverTooltip == "vault" then mp.clockHoverTooltip = "none" end
-            if mp.fpsHoverTooltip == "vault" then mp.fpsHoverTooltip = "none" end
-        end
     end
 
     -- Full rebuild: wipes cached button state so the next ApplyMinimap re-snapshots native sizes/textures (as if /reload). Used by btnBackgrounds and ungrouping.
@@ -5935,11 +5820,12 @@ function EBS:OnInitialize()
     _G._EMM_DB           = EBS.db
     _G._EMM_ApplyMinimap = ApplyMinimap
     _G._EMM_FullRebuildMinimap = FullRebuildMinimap
+    _G._EMM_ApplyMapAlpha = EBS._ApplyMapAlpha
+    _G._EMM_ApplyIconScale = EBS._ApplyMinimapIconScale
+    _G._EMM_EditModeIconScale = EBS._EditModeIconScale
 
     -- Register visibility updater + mouseover target
-    if EllesmereUI.RegisterVisibilityUpdater then
-        EllesmereUI.RegisterVisibilityUpdater(UpdateMinimapVisibility)
-    end
+    EllesmereUI.RegisterVisibilityUpdater(UpdateMinimapVisibility)
     if EllesmereUI.RegisterMouseoverTarget and Minimap then
         EllesmereUI.RegisterMouseoverTarget(Minimap, function()
             -- Minimap is the one mouseover target that is a raw protected Blizzard frame
@@ -5951,6 +5837,9 @@ function EBS:OnInitialize()
             if not (p and p.enabled) then return false end
             -- Hover-gated sets only reveal while their conditions pass.
             return EllesmereUI.VisWantsMouseover(p, "visibility")
+        end, function()
+            -- A hover reveal shows the map at its Opacity, not full alpha.
+            return EBS._MapAlpha(EBS.db and EBS.db.profile and EBS.db.profile.minimap)
         end)
     end
 end
@@ -6087,7 +5976,9 @@ do
             if host then host:SetAlpha(alpha) end
         end
 
-        FarmHud:HookScript("OnShow", function() ToggleMinimapBorders(false) end)
-        FarmHud:HookScript("OnHide", function() ToggleMinimapBorders(true) end)
+        -- The HUD owns the map while shown (full alpha, see EBS._MapAlpha); its hide
+        -- edge hands our Opacity back.
+        FarmHud:HookScript("OnShow", function() ToggleMinimapBorders(false); EBS._ApplyMapAlpha() end)
+        FarmHud:HookScript("OnHide", function() ToggleMinimapBorders(true); EBS._ApplyMapAlpha() end)
     end)
 end

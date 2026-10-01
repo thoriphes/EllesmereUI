@@ -163,7 +163,7 @@ local function Enabled()
 end
 
 local function FontPath()
-    return (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends")) or STANDARD_TEXT_FONT
+    return (EllesmereUI.GetFontPath("friends")) or STANDARD_TEXT_FONT
 end
 
 local classFileByLocalName = {}
@@ -201,18 +201,6 @@ local function TileState(accountInfo)
     local gi = accountInfo and accountInfo.gameAccountInfo
     if not (gi and gi.isOnline) then return "offline" end
     return IsSameProjectOnline(gi) and "retail" or "other_game"
-end
-
--- Legacy ||EUI:Group|| tags are stripped from any note we display.
-local EUI_NOTE_TAG, EUI_NOTE_END = "||EUI:", "||"
-local function StripNoteTag(note)
-    if not note or note == "" then return note end
-    local s = note:find(EUI_NOTE_TAG, 1, true)
-    if not s then return note end
-    local e = note:find(EUI_NOTE_END, s + #EUI_NOTE_TAG, true)
-    if not e then return note end
-    local clean = note:sub(1, s - 1)
-    return (clean:match("^(.-)%s*$")) or clean
 end
 
 -------------------------------------------------------------------------------
@@ -283,7 +271,7 @@ local function SkinStructure(card)
     d.classIcon = card:CreateTexture(nil, "ARTWORK", nil, 2)
 
     d.name = card:CreateFontString(nil, "OVERLAY")
-    if EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(d.name, true) end
+    EllesmereUI.PrimeFontShadow(d.name, true)
     d.name:SetFont(FontPath(), TILE_NAME_SIZE, "")
     d.name:SetJustifyH("LEFT")
     d.name:SetWordWrap(false)
@@ -293,14 +281,14 @@ local function SkinStructure(card)
 
     -- Character name + level, its own line under the Battle.net name.
     d.charLine = card:CreateFontString(nil, "OVERLAY")
-    if EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(d.charLine, true) end
+    EllesmereUI.PrimeFontShadow(d.charLine, true)
     d.charLine:SetFont(FontPath(), TILE_CHAR_SIZE, "")
     d.charLine:SetJustifyH("LEFT")
     d.charLine:SetWordWrap(false)
     d.charLine:SetPoint("TOPLEFT", d.name, "BOTTOMLEFT", 0, TILE_LINE_GAP)
 
     d.info = card:CreateFontString(nil, "OVERLAY")
-    if EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(d.info, true) end
+    EllesmereUI.PrimeFontShadow(d.info, true)
     d.info:SetFont(FontPath(), TILE_INFO_SIZE, "")
     d.info:SetJustifyH("LEFT")
     d.info:SetWordWrap(false)
@@ -401,12 +389,13 @@ local function BuildInfo(accountInfo)
             text = (loc == "enUS" or loc == "enGB") and "In App" or "Battle.Net"
         end
     end
-    local note = StripNoteTag(accountInfo.note)
-    if note and note ~= "" then
+    -- Legacy ||EUI:Group|| tags are stripped from any note we display.
+    local note = EllesmereUI.StripFriendNoteTag(accountInfo.note)
+    if note then
         if text ~= "" then
             text = text .. "  |cff888888|  " .. note .. "|r"
         else
-            text = "|cff888888" .. note .. "|r"
+            text = EllesmereUI.COLOR_CODES.DIM .. note .. "|r"
         end
     end
     return text
@@ -586,12 +575,10 @@ local function UpdateRegion(card, d, accountInfo)
         rb._tex:SetAllPoints()
         rb._tex:SetAlpha(0.25)
         rb:SetScript("OnEnter", function(self)
-            if EllesmereUI.ShowWidgetTooltip then
-                EllesmereUI.ShowWidgetTooltip(self, self._regionLabel or "")
-            end
+            EllesmereUI.ShowWidgetTooltip(self, self._regionLabel or "")
         end)
         rb:SetScript("OnLeave", function()
-            if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+            EllesmereUI.HideWidgetTooltip()
         end)
         local iconH = math.floor((card:GetHeight() or 40) * 0.8)
         rb:SetSize(iconH, iconH)

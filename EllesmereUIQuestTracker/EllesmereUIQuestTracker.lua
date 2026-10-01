@@ -10,8 +10,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -- Blizzard_ObjectiveTracker has loaded.
 -------------------------------------------------------------------------------
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
+ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
 local EQT = {}
 ns.EQT = EQT
@@ -152,8 +153,7 @@ loader:RegisterEvent("PLAYER_LOGIN")
 -- before our addon, so ADDON_LOADED for it never fires. Seed _sawOT from
 -- IsAddOnLoaded (or the frame's existence) so init still triggers.
 local _sawSelf, _sawOT, _loggedIn = false, false, false
-local _isLoaded = C_AddOns and C_AddOns.IsAddOnLoaded or IsAddOnLoaded
-if (_isLoaded and _isLoaded("Blizzard_ObjectiveTracker")) or _G.ObjectiveTrackerFrame then
+if C_AddOns.IsAddOnLoaded("Blizzard_ObjectiveTracker") or _G.ObjectiveTrackerFrame then
     _sawOT = true
 end
 
@@ -211,8 +211,6 @@ SlashCmdList.EQT = function(msg)
         if EQT.UpdateVisibility then EQT.UpdateVisibility() end
     else
         if InCombatLockdown and InCombatLockdown() then return end
-        if EllesmereUI and EllesmereUI.ShowModule then
-            EllesmereUI:ShowModule("EllesmereUIQuestTracker")
-        end
+        EllesmereUI:ShowModule("EllesmereUIQuestTracker")
     end
 end

@@ -241,7 +241,9 @@ local function BuildScrollbar(win)
     track:SetFrameLevel(win.smf:GetFrameLevel() + 2)
     track:Hide()
     local thumb = track:CreateTexture(nil, "ARTWORK")
-    thumb:SetColorTexture(1, 1, 1, 0.27)
+    -- WoW Forever: a bronze thumb to match the kit's frame.
+    local fc = ns.ChatForever() and ECHAT.FV.thumb
+    if fc then thumb:SetColorTexture(fc[1], fc[2], fc[3], fc[4]) else thumb:SetColorTexture(1, 1, 1, 0.27) end
     thumb:SetWidth(4)
     thumb:SetPoint("BOTTOM", track, "BOTTOM", 0, 0)
     win.track, win.thumb = track, thumb
@@ -500,21 +502,24 @@ local CHANNEL_ABBR_LOOKUP = {
 }
 
 -- World channels use hyperlink keyword "channel:<N>": 1=General, 2=Trade,
--- 22=LocalDefense, 23=WorldDefense, 26=LookingForGroup.
-local WORLD_CHANNEL_ABBR = {
+-- 22=LocalDefense, 23=WorldDefense, 26=LookingForGroup. By default they show
+-- their channel number (what "/1" types); the Use Letters cog option paints
+-- these letters instead. A number with no letter stays a number either way.
+local WORLD_CHANNEL_LETTERS = {
     ["1"]  = "Ge",
     ["2"]  = "T",
     ["22"] = "LD",
     ["23"] = "WD",
     ["26"] = "LFG",
 }
+local _abbrevLetters = false  -- Shortened Channel Names > Use Letters user setting
 
 local function ShortChannelReplacer(hyperlinkTarget)
     local abbr = CHANNEL_ABBR_LOOKUP[hyperlinkTarget:upper()]
     if not abbr then
         local channelNum = hyperlinkTarget:match("^channel:(%d+)$")
         if channelNum then
-            abbr = WORLD_CHANNEL_ABBR[channelNum] or channelNum
+            abbr = (_abbrevLetters and WORLD_CHANNEL_LETTERS[channelNum]) or channelNum
         end
     end
     if not abbr then return nil end
@@ -555,6 +560,9 @@ end
 
 function ECHAT.EngineSetChannelAbbrev(on)
     _abbrevOn = on == true
+end
+function ECHAT.EngineSetChannelAbbrevLetters(on)
+    _abbrevLetters = on == true
 end
 
 -------------------------------------------------------------------------------
@@ -1154,7 +1162,7 @@ ECHAT.EngineQueueRebuildAll = QueueRebuildAll
 -- lines received while dormant. No-op while the state is unchanged, so the
 -- PEW edge and the per-message probe cost one comparison.
 EngineUpdateProtectedState = function()
-    local prot = (EUI.InProtectedInstance and EUI.InProtectedInstance()) and true or false
+    local prot = (EUI.InProtectedInstance()) and true or false
     if prot == _protActive then return end
     _protActive = prot
     QueueRebuildAll()
@@ -1265,12 +1273,6 @@ function ECHAT.EngineBackfillLine(cf, text, r, g, b, id)
     cf:BackFillMessage(display, r, g, b, id)
     win.smf:BackFillMessage(display, r, g, b, id)
     return true
-end
-
-function ECHAT.EngineNumMessages(cf)
-    local win = WINS[cf]
-    if not win then return 0 end
-    return win.smf:GetNumMessages()
 end
 
 -- Full-hide passthrough support: our display simply hides (a hidden frame

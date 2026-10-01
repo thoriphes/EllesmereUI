@@ -3,18 +3,21 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  EUI_RaidFrames_Stock.lua
 --
 --  Blizzard Style / Classic WoW UI on the raid frames: raid and party buttons
---  (party in its "Raid Frames" layout), Friendly Boss, Extra Frames and the
---  options preview. The stock per-frame edge stands in for the EllesmereUI
---  border, the stock target and aggro highlights for the EllesmereUI target
---  and threat borders, and Classic draws the stock health/power divider.
---  Every other EllesmereUI feature is untouched.
+--  (party in its "Raid Frames" layout), Friendly Boss, Extra Frames, Pet
+--  Frames and the options preview. The stock per-frame edge stands in for
+--  the EllesmereUI border, the stock target and aggro highlights for the
+--  EllesmereUI target and threat borders, and Classic draws the stock
+--  health/power divider. Every other EllesmereUI feature is untouched.
 --
 --  Built only under a stock style (the latch, ns.RF_Style, is in the main
 --  file): the EllesmereUI look never reaches any of this. Helpers take the
 --  owner frame and `st`, the table that holds its state -- the FFD entry of a
---  header button (never a key on the button itself), or the frame itself for
---  frames this module creates (Friendly Boss, the preview). All paint is
---  event-driven through the callers' existing edges; nothing here ticks.
+--  raid or party button (never a key on the button itself), or the frame
+--  itself for the frames on the Friendly Boss visuals (Friendly Boss, the
+--  Beside Owner pets) and the preview. The one exception: the pet header's
+--  buttons are made by the pet header, yet keep this state on the frame
+--  like the rest of their Friendly Boss visuals. All paint is event-driven
+--  through the callers' existing edges; nothing here ticks.
 -------------------------------------------------------------------------------
 local _, ns = ...
 
@@ -275,9 +278,11 @@ function ns.RF_SeedStock(p, styleKey)
     p.cellSpacing, p.groupSpacing = 0, 0
     if rawget(p, "partyCellSpacing") ~= nil then p.partyCellSpacing = 0 end
     -- The stock raid role art, and the stock absorb looks (Classic's with
-    -- the opacity its dropdown pairs with it).
+    -- the opacity its dropdown pairs with it; each with the Blizzard Glow
+    -- Line its pick sets: on for Default Blizz Frames, off for Classic's).
     SeedBoth(p, "roleIconStyle", "classicCircle")
     SeedBoth(p, "absorbStyle", classic and "blizzard" or "blizzardModern")
+    SeedBoth(p, "absorbGlowLine", not classic)
     if classic then SeedBoth(p, "absorbOpacity", 90) end
     SeedBoth(p, "healAbsorbStyle", classic and "blizzard" or "healBlizzModern")
 end
@@ -716,7 +721,9 @@ end
 
 local function SetArt(tex, a)
     if a.atlas then
-        tex:SetAtlas(a.atlas)       -- sized by the seat pass, never useAtlasSize
+        -- The retail art on every client (WoW Forever swaps the frame's
+        -- atlas); sized by the seat pass, never useAtlasSize.
+        EllesmereUI.StockAtlas(tex, a.atlas)
     else
         tex:SetTexture(a.file)
     end
@@ -952,6 +959,8 @@ function ns.RF_ApplyPartyKit(owner, st, s, unit, force)
             if st.AnchorReadyCheck then st.AnchorReadyCheck() end
             if st.AnchorHealthText then st.AnchorHealthText() end
             if st.AnchorHealAbsorbText then st.AnchorHealAbsorbText() end
+            if st.powerText then ns._RFAnchorPowerText(st) end
+            if st.levelText then ns._RFAnchorLevelText(st) end
             ns.RF_KitLeader(st, s)
             if st._nameText and s then PreviewSpots(owner, s, g) end
         end

@@ -4,13 +4,14 @@
 ## Group: EllesmereUI
 ## Notes: Modern action bars built for performance and clarity.
 ## Author: Ellesmere
-## Version: 9.2.3
+## Version: 9.3.5
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUIActionBarsDB
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
 # Main Luas
 EllesmereUIActionBars.lua
+EUI_ActionBars_XPBar.lua
 EUI_ActionBars_Flyout.lua
 
 # Options

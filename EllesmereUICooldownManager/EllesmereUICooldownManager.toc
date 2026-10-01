@@ -4,19 +4,23 @@
 ## Group: EllesmereUI
 ## Notes: A CDM replacement focused on performance, customizations and alerts.
 ## Author: Ellesmere
-## Version: 9.2.3
+## Version: 9.3.5
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUICooldownManagerDB
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
 # Main Lua
 EllesmereUICooldownManager.lua
+EllesmereUICdmKeybindStyle.lua
+EllesmereUICdmRotationIcon.lua
 EllesmereUICdmHooks.lua
 EllesmereUICdmSpellPicker.lua
 EllesmereUICdmBarGlows.lua
+EllesmereUICdmBarGlowConditions.lua
 EllesmereUICdmBuffBars.lua
 EllesmereUICdmTbbDecimals.lua
 EllesmereUICdmFakeActive.lua
 EllesmereUICdmRPTSync.lua
+EllesmereUICdmTalentConditions.lua
 
 # Options

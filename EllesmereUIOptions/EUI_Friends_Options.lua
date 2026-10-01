@@ -74,61 +74,6 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
-    --  Border color multiSwatch builder
-    ---------------------------------------------------------------------------
-    local function MakeBorderSwatch(getCfg, refreshFn)
-        return {
-            { tooltip = "Custom Color",
-              hasAlpha = false,
-              getValue = function()
-                  local c = getCfg()
-                  if not c then return 0.05, 0.05, 0.05 end
-                  return c.borderR, c.borderG, c.borderB
-              end,
-              setValue = function(r, g, b)
-                  local c = getCfg(); if not c then return end
-                  c.borderR, c.borderG, c.borderB = r, g, b
-                  refreshFn()
-              end,
-              onClick = function(self)
-                  local c = getCfg(); if not c then return end
-                  if c.useClassColor then
-                      c.useClassColor = false
-                      refreshFn(); EllesmereUI:RefreshPage()
-                      return
-                  end
-                  if self._eabOrigClick then self._eabOrigClick(self) end
-              end,
-              refreshAlpha = function()
-                  local c = getCfg()
-                  if not c or not c.enabled then return 0.15 end
-                  return c.useClassColor and 0.3 or 1
-              end },
-            { tooltip = "Accent Color",
-              hasAlpha = false,
-              getValue = function()
-                  local ar, ag, ab = EllesmereUI.GetAccentColor()
-                  return ar, ag, ab
-              end,
-              setValue = function() end,
-              -- Flag name stays `useClassColor` for backwards compat with
-              -- users who already have it stamped in their SavedVariables.
-              -- Only the color resolution changes -- the flag now means
-              -- "use live accent" rather than "use class color".
-              onClick = function()
-                  local c = getCfg(); if not c then return end
-                  c.useClassColor = true
-                  refreshFn(); EllesmereUI:RefreshPage()
-              end,
-              refreshAlpha = function()
-                  local c = getCfg()
-                  if not c or not c.enabled then return 0.15 end
-                  return c.useClassColor and 1 or 0.3
-              end },
-        }
-    end
-
-    ---------------------------------------------------------------------------
     --  Chat Page
     ---------------------------------------------------------------------------
 
@@ -144,6 +89,7 @@ initFrame:SetScript("OnEvent", function(self)
         blizzard = "Blizzard",
         modern   = "Modern",
         pixel    = "Pixel",
+        pixelsComic = "Pixels Comic",
         glyph    = "Glyph",
         arcade   = "Arcade",
         legend   = "Legend",
@@ -151,49 +97,9 @@ initFrame:SetScript("OnEvent", function(self)
         runic    = "Runic",
     }
     local ICON_STYLE_ORDER = {
-        "blizzard", "modern", "pixel", "glyph",
+        "blizzard", "modern", "pixel", "pixelsComic", "glyph",
         "arcade", "legend", "midnight", "runic",
     }
-
-    -- Inline cog button. When disabledFn/disabledLabel are given, the cog dims
-    -- and blocks (with a requirement tooltip) while disabledFn() is true --
-    -- the standard inline-control disabled-state pattern.
-    local function MakeCogBtn(rgn, showFn, disabledFn, disabledLabel)
-        local cogBtn = CreateFrame("Button", nil, rgn)
-        cogBtn:SetSize(26, 26)
-        cogBtn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = cogBtn
-        cogBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-        local function baseAlpha()
-            return (disabledFn and disabledFn()) and 0.15 or 0.4
-        end
-        cogBtn:SetAlpha(baseAlpha())
-        local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
-        cogTex:SetAllPoints()
-        cogTex:SetTexture(EllesmereUI.COGS_ICON)
-        cogBtn:SetScript("OnEnter", function(s) s:SetAlpha(0.7) end)
-        cogBtn:SetScript("OnLeave", function(s) s:SetAlpha(baseAlpha()) end)
-        cogBtn:SetScript("OnClick", function(s) showFn(s) end)
-
-        if disabledFn then
-            local block = CreateFrame("Frame", nil, cogBtn)
-            block:SetAllPoints()
-            block:SetFrameLevel(cogBtn:GetFrameLevel() + 10)
-            block:EnableMouse(true)
-            block:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(cogBtn, EllesmereUI.DisabledTooltip(disabledLabel))
-            end)
-            block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            local function UpdateState()
-                local off = disabledFn()
-                cogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then block:Show() else block:Hide() end
-            end
-            EllesmereUI.RegisterWidgetRefresh(UpdateState)
-            UpdateState()
-        end
-        return cogBtn
-    end
 
     -- Live repaint after a display toggle: the legacy list's row pass, plus a
     -- decoration-only pass over the 12.1 cards (never Blizzard's view:Refresh,
@@ -221,6 +127,9 @@ initFrame:SetScript("OnEvent", function(self)
             if BS then BS.Gate("friends", cfg) end
             return cfg
         end
+        -- Border Size / Border Color drive only this module's own flat look;
+        -- the Window Skins "Friends List" card draws the frame otherwise.
+        local CHROME_BORDER_TIP = "The Friends List window skin draws this border (Blizz UI Enhanced > Blizzard Window Skins)."
 
         -- DISPLAY
         _, h = W:SectionHeader(parent, "DISPLAY", y);  y = y - h
@@ -251,6 +160,8 @@ initFrame:SetScript("OnEvent", function(self)
         -- Border Size | Border Color
         _, h = W:DualRow(parent, y,
             Gate({ type="slider", text="Border Size", min=0, max=4, step=1,
+              disabled=function() return ns.FR_ChromeShell() end,
+              disabledTooltip=CHROME_BORDER_TIP, rawTooltip=true,
               getValue=function() local f = FriendsDB(); return f and f.borderSize or 0 end,
               setValue=function(v)
                 local f = FriendsDB(); if not f then return end
@@ -260,10 +171,13 @@ initFrame:SetScript("OnEvent", function(self)
               end }),
             Gate({ type="multiSwatch", text="Border Color",
               disabled=function()
+                if ns.FR_ChromeShell() then return true end
                 local f = FriendsDB()
                 return not f or (f.borderSize or 0) == 0
               end,
-              disabledTooltip="Set Border Size above 0", rawTooltip=true,
+              disabledTooltip=function()
+                return ns.FR_ChromeShell() and CHROME_BORDER_TIP or "Set Border Size above 0"
+              end, rawTooltip=true,
               swatches = {
                 { tooltip = "Custom Color",
                   hasAlpha = false,
@@ -358,7 +272,7 @@ initFrame:SetScript("OnEvent", function(self)
             local f = FriendsDB()
             return not (f and f.autoAcceptFriendInvites)
         end
-        local _, cogShow = EllesmereUI.BuildCogPopup({
+        EllesmereUI.BuildInlineCog(rgn, {
             title = "Auto Accept Settings",
             rows = {
                 { type="toggle", label="Accept Invites from Guildmates",
@@ -368,8 +282,8 @@ initFrame:SetScript("OnEvent", function(self)
                     f.autoAcceptGuildInvites = v
                   end }
             },
+            disabled = autoAcceptOff, disabledTooltip = "Auto-Accept Friend Invites",
         })
-        MakeCogBtn(rgn, cogShow, autoAcceptOff, "Auto-Accept Friend Invites")
         end
 
         return math.abs(y)
