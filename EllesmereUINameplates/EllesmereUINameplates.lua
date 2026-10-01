@@ -278,6 +278,8 @@ local defaults = {
     friendlyBelowNameColor = { r = 0.8, g = 0.8, b = 0.8 },
     friendlyBelowNameClassColor = false,
     friendlyBelowNameGuildBrackets = true,
+    hideTrivialEnemies = false,
+    questMobAlwaysShow = false,
     showEnemyPets = false,
     forceTargetPlate = false,  -- Force Nameplate on Current Target (EUI_Nameplates_TargetForce.lua)
     font = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF",
@@ -5034,6 +5036,7 @@ function ns.RefreshAllSettings()
     -- (the enemy plates followed through the appearance pass above).
     if ns._npForever and ns.NP_ForeverWatchLevels() then ns.NP_ForeverFriendlyBoxes() end
     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+    if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
     if ns.RangeText_Apply then ns.RangeText_Apply() end
     if ns.ApplyClassPowerSetting then ns.ApplyClassPowerSetting() end
     -- Aura containers: fingerprint-guarded, near-free when no aura setting changed.
@@ -5076,6 +5079,14 @@ ns._oorAlpha = 1  -- cached out-of-range alpha; 1 = inert
 function ns.NT_Apply(plate)
     local unit = plate.unit
     if not unit then return end
+    -- Hide Gray-Level Enemy Nameplates wins over every fade (ns.TRIV_Eval).
+    if plate._trivHidden then
+        if plate._ntCurAlpha ~= 0 then
+            plate._ntCurAlpha = 0
+            plate:SetAlpha(0)
+        end
+        return
+    end
     local a = 1
     local tfHidden = ns._tfHidden
     if tfHidden and tfHidden[unit] then
@@ -5112,6 +5123,95 @@ function ns.NT_RefreshSetting()
     ns._ntAlpha = v / 100
     ns._ntKeepFocus = not (p and p.nonTargetKeepFocus == false)
     ns.NT_ApplyAll()
+end
+
+-------------------------------------------------------------------------------
+--  Hide Gray-Level Enemy Nameplates / Always Show Quest Mob Nameplates.
+--  A hidden plate gets root alpha 0 through ns.NT_Apply, so no frame is hidden
+--  or re-anchored. Gray = an attackable unit too low to give experience
+--  (UnitIsTrivial, the grey level colour). With Always Show Quest Mobs and
+--  Hide Enemy Nameplates out of Combat both on, the OOC rule stops turning
+--  nameplateShowEnemies off (ns.ApplyOOCPlates) and the non-quest plates are
+--  hidden here instead, so a quest mob keeps its plate; quest mobs are exempt
+--  from the gray rule too. Every hidden plate comes back while the unit is the
+--  target or focus, or has the player on its threat table (it is fighting
+--  you). Off = one boolean test per hook (ns._trivOn).
+-------------------------------------------------------------------------------
+ns._trivHide = false     -- Hide Gray-Level Enemy Nameplates
+ns._questAlways = false  -- Always Show Quest Mob Nameplates
+ns._questSoftOOC = false -- quest exemption + OOC hide: hide OOC by alpha, not by CVar
+ns._trivOn = false       -- any of the above needs the per-plate evaluation
+ns._trivInCombat = false -- player combat state, kept from the REGEN edges
+
+function ns.TRIV_Eval(plate)
+    local unit = plate.unit
+    if not unit then return end
+    local hide = false
+    local ooc = ns._questSoftOOC and not ns._trivInCombat
+    if (ns._trivHide or ooc)
+       and not UnitIsUnit(unit, "target") and not UnitIsUnit(unit, "focus") then
+        local sv = issecretvalue
+        local threat = UnitThreatSituation("player", unit)
+        local engaged = (sv and sv(threat)) or threat ~= nil
+        if not engaged and not (ns._questAlways and ns.IsQuestMob and ns.IsQuestMob(unit)) then
+            if ooc then
+                hide = true
+            else
+                local triv = UnitIsTrivial(unit)
+                hide = triv == true and not (sv and sv(triv))
+            end
+        end
+    end
+    if (plate._trivHidden or false) ~= hide then
+        plate._trivHidden = hide or nil
+        ns.NT_Apply(plate)
+    end
+end
+
+function ns.TRIV_EvalAll()
+    for _, plate in pairs(ns.plates) do
+        ns.TRIV_Eval(plate)
+    end
+end
+
+-- The player's level moves the grey cutoff, a unit's level moves the unit
+-- across it; the combat edges flip the out-of-combat hide. Each pair is armed
+-- only while its option is on.
+ns._trivLevelEv = CreateFrame("Frame")
+ns._trivLevelEv:SetScript("OnEvent", function(_, event, unit)
+    if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+        ns._trivInCombat = event == "PLAYER_REGEN_DISABLED"
+        ns.TRIV_EvalAll()
+        return
+    end
+    if event == "PLAYER_LEVEL_CHANGED" then
+        ns.TRIV_EvalAll()
+        return
+    end
+    local plate = unit and unit ~= "player" and ns.plates[unit]
+    if plate then ns.TRIV_Eval(plate) end
+end)
+
+-- Re-reads the toggles and re-evaluates every plate (an off flip shows them all).
+-- Called from the options toggles, ns.ApplyOOCPlates, OnInitialize and
+-- RefreshAllSettings. Never writes the CVar: ns.ApplyOOCPlates owns it.
+function ns.TRIV_RefreshSetting()
+    ns._trivHide = (p and p.hideTrivialEnemies) == true
+    ns._questAlways = (p and p.questMobAlwaysShow) == true
+    ns._questSoftOOC = ns._questAlways and (p and p.hideEnemyPlatesOOC) == true
+    ns._trivOn = ns._trivHide or ns._questSoftOOC
+    ns._trivInCombat = UnitAffectingCombat("player") == true
+    local f = ns._trivLevelEv
+    f:UnregisterAllEvents()
+    if ns._trivHide then
+        f:RegisterEvent("UNIT_LEVEL")
+        f:RegisterEvent("PLAYER_LEVEL_CHANGED")
+    end
+    if ns._questSoftOOC then
+        f:RegisterEvent("PLAYER_REGEN_DISABLED")
+        f:RegisterEvent("PLAYER_REGEN_ENABLED")
+    end
+    ns.TRIV_EvalAll()
 end
 
 function ns.HideHoverEffect(plate)
@@ -6588,6 +6688,7 @@ questCacheWatcher:SetScript("OnEvent", function()
             for _, plate in pairs(ns.plates) do
                 plate:UpdateHealthColor()
                 plate:UpdateClassification()
+                if ns._trivOn then ns.TRIV_Eval(plate) end
             end
         end)
     end
@@ -8272,6 +8373,8 @@ function NameplateFrame:SetUnit(unit, nameplate)
     -- (skipped on recycled plates) and the threshold watcher only reaches plates active at flip
     -- time, so a plate pooled during a no-execute window would return glowless. Re-assert.
     ns.ApplyLowHpGlow(self)
+    -- Hide Gray-Level Enemy Nameplates (also clears a pooled plate's flag after an off flip).
+    if ns._trivOn or self._trivHidden then ns.TRIV_Eval(self) end
     -- Critical: health bar must display immediately
     self:UpdateHealth()
     -- PERF: defer non-critical work 1 frame. Stacking bounds, name, cast bar, classification,
@@ -10630,6 +10733,7 @@ function NameplateFrame:UNIT_NAME_UPDATE()
 end
 function NameplateFrame:UNIT_THREAT_LIST_UPDATE()
     self:UpdateHealthColor()
+    if ns._trivOn then ns.TRIV_Eval(self) end
 end
 -- Faction badge: faction and PvP flag changes. The tap-state repaint rides the
 -- shared UNIT_FACTION handler (factionFrame), not this one.
@@ -11231,6 +11335,11 @@ manager:SetScript("OnEvent", function(self, event, unit)
         -- Non-Target Opacity: gaining/losing a target flips every plate's fade state, so this
         -- is the one full-iteration site. Zero cost while off (single compare).
         if ns._ntAlpha < 1 then ns.NT_ApplyAll() end
+        -- Gray-level plates show while targeted: only the old and new target change.
+        if ns._trivOn then
+            if oldTarget then ns.TRIV_Eval(oldTarget) end
+            if ns._cachedTargetPlate then ns.TRIV_Eval(ns._cachedTargetPlate) end
+        end
     elseif event == "PLAYER_FOCUS_CHANGED" then
         -- PERF: only update old + new focus plates instead of iterating all
         local oldFocus = ns._cachedFocusPlate
@@ -11270,6 +11379,10 @@ manager:SetScript("OnEvent", function(self, event, unit)
             if ns._cachedFocusPlate and ns._cachedFocusPlate ~= oldFocus then
                 ns.NT_Apply(ns._cachedFocusPlate)
             end
+        end
+        if ns._trivOn then
+            if oldFocus then ns.TRIV_Eval(oldFocus) end
+            if ns._cachedFocusPlate then ns.TRIV_Eval(ns._cachedFocusPlate) end
         end
     elseif event == "UPDATE_MOUSEOVER_UNIT" then
         ns._UpdateMouseover()
@@ -11451,6 +11564,7 @@ function npAddon:OnInitialize()
     -- Non-Target Opacity: derive the cached value at login (no plates exist yet,
     -- so the apply loop no-ops; SetUnit fades new plates as they spawn).
     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+    if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
     -- Append SharedMedia textures to runtime tables so SM texture keys resolve at runtime
     EllesmereUI.AppendSharedMediaTextures(
         ns.healthBarTextureNames,
@@ -11722,6 +11836,9 @@ ns._oocPlatesCtl = CreateFrame("Frame")
 ns.ApplyOOCPlates = function()
     local ctl = ns._oocPlatesCtl
     local on = p and p.hideEnemyPlatesOOC == true
+    -- Always Show Quest Mob Nameplates: the CVar stays on and ns.TRIV_Eval
+    -- hides the non-quest plates out of combat instead.
+    if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
     if on then
         ctl:RegisterEvent("PLAYER_REGEN_DISABLED")
         ctl:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -11729,7 +11846,7 @@ ns.ApplyOOCPlates = function()
         ns._oocPlatesOwned = true
         -- Read-guarded: RefreshAllSettings calls this on every nameplate settings
         -- change, and a redundant SetCVar broadcasts CVAR_UPDATE to the whole UI.
-        local want = InCombatLockdown() and "1" or "0"
+        local want = (InCombatLockdown() or ns._questSoftOOC) and "1" or "0"
         if GetCVar("nameplateShowEnemies") ~= want then
             SetCVar("nameplateShowEnemies", want)
         end
@@ -11751,7 +11868,7 @@ ns._oocPlatesCtl:SetScript("OnEvent", function(self, event)
     end
     if event == "PLAYER_REGEN_DISABLED" then
         SetCVar("nameplateShowEnemies", "1")
-    elseif not InCombatLockdown() then
+    elseif not InCombatLockdown() and not ns._questSoftOOC then
         -- REGEN_ENABLED, or a world entry that lands out of combat.
         SetCVar("nameplateShowEnemies", "0")
     end
