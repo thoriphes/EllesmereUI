@@ -459,6 +459,22 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end,
           tooltip="Toggle visibility of enemy pet nameplates." });  y = y - h
 
+    _, h = W:DualRow(parent, y,
+        { type="toggle", text="Hide Gray-Level Enemy Nameplates",
+          getValue=function() return DBVal("hideTrivialEnemies") == true end,
+          setValue=function(v)
+            DB().hideTrivialEnemies = v
+            if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
+          end,
+          tooltip="Hide the nameplates of enemies too low level to give experience (grey level), such as critters and low-level wildlife.\n\nA hidden nameplate still shows while that enemy is your target or focus, or is in combat with you." },
+        { type="toggle", text="Always Show Quest Mob Nameplates",
+          getValue=function() return DBVal("questMobAlwaysShow") == true end,
+          setValue=function(v)
+            DB().questMobAlwaysShow = v
+            if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
+          end,
+          tooltip="Enemies you still need for a quest keep their nameplates, even when Hide Gray-Level Enemy Nameplates or Hide Enemy Nameplates out of Combat would hide them.\n\nWith Hide Enemy Nameplates out of Combat on, the other enemy nameplates are then hidden by EllesmereUI instead of the game setting." });  y = y - h
+
     -- Inline DIRECTIONS cog on Friendly Name Size: name-only vertical distance
     if not EllesmereUI._prebuilding then
         EllesmereUI.BuildInlineCog(npcRow._rightRegion, {
