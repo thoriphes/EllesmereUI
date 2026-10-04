@@ -142,6 +142,11 @@ local parkFrame           -- hidden parent for parked UnitFrames; built on first
 local ctl = CreateFrame("Frame")
 local evalPending, sweepPending = false, false
 
+-- Every write is a hold in EllesmereUI's CVar record (EllesmereUI_Uninstall.lua):
+-- forcing a category on is HoldCVar, handing it back is ReleaseCVar with the 0 it
+-- held, so Uninstall or turning Nameplates off can never leave a category stuck on.
+local OWNER = "EllesmereUINameplates"
+
 local function WriteCVar(name, on)
     local lname = string.lower(name)
     ownWrites[lname] = (ownWrites[lname] or 0) + 1
@@ -149,7 +154,11 @@ local function WriteCVar(name, on)
     -- no CVAR_UPDATE: take the count back so it cannot swallow the next
     -- external update (an accepted write has already been counted down when
     -- the event is synchronous, and still reads back as ours when it is not).
-    pcall(SetCVar, name, on and "1" or "0")
+    if on then
+        pcall(EllesmereUI.HoldCVar, name, "1", OWNER)
+    else
+        pcall(EllesmereUI.ReleaseCVar, name, "0", OWNER)
+    end
     if GetCVarBool(name) ~= on and ownWrites[lname] > 0 then
         ownWrites[lname] = ownWrites[lname] - 1
     end
@@ -174,8 +183,23 @@ local function ReleaseKey(key)
     forced[key] = nil
     if key == "friendNPC" then ns._tfFriendlyNPCForced = nil end
     local name = LiveCVar(key)
-    -- Already 0 = someone else turned it off under us; nothing to hand back.
-    if name and GetCVarBool(name) then WriteCVar(name, false) end
+    -- Already 0 = someone else turned it off under us; nothing to hand back,
+    -- only the hold to close (no write, so no CVAR_UPDATE to count).
+    if not name then return end
+    if GetCVarBool(name) then
+        WriteCVar(name, false)
+    else
+        pcall(EllesmereUI.ReleaseCVar, name, nil, OWNER)
+    end
+end
+
+-- Another writer turned a held category on: the 1 is theirs now. Drop the hold
+-- without writing; the record keeps the value as set by EllesmereUI.
+local function AdoptKey(key)
+    forced[key] = nil
+    if key == "friendNPC" then ns._tfFriendlyNPCForced = nil end
+    local name = LiveCVar(key)
+    if name then pcall(EllesmereUI.ReleaseCVar, name, nil, OWNER) end
 end
 
 -------------------------------------------------------------------------------
@@ -367,10 +391,7 @@ ctl:SetScript("OnEvent", function(self, event, arg1)
         -- not blink (e.g. Hide Enemy Nameplates out of Combat writing 0 at
         -- combat end). The value is read back rather than taken from the
         -- event payload.
-        if forced[key] and GetCVarBool(arg1) then
-            forced[key] = nil
-            if key == "friendNPC" then ns._tfFriendlyNPCForced = nil end
-        end
+        if forced[key] and GetCVarBool(arg1) then AdoptKey(key) end
         Evaluate()
     elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
         -- Hide Enemy Nameplates out of Combat writes nameplateShowEnemies at
@@ -381,7 +402,7 @@ ctl:SetScript("OnEvent", function(self, event, arg1)
         -- normally runs first; if it has not written yet, the next-frame pass
         -- catches it.
         if event == "PLAYER_REGEN_DISABLED" and forced.enemies and ns._oocPlatesOwned then
-            forced.enemies = nil
+            AdoptKey("enemies")
         end
         Evaluate()
         RequestEvaluate()
