@@ -791,7 +791,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 else txR, txG, txB = 0, 0, 1 end
             end
             pf._pR, pf._pG, pf._pB = txR, txG, txB
-            PV_FillColor(pf._powerFill, texPath, txR, txG, txB, settings.powerGradientEnabled, settings.powerGradientColor, settings.powerGradientDir, powerOpacity)
+            PV_FillColor(pf._powerFill, texPath, txR, txG, txB, settings.powerGradientEnabled, settings.powerGradientColor, settings.powerGradientDir, (settings.powerBarOpacity or 100) / 100)
         end
     end
 
@@ -1208,9 +1208,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 bar:SetReverseFill(false)
                 bar:SetPoint("BOTTOMLEFT",  health, "BOTTOMLEFT",  0, 0)
                 bar:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", 0, 0)
-            elseif mode == "overlayReverse" then
+            elseif mode == "overlayReverse" or mode == "overlayReverseFull" then
                 -- Overlay Reverse: shield fills INTO the health fill from
-                -- its leading edge; the preview clip masks excess.
+                -- its leading edge; the preview clip masks excess. The
+                -- preview shield never exceeds health, so Full matches.
                 if isRev then
                     bar:SetReverseFill(false)
                     bar:SetPoint("BOTTOMLEFT",  healthFill, "BOTTOMLEFT",  0, 0)
@@ -1241,9 +1242,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             bar:SetReverseFill(false)
             bar:SetPoint("TOPLEFT",    health, "TOPLEFT",    0, 0)
             bar:SetPoint("BOTTOMLEFT", health, "BOTTOMLEFT", 0, 0)
-        elseif mode == "overlayReverse" then
+        elseif mode == "overlayReverse" or mode == "overlayReverseFull" then
             -- Overlay Reverse: shield fills INTO the health fill from its
-            -- leading edge; the preview clip masks excess.
+            -- leading edge; the preview clip masks excess. The preview
+            -- shield never exceeds health, so Full matches.
             if isRev then
                 bar:SetReverseFill(false)
                 bar:SetPoint("TOPLEFT",    healthFill, "TOPLEFT",    0, 0)
@@ -1778,7 +1780,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             end
             -- The small frames' bar takes the donor's texture, as live.
             local texKey = ns.ResolveHealthBarTextureKey(s,
-                ns.GetMiniDonorSettings and ns.GetMiniDonorSettings() or db.profile.player)
+                ns.GetMiniDonorSettings and ns.GetMiniDonorSettings(unitKey) or db.profile.player)
             local texPath = (ns.healthBarTextures or {})[texKey]
             local _, pToken = UnitPowerType("player")
             local pc = EllesmereUI.GetPowerColor(pToken or "MANA")
@@ -2069,27 +2071,41 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         pf._previewScale = (pf._previewBaseScale or pf._previewScale or 1)
             * (blizzG and pf._blizzScale(s) or 1)
 
-        -- Player/target preview: mirror the live shared aura border style.
-        if unitKey == "player" or unitKey == "target" or unitKey == "boss" then
+        -- Aura preview: mirror the live shared aura border style.
+        if unitKey == "player" or unitKey == "target" or unitKey == "focus" or unitKey == "boss" then
+            -- Blizzard Style: the live frames draw no custom aura border, so
+            -- the preview keeps the plain 1px edge and hides it too.
+            local blizzAura = blizzG ~= nil
             local function ApplyPreviewAuraBorder(icon)
                 if icon._iconTex then
                     icon._iconTex:ClearAllPoints()
-                    local inset = (s.auraBorderSize or 1) > 0 and 1 or 0
+                    local inset = (blizzAura or (s.auraBorderSize or 1) > 0) and 1 or 0
                     PP.Point(icon._iconTex, "TOPLEFT", icon, "TOPLEFT", inset, -inset)
                     PP.Point(icon._iconTex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -inset, inset)
                 end
                 local border = icon._euiAuraBorder
+                if blizzAura then
+                    if border then border:Hide() end
+                    return
+                end
                 if not border then
                     border = CreateFrame("Frame", nil, icon)
                     border:SetAllPoints(icon)
                     border:EnableMouse(false)
                     icon._euiAuraBorder = border
                 end
+                local aboveEffects = unitKey == "boss" and ns.UF_BossAuraBorderAboveEffects(s)
                 if s.auraBorderBehindUnitFrame then
                     border:SetFrameLevel(0)
+                elseif aboveEffects then
+                    border:SetFrameLevel(icon:GetFrameLevel() + 20)
                 else
                     border:SetFrameLevel(s.auraBorderBehind
                         and math.max(0, icon:GetFrameLevel() - 1) or (icon:GetFrameLevel() + 1))
+                end
+                if icon._durText and (aboveEffects or icon._borderAboveEffects) then
+                    icon._durText:GetParent():SetFrameLevel(icon:GetFrameLevel() + (aboveEffects and 25 or 2))
+                    icon._borderAboveEffects = aboveEffects or nil
                 end
                 EllesmereUI.ApplyBorderStyle(border, s.auraBorderSize or 1,
                     s.auraBorderR or 0, s.auraBorderG or 0, s.auraBorderB or 0, s.auraBorderA or 1,
@@ -2103,13 +2119,13 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             for i = 1, #debuffIcons do ApplyPreviewAuraBorder(debuffIcons[i]) end
         end
 
-        -- Donor settings for mini frames (border/texture inherit from
-        -- focus/target/player; text SIZES are the unit's own -- see
+        -- Donor settings for mini frames (border/texture inherit from the
+        -- frame Copy Look From picks; text SIZES are the unit's own -- see
         -- ApplyPreviewTextPositions)
         local isMini = (unitKey == "pet" or unitKey == "boss" or unitKey == "targettarget" or unitKey == "focustarget")
         local ds = s
         if isMini then
-            ds = ns.GetMiniDonorSettings and ns.GetMiniDonorSettings() or db.profile.player
+            ds = ns.GetMiniDonorSettings and ns.GetMiniDonorSettings(unitKey) or db.profile.player
         end
         -- The frame border's settings: the donor's for the minis; the boss
         -- frames' own once the boss Border Style leaves Inherit (the live
@@ -2883,7 +2899,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         -- Donor's exact pixel size rides along only while this frame is not
         -- setting the size itself (Advanced borderSize, or borderSizeOverride).
         EllesmereUI.ApplyBorderStyle(border, bs, bc.r, bc.g, bc.b, PB("borderAlpha") or 1, bTexKey, PB("borderTextureOffset"), PB("borderTextureOffsetY"), PB("borderTextureShiftX"), PB("borderTextureShiftY"), "unitframes", bs, nil,
-            (not ((pov and pov.borderSize) or s.borderSizeOverride)) and EllesmereUI.BorderPx(bds.borderSizePx, bs, bTexKey) or nil)
+            EllesmereUI.BorderPx((not ((pov and pov.borderSize) or s.borderSizeOverride)) and bds.borderSizePx, bs, bTexKey))
 
         -- Class Power Pips update (player only)
         if cpPipContainer and cpPips then
@@ -3050,7 +3066,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 local pvGl = pf._pvGlowLine
                 local glEm = s.absorbEdgeMode or "overlay"
                 if s.absorbGlowLine == true and not s.healthVerticalFill
-                    and (glEm == "overlay" or glEm == "overlayReverse") then
+                    and (glEm == "overlay" or glEm == "overlayReverse" or glEm == "overlayReverseFull") then
                     if not pvGl then
                         pvGl = absorbBar:CreateTexture(nil, "OVERLAY")
                         pf._pvGlowLine = pvGl
@@ -3612,7 +3628,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local bc2 = PB("borderColor") or { r = 0, g = 0, b = 0 }
             local bTex2 = PB("borderTexture") or "solid"
             EllesmereUI.ApplyBorderStyle(border, bs2, bc2.r, bc2.g, bc2.b, PB("borderAlpha") or 1, bTex2, PB("borderTextureOffset"), PB("borderTextureOffsetY"), PB("borderTextureShiftX"), PB("borderTextureShiftY"), "unitframes", bs2, nil,
-                (not ((pov and pov.borderSize) or s.borderSizeOverride)) and EllesmereUI.BorderPx(bds.borderSizePx, bs2, bTex2) or nil)
+                EllesmereUI.BorderPx((not ((pov and pov.borderSize) or s.borderSizeOverride)) and bds.borderSizePx, bs2, bTex2))
         end
         if castbar then
             if PP.GetBorders(castbar) then PP.SetBorderSize(castbar, 1) end
@@ -3702,17 +3718,19 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         end
         if s.portraitSeparator or pf._portraitSeparator then
             ns.UpdatePortraitSeparator(pf, portraitFrame, s, effectiveSide,
-                sp and isAttached, EllesmereUI.BlizzStyle.Get("unitframes"), true)
+                sp and isAttached, EllesmereUI.BlizzStyle.Get("unitframes"), true,
+                (unitKey == "targettarget" or unitKey == "boss") and bds or nil)
         end
-        -- After the separators have their final layout, mirror the live
-        -- Magic dispel copies, including their above/below and left/right art.
-        local dispelBorderOn = pf._pvDispelBorder and pf._pvDispelBorder:IsShown()
-        if dispelBorderOn or pf._pvDispelPowerSeam or pf._pvDispelPortraitSeam then
+        -- Color Custom Borders: while the Magic border copy shows, both
+        -- separators are tinted Magic at full opacity in place, as the live
+        -- copies draw them (the two passes above reset the border colour
+        -- first), so the preview does not depend on copy-frame draw order
+        -- inside the options panel.
+        if pf._pvDispelBorder and pf._pvDispelBorder:IsShown() then
             local mc = db.profile.dispelColorMagic or { r = 0.349, g = 0.475, b = 1.0 }
-            ns.UF_ApplyDispelSeparatorCopy(pf, pf, "_pvDispelPowerSeam",
-                dispelBorderOn and power and power._pbSeam, mc)
-            ns.UF_ApplyDispelSeparatorCopy(pf, pf, "_pvDispelPortraitSeam",
-                dispelBorderOn and pf._portraitSeparator, mc)
+            local pSeam, vSeam = power and power._pbSeam, pf._portraitSeparator
+            if pSeam and pSeam:IsShown() then pSeam._tex:SetVertexColor(mc.r, mc.g, mc.b, 1) end
+            if vSeam and vSeam:IsShown() then vSeam._tex:SetVertexColor(mc.r, mc.g, mc.b, 1) end
         end
 
         -- Re-snap BTB

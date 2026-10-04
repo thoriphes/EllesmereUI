@@ -12,6 +12,9 @@
 # Main Luas
 EllesmereUIRaidFrames.lua
 
+# Options preview (fake raid/party members while the options panel is open)
+EUI_RaidFrames_Preview.lua
+
 # Blizzard Style / Classic WoW UI (edge, highlights, defaults)
 EUI_RaidFrames_Stock.lua
 

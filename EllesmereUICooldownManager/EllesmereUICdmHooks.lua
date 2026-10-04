@@ -850,13 +850,13 @@ function ns.CdmBarHasShiftCdState(barKey)
                     local ss = ResolveSpellSettings(nil, sid, sd, barKey)
                     eff = ss and ss.cdStateEffect
                 end
-                if eff ~= "hiddenOnCDShift" and eff ~= "hiddenReadyShift"
+                if eff ~= "hiddenOnCDShift" and eff ~= "hiddenReadyShift" and eff ~= "hiddenUnusableShift"
                    and ns.GetEffectiveCustomActiveState then
                     local cas = ns.GetEffectiveCustomActiveState(sid)
                     if cas and cas.cdStateEffect then eff = cas.cdStateEffect end
                 end
             end
-            if eff == "hiddenOnCDShift" or eff == "hiddenReadyShift" then
+            if eff == "hiddenOnCDShift" or eff == "hiddenReadyShift" or eff == "hiddenUnusableShift" then
                 return true
             end
         end
@@ -903,11 +903,23 @@ function ns.ApplyActiveOverlays(frame, fd, ss, isActive, bd)
                 fd._activeGlowOn = true
                 fd._activeGlowStyle = ss.activeGlow
                 fd._activeGlowR, fd._activeGlowG, fd._activeGlowB = gr, gg, gb
+                -- This replaced any CD-state glow on the shared overlay: the memo
+                -- follows the visual, and the glow is owed back when the active
+                -- window ends (below). A Blackout keeps its own overlay.
+                local bo = fd.blackoutOverlay
+                if fd._cdStateGlowOn and not (bo and bo._glowActive) then
+                    fd._cdStateGlowOn = false
+                    fd._cdGlowOwed = true
+                end
             end
         end
     elseif fd._activeGlowOn then
         if fd.glowOverlay then ns.StopNativeGlow(fd.glowOverlay) end
         fd._activeGlowOn = false
+        -- A CD-state glow this replaced or held back lights now, not on the
+        -- icon's next cooldown edge: a buff that outlasts its cooldown ends
+        -- with no further cooldown push to re-run that decision.
+        if fd._cdGlowOwed then ns.CdGlowKick(frame) end
     end
 
     -- Active border color (per-spell): recolor while active, restore on falloff.
@@ -2692,6 +2704,16 @@ function ns.CdmCdStateReady(liveSid, onCD, hideUntilSpent)
     return not onCD
 end
 
+-- Hidden Until Usable: the spell counts as unavailable while it cannot be used
+-- for any reason but missing power, so a reactive spell (Overpower, Victory
+-- Rush, Execute) shows once its proc or condition is up, tinted by Blizzard
+-- while rage / energy / mana is short, and power ticks never flip the answer.
+-- IsSpellUsable returns plain booleans on every client.
+function ns.CdmSpellNotUsable(liveSid)
+    local usable, noPower = C_Spell.IsSpellUsable(liveSid)
+    return not (usable or noPower)
+end
+
 -- Deferred cd-state evaluator for the hide / lower-alpha modes, shared by the
 -- SetDesaturated hook (every cooldown transition) and the charge watch below.
 -- Deferred one frame because SetDesaturated fires inside Blizzard's secure CDM
@@ -2699,7 +2721,7 @@ end
 -- evaluation (charge spells report isActive with charges left, GCD tail races).
 -- The OnUpdate script is installed ONCE per frame object: the hook fires per
 -- repaint, so per-arm work stays plain field writes, never closure creation.
-local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent)
+local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent, usable)
     local pending = fd._cdStatePending
     if not pending then
         pending = CreateFrame("Frame")
@@ -2715,8 +2737,15 @@ local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent
             if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
                 liveSid = C_SpellBook.FindSpellOverrideByID(sid3) or sid3
             end
-            local cseInfo = C_Spell.GetSpellCooldown(liveSid)
-            local onCD = cseInfo and cseInfo.isActive and not cseInfo.isOnGCD
+            local onCD
+            -- Hidden Until Usable arrives as Hidden (On CD) with this flag: an
+            -- unusable spell hides whatever its cooldown, so that read is skipped.
+            if self.usable and ns.CdmSpellNotUsable(liveSid) then
+                onCD = true
+            else
+                local cseInfo = C_Spell.GetSpellCooldown(liveSid)
+                onCD = cseInfo and cseInfo.isActive and not cseInfo.isOnGCD
+            end
             local myCse = self.cse
             local bd3 = barDataByKey and barDataByKey[bk3]
             local baseA = ns.IconShownAlpha(fc3, bd3)
@@ -2757,6 +2786,7 @@ local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent
     pending.lowAlpha = lowAlpha
     pending.shift = cseShift
     pending.hideUntilSpent = hideUntilSpent
+    pending.usable = usable
     pending:Show()
 end
 
@@ -2820,6 +2850,59 @@ function ns.WatchCdStateChargeIfEnabled(frame)
             end
         end)
         ns._cdStateChargeEventFrame = ef
+    end
+end
+
+-------------------------------------------------------------------------------
+--  Hidden Until Usable: proc edges
+--  The mode runs as Hidden (On CD) with "not usable" counting as unavailable,
+--  so its cooldown edges ride the SetDesaturated hook like every hidden mode.
+--  A proc (Overpower after a dodge, Victory Rush after a kill) changes only
+--  usability, which Blizzard's own icons follow through SPELL_UPDATE_USABLE.
+--  That event is registered only while an icon runs the mode; a burst folds
+--  into one pass on the next frame, which re-resolves each watched icon (an
+--  icon whose mode, spell or owner changed leaves the set) and re-arms the
+--  shared evaluator. The set drains itself, then the event unregisters.
+-------------------------------------------------------------------------------
+do
+    local watch = setmetatable({}, { __mode = "k" })  -- icon frame -> true
+    local eventFrame, flushFrame
+
+    local function Flush(self)
+        self:Hide()
+        for frame in pairs(watch) do
+            local fd = hookFrameData[frame]
+            local fc = _ecmeFC[frame]
+            local sid = fc and fc.spellID
+            local bk = fc and fc.barKey
+            local cse
+            -- Same ownership guards as the SetDesaturated hook.
+            if fd and sid and bk and bk:sub(1, 7) ~= "__ghost" and bk ~= ns.FOCUSKICK_BAR_KEY
+               and not (ns.PresetHasCdState and ns.PresetHasCdState(frame)) then
+                cse = ns.GetSpellCdStateEffect(frame, ResolveSpellSettings(frame, sid, false))
+            end
+            if cse == "hiddenUnusable" or cse == "hiddenUnusableShift" then
+                ArmCdStateEval(frame, fd, "hiddenOnCD", cse == "hiddenUnusableShift", nil, nil, true)
+            else
+                watch[frame] = nil
+            end
+        end
+        if not next(watch) then eventFrame:UnregisterEvent("SPELL_UPDATE_USABLE") end
+    end
+
+    -- Called wherever the mode is resolved for an icon (SetDesaturated hook,
+    -- RefreshCDMIconAppearance). One table read once the icon is watched.
+    function ns.WatchCdUsable(frame)
+        if watch[frame] then return end
+        watch[frame] = true
+        if not eventFrame then
+            flushFrame = ns.TakeShell()
+            flushFrame:Hide()
+            flushFrame:SetScript("OnUpdate", Flush)
+            eventFrame = ns.TakeShell()
+            eventFrame:SetScript("OnEvent", function() flushFrame:Show() end)
+        end
+        eventFrame:RegisterEvent("SPELL_UPDATE_USABLE")
     end
 end
 
@@ -3123,6 +3206,10 @@ local function DecorateFrame(frame, barData)
         fd.borderFrame:SetFrameLevel(barData.borderBehind and math.max(0, baseLvl - 1) or (baseLvl + 13))
     end
     if fd.glowOverlay then fd.glowOverlay:SetFrameLevel(baseLvl + 16) end
+    -- Blackout (solid-fill Cooldown State glow) sits BELOW frame.Cooldown
+    -- (icon+14), unlike every other glow style on glowOverlay (icon+16): a
+    -- fill above it would hide the swipe and countdown. Made by
+    -- ns.StartCdGlow on the icon's first Blackout start.
     if fd.blackoutOverlay then fd.blackoutOverlay:SetFrameLevel(baseLvl + 12) end
     if fd.textOverlay then fd.textOverlay:SetFrameLevel(baseLvl + 23) end
     if blizzArt then ns.CdmApplyBlizzIconArt(frame) end
@@ -3217,20 +3304,6 @@ local function DecorateFrame(frame, barData)
         go:EnableMouse(false)
         fd.glowOverlay = go
         go:SetFrameLevel(baseLvl + 16)
-    end
-
-    -- Blackout (solid-fill Cooldown State glow) lives BELOW frame.Cooldown
-    -- (icon+14), unlike every other glow style on glowOverlay (icon+16,
-    -- above it): a fill there would fully hide the swipe/countdown text.
-    -- ns.StartCdGlow/ns.StopCdGlow pick this frame instead whenever the
-    -- resolved style is Blackout.
-    if not fd.blackoutOverlay then
-        local bo = CreateFrame("Frame", nil, frame)
-        bo:SetAllPoints(frame)
-        bo:SetAlpha(0)
-        bo:EnableMouse(false)
-        fd.blackoutOverlay = bo
-        bo:SetFrameLevel(baseLvl + 12)
     end
 
     -- Re-arm the buff ticker's active-glow "nothing configured" latch: this
@@ -4223,8 +4296,11 @@ local function DecorateFrame(frame, barData)
                 local cse = ns.GetSpellCdStateEffect(frame, ss2)
                 -- Shift-Icons variants = base hidden mode + a bar-relayout
                 -- flag; normalize here so every comparison below is unchanged.
-                local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift")
-                if cse == "hiddenOnCDShift" then cse = "hiddenOnCD"
+                -- Hidden Until Usable = Hidden (On CD) + the usable flag.
+                local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift"
+                    or cse == "hiddenUnusableShift")
+                local cseUsable = (cse == "hiddenUnusable" or cse == "hiddenUnusableShift")
+                if cse == "hiddenOnCDShift" or cseUsable then cse = "hiddenOnCD"
                 elseif cse == "hiddenReadyShift" then cse = "hiddenReady" end
                 if not cse then
                     if fd._cdStateGlowOn then
@@ -4264,7 +4340,9 @@ local function DecorateFrame(frame, barData)
                 if cse == "hiddenOnCD" or cse == "hiddenReady" or cse == "lowerAlphaOnCD" then
                     ArmCdStateEval(frame, fd, cse, cseShift,
                         (ss2 and ss2.cdStateLowerAlpha) or 0.5,
-                        ss2 and ss2.chargeHideUntilSpent)
+                        ss2 and ss2.chargeHideUntilSpent, cseUsable)
+                    -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
+                    if cseUsable then ns.WatchCdUsable(frame) end
                     -- Hidden (CD Ready) on a charge spell also needs the refill-to-max
                     -- edge, which this hook never fires. Registered once per spell
                     -- binding (a pooled frame can be handed a different spell), so
@@ -4310,24 +4388,24 @@ local function DecorateFrame(frame, barData)
                         end
                     end
                     if not onCD then
-                        -- procGlowActive gate: the proc glow shares this
-                        -- overlay and has priority -- never start over it
-                        -- (ShowProcGlow clears the memo, so this is the
-                        -- explicit gate that replaces the old accidental one).
-                        if fd.glowOverlay and not fd._cdStateGlowOn
-                            and not fd.procGlowActive then
+                        -- The proc and active-state glows share this overlay
+                        -- and have priority: ns.StartCdGlow never starts over
+                        -- them (only a Blackout, on its own overlay, shows
+                        -- beside them) and records the glow as owed instead.
+                        if fd.glowOverlay and not fd._cdStateGlowOn then
                             local style = ns.CdReadyGlowStyle(cse, ss2)
                             local cr, cg, cb = ns.CdReadyGlowColor(style, ss2)
-                            ns.StartCdGlow(fd, style, cr, cg, cb, { alpha = ns.CdReadyGlowAlpha(ss2) })
-                            fd._cdStateGlowOn = true
+                            fd._cdStateGlowOn = ns.StartCdGlow(fd, style, cr, cg, cb, ns.CdReadyGlowAlpha(ss2)) ~= nil
                         end
                     elseif fd._cdStateGlowOn then
                         ns.StopCdGlow(fd)
                         fd._cdStateGlowOn = false
                     end
-                elseif cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable" then
+                elseif cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable"
+                    or cse == "glowOnCD" then
                     -- Resource Aware CD Ready Glow: also requires the spell to
-                    -- be castable (resources/form/lockout).
+                    -- be castable (resources/form/lockout). Glow (On CD): the plain
+                    -- Ready rule inverted -- glows for the whole cooldown.
                     -- Pool reassignment reset, same as the plain variants.
                     if fd._cdGlowBoundSid ~= sid2 then
                         fd._cdGlowBoundSid = sid2
@@ -4336,18 +4414,24 @@ local function DecorateFrame(frame, barData)
                             fd._cdStateGlowOn = false
                         end
                     end
-                    -- Track this frame for the event-driven re-evaluation loop.
-                    -- The loop's events stay unregistered until the first watch,
-                    -- so the whole system is inert unless a Resource Aware glow
-                    -- is actually configured somewhere.
-                    if ns.CDGlowWatch then ns.CDGlowWatch(frame) end
+                    -- Track this frame for the event-driven re-evaluation loop:
+                    -- every Resource Aware glow, and On CD glows on EUI's custom
+                    -- frames (see the plain branch). The loop's events stay
+                    -- unregistered until the first watch, so the whole system is
+                    -- inert unless such a glow is actually configured somewhere.
+                    if ns.CDGlowWatch and (cse ~= "glowOnCD" or frame._isRacialFrame
+                        or frame._isTrinketFrame or frame._isPresetFrame
+                        or frame._isItemPresetFrame or frame._isCustomSpellFrame) then
+                        ns.CDGlowWatch(frame)
+                    end
                     -- Defer the actual decision by one frame, same as
                     -- hiddenOnCD/hiddenReady above: SetDesaturated fires inside
                     -- Blizzard's secure CDM chain where C_Spell.IsSpellUsable can
-                    -- return stale values. The OnUpdate script is installed ONCE
-                    -- per frame object -- this hook fires on every repaint
-                    -- (range/resource tints), so the per-fire work must stay at
-                    -- plain field writes, never closure creation.
+                    -- return stale values and a GCD can read as a real cooldown
+                    -- (lighting Glow (On CD) on a ready spell). The OnUpdate script
+                    -- is installed ONCE per frame object -- this hook fires on every
+                    -- repaint (range/resource tints), so the per-fire work must stay
+                    -- at plain field writes, never closure creation.
                     local pending = fd._cdStateGlowPending
                     if not pending then
                         pending = CreateFrame("Frame")
@@ -4360,28 +4444,32 @@ local function DecorateFrame(frame, barData)
                             -- transients misreport isActive there).
                             local ci = C_Spell.GetSpellCooldown(self.sid)
                             local pOnCD = ci and ci.isActive and not ci.isOnGCD
-                            local isUsable
-                            if ns._cdmSoundSuppressed and ns._cdmSoundSuppressed() then
-                                -- Loading-screen settle window: IsSpellUsable is not
-                                -- trustworthy yet. Glow from cooldown state alone
-                                -- (pre-usability behavior); the queued post-settle
-                                -- pass re-evaluates with real data.
-                                isUsable = true
+                            local shouldGlow
+                            if self.cse == "glowOnCD" then
+                                shouldGlow = pOnCD
                             else
-                                -- nil = API has no data for this spell -> treat as
-                                -- not usable; a later event re-evaluates.
-                                isUsable = C_Spell.IsSpellUsable and C_Spell.IsSpellUsable(self.sid)
+                                local isUsable
+                                if ns._cdmSoundSuppressed and ns._cdmSoundSuppressed() then
+                                    -- Loading-screen settle window: IsSpellUsable is not
+                                    -- trustworthy yet. Glow from cooldown state alone
+                                    -- (pre-usability behavior); the queued post-settle
+                                    -- pass re-evaluates with real data.
+                                    isUsable = true
+                                else
+                                    -- nil = API has no data for this spell -> treat as
+                                    -- not usable; a later event re-evaluates.
+                                    isUsable = C_Spell.IsSpellUsable and C_Spell.IsSpellUsable(self.sid)
+                                end
+                                shouldGlow = (not pOnCD) and (isUsable == true)
                             end
-                            local shouldGlow = (not pOnCD) and (isUsable == true)
                             if shouldGlow then
-                                -- procGlowActive: proc owns the shared
-                                -- overlay -- never start over a live proc.
-                                if fd.glowOverlay and not fd._cdStateGlowOn
-                                    and not fd.procGlowActive then
+                                -- A live proc or active-state glow owns the
+                                -- shared overlay: ns.StartCdGlow lights only a
+                                -- Blackout beside it.
+                                if fd.glowOverlay and not fd._cdStateGlowOn then
                                     local style = ns.CdReadyGlowStyle(self.cse, self.ss2)
                                     local cr, cg, cb = ns.CdReadyGlowColor(style, self.ss2)
-                                    ns.StartCdGlow(fd, style, cr, cg, cb, { alpha = ns.CdReadyGlowAlpha(self.ss2) })
-                                    fd._cdStateGlowOn = true
+                                    fd._cdStateGlowOn = ns.StartCdGlow(fd, style, cr, cg, cb, ns.CdReadyGlowAlpha(self.ss2)) ~= nil
                                 end
                             elseif fd._cdStateGlowOn then
                                 ns.StopCdGlow(fd)
@@ -4393,33 +4481,6 @@ local function DecorateFrame(frame, barData)
                     pending.sid = liveSid
                     pending.ss2 = ss2
                     pending:Show()
-                elseif cse == "glowOnCD" then
-                    -- Glow (On CD): mirror of the plain Ready branch above, condition
-                    -- inverted -- glows for the whole cooldown instead of at readiness.
-                    if (frame._isRacialFrame or frame._isTrinketFrame or frame._isPresetFrame
-                        or frame._isItemPresetFrame or frame._isCustomSpellFrame)
-                        and ns.CDGlowWatch then
-                        ns.CDGlowWatch(frame)
-                    end
-                    if fd._cdGlowBoundSid ~= sid2 then
-                        fd._cdGlowBoundSid = sid2
-                        if fd._cdStateGlowOn then
-                            ns.StopCdGlow(fd)
-                            fd._cdStateGlowOn = false
-                        end
-                    end
-                    if onCD then
-                        if fd.glowOverlay and not fd._cdStateGlowOn
-                            and not fd.procGlowActive then
-                            local style = ns.CdReadyGlowStyle(cse, ss2)
-                            local cr, cg, cb = ns.CdReadyGlowColor(style, ss2)
-                            ns.StartCdGlow(fd, style, cr, cg, cb, { alpha = ns.CdReadyGlowAlpha(ss2) })
-                            fd._cdStateGlowOn = true
-                        end
-                    elseif fd._cdStateGlowOn then
-                        ns.StopCdGlow(fd)
-                        fd._cdStateGlowOn = false
-                    end
                 end
             end)
         end
@@ -4951,7 +5012,7 @@ end)
 --  clearing a glow that came up stale across a /reload.
 -------------------------------------------------------------------------------
 do
-    local _cdGlowWatched = setmetatable({}, { __mode = "k" })  -- frame -> true
+    local _cdGlowWatched = setmetatable({}, { __mode = "k" })  -- frame -> true (watched) | false (one-shot kick)
     local _cdGlowDirty = false
     local _cdGlowEventsOn = false
     local _cdGlowRetryPending = false
@@ -4989,6 +5050,28 @@ do
         end
     end
 
+    -- One-shot re-evaluation of an icon whose CD-state glow is owed
+    -- (fd._cdGlowOwed: ns.StartCdGlow refused it, or the proc / active-state
+    -- glow replaced it, while that glow held the shared overlay). The edge that
+    -- ends the proc or active glow calls this, so the CD-state glow comes back
+    -- at once instead of on the icon's next cooldown edge, which never comes
+    -- when a buff outlasts its cooldown. The entry goes in as false: no events
+    -- register for it and the next flush evaluates it once and drops it (a
+    -- watched frame keeps its watch). Preset frames own their CD-state through
+    -- the Fake-Active engine, so its coalesced pass is queued too, only for a
+    -- frame that engine has painted (fd._presetCdTouched): a native icon's kick
+    -- never wakes the preset sweep.
+    function ns.CdGlowKick(frame)
+        local fd = frame and hookFrameData[frame]
+        if not fd then return end
+        fd._cdGlowOwed = nil
+        if not _cdGlowWatched[frame] then _cdGlowWatched[frame] = false end
+        QueueCDGlowUpdate()
+        if fd._presetCdTouched and ns.FakeActive_QueueCdStateEval then
+            ns.FakeActive_QueueCdStateEval()
+        end
+    end
+
     _cdGlowUpdateFrame:SetScript("OnUpdate", function(self)
         self:Hide()
         _cdGlowDirty = false
@@ -5012,7 +5095,7 @@ do
             end
             return
         end
-        for frame in pairs(_cdGlowWatched) do
+        for frame, watched in pairs(_cdGlowWatched) do
             local fd = hfd[frame]
             local fc2 = efc[frame]
             local sid2 = fc2 and fc2.spellID
@@ -5064,14 +5147,14 @@ do
                         shouldGlow = true
                     end
                     if shouldGlow then
-                        -- procGlowActive: proc owns the shared overlay --
-                        -- never start over a live proc; StopProcGlow queues
-                        -- this flush again once the proc ends.
-                        if not fd._cdStateGlowOn and not fd.procGlowActive then
+                        -- A live proc or active-state glow owns the shared
+                        -- overlay: ns.StartCdGlow lights only a Blackout beside
+                        -- it, and the glow it holds back is kicked through
+                        -- here again once that glow ends (ns.CdGlowKick).
+                        if not fd._cdStateGlowOn then
                             local style = ns.CdReadyGlowStyle(cse2, ss2)
                             local cr, cg, cb = ns.CdReadyGlowColor(style, ss2)
-                            ns.StartCdGlow(fd, style, cr, cg, cb, { alpha = ns.CdReadyGlowAlpha(ss2) })
-                            fd._cdStateGlowOn = true
+                            fd._cdStateGlowOn = ns.StartCdGlow(fd, style, cr, cg, cb, ns.CdReadyGlowAlpha(ss2)) ~= nil
                         end
                     elseif fd._cdStateGlowOn then
                         ns.StopCdGlow(fd)
@@ -5088,6 +5171,9 @@ do
                     ns.StopCdGlow(fd)
                     fd._cdStateGlowOn = false
                 end
+            elseif not watched then
+                -- One-shot kick (ns.CdGlowKick): evaluated once, now leaves.
+                _cdGlowWatched[frame] = nil
             end
         end
         if not next(_cdGlowWatched) then
@@ -8339,6 +8425,11 @@ local function CollectAndReanchor()
                             if not hasClaim then
                                 local isRacial = ns._myRacialsSet and ns._myRacialsSet[sid]
                                 local isCustomSpell = sd and sd.customSpellIDs and sd.customSpellIDs[sid]
+                                -- Keep saved placement, but do not inject an unlearned talent.
+                                if isCustomSpell then
+                                    isCustomSpell = ns.IsSpellInPlayerBook(sid, false)
+                                        or C_SpellBook.IsSpellKnownOrInSpellBook(sid, Enum.SpellBookSpellBank.Pet, false)
+                                end
                                 -- FRAMES AS TRUTH (native-first, injection-fallback): a racial
                                 -- with a LIVE Blizzard frame anywhere is a regular native
                                 -- cooldown -- hasClaim above already skipped it, and the route
@@ -8740,7 +8831,8 @@ local function CollectAndReanchor()
                                     if fcS._cdStateShiftHidden then blocked = true; break end
                                     local ssS = ResolveSpellSettings(srcList[i], fcS.spellID, sdS, bd.key)
                                     local effS = ns.GetSpellCdStateEffect(srcList[i], ssS)
-                                    if effS == "hiddenOnCDShift" or effS == "hiddenReadyShift" then
+                                    if effS == "hiddenOnCDShift" or effS == "hiddenReadyShift"
+                                       or effS == "hiddenUnusableShift" then
                                         blocked = true; break
                                     end
                                 end
@@ -10967,6 +11059,10 @@ function ns.SetupViewerHooks()
                                         if fd._activeGlowOn then
                                             if fd.glowOverlay then ns.StopNativeGlow(fd.glowOverlay) end
                                             fd._activeGlowOn = false
+                                            -- The falling edge Blizzard pushed no
+                                            -- swipe for: light an owed CD-state
+                                            -- glow now (see ApplyActiveOverlays).
+                                            if fd._cdGlowOwed then ns.CdGlowKick(frame) end
                                         end
                                     elseif r and ns._cdmAnyActiveGlow
                                        and not fd._activeGlowNoCfg
@@ -11123,6 +11219,24 @@ function ns.SetupViewerHooks()
         -- CooldownManager context, so the group is born correctly billed.
         local _btTicker
         cdmBuffTickFrame:RegisterUnitEvent("UNIT_AURA", "player")
+        -- Target auras: a Bar Glow on a tracked TARGET debuff (e.g. Freezing) changes
+        -- with no player aura edge, so with a player-only listener its glow waited
+        -- for some unrelated player aura (or a target swap) -- seconds late. The
+        -- target unit is added only while a Bar Glow tracks a non-self aura (Bar
+        -- Glows' SetupOverlays calls this with its want, remembered in
+        -- ns._bgWantTargetAuras in case it runs before this block), so glows on
+        -- your own buffs never pay for target (raid boss) aura churn.
+        ns.SetBarGlowTargetAuras = function(want)
+            want = want and true or false
+            if want == ns._bgTargetAuras then return end
+            ns._bgTargetAuras = want
+            if want then
+                cdmBuffTickFrame:RegisterUnitEvent("UNIT_AURA", "player", "target")
+            else
+                cdmBuffTickFrame:RegisterUnitEvent("UNIT_AURA", "player")
+            end
+        end
+        ns.SetBarGlowTargetAuras(ns._bgWantTargetAuras)
         cdmBuffTickFrame:RegisterEvent("PLAYER_TOTEM_UPDATE")
         cdmBuffTickFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
         -- Target-applied auras bind and release on this edge and on no player-scoped
@@ -11159,9 +11273,13 @@ function ns.SetupViewerHooks()
                     local full    = updateInfo.isFullUpdate
                     local removed = updateInfo.removedAuraInstanceIDs
                     local added   = updateInfo.addedAuras
+                    -- A stack change arrives as an UPDATE (no add/remove), so a
+                    -- stack-gated Bar Glow's count stayed stale until some other
+                    -- edge. Read only while a stack-gated glow exists (nil otherwise).
+                    local updated = ns._barGlowStackSids and updateInfo.updatedAuraInstanceIDs
                     if issecretvalue(full) or issecretvalue(removed)
-                       or issecretvalue(added)
-                       or full or removed or added then
+                       or issecretvalue(added) or issecretvalue(updated)
+                       or full or removed or added or updated then
                         ns._acGen = (ns._acGen or 0) + 1
                     end
                 end

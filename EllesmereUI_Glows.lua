@@ -830,8 +830,9 @@ end
 --  Solid Fill Engine (Blackout)
 --  One colour texture covering the wrapper at a caller-chosen alpha (opaque
 --  by default), so the icon can be fully hidden or only partially obscured.
---  Static: no driver tick and no AnimationGroup, so it renders identically
---  inside the 12.1 forbidden partition and costs nothing per frame.
+--  Static: no driver tick and no AnimationGroup, so it costs nothing per
+--  frame. The texture is created on the first start and PrewarmEngineHost has
+--  no fill family, so this is not an engine-host style.
 -------------------------------------------------------------------------------
 local function StartSolidFill(wrapper, cr, cg, cb, opts)
     opts = opts or {}
@@ -928,7 +929,7 @@ end
 --    .maskPath, .borderPath, .shapeMask — shape glow textures
 --    .untinted    -- a nil color stays nil on the FlipBook path (the atlas's
 --                   own untinted look) instead of desaturated white
---    .alpha       — Blackout fill opacity (0-1, default 1 = opaque)
+--    .alpha       -- Blackout fill opacity (0-1, default 1 = opaque)
 -------------------------------------------------------------------------------
 local function StartGlow(wrapper, styleIdx, szOrW, cr, cg, cb, opts, szH)
     if not wrapper then return end
@@ -938,8 +939,8 @@ local function StartGlow(wrapper, styleIdx, szOrW, cr, cg, cb, opts, szH)
     opts = opts or {}
     local w = szOrW or 36
     local h = szH or w
-    -- An unspecified colour means black (Blackout's default look), not the
-    -- tinted-style gold noColor would otherwise resolve to.
+    -- An unspecified colour means black for Blackout (its default look), not
+    -- the white every other style falls back to below.
     local noColor = (cr == nil)
     local keepUntinted = opts.untinted and cr == nil
     cr = cr or 1; cg = cg or 1; cb = cb or 1
@@ -1138,7 +1139,9 @@ local ABG_HALO_OPTS = { abgHalo = true }  -- shared scratch for the no-opts ABG 
 local function StartEngineGlow(wrapper, styleIdx, szOrW, cr, cg, cb, opts, szH)
     if not wrapper then return end
     styleIdx = tonumber(styleIdx) or 1
-    if styleIdx < 1 or styleIdx > #GLOW_STYLES then styleIdx = 1 end
+    -- Blackout is Cooldown Manager only: engine hosts draw Pixel instead, as
+    -- ResolveStyle does.
+    if styleIdx < 1 or styleIdx > #GLOW_STYLES or GLOW_STYLES[styleIdx].solidFill then styleIdx = 1 end
     local entry = GLOW_STYLES[styleIdx]
     if entry.procedural then
         opts = opts or {}
@@ -1305,9 +1308,11 @@ do
         return { list = list, toShared = toShared, fromShared = fromShared, ordered = ordered }
     end
 
-    -- Styles each host can render, by shared index. Only technical limits live
+    -- Styles each host can render, by shared index. Technical limits live
     -- here; which styles a site OFFERS (e.g. no Shape without an icon shape) is
-    -- the site's own excludes list.
+    -- the site's own excludes list. Blackout (8) is Cooldown Manager only and
+    -- stays out of every host on purpose: that keeps it out of every shared
+    -- glow picker (StyleOffered), and ResolveStyle turns a stray 8 into Pixel.
     --   icon   : our own frame, driver-ticked engines allowed
     --   bar    : our own rectangular frame; Shape has no shape to follow
     --   engine : 12.1 aura-button subtree; no driver ticks, so no Auto-Cast or

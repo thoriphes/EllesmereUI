@@ -584,6 +584,26 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
             },
         })
     end
+    -- Inline reposition cog on "Expand Power Bar if No Resource": Extra Y Offset
+    if not EllesmereUI._prebuilding then
+        local rgn = blizzArtRow._rightRegion
+        local function expandOff()
+            local p = DB(); return not (p and p.primary.expandIfNoResource)
+        end
+        EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+            disabled = expandOff, disabledTooltip = "Expand Power Bar if No Resource",
+            title = "Expand Offset",
+            rows = {
+                { type = "slider", pixel = true, label = "Extra Y Offset", min = -50, max = 50, step = 1,
+                  get = function() local p = DB(); return (p and p.primary.expandIfNoResourceExtraY) or 0 end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.primary.expandIfNoResourceExtraY = v
+                      Refresh()
+                  end },
+            },
+        })
+    end
 
     -- Row 5: Shift Elements if No Resource | Shift Elements if No Power
     local shiftRow

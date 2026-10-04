@@ -14,7 +14,7 @@ local function BuildDisplayLayout(parent, y, ctx)
     local env = ns._NPO_OptEnv
     local DB, DBVal, defaults, GetNPOptOutline = env.DB, env.DBVal, env.defaults, env.GetNPOptOutline
     local hbtOrder, hbtValues, optState, pairs = env.hbtOrder, env.hbtValues, env.optState, env.pairs
-    local plates, PP, UpdatePreview = env.plates, env.PP, env.UpdatePreview
+    local plates, PP, UpdatePreview, RefreshAllPlates = env.plates, env.PP, env.UpdatePreview, env.RefreshAllPlates
     local GetElementAtPosition, RefreshAllSlots, SetElementAtPosition, SetTextElementAtSlot = ctx.GetElementAtPosition, ctx.RefreshAllSlots, ctx.SetElementAtPosition, ctx.SetTextElementAtSlot
     local W = ctx.W
     local _, h
@@ -389,14 +389,31 @@ local function BuildDisplayLayout(parent, y, ctx)
                       tooltip="Gives the cast bar spell icon the custom border instead of its 1-pixel border.",
                       disabled=function()
                         return DBVal("showCastIcon") == false or DBVal("hideCastIconBorder") == true
+                            or DBVal("castbarIconInWidth") == true
                       end,
-                      disabledTooltip="This option requires the spell icon and its border to be shown.",
+                      disabledTooltip=function()
+                        if DBVal("castbarIconInWidth") == true then
+                            return "This option is disabled while Make Icon Part of the Bar is enabled."
+                        end
+                        return "This option requires the spell icon and its border to be shown."
+                      end,
                       rawTooltip=true,
                       get=function() return DBVal("castIconCustomBorder") == true end,
                       set=function(v)
                         DB().castIconCustomBorder = v
                         -- Re-applies every plate's appearance (pooled plates too), which
                         -- builds or turns off the icon border.
+                        ns.RefreshAllSettings()
+                        UpdatePreview()
+                      end },
+                    { type="toggle", label="Vertical Separator",
+                      tooltip="Draws a divider between the integrated spell icon and the cast bar using the custom border appearance.",
+                      disabled=function() return not ns.NP_CanShowCastIconSeparator(DB()) end,
+                      disabledTooltip="Requires Make Icon Part of the Bar, a shown non-full-sized icon, and a Solid or Pixels border with size above 0.",
+                      rawTooltip=true,
+                      get=function() return DBVal("castIconSeparator") == true end,
+                      set=function(v)
+                        DB().castIconSeparator = v
                         ns.RefreshAllSettings()
                         UpdatePreview()
                       end },
@@ -543,6 +560,20 @@ local function BuildDisplayLayout(parent, y, ctx)
                     ns.ApplyAbsorbStyleAll()
                     UpdatePreview()
                   end },
+                -- Same placements as the unit frames' Absorb Rendering cog, except
+                -- that Overlay Reverse here keeps a shield larger than current
+                -- health (the unit frames clip that excess).
+                { type = "dropdown", label = "Placement",
+                  tooltip = "Overlay fills empty health first, then draws any excess over current health. Overlay Reverse draws the shield back over current health; a shield larger than current health spans from the bar's left end. From Right Edge and From Left Edge grow the whole shield from that end of the bar.",
+                  values = { overlay = "Overlay", overlayReverse = "Overlay Reverse",
+                             right = "From Right Edge", left = "From Left Edge" },
+                  order = { "overlay", "overlayReverse", "right", "left" },
+                  get = function() return DBVal("absorbEdgeMode") or "overlay" end,
+                  set = function(v)
+                    DB().absorbEdgeMode = v
+                    ns.ApplyAbsorbStyleAll()
+                    UpdatePreview()
+                  end },
             },
         })
     end
@@ -634,7 +665,7 @@ local function BuildDisplayLayout(parent, y, ctx)
                 local sub = coreHeader:CreateFontString(nil, "OVERLAY")
                 sub:SetFont(rgn:GetFont())
                 sub:SetTextColor(1, 1, 1, 0.25)
-                sub:SetText(EllesmereUI.L("(one per slot)"))
+                sub:SetText(EllesmereUI.L("(one slot per element)"))
                 sub:SetPoint("LEFT", rgn, "RIGHT", 6, 0)
                 break
             end
@@ -661,6 +692,200 @@ local function BuildDisplayLayout(parent, y, ctx)
     optState.RefreshCoreEyes = function()
         if _refreshRaidMarkerEyePos then _refreshRaidMarkerEyePos() end
         if _refreshClassificationEyePos then _refreshClassificationEyePos() end
+    end
+
+    -- Each slot's control is a checkbox dropdown, one box per element: a view
+    -- over the same stored keys the single-choice dropdowns wrote (each
+    -- element's slot key, debuffIncludeCC and classificationIncludeFaction for
+    -- the two pairs that can share a slot) plus classificationHideRare /
+    -- classificationHideQuest, the two halves of the Rare/Quest indicator. The
+    -- halves are one frame, so they always share a slot and move together.
+    -- Only elements of one group can share a slot; the rest grey out while the
+    -- slot holds something. The single-choice dropdowns stay built, hidden,
+    -- under the checkbox dropdowns (the row label's empty-slot state).
+    local CORE_ORDER = { "debuffs", "buffs", "ccs", "raidmarker", "rare", "quest", "faction" }
+    local CORE_LABEL = {
+        debuffs = "Debuffs", buffs = "Buffs", ccs = "Crowd Control", raidmarker = "Raid Marker",
+        rare = "Rare Indicator", quest = "Quest Indicator", faction = "Faction",
+    }
+    local CORE_TIP = {
+        rare  = "Elite and rare marks. Always in the same slot as the Quest Indicator.",
+        quest = "Marks mobs for your active quests. Always in the same slot as the Rare Indicator.",
+    }
+    local CORE_GROUP = {
+        debuffs = "aura", ccs = "aura",
+        rare = "class", quest = "class", faction = "class",
+        buffs = "buffs", raidmarker = "raidmarker",
+    }
+
+    local function CoreHas(pos, k)
+        if k == "debuffs" then return DBVal("debuffSlot") == pos end
+        if k == "buffs" then return DBVal("buffSlot") == pos end
+        if k == "ccs" then
+            return DBVal("ccSlot") == pos
+                or (DBVal("debuffIncludeCC") == true and DBVal("debuffSlot") == pos)
+        end
+        if k == "raidmarker" then return DBVal("raidMarkerPos") == pos end
+        if k == "rare" then
+            return DBVal("classificationSlot") == pos and not DBVal("classificationHideRare")
+        end
+        if k == "quest" then
+            return DBVal("classificationSlot") == pos and not DBVal("classificationHideQuest")
+        end
+        if k == "faction" then
+            -- While Rare/Quest + Faction is on, a leftover faction slot is ignored.
+            if DBVal("classificationIncludeFaction") == true then
+                return DBVal("classificationSlot") == pos
+            end
+            return DBVal("factionSlot") == pos
+        end
+        return false
+    end
+
+    -- A checked box can always be unchecked.
+    local function CoreLocked(pos, k)
+        if CoreHas(pos, k) then return false end
+        if k == "rare" and EllesmereUI.BlizzStyle.Forever("nameplates") then return true end
+        local g = CORE_GROUP[k]
+        for i = 1, #CORE_ORDER do
+            local o = CORE_ORDER[i]
+            if CORE_GROUP[o] ~= g and CoreHas(pos, o) then return true end
+        end
+        return false
+    end
+
+    local function CoreLockTip(k)
+        if k == "rare" and EllesmereUI.BlizzStyle.Forever("nameplates") then
+            return "WoW Forever nameplates show no elite or rare marks."
+        end
+        return "Only Debuffs with Crowd Control, or the Rare and Quest Indicators with Faction, can share a slot."
+    end
+
+    local function CoreSet(pos, k, v)
+        local db = DB()
+        if k == "debuffs" then
+            if v then
+                local old = DBVal("debuffSlot")
+                local merged = DBVal("debuffIncludeCC") == true
+                if DBVal("ccSlot") == pos then
+                    -- CC already here on its own: the two become Debuffs + CC.
+                    db.ccSlot = "none"
+                    merged = true
+                elseif merged and old ~= pos then
+                    -- Leaving a Debuffs + CC slot: CC stays there on its own
+                    -- unless it already has a slot elsewhere.
+                    if old ~= "none" and DBVal("ccSlot") == "none" then db.ccSlot = old end
+                    merged = false
+                end
+                db.debuffSlot = pos
+                db.debuffIncludeCC = merged
+            else
+                if DBVal("debuffIncludeCC") == true and DBVal("ccSlot") == "none" then
+                    db.ccSlot = pos
+                end
+                db.debuffSlot = "none"
+                db.debuffIncludeCC = false
+            end
+        elseif k == "ccs" then
+            if v then
+                if DBVal("debuffSlot") == pos then
+                    db.debuffIncludeCC = true
+                    db.ccSlot = "none"
+                else
+                    db.debuffIncludeCC = false
+                    db.ccSlot = pos
+                end
+            else
+                if DBVal("debuffSlot") == pos then db.debuffIncludeCC = false end
+                if DBVal("ccSlot") == pos then db.ccSlot = "none" end
+            end
+        elseif k == "buffs" then
+            if v then db.buffSlot = pos
+            elseif DBVal("buffSlot") == pos then db.buffSlot = "none" end
+        elseif k == "raidmarker" then
+            if v then db.raidMarkerPos = pos
+            elseif DBVal("raidMarkerPos") == pos then db.raidMarkerPos = "none" end
+        elseif k == "rare" or k == "quest" then
+            local hideKey = (k == "rare") and "classificationHideRare" or "classificationHideQuest"
+            local otherKey = (k == "rare") and "classificationHideQuest" or "classificationHideRare"
+            if v then
+                local old = DBVal("classificationSlot")
+                if old ~= pos then
+                    -- Moving: a Faction badge riding along stays behind on its own.
+                    if DBVal("classificationIncludeFaction") == true then
+                        db.classificationIncludeFaction = false
+                        if old ~= "none" then db.factionSlot = old end
+                    end
+                    -- Brought back from None: only the half that was checked.
+                    if old == "none" then db[otherKey] = true end
+                    db.classificationSlot = pos
+                    -- Faction already here on its own joins them.
+                    if DBVal("factionSlot") == pos then
+                        db.classificationIncludeFaction = true
+                        db.factionSlot = "none"
+                    end
+                end
+                db[hideKey] = false
+            elseif DBVal(otherKey) then
+                -- The last half goes: the indicator leaves the slot, a Faction
+                -- badge riding along stays there on its own.
+                if DBVal("classificationIncludeFaction") == true then
+                    db.classificationIncludeFaction = false
+                    db.factionSlot = pos
+                end
+                db.classificationSlot = "none"
+                db.classificationHideRare = false
+                db.classificationHideQuest = false
+            else
+                db[hideKey] = true
+            end
+        elseif k == "faction" then
+            if v then
+                if DBVal("classificationSlot") == pos then
+                    db.classificationIncludeFaction = true
+                    db.factionSlot = "none"
+                else
+                    db.classificationIncludeFaction = false
+                    db.factionSlot = pos
+                end
+            else
+                if DBVal("classificationSlot") == pos then db.classificationIncludeFaction = false end
+                if DBVal("factionSlot") == pos then db.factionSlot = "none" end
+            end
+        end
+    end
+
+    local function InstallCoreCB(rgn, pos)
+        local ctrl = rgn._control
+        local ddW = ctrl and ctrl:GetWidth() or 0
+        if ddW < 50 then ddW = 170 end
+        local items = {}
+        for i = 1, #CORE_ORDER do
+            local k = CORE_ORDER[i]
+            items[i] = {
+                key = k, label = CORE_LABEL[k], tooltip = CORE_TIP[k],
+                lockedFn = function() return CoreLocked(pos, k) end,
+                lockedTooltip = function() return CoreLockTip(k) end,
+            }
+        end
+        local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+            rgn, ddW, rgn:GetFrameLevel() + 2, items,
+            function(k) return CoreHas(pos, k) end,
+            function(k, v)
+                CoreSet(pos, k, v)
+                RefreshAllSlots()
+                optState.RefreshCoreEyes()
+            end)
+        local p1, rel, p2, ax, ay
+        if ctrl then
+            p1, rel, p2, ax, ay = ctrl:GetPoint(1)
+            ctrl:Hide()
+        end
+        if p1 then cbDD:SetPoint(p1, rel, p2, ax, ay)
+        else PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0) end
+        rgn._control = cbDD
+        rgn._lastInline = nil
+        EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
     end
 
     -- Slot-based offsets: pos .. "SlotXOffset" / "SlotYOffset"
@@ -1035,7 +1260,7 @@ local function BuildDisplayLayout(parent, y, ctx)
 
             -- Optional second generic toggle row (own row, below Wrap), for an
             -- element that needs one more switch than the toggle row gives it
-            -- (e.g. Level Text: Include Friendly, Rare/Quest + Faction); wired via pf._toggle2Get/Set, label per show.
+            -- (e.g. Rare/Quest + Faction); wired via pf._toggle2Get/Set, label per show.
             local t2Label = MakeFont(pf, 12, nil, 1, 1, 1)
             t2Label:SetAlpha(0.6)
             t2Label:SetPoint("LEFT", pf, "TOPLEFT", SIDE_PAD, G_ROW_Y - GROWTH_ROW_H / 2)
@@ -1845,6 +2070,8 @@ local function BuildDisplayLayout(parent, y, ctx)
           disabledTooltip = "This option requires an aura or indicator to be assigned", rawTooltip = true,
           labelOnlyDisabled = true });  y = y - h
     if not EllesmereUI._prebuilding then
+    InstallCoreCB(coreRow1._leftRegion,  "top")
+    InstallCoreCB(coreRow1._rightRegion, "right")
     MakeCogIcon(coreRow1, "_leftRegion",  "top",      "Top")
     MakeCogIcon(coreRow1, "_rightRegion", "right",    "Right")
     end
@@ -1866,6 +2093,8 @@ local function BuildDisplayLayout(parent, y, ctx)
           disabledTooltip = "This option requires an aura or indicator to be assigned", rawTooltip = true,
           labelOnlyDisabled = true });  y = y - h
     if not EllesmereUI._prebuilding then
+    InstallCoreCB(coreRow2._leftRegion,  "left")
+    InstallCoreCB(coreRow2._rightRegion, "topright")
     MakeCogIcon(coreRow2, "_leftRegion",  "left",     "Left")
     MakeCogIcon(coreRow2, "_rightRegion", "topright", "Top Right")
     end
@@ -1887,6 +2116,8 @@ local function BuildDisplayLayout(parent, y, ctx)
           disabledTooltip = "This option requires an aura or indicator to be assigned", rawTooltip = true,
           labelOnlyDisabled = true });  y = y - h
     if not EllesmereUI._prebuilding then
+    InstallCoreCB(coreRow3._leftRegion,  "topleft")
+    InstallCoreCB(coreRow3._rightRegion, "bottom")
     MakeCogIcon(coreRow3, "_leftRegion", "topleft", "Top Left")
     MakeCogIcon(coreRow3, "_rightRegion", "bottom", "Bottom")
     end
@@ -2036,14 +2267,22 @@ local function BuildDisplayLayout(parent, y, ctx)
     local textElementOrder = { "none", "---", "enemyName", "levelName", "nameLevel", "level", "targetOfTarget", "healthPercent", "healthPercentNoSign", "healthNumber", "healthPctNum", "healthNumPct", "healthPctNumDash", "healthNumPctDash" }
 
     local function TextSlotSetValue(slotKey, v)
-        -- Target of Target starts in Class / Reaction colour whenever a slot newly
-        -- takes it; the slot's custom swatch still switches it back.
-        if v == "targetOfTarget" and DBVal(slotKey) ~= "targetOfTarget" then
-            DB()[slotKey .. "ClassColor"] = true
-        end
+        -- Target of Target starts in Class mode whenever a slot newly takes it;
+        -- the slot's Text Coloring dropdown still switches it back. The mode is
+        -- saved only when the slot would not already derive Class.
+        local newToT = v == "targetOfTarget" and DBVal(slotKey) ~= "targetOfTarget"
         SetTextElementAtSlot(slotKey, v)
+        if newToT then
+            local db = DB()
+            db[slotKey .. "ColorMode"] = nil
+            if ns.NP_SlotColorMode(slotKey, db) ~= "class" then
+                db[slotKey .. "ColorMode"] = "class"
+            end
+        end
         ns.RefreshAllSettings()
-        UpdatePreview(); EllesmereUI:RefreshPage()
+        -- Rebuild: the Text Coloring rows, their modes and cogs follow the
+        -- slotted elements (a slot change can also clear another slot).
+        UpdatePreview(); EllesmereUI:RefreshPage(true)
     end
 
     local function TextOffsetRefresh()
@@ -2133,26 +2372,10 @@ local function BuildDisplayLayout(parent, y, ctx)
                     UpdatePreview()
                 end
             end
-            -- Level text (alone or with the name): Level Difficulty Color takes the
-            -- toggle row (the standalone level has no use for "Show % Decimal").
+            -- Target of Target and the standalone level have no use for "Show % Decimal".
             local slotEl = DBVal(slotKey)
-            if slotEl == "targetOfTarget" then
+            if slotEl == "targetOfTarget" or slotEl == "level" then
                 cogOpts.toggleLabel, cogOpts.toggleGet, cogOpts.toggleSet = nil, nil, nil
-            elseif slotEl == "level" or slotEl == "levelName" or slotEl == "nameLevel" then
-                cogOpts.toggleLabel = "Level Text: Difficulty Color"
-                cogOpts.toggleGet = function() return DBVal("levelDifficultyColor") == true end
-                cogOpts.toggleSet = function(v)
-                    DB().levelDifficultyColor = v and true or false
-                    ns.RefreshAllSettings()
-                    UpdatePreview()
-                end
-                cogOpts.toggle2Label = "Level Text: Include Friendly"
-                cogOpts.toggle2Get = function() return DBVal("levelDifficultyColorFriendly") == true end
-                cogOpts.toggle2Set = function(v)
-                    DB().levelDifficultyColorFriendly = v and true or false
-                    ns.RefreshAllSettings()
-                    UpdatePreview()
-                end
             end
             -- WoW Forever: the name's format, while this slot shows a name or the
             -- Target of Target name. First and Last is stored as nil (the
@@ -2190,84 +2413,195 @@ local function BuildDisplayLayout(parent, y, ctx)
 
     parent._showRowDivider = true
 
-    -- Custom colour swatch plus a Class / Reaction sample swatch to its left (the
-    -- Target Arrows pair's order): the sample selects class mode (textSlot<X>ClassColor,
-    -- the runtime paints enemy players by class and NPCs by the Hostile / Neutral name
-    -- colours); clicking the inactive custom swatch only returns to custom mode, a
-    -- second click opens the picker. The inactive swatch sits at 0.3; both drop to 0.15
-    -- with the mouse off while the slot is None. The resize cog chains left of them.
-    local function MakeTextColorSwatch(row, regionKey, slotKey, slotLabel)
+    -- Text Coloring rows: one under each position row, its halves mirroring that
+    -- row (a None slot's half stays blank). The dropdown picks the slot's colour
+    -- mode; ns.NP_SlotColorMode reads the saved mode, or derives it from the older
+    -- colour keys until one is picked, so the page and the plates always agree.
+    -- Custom paints the slot colour; Hostility / Class paints enemy players by
+    -- class and NPCs by the Tapped / Neutral / Hostile name colours every slot
+    -- shares (Target of Target: the target's class, else the slot colour); Level
+    -- Difficulty paints the unit's level difficulty colour (every text but Target
+    -- of Target, which names another unit).
+    local COLOR_MODE_ORDER = { "custom", "class" }
+    local COLOR_MODE_ORDER_LEVEL = { "custom", "class", "level" }
+    local function TextColoringCfg(slotKey, label)
+        local el = DBVal(slotKey)
+        if el == "none" then return EllesmereUI.BlankRowCfg() end
+        local values, order
+        if el == "targetOfTarget" then
+            values, order = { custom = "Custom", class = "Class" }, COLOR_MODE_ORDER
+        else
+            values = { custom = "Custom", class = "Hostility / Class", level = "Level Difficulty" }
+            order = COLOR_MODE_ORDER_LEVEL
+        end
+        return { type="dropdown", text=label, values=values, order=order,
+          getValue=function() return ns.NP_SlotColorMode(slotKey, DB()) end,
+          -- The mode is saved only when the pick differs from what the slot derives
+          -- with none saved, so picking the derived value pins nothing. Rebuild: the
+          -- shared NPC swatches exist only on a Hostility / Class half.
+          setValue=function(v)
+            local db = DB()
+            db[slotKey .. "ColorMode"] = nil
+            if ns.NP_SlotColorMode(slotKey, db) ~= v then
+                db[slotKey .. "ColorMode"] = v
+            end
+            ns.RefreshAllSettings()
+            UpdatePreview(); EllesmereUI:RefreshPage(true)
+          end }
+    end
+
+    -- A Text Coloring half's inline controls. Level | Name and Name | Level get a
+    -- cog beside the dropdown with the name and level part colours (inline escapes
+    -- on that part only; the rest of the text keeps the mode's colour). The
+    -- swatches chain left of it, shown by the mode from the page refresh: Custom
+    -- the slot colour, Hostility / Class the three shared NPC colours (Target of
+    -- Target: the slot colour, used for an NPC target), Level Difficulty none. The
+    -- NPC swatches are built only on a Hostility / Class half, so no other half
+    -- traces the shared keys for Spec Overrides. Every write goes through the
+    -- dropdown, a cog row or a swatch, which the Spec Overrides capture follows on
+    -- its own.
+    local npcSwatchUpdates = {}  -- the shared NPC swatches of every row, repainted together
+    local function MakeTextColoringInline(row, regionKey, slotKey, title)
+        local el = DBVal(slotKey)
+        if el == "none" then return end
         local rgn = row[regionKey]
         local colorKey = slotKey .. "Color"
-        local modeKey = slotKey .. "ClassColor"
-        local function getColor()
-            local c = (DB() and DB()[colorKey]) or defaults[colorKey]
-            return c.r, c.g, c.b
-        end
-        local function setColor(r, g, b)
-            DB()[colorKey] = { r = r, g = g, b = b }
+        local isToT = el == "targetOfTarget"
+        local function Mode() return ns.NP_SlotColorMode(slotKey, DB()) end
+        local function Apply()
             ns.RefreshAllSettings()
             UpdatePreview()
         end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, getColor, setColor, nil, 20)
-        PP.Point(swatch, "RIGHT", rgn._control, "LEFT", -12, 0)
-        -- The sample shows the player's own class colour; its self-registered colour
-        -- accessor reads no setting (as with every class sample swatch).
-        local classSwatch, updateClass = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
+
+        if el == "levelName" or el == "nameLevel" then
+            local nameOnKey, nameColorKey = slotKey .. "NameColorOn", slotKey .. "NameColor"
+            local lvlOnKey, lvlColorKey = slotKey .. "LevelColorOn", slotKey .. "LevelColor"
+            local diffKey = slotKey .. "LevelDiffOn"
+            -- A part colour not picked yet starts from the slot colour.
+            local function PartColor(key)
+                local db = DB()
+                local c = (db and (db[key] or db[colorKey])) or defaults[colorKey]
+                return c.r, c.g, c.b
+            end
+            EllesmereUI.BuildInlineCog(rgn, {
+                title = title,
+                captureRegion = rgn,
+                rows = {
+                    { type="toggle", label="Custom Name Color",
+                      get=function() return DBVal(nameOnKey) == true end,
+                      set=function(v) DB()[nameOnKey] = v; Apply() end },
+                    { type="colorpicker", label="Name Color",
+                      hidden=function() return DBVal(nameOnKey) ~= true end,
+                      get=function() return PartColor(nameColorKey) end,
+                      set=function(r, g, b) DB()[nameColorKey] = { r = r, g = g, b = b }; Apply() end },
+                    { type="toggle", label="Custom Level Color",
+                      get=function() return DBVal(lvlOnKey) == true end,
+                      set=function(v)
+                        DB()[lvlOnKey] = v
+                        if v then DB()[diffKey] = false end
+                        Apply()
+                      end },
+                    { type="colorpicker", label="Level Color",
+                      hidden=function() return DBVal(lvlOnKey) ~= true end,
+                      get=function() return PartColor(lvlColorKey) end,
+                      set=function(r, g, b) DB()[lvlColorKey] = { r = r, g = g, b = b }; Apply() end },
+                    -- The whole text already takes the difficulty colour in Level
+                    -- Difficulty mode.
+                    { type="toggle", label="Level Difficulty Color",
+                      hidden=function() return Mode() == "level" end,
+                      get=function() return ns.NP_SlotLevelDiff(slotKey, DB()) end,
+                      set=function(v)
+                        DB()[diffKey] = v
+                        if v then DB()[lvlOnKey] = false end
+                        Apply()
+                      end },
+                },
+            })
+        end
+
+        local anchor = rgn._lastInline or rgn._control
+        local gap = rgn._lastInline and -8 or -12
+        local custom, updateCustom = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
             function()
-                local _, ct = UnitClass("player")
-                local cc = ct and EllesmereUI.GetClassColor(ct)
-                if cc then return cc.r, cc.g, cc.b end
-                return 1, 1, 1
+                local c = (DB() and DB()[colorKey]) or defaults[colorKey]
+                return c.r, c.g, c.b
             end,
-            function() end, nil, 20)
-        PP.Point(classSwatch, "RIGHT", swatch, "LEFT", -8, 0)
-        rgn._lastInline = classSwatch
-        local function refreshSwatches()
-            updateSwatch()
-            updateClass()
-            local off = TextPosDisabled(slotKey)
-            local useClass = DBVal(modeKey) == true
-            swatch:SetAlpha(off and 0.15 or (useClass and 0.3 or 1))
-            classSwatch:SetAlpha(off and 0.15 or (useClass and 1 or 0.3))
-            swatch:EnableMouse(not off)
-            classSwatch:EnableMouse(not off)
-        end
-        local function setMode(v, src)
-            DB()[modeKey] = v
-            ns.RefreshAllSettings()
-            -- Bespoke write: notify for Spec Overrides attribution before the rebuild.
-            EllesmereUI._NotifySettingWrite(src)
-            UpdatePreview(); EllesmereUI:RefreshPage()
-        end
-        local origClick = swatch:GetScript("OnClick")
-        swatch:SetScript("OnClick", function(self, ...)
-            if TextPosDisabled(slotKey) then return end
-            if DBVal(modeKey) == true then setMode(false, self); return end
-            if origClick then origClick(self, ...) end
+            function(r, g, b)
+                DB()[colorKey] = { r = r, g = g, b = b }
+                Apply()
+            end, nil, 20)
+        PP.Point(custom, "RIGHT", anchor, "LEFT", gap, 0)
+        custom:SetScript("OnEnter", function()
+            if isToT and Mode() == "class" then
+                EllesmereUI.ShowWidgetTooltip(custom, EllesmereUI.L("NPC Target Color"))
+            else
+                EllesmereUI.ShowWidgetTooltip(custom, EllesmereUI.L("Custom Color"))
+            end
         end)
-        swatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.L("Custom Color")) end)
-        swatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        classSwatch:SetScript("OnClick", function(self)
-            if TextPosDisabled(slotKey) or DBVal(modeKey) == true then return end
-            setMode(true, self)
-        end)
-        classSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(classSwatch, EllesmereUI.L("Class / Reaction Color")) end)
-        classSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        -- The mode flag is written only by the bespoke clicks above, so the slot's
-        -- Spec Overrides capture gets its own accessor for it.
-        EllesmereUI.AddCaptureAccessor(rgn, {
-            type = "toggle", text = slotLabel .. " Class / Reaction Color",
-            getValue = function() return DBVal(modeKey) == true end,
-            setValue = function(v)
-                DB()[modeKey] = v and true or false
-                ns.RefreshAllSettings()
-                UpdatePreview()
-            end,
-        })
-        EllesmereUI.RegisterWidgetRefresh(refreshSwatches)
-        refreshSwatches()
-        return swatch
+        custom:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        rgn._lastInline = custom
+
+        -- Hostility / Class: Tapped / Neutral / Hostile left to right, Hostile in
+        -- the custom swatch's place.
+        local npc, npcUpd
+        if not isToT and Mode() == "class" then
+            npc, npcUpd = {}, {}
+            local prev, prevGap = anchor, gap
+            local function NPCSwatch(key, fallbackKey, tip)
+                local sw, upd = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
+                    function()
+                        local c = (DB() and DB()[key]) or defaults[fallbackKey]
+                        return c.r, c.g, c.b
+                    end,
+                    -- Read live by the per-unit painter, so a health colour pass repaints.
+                    function(r, g, b)
+                        DB()[key] = { r = r, g = g, b = b }
+                        RefreshAllPlates()
+                        UpdatePreview()
+                        for i = 1, #npcSwatchUpdates do npcSwatchUpdates[i]() end
+                    end, nil, 20)
+                PP.Point(sw, "RIGHT", prev, "LEFT", prevGap, 0)
+                prev, prevGap = sw, -8
+                sw:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, tip) end)
+                sw:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                npc[#npc + 1] = sw
+                npcUpd[#npcUpd + 1] = upd
+                npcSwatchUpdates[#npcSwatchUpdates + 1] = upd
+                return sw
+            end
+            NPCSwatch("enemyNameHostileColor", "hostile", EllesmereUI.L("Hostile Color"))
+            NPCSwatch("enemyNameNeutralColor", "neutral", EllesmereUI.L("Neutral Color"))
+            -- Leftmost built item: the label clamp keeps the label clear of it.
+            rgn._lastInline = NPCSwatch("enemyNameTappedColor", "tapped", EllesmereUI.L("Tapped Color"))
+        end
+
+        local function ShowForMode()
+            local m = Mode()
+            custom:SetShown(m == "custom" or (isToT and m == "class"))
+            updateCustom()
+            if npc then
+                local on = m == "class"
+                for i = 1, #npc do
+                    npc[i]:SetShown(on)
+                    npcUpd[i]()
+                end
+            end
+        end
+        EllesmereUI.RegisterWidgetRefresh(ShowForMode)
+        ShowForMode()
+    end
+
+    -- Builds the Text Coloring row under a position row while either of its slots
+    -- shows a text; returns the new y.
+    local function TextColoringRow(rowY, leftSlot, leftLabel, rightSlot, rightLabel)
+        if DBVal(leftSlot) == "none" and DBVal(rightSlot) == "none" then return rowY end
+        local row, rowH = W:DualRow(parent, rowY,
+            TextColoringCfg(leftSlot, leftLabel), TextColoringCfg(rightSlot, rightLabel))
+        if not EllesmereUI._prebuilding then
+            MakeTextColoringInline(row, "_leftRegion", leftSlot, leftLabel)
+            MakeTextColoringInline(row, "_rightRegion", rightSlot, rightLabel)
+        end
+        return rowY - rowH
     end
 
     local textRow1, textRow2, textRow3
@@ -2290,11 +2624,10 @@ local function BuildDisplayLayout(parent, y, ctx)
           labelOnlyDisabled=true,
           disabledValues=function(k) if ns.IsComboHealthText(k) and ns.IsNameElement(DBVal("textSlotCenter")) then return "Disabled when the Name/Level text is centered on the health bar due to overlapping text" end end });  y = y - h
     if not EllesmereUI._prebuilding then
-    MakeTextColorSwatch(textRow1, "_leftRegion",  "textSlotTop",   "Top Text")
     MakeTextCogIcon(textRow1, "_leftRegion",  "textSlotTop",   "Top Text")
-    MakeTextColorSwatch(textRow1, "_rightRegion", "textSlotRight", "Right Text")
     MakeTextCogIcon(textRow1, "_rightRegion", "textSlotRight", "Right Text")
     end
+    y = TextColoringRow(y, "textSlotTop", "Top Text Coloring", "textSlotRight", "Right Text Coloring")
 
     -- Row 2: Left Text | Center Text
     textRow2, h = W:DualRow(parent, y,
@@ -2314,11 +2647,10 @@ local function BuildDisplayLayout(parent, y, ctx)
           disabledTooltip="This option requires a text to be assigned", rawTooltip=true,
           labelOnlyDisabled=true });  y = y - h
     if not EllesmereUI._prebuilding then
-    MakeTextColorSwatch(textRow2, "_leftRegion",  "textSlotLeft",   "Left Text")
     MakeTextCogIcon(textRow2, "_leftRegion",  "textSlotLeft",   "Left Text")
-    MakeTextColorSwatch(textRow2, "_rightRegion", "textSlotCenter", "Center Text")
     MakeTextCogIcon(textRow2, "_rightRegion", "textSlotCenter", "Center Text")
     end
+    y = TextColoringRow(y, "textSlotLeft", "Left Text Coloring", "textSlotCenter", "Center Text Coloring")
 
     -- Row 3: Bottom Left Text | Bottom Right Text (under the health bar's corners,
     -- below the cast bar while one shows)
@@ -2338,11 +2670,10 @@ local function BuildDisplayLayout(parent, y, ctx)
           disabledTooltip="This option requires a text to be assigned", rawTooltip=true,
           labelOnlyDisabled=true });  y = y - h
     if not EllesmereUI._prebuilding then
-    MakeTextColorSwatch(textRow3, "_leftRegion",  "textSlotBottomLeft",  "Bottom Left Text")
     MakeTextCogIcon(textRow3, "_leftRegion",  "textSlotBottomLeft",  "Bottom Left Text")
-    MakeTextColorSwatch(textRow3, "_rightRegion", "textSlotBottomRight", "Bottom Right Text")
     MakeTextCogIcon(textRow3, "_rightRegion", "textSlotBottomRight", "Bottom Right Text")
     end
+    y = TextColoringRow(y, "textSlotBottomLeft", "Bottom Left Text Coloring", "textSlotBottomRight", "Bottom Right Text Coloring")
 
     _, h = W:Spacer(parent, y, 20);  y = y - h
 

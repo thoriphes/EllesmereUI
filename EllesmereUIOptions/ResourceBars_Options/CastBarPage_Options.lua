@@ -540,16 +540,18 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
              if castFillBlizz then return "This option requires Blizzard Style to be disabled" end
              return "Player Cast Bar"
          end })
-    -- Inline cog on Fill Color for gradient settings
+    -- Inline cog on Fill Color: the gradient (not under Blizzard Style, whose fill
+    -- art is stock) and Out of Range Gray (every style).
     if not EllesmereUI._prebuilding then
         local rgn = castColorRow._leftRegion
+        local function gradientOff() return castFillBlizz end
         EllesmereUI.BuildInlineCog(rgn, {
-            disabled = function() local p = DB(); return castFillBlizz or (p and not p.castBar.enabled) end,
-            disabledTooltip = castFillBlizz and "Blizzard Style" or "Player Cast Bar",
-            requireState = castFillBlizz and "disabled" or nil,
-            title = "Gradient Settings",
+            disabled = function() local p = DB(); return p and not p.castBar.enabled end,
+            disabledTooltip = "Player Cast Bar",
+            title = "Fill Settings",
             rows = {
                 { type = "toggle", label = "Enable Gradient",
+                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
                   get = function() local p = DB(); return p and p.castBar.gradientEnabled end,
                   set = function(v)
                       local p = DB(); if not p then return end
@@ -557,12 +559,20 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
                       EllesmereUI:RefreshPage()
                   end },
                 { type = "dropdown", label = "Gradient Direction",
+                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
                   values = { HORIZONTAL = "Horizontal", VERTICAL = "Vertical" },
                   order = { "HORIZONTAL", "VERTICAL" },
                   get = function() local p = DB(); return p and p.castBar.gradientDir or "HORIZONTAL" end,
                   set = function(v)
                       local p = DB(); if not p then return end
                       p.castBar.gradientDir = v; RefreshCast()
+                  end },
+                { type = "toggle", label = "Gray When Out of Range",
+                  tooltip = "Grays the fill while your target is out of range of the spell being cast.",
+                  get = function() local p = DB(); return p and p.castBar.outOfRangeGray == true end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.castBar.outOfRangeGray = v; RefreshCast()
                   end },
             },
         })

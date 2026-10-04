@@ -424,6 +424,7 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
                   if not c.enabled then return true end
                   local tse = _G._ERB_ResolveThresholdSpecEntry and _G._ERB_ResolveThresholdSpecEntry(c)
                   if tse and (tse.thresholdEnabled ~= false) then return true end
+                  if tse and tse.spenderColorEnabled and not (tse.thresholdTextInstead and c.textFormat ~= "none") then return true end
                   return not c.gradientEnabled
               end,
               disabledTooltip = function()
@@ -431,6 +432,7 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
                   if not c or not c.enabled then return powerDisTip end
                   local tse = _G._ERB_ResolveThresholdSpecEntry and _G._ERB_ResolveThresholdSpecEntry(c)
                   if tse and (tse.thresholdEnabled ~= false) then return "This option requires Threshold Settings to be disabled" end
+                  if tse and tse.spenderColorEnabled and not (tse.thresholdTextInstead and c.textFormat ~= "none") then return "This option requires Threshold Settings to be disabled" end
                   return "Gradient"
               end,
               getValue = function()
@@ -710,6 +712,7 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
         disabledTip = "Power Bar",
         showHash = false,
         showPartialCog = true,
+        showSpenders = true,
         thresholdLabel = "Threshold %",
         threshMin = 1, threshMax = 99,
         popupTitle = "Power Bar Threshold",
