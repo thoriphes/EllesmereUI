@@ -69,8 +69,12 @@ changes the user makes apply to your frames live where possible.
 
 ## Reference
 
-`S.apiVersion` is `1`. The API only ever grows; existing functions and their
-signatures will not change.
+`S.apiVersion` is `3`. The API only ever grows; existing functions and their
+signatures will not change. Version 2 added `S.SetTabSelection`; check
+`S.apiVersion >= 2` (or `S.SetTabSelection`) before calling it, so your skin
+still works for players on an older EllesmereUI. Version 3 added the
+`S.EditBox` options; an older EllesmereUI ignores them (the box keeps its
+border and gets no padding), so they need no check.
 
 ### Containers
 
@@ -89,11 +93,12 @@ signatures will not change.
 | `S.Button(button [, keepKeys])` | Flat dark button, subtle white hover, thin border. `keepKeys = {"Icon"}` preserves named regions. Label font/color untouched. |
 | `S.WhiteButtonLabel(button)` | Forces a button label white (color only), re-applied on OnEnable. |
 | `S.StateButtonLabel(button)` | Label white when enabled, gray when disabled. |
-| `S.EditBox(editBox)` | Near-black input box with border, template art removed. |
+| `S.EditBox(editBox [, opts])` | Near-black input box with border, template art removed. `opts.padInput` moves the box's left edge 6px further left and insets its text by the same amount, so the text keeps its place with room before the border; call it after the box is anchored (an unanchored box gets no padding). `opts.noBorder` skips the border. (opts: apiVersion 3) |
 | `S.Checkbox(checkbox [, opts])` | Dark box + accent-colored check. `opts.stockCheck` keeps Blizzard's check color. |
 | `S.Dropdown(dropdown)` | Flat dropdown with the house arrow. |
 | `S.ScrollBar(scrollBar)` | Fades arrows/track art, paints the thin white thumb strip. Scroll behavior untouched. |
 | `S.Tab(tab)` | House tab: flat plate, accent underline on the active tab. |
+| `S.SetTabSelection(tab, selected)` | Overrides which of your `S.Tab` tabs looks selected, for tabs your addon switches itself: `true` / `false` show it selected or not, `nil` returns to the tab's own selection. Visual only: the tab's real selection state is never touched. (apiVersion 2) |
 | `S.CloseButton(button)` | House close (X) glyph. |
 | `S.PageButton(button, "<" or ">")` | House prev/next page arrows. |
 | `S.SquareIcon(iconTexture [, parentFrame])` | Squares an icon's baked bevel (texcoord crop). Pass the icon's parent frame to also draw a 1px black border around it. |

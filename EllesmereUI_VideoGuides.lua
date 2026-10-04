@@ -141,45 +141,14 @@ local function BuildShell()
 
     -- Dimmer: eats stray clicks/wheel; clicking anywhere outside the panel
     -- closes the guide (the popup itself is mouse-enabled, so clicks over it
-    -- never reach this handler).
-    local dimmer = CreateFrame("Frame", "EUIVideoGuideDimmer", UIParent)
-    dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
-    dimmer:SetAllPoints(UIParent)
-    dimmer:EnableMouse(true)
-    dimmer:EnableMouseWheel(true)
-    dimmer:SetScript("OnMouseWheel", function() end)
-    dimmer:SetScript("OnMouseDown", Dismiss)
-    local dimTex = dimmer:CreateTexture(nil, "BACKGROUND")
-    dimTex:SetAllPoints()
-    dimTex:SetColorTexture(0, 0, 0, 0.35)
+    -- never reach this handler). No bump: Show() scales both frames per open,
+    -- so the edge width is read unscaled here, as before. Escape closes (the
+    -- EditBox path handles it while focused; this covers an unfocused box).
+    local dimmer, popup = EllesmereUI.BuildPopupShell("EUIVideoGuide", {
+        w = POPUP_W, h = POPUP_H, onDimmerDown = Dismiss, onEscape = Dismiss,
+    })
     ui.dimmer = dimmer
-
-    -- Panel
-    local popup = CreateFrame("Frame", "EUIVideoGuidePopup", dimmer)
-    popup:SetFrameStrata("FULLSCREEN_DIALOG")
-    popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
-    PP.Size(popup, POPUP_W, POPUP_H)
-    popup:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    popup:EnableMouse(true)
     ui.popup = popup
-
-    local bg = popup:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints()
-    bg:SetColorTexture(0.06, 0.08, 0.10, 1)
-
-    -- 1 physical-pixel white border (announcement chrome), scale-derived.
-    local onePhys = 1 / (popup:GetEffectiveScale() or 1)
-    local BRD_A = 0.15
-    local function MakeEdge()
-        local t = popup:CreateTexture(nil, "BORDER")
-        t:SetColorTexture(1, 1, 1, BRD_A)
-        if t.SetSnapToPixelGrid then t:SetSnapToPixelGrid(false); t:SetTexelSnappingBias(0) end
-        return t
-    end
-    local spT = MakeEdge(); spT:SetPoint("TOPLEFT", 0, 0); spT:SetPoint("TOPRIGHT", 0, 0); spT:SetHeight(onePhys)
-    local spB = MakeEdge(); spB:SetPoint("BOTTOMLEFT", 0, 0); spB:SetPoint("BOTTOMRIGHT", 0, 0); spB:SetHeight(onePhys)
-    local spL = MakeEdge(); spL:SetPoint("TOPLEFT", spT, "BOTTOMLEFT"); spL:SetPoint("BOTTOMLEFT", spB, "TOPLEFT"); spL:SetWidth(onePhys)
-    local spR = MakeEdge(); spR:SetPoint("TOPRIGHT", spT, "BOTTOMRIGHT"); spR:SetPoint("BOTTOMRIGHT", spB, "TOPRIGHT"); spR:SetWidth(onePhys)
 
     -- Art band: full-bleed dark well flush to the top edge, accent rule
     -- underneath. Per-guide art containers are children created in SetGuide.
@@ -321,14 +290,6 @@ local function BuildShell()
     footnote:SetJustifyH("CENTER")
     PP.Point(footnote, "BOTTOM", popup, "BOTTOM", 0, 16)
     ui.footnote = footnote
-
-    -- Escape closes (the EditBox path handles it while focused; this path
-    -- covers an unfocused box). Propagate everything else.
-    popup:EnableKeyboard(true)
-    popup:SetScript("OnKeyDown", function(self, key)
-        self:SetPropagateKeyboardInput(key ~= "ESCAPE")
-        if key == "ESCAPE" then Dismiss() end
-    end)
 end
 
 --- Populates the shared shell for one guide: texts, accent retints, art swap.
@@ -462,9 +423,9 @@ local function Show(id)
     local def = guides[id]
     if not def then return false end
     -- The trigger's widget tooltip is still on screen at click time.
-    if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+    EllesmereUI.HideWidgetTooltip()
     BuildShell()
-    local ppScale = (EllesmereUI.GetPopupScale and EllesmereUI.GetPopupScale()) or 1
+    local ppScale = (EllesmereUI.GetPopupScale()) or 1
     ui.dimmer:SetScale(ppScale)
     ui.popup:SetScale(EllesmereUI.PopupBump(1.15))
     SetGuide(id, def)
@@ -506,9 +467,7 @@ local function AttachTip(region, tipId, opts)
     local EG = EllesmereUI.ELLESMERE_GREEN
     if EG then
         icon:SetVertexColor(EG.r, EG.g, EG.b, 1)
-        if EllesmereUI.RegAccent then
-            EllesmereUI.RegAccent({ type = "vertex", obj = icon })
-        end
+        EllesmereUI.RegAccent({ type = "vertex", obj = icon })
     else
         icon:SetVertexColor(1, 1, 1, 0.9)
     end
@@ -523,14 +482,14 @@ local function AttachTip(region, tipId, opts)
     tip:SetScript("OnEnter", function(self)
         self:SetAlpha(1)
         if EllesmereUI.ShowWidgetTooltip then
-            local t = (EllesmereUI.L and EllesmereUI.L(tipText)) or tipText
-            local hint = (EllesmereUI.L and EllesmereUI.L("Shift + right click to hide video guide icons"))
+            local t = (EllesmereUI.L(tipText)) or tipText
+            local hint = (EllesmereUI.L("Shift + right click to hide video guide icons"))
                 or "Shift + right click to hide video guide icons"
             EllesmereUI.ShowWidgetTooltip(self, t .. "\n|cff909090" .. hint .. "|r")
         end
     end)
     tip:SetScript("OnLeave", function(self)
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
         self:SetAlpha(0.8)
     end)
     tip:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -542,16 +501,16 @@ local function AttachTip(region, tipId, opts)
             if not IsShiftKeyDown() then return end
             if not EllesmereUIDB then EllesmereUIDB = {} end
             EllesmereUIDB.tutorialTipsDisabled = true
-            if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+            EllesmereUI.HideWidgetTooltip()
             RefreshTips()
             -- Re-run the active page's widget refreshers so the Global
             -- Settings toggle flips live if it is on screen right now.
-            if EllesmereUI.RefreshPage then EllesmereUI:RefreshPage() end
+            EllesmereUI:RefreshPage()
             return
         end
         -- One shot: retire forever, then open the guide.
         MarkTipSeen(tipId)
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
         self:Hide()
         Show(opts.guide or tipId)
     end)
@@ -712,8 +671,8 @@ do
     local _decision
 
     local function ComputeDecision()
-        -- RETIRED 2026-09-19: superseded by the EllesmereUI Forever launch
-        -- announcement (EllesmereUI_ForeverLaunchPopup.lua) -- only the newest
+        -- RETIRED 2026-09-19: superseded by a newer login announcement (now
+        -- EllesmereUI_StyleLaunchPopup.lua) -- only the newest
         -- login announcement fires, so users upgrading across versions never
         -- see two intro popups back to back. The guide itself stays reachable
         -- from the Patch Notes video banner and /euivideos. Delete the next
@@ -1057,4 +1016,97 @@ do
             end
         end,
     })
+end
+
+-------------------------------------------------------------------------------
+--  Guide #5: addons that need an update ("addon_update")
+--
+--  Shown by the options panel (EllesmereUI_Panel.lua), once per session, when
+--  another addon tried to change EllesmereUI's own settings pages. Names those
+--  addons and links the plugin guide for addon authors.
+-------------------------------------------------------------------------------
+-- ONE paste point for the plugin guide on GitHub.
+EllesmereUI.PLUGINS_API_URL = "https://github.com/EllesmereGaming/EllesmereUI/blob/main/PLUGINS_API.md"
+
+do
+    local def = {
+        url       = EllesmereUI.PLUGINS_API_URL,
+        width     = 580,
+        artHeight = 96,
+        urlWidth  = 520,
+        gaps = {
+            eyebrow = 20, title = 8, blurb = 14,
+            bullets = 18, bulletRows = 8, url = 20, hint = 8,
+            button = 46, footnote = 18,
+        },
+        art = function(popup, ctx)
+            local PPx, band = ctx.PP, ctx.band
+            local EG = ctx.accent
+            local function Box(w, h, x, y, edgeR, edgeG, edgeB, edgeA)
+                local f = CreateFrame("Frame", nil, band)
+                f:SetFrameLevel(band:GetFrameLevel() + 2)
+                PPx.Size(f, w, h)
+                PPx.Point(f, "CENTER", band, "CENTER", x, y)
+                local bg = f:CreateTexture(nil, "BACKGROUND")
+                bg:SetAllPoints()
+                bg:SetColorTexture(0.045, 0.055, 0.07, 1)
+                ctx.MakeBorder(f, edgeR, edgeG, edgeB, edgeA, PPx)
+                return f
+            end
+            local function Bar(parent, w, h, x, y, r, g, b, a)
+                local t = parent:CreateTexture(nil, "ARTWORK")
+                t:SetColorTexture(r, g, b, a)
+                PPx.Size(t, w, h)
+                PPx.Point(t, "TOPLEFT", parent, "TOPLEFT", x, y)
+                return t
+            end
+
+            -- The addon (a settings cog) plugging into a section of its own,
+            -- below EllesmereUI's own rows in a mini settings panel.
+            local tile = Box(50, 50, -104, 0, EG.r, EG.g, EG.b, 0.85)
+            local cog = tile:CreateTexture(nil, "ARTWORK")
+            cog:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\cogs.png")
+            cog:SetVertexColor(1, 1, 1, 0.85)
+            PPx.Size(cog, 26, 26)
+            PPx.Point(cog, "CENTER", tile, "CENTER", 0, 0)
+
+            local arrow = ctx.MakeTriangle(band, 10, 12, EG.r, EG.g, EG.b, 0.9)
+            PPx.Point(arrow, "CENTER", band, "CENTER", -60, 0)
+
+            local panel = Box(170, 66, 44, 0, 1, 1, 1, 0.18)
+            for i = 1, 3 do Bar(panel, 40, 4, 8, -(10 + (i - 1) * 8), 1, 1, 1, 0.18) end
+            local own = CreateFrame("Frame", nil, panel)
+            own:SetFrameLevel(panel:GetFrameLevel() + 1)
+            PPx.Size(own, 46, 14)
+            PPx.Point(own, "TOPLEFT", panel, "TOPLEFT", 5, -42)
+            ctx.MakeBorder(own, EG.r, EG.g, EG.b, 0.85, PPx)
+            Bar(own, 30, 4, 8, -5, EG.r, EG.g, EG.b, 0.9)
+            Bar(panel, 1, 54, 58, -6, 1, 1, 1, 0.10)
+            Bar(panel, 88, 4, 68, -12, 1, 1, 1, 0.16)
+            Bar(panel, 70, 4, 68, -22, 1, 1, 1, 0.16)
+            Bar(panel, 80, 4, 68, -32, 1, 1, 1, 0.16)
+            Bar(panel, 60, 4, 68, -47, EG.r, EG.g, EG.b, 0.35)
+        end,
+    }
+    EllesmereUI.VideoGuides.Register("addon_update", def)
+
+    --- names: the addons' titles, sorted. One per bullet row (titles run
+    --- long); the second row sums up any past the first two.
+    function EllesmereUI.VideoGuides.ShowAddonUpdate(names)
+        local n = #names
+        def.eyebrow  = EllesmereUI.L("ADDON COMPATIBILITY")
+        def.title    = n == 1 and EllesmereUI.Lf("%1$s Issue", names[1]) or EllesmereUI.L("Some Addons Need an Update")
+        def.blurb    = EllesmereUI.L("To keep its settings safe, EllesmereUI now gives other addons their own section in the panel instead of letting them change its pages. The addons below haven't caught up yet, so those changes are hidden until they're updated. Everything else works as usual.")
+        def.footnote = EllesmereUI.L("Addon authors: this guide shows how to add your settings to EllesmereUI.")
+        def.okText   = EllesmereUI.L("Got It")
+        local rows = { { names[1] } }
+        if n == 2 then
+            rows[2] = { names[2] }
+        elseif n > 2 then
+            rows[2] = { EllesmereUI.Lf("%1$s and %2$d more", names[2], n - 2) }
+        end
+        def.bullets = rows
+        def.height = n > 1 and 481 or 460
+        return EllesmereUI.VideoGuides.Show("addon_update")
+    end
 end

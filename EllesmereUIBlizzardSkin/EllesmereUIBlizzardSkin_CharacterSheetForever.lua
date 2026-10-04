@@ -19,6 +19,12 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --      a grey square behind each and a 2px border in the item's quality
 --      colour (dark grey when empty), recoloured through Blizzard's own
 --      per-slot update;
+--    - text beside each slot where retail shows its item level and upgrade
+--      track (neither means much on Forever): the item's main and secondary
+--      stat, or its armor when it has no stats, a weapon's damage per second
+--      under that, and the enchant name under those, painted through the
+--      same per-slot update; retail's top-left eyeball hides it all for the
+--      session;
 --    - the character name and the "Level N Class" line in the house font,
 --      as on retail (Blizzard keeps writing the text, so the class colour
 --      and the pvp title still come from the client);
@@ -29,10 +35,25 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --      page, the thin header bars) through the scroll box's own frame
 --      callbacks, never by touching its data.
 --
---  Cost: a one-time pass at login on frames that already exist, then a
+--  All of this is the EllesmereUI look (the Character Sheet card's
+--  EllesmereUI and Modern). Under the card's Blizz Default only the slot text
+--  stays, on Blizzard's own sheet: the same lines through the same per-slot
+--  update, set further out so they clear Blizzard's bronze slot frames. The
+--  outer weapon slots' lines start lower (under the columns' bottom slot
+--  frames) and the middle weapon slot's lines stack above it, running left
+--  from its right edge (the frame border leaves no room under it), clear of
+--  the columns' own text; weapon lines too long for their room are cut
+--  short. No eyeball there: that corner is Blizzard's portrait.
+--  The card's Off and the window skins kill switch stop both looks.
+--
+--  Cost: a one-time pass at login on frames that already exist (under Blizz
+--  Default, a one-time text build at the slots' first show instead), then a
 --  recolour per element initialisation (what Blizzard does anyway on each
---  stats refresh) and one colour compare per slot update (Blizzard's own,
---  only while the slots are shown). No events of our own.
+--  stats refresh) and one colour compare plus one item-link compare per slot
+--  update (Blizzard's own, only while the slots are shown). The one event of
+--  our own, GET_ITEM_INFO_RECEIVED, is registered only while a shown slot
+--  waits on item data the client has not cached yet. Nothing at all while the
+--  card is Off.
 --------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
 local EllesmereUI = _G.EllesmereUI
@@ -45,15 +66,27 @@ local function GetFFD(frame)
     return d
 end
 
-local function Enabled()
+-- The Character Sheet card's Off and the window skins kill switch, which
+-- stop both looks (as they stop the retail sheet's).
+local function SheetOn()
     if not EllesmereUIDB then return true end
     if EllesmereUIDB.themedCharacterSheet == false then return false end
-    if EllesmereUI.BlizzWindowSkinsKilled and EllesmereUI.BlizzWindowSkinsKilled() then return false end
-    return true
+    return not EllesmereUI.BlizzWindowSkinsKilled() and not EllesmereUI.BlizzSkinPadStandDown()
+end
+
+-- The EllesmereUI look (the card's style is latched at login, so a change
+-- lands at the reload).
+local function Enabled()
+    return not ns.CharSheetStock() and SheetOn()
+end
+
+-- The slot text: both looks.
+local function TextEnabled()
+    return SheetOn()
 end
 
 local function FontPath()
-    return (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("blizzardSkin")) or STANDARD_TEXT_FONT
+    return (EllesmereUI.GetFontPath("blizzardSkin")) or STANDARD_TEXT_FONT
 end
 
 local MEDIA = "Interface\\AddOns\\EllesmereUIBlizzardSkin\\Media\\"
@@ -228,17 +261,17 @@ local SLOTS = {
 
 local function FadeChildren(frame, Fade)
     if not frame then return end
-    for i = 1, select("#", frame:GetChildren()) do
-        local child = select(i, frame:GetChildren())
+    local children = { frame:GetChildren() }
+    for i = 1, #children do
+        local child = children[i]
         if child and child.GetRegions and not (child.IsForbidden and child:IsForbidden()) then
             Fade(child)
         end
     end
 end
 
--- The slot border colour: the equipped item's quality, dark grey when empty
--- (the retail sheet's values).
-local function SlotBorderColor(slot)
+-- The equipped item's quality colour; nothing when the slot is empty.
+local function QualityColor(slot)
     local quality = GetInventoryItemQuality("player", slot:GetID())
     if quality and not (issecretvalue and issecretvalue(quality)) then
         local r, g, b
@@ -249,6 +282,13 @@ local function SlotBorderColor(slot)
         end
         if r then return r, g, b end
     end
+end
+
+-- The slot border colour: the equipped item's quality, dark grey when empty
+-- (the retail sheet's values).
+local function SlotBorderColor(slot)
+    local r, g, b = QualityColor(slot)
+    if r then return r, g, b end
     return 0.4, 0.4, 0.4
 end
 
@@ -259,11 +299,556 @@ local function ColorSlotBorder(slot)
     PanelPP.SetBorderColor(slot, r, g, b, 1)
 end
 
+--------------------------------------------------------------------------------
+--  Slot text where the retail sheet shows the item level and upgrade track:
+--  the item's main and secondary stat, or its armor when it has no stats,
+--  and the enchant name under it. It reads the retail upgrade track and
+--  enchant settings keys, sizes and colours, so those options rows drive it
+--  through the refreshers redefined below.
+--------------------------------------------------------------------------------
+local EX_LOOK = 5  -- the EllesmereUI look's text edge, off the slot edge
+local EX = EX_LOOK -- the text's near edge, off the slot edge
+local WY = 10      -- the outer weapon slots' first line, above the slot's centre
+-- Under Blizz Default Blizzard's bronze slot frames stay: the 55px art round
+-- each 37px slot reaches 9px past its edges. The text sits 4px past that,
+-- and the outer weapon slots' first line drops to the slot's centre so it
+-- clears the frames of the columns' bottom slots (set at the build, the
+-- style being latched for the session).
+local SLOT_FRAME = 9
+local stockPane      -- Blizz Default: the left pane, which the side weapon lines stop at
+
+-- Where each slot's text sits: "R" right of it, "L" left of it, "B" below
+-- it, "T" above it. The inner side for the two columns; the outer side for
+-- the outer weapon slots (the ranged text past the ammo slot while that
+-- shows); below the middle weapon slot, whose sides are taken and whose top
+-- holds the flyout arrow, or above it under Blizz Default (Blizzard's frame
+-- border leaves no room under it). Shirt, tabard and ammo carry none
+-- (shirt and tabard carry none on retail either).
+local TEXT_SIDE = {
+    CharacterHeadSlot = "R", CharacterNeckSlot = "R", CharacterShoulderSlot = "R",
+    CharacterBackSlot = "R", CharacterChestSlot = "R", CharacterWristSlot = "R",
+    CharacterHandsSlot = "L", CharacterWaistSlot = "L", CharacterLegsSlot = "L",
+    CharacterFeetSlot = "L", CharacterFinger0Slot = "L", CharacterFinger1Slot = "L",
+    CharacterTrinket0Slot = "L", CharacterTrinket1Slot = "L",
+    CharacterMainHandSlot = "L", CharacterSecondaryHandSlot = "B", CharacterRangedSlot = "R",
+}
+
+-- The slots that can hold a weapon carry a dps line (painted only when the
+-- item there is one).
+local WEAPON_SLOT = {
+    CharacterMainHandSlot = true, CharacterSecondaryHandSlot = true, CharacterRangedSlot = true,
+}
+
+-- C_Item.GetItemStats keys in tie order (an earlier key wins a tie), with our
+-- own short labels. Main stat: the largest of the first three (the
+-- primaries), else of the next two (Stamina, Spirit). Secondary: the largest
+-- of every other listed key. Armor, shield block value, weapon damage,
+-- sockets and any unlisted key never show. Built on first use, once the
+-- locale catalog is active.
+local STAT_LIST
+local function StatList()
+    if STAT_LIST then return STAT_LIST end
+    local crit, hit = EllesmereUI.L("Crit"), EllesmereUI.L("Hit")
+    local mp5, hp5 = EllesmereUI.L("MP5"), EllesmereUI.L("HP5")
+    STAT_LIST = {
+        { "ITEM_MOD_STRENGTH_SHORT",             EllesmereUI.L("Str") },
+        { "ITEM_MOD_AGILITY_SHORT",              EllesmereUI.L("Agi") },
+        { "ITEM_MOD_INTELLECT_SHORT",            EllesmereUI.L("Int") },
+        { "ITEM_MOD_STAMINA_SHORT",              EllesmereUI.L("Stam") },
+        { "ITEM_MOD_SPIRIT_SHORT",               EllesmereUI.L("Spi") },
+        { "ITEM_MOD_ATTACK_POWER_SHORT",         EllesmereUI.L("AP") },
+        { "ITEM_MOD_RANGED_ATTACK_POWER_SHORT",  EllesmereUI.L("RAP") },
+        { "ITEM_MOD_SPELL_POWER_SHORT",          EllesmereUI.L("SP") },
+        { "ITEM_MOD_SPELL_DAMAGE_DONE_SHORT",    EllesmereUI.L("Spell Dmg") },
+        { "ITEM_MOD_SPELL_HEALING_DONE_SHORT",   EllesmereUI.L("Heal") },
+        { "ITEM_MOD_CRIT_RATING_SHORT",          crit },
+        { "ITEM_MOD_CRIT_MELEE_RATING_SHORT",    crit },
+        { "ITEM_MOD_CRIT_RANGED_RATING_SHORT",   crit },
+        { "ITEM_MOD_CRIT_SPELL_RATING_SHORT",    EllesmereUI.L("Spell Crit") },
+        { "ITEM_MOD_HIT_RATING_SHORT",           hit },
+        { "ITEM_MOD_HIT_MELEE_RATING_SHORT",     hit },
+        { "ITEM_MOD_HIT_RANGED_RATING_SHORT",    hit },
+        { "ITEM_MOD_HIT_SPELL_RATING_SHORT",     EllesmereUI.L("Spell Hit") },
+        { "ITEM_MOD_HASTE_RATING_SHORT",         EllesmereUI.L("Haste") },
+        { "ITEM_MOD_MANA_REGENERATION_SHORT",    mp5 },
+        { "ITEM_MOD_POWER_REGEN0_SHORT",         mp5 },
+        { "ITEM_MOD_HEALTH_REGEN_SHORT",         hp5 },
+        { "ITEM_MOD_HEALTH_REGENERATION_SHORT",  hp5 },
+        { "ITEM_MOD_DEFENSE_SKILL_RATING_SHORT", EllesmereUI.L("Def") },
+        { "ITEM_MOD_DODGE_RATING_SHORT",         EllesmereUI.L("Dodge") },
+        { "ITEM_MOD_PARRY_RATING_SHORT",         EllesmereUI.L("Parry") },
+        { "ITEM_MOD_BLOCK_RATING_SHORT",         EllesmereUI.L("Block") },
+        { "ITEM_MOD_SPELL_PENETRATION_SHORT",    EllesmereUI.L("Spell Pen") },
+        { "RESISTANCE1_NAME",                    EllesmereUI.L("Holy Res") },
+        { "RESISTANCE2_NAME",                    EllesmereUI.L("Fire Res") },
+        { "RESISTANCE3_NAME",                    EllesmereUI.L("Nature Res") },
+        { "RESISTANCE4_NAME",                    EllesmereUI.L("Frost Res") },
+        { "RESISTANCE5_NAME",                    EllesmereUI.L("Shadow Res") },
+        { "RESISTANCE6_NAME",                    EllesmereUI.L("Arcane Res") },
+    }
+    return STAT_LIST
+end
+
+-- "+14 Int / +9 Stam": main / secondary, one when only one exists; an item
+-- with no listed stat shows its armor ("45 Armor"), else "". Memoized per
+-- link (the link carries every input: item, suffix, enchant); an item whose
+-- stats have not arrived is not recorded.
+local statTextCache = {}
+local armorLabel
+local function StatText(link)
+    local text = statTextCache[link]
+    if text then return text end
+    local stats = C_Item.GetItemStats(link)
+    if not stats then return "" end
+    local list = StatList()
+    local main, mainV = nil, 0
+    for i = 1, 3 do
+        local v = stats[list[i][1]]
+        if v and v > mainV then main, mainV = i, v end
+    end
+    if not main then
+        for i = 4, 5 do
+            local v = stats[list[i][1]]
+            if v and v > mainV then main, mainV = i, v end
+        end
+    end
+    local second, secondV = nil, 0
+    for i = 1, #list do
+        local v = i ~= main and stats[list[i][1]]
+        if v and v > secondV then second, secondV = i, v end
+    end
+    if main and second then
+        text = string.format("+%d %s / +%d %s", mainV, list[main][2], secondV, list[second][2])
+    elseif main or second then
+        text = string.format("+%d %s", main and mainV or secondV, list[main or second][2])
+    else
+        local armor = stats.RESISTANCE0_NAME
+        if armor and armor > 0 then
+            armorLabel = armorLabel or EllesmereUI.L("Armor")
+            text = string.format("%d %s", armor, armorLabel)
+        else
+            text = ""
+        end
+    end
+    statTextCache[link] = text
+    return text
+end
+
+-- "6.3 Dps" for a weapon (item class Weapon, so never a shield or a held-in
+-- off-hand item), "" for anything else. Memoized per link like the stats.
+local dpsTextCache = {}
+local dpsLabel
+local function DpsText(link)
+    local text = dpsTextCache[link]
+    if text then return text end
+    text = ""
+    if select(6, C_Item.GetItemInfoInstant(link)) == Enum.ItemClass.Weapon then
+        local stats = C_Item.GetItemStats(link)
+        if not stats then return "" end
+        local dps = stats.ITEM_MOD_DAMAGE_PER_SECOND_SHORT
+        if dps and dps > 0 then
+            dpsLabel = dpsLabel or EllesmereUI.L("Dps")
+            text = string.format("%.1f %s", dps, dpsLabel)
+        end
+    end
+    dpsTextCache[link] = text
+    return text
+end
+
+local function DB(key)
+    local db = EllesmereUIDB
+    return db and db[key]
+end
+
+-- The enchant name through the retail sheet's reader, which takes the
+-- engine-tagged permanent enchant tooltip line. A vanilla line is the effect
+-- itself ("+7 Agility"): the plus the reader trims goes back on, and an
+-- "Enchanted: " prefix, where the client adds one, comes off.
+local ENCHANT_PREFIX = ENCHANTED_TOOLTIP_LINE and ENCHANTED_TOOLTIP_LINE:match("^(.-)%%s")
+local function EnchantName(slotID)
+    local text = EllesmereUI.GetEnchantText(slotID)
+    if text == "" then return text end
+    if ENCHANT_PREFIX and ENCHANT_PREFIX ~= "" and text:sub(1, #ENCHANT_PREFIX) == ENCHANT_PREFIX then
+        text = text:sub(#ENCHANT_PREFIX + 1)
+    end
+    if text:find("^%d") then text = "+" .. text end
+    return text
+end
+
+local textVer = 1               -- bumped by every options refresh
+local pending, pendingN = {}, 0 -- SLOTS index -> itemID waiting on item data
+local itemWatch                 -- GET_ITEM_INFO_RECEIVED, registered only while a slot waits
+
+-- The stats font (and the weapon slots' dps line): the retail upgrade
+-- track's size, outline and shadow keys. The enchant's font follows its
+-- name mode at paint.
+local function ApplyLabelFonts(d)
+    local path = FontPath()
+    local size = DB("charSheetUpgradeTrackSize") or 11
+    local flags = DB("charSheetUpgradeTrackOutline") and "OUTLINE, SLUG" or ""
+    EllesmereUI.PrimeFontShadow(d.stats, DB("charSheetUpgradeTrackShadow"))
+    d.stats:SetFont(path, size, flags)
+    if d.dps then
+        EllesmereUI.PrimeFontShadow(d.dps, DB("charSheetUpgradeTrackShadow"))
+        d.dps:SetFont(path, size, flags)
+    end
+    d.fontVer = textVer
+end
+
+-- Blizz Default: a weapon slot's lines capped at the room they have
+-- (the stats and dps take its width, justified to their anchored side; the
+-- enchant shrinks to it when wider), cut short rather than run past it.
+local function CapLines(d, room, justify)
+    if not room or room <= 0 then return end
+    d.stats:SetWidth(room); d.stats:SetJustifyH(justify)
+    d.dps:SetWidth(room); d.dps:SetJustifyH(justify)
+    if d.ench:GetWidth() > room then d.ench:SetWidth(room) end
+end
+
+-- The side weapon lines stop 6px inside the left pane (its frame border on
+-- the left, the stats pane's edge on the right: past the ammo slot the
+-- ranged text has about 90px).
+local PANE_PAD = 6
+local function CapToPane(d, anchor, point)
+    local room
+    if point == "LEFT" then
+        local a, e = anchor:GetRight(), stockPane:GetRight()
+        room = a and e and e - PANE_PAD - a - EX
+    else
+        local a, e = anchor:GetLeft(), stockPane:GetLeft()
+        room = a and e and a - EX - e - PANE_PAD
+    end
+    CapLines(d, room, point)
+end
+
+-- Weapon slots stack their lines from the top: the stats, the dps, then the
+-- enchant, a line moving up when the one above it is empty. Beside a slot
+-- the first line sits where retail's item level does (at the slot's centre
+-- under Blizz Default) and the enchant keeps its retail spot unless the dps
+-- line pushes it down; below the middle weapon slot the lines stack centred
+-- under it, stats and dps sharing a row; above it (Blizz Default) they stack
+-- upward, ending at its right edge. Re-run after each paint (the lines'
+-- contents and heights decide the stack).
+local LINE = 13
+local function StackWeaponText(d, anchor)
+    local stats, dps, ench = d.stats, d.dps, d.ench
+    stats:ClearAllPoints(); dps:ClearAllPoints(); ench:ClearAllPoints()
+    if d.side == "B" then
+        -- About 30px sit between the weapon row and the frame's bottom edge:
+        -- three lines do not fit, so under the middle slot the stats and the
+        -- dps share one row, centred as a pair.
+        local top = -3
+        if d.hasStats and d.hasDps then
+            local gap = 6
+            local w = stats:GetStringWidth() + gap + dps:GetStringWidth()
+            stats:SetPoint("TOPLEFT", anchor, "BOTTOM", -w / 2, top)
+            dps:SetPoint("LEFT", stats, "RIGHT", gap, 0)
+            top = top - math.max(stats:GetStringHeight(), dps:GetStringHeight()) - 1
+        elseif d.hasStats then
+            stats:SetPoint("TOP", anchor, "BOTTOM", 0, top)
+            top = top - stats:GetStringHeight() - 1
+        elseif d.hasDps then
+            dps:SetPoint("TOP", anchor, "BOTTOM", 0, top)
+            top = top - dps:GetStringHeight() - 1
+        end
+        ench:SetPoint("TOP", anchor, "BOTTOM", 0, top)
+        ench:SetJustifyH("CENTER")
+        return
+    end
+    if d.side == "T" then
+        -- The enchant nearest the slot, then the dps, then the stats. The
+        -- columns' bottom slots keep their inner lines within their own
+        -- height, level with these, so the stack starts at those slots' top,
+        -- else just past the bronze frame. Each line ends at the slot's right
+        -- edge and runs left into the band beside the shirt and tabard (which
+        -- carry no text), capped at the left column's text edge: a centred
+        -- stack or a shared stats and dps row would run into the right
+        -- column's text.
+        local y = SLOT_FRAME + 2
+        local col, top = _G.CharacterWristSlot, anchor:GetTop()
+        local colTop = col and col:GetTop()
+        if top and colTop and colTop - top + 2 > y then y = colTop - top + 2 end
+        local right, colRight = anchor:GetRight(), col and col:GetRight()
+        CapLines(d, right and colRight and right - colRight - EX, "RIGHT")
+        ench:SetJustifyH("RIGHT")
+        if d.hasEnch then
+            ench:SetPoint("BOTTOMRIGHT", anchor, "TOPRIGHT", 0, y)
+            y = y + ench:GetStringHeight() + 1
+        end
+        if d.hasDps then
+            dps:SetPoint("BOTTOMRIGHT", anchor, "TOPRIGHT", 0, y)
+            y = y + dps:GetStringHeight() + 1
+        end
+        if d.hasStats then stats:SetPoint("BOTTOMRIGHT", anchor, "TOPRIGHT", 0, y) end
+        return
+    end
+    local point, rel, x = "LEFT", "RIGHT", EX
+    if d.side == "L" then point, rel, x = "RIGHT", "LEFT", -EX end
+    if stockPane then CapToPane(d, anchor, point) end
+    local y = WY
+    if d.hasStats then
+        stats:SetPoint(point, anchor, rel, x, y)
+        y = y - LINE
+    end
+    if d.hasDps then
+        dps:SetPoint(point, anchor, rel, x, y)
+        y = y - LINE
+    end
+    ench:SetPoint(point, anchor, rel, x, math.min(y, -3) - 2)
+    ench:SetJustifyH(point)
+end
+
+-- The stats off the slot's edge where retail's item level sits, the
+-- enchant under them hugging the slot.
+local function PlaceText(d, anchor)
+    if d.dps then return StackWeaponText(d, anchor) end
+    local stats, ench = d.stats, d.ench
+    stats:ClearAllPoints(); ench:ClearAllPoints()
+    if d.side == "R" then
+        stats:SetPoint("LEFT", anchor, "RIGHT", EX, 10)
+        ench:SetPoint("LEFT", anchor, "RIGHT", EX, -5)
+        ench:SetJustifyH("LEFT")
+    else
+        stats:SetPoint("RIGHT", anchor, "LEFT", -EX, 10)
+        ench:SetPoint("RIGHT", anchor, "LEFT", -EX, -5)
+        ench:SetJustifyH("RIGHT")
+    end
+end
+
+-- One slot's text. Runs from Blizzard's per-slot update (only while the
+-- slots are shown), from the options refreshers and from item data landing.
+local function PaintSlotText(slot)
+    local d = FFD[slot]
+    local stats = d and d.stats
+    if not stats then return end
+    -- The ranged text sits past the ammo slot while that shows (checked
+    -- ahead of the memo: the ammo slot comes and goes with the class).
+    local ammo = d.ammo
+    if ammo then
+        local anchor = ammo:IsShown() and ammo or slot
+        if d.anchor ~= anchor then
+            d.anchor = anchor
+            PlaceText(d, anchor)
+        end
+    end
+    -- Memo: the equipped link and the settings version are every input.
+    local slotID = slot:GetID()
+    local link = GetInventoryItemLink("player", slotID)
+    if d.paintLink == link and d.paintVer == textVer then return end
+    d.paintLink, d.paintVer = link, textVer
+    local idx = d.idx
+    if pending[idx] then
+        pending[idx] = nil
+        pendingN = pendingN - 1
+        if pendingN == 0 then itemWatch:UnregisterEvent("GET_ITEM_INFO_RECEIVED") end
+    end
+    if d.fontVer ~= textVer then ApplyLabelFonts(d) end
+    local ench = d.ench
+    local itemID = link and GetInventoryItemID("player", slotID)
+    if not (itemID and C_Item.IsItemDataCachedByID(itemID)) then
+        stats:SetText(""); ench:SetText("")
+        if d.dps then d.dps:SetText("") end
+        if itemID then
+            -- Not cached yet: one repaint when it lands, watched only while
+            -- the slot shows (and ahead of the request, whose answer can
+            -- come at once); a hidden one repaints on its next show.
+            if slot:IsVisible() then
+                pending[idx] = itemID
+                pendingN = pendingN + 1
+                itemWatch:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+            else
+                d.paintLink = nil
+            end
+            C_Item.RequestLoadItemDataByID(itemID)
+        end
+        return
+    end
+
+    -- The item's colour as retail colours its item level: the custom colour,
+    -- else the item's quality (unless turned off), else white.
+    local r, g, b = 1, 1, 1
+    local custom = DB("charSheetItemLevelUseColor") and DB("charSheetItemLevelColor")
+    if custom then
+        r, g, b = custom.r, custom.g, custom.b
+    elseif DB("charSheetColorItemLevel") ~= false then
+        local qr, qg, qb = QualityColor(slot)
+        if qr then r, g, b = qr, qg, qb end
+    end
+
+    -- The upgrade track's key and colour override: the item's stats (or its
+    -- armor), else in the item's colour.
+    -- A weapon's damage per second rides the same key and colour.
+    local showStats = DB("showUpgradeTrack") ~= false
+    local statText = showStats and StatText(link) or ""
+    stats:SetText(statText)
+    local sc = DB("charSheetUpgradeTrackUseColor") and DB("charSheetUpgradeTrackColor")
+    local sr, sg, sb = r, g, b
+    if sc then sr, sg, sb = sc.r, sc.g, sc.b end
+    stats:SetTextColor(sr, sg, sb, 0.8)
+    local dps = d.dps
+    if dps then
+        local dpsText = showStats and DpsText(link) or ""
+        dps:SetText(dpsText)
+        dps:SetTextColor(sr, sg, sb, 0.8)
+        d.hasStats, d.hasDps = statText ~= "", dpsText ~= ""
+    end
+
+    -- Vanilla enchants carry no icon, so the name always shows; Show Enchant
+    -- Names gives it retail's name look (outlined, tinted from the item's
+    -- colour). Capped at 45% of the gap between the columns, as on retail,
+    -- less Blizz Default's extra inset on each side (so the two
+    -- columns' enchants keep a gap in the middle).
+    local name = DB("showEnchants") ~= false and EnchantName(slotID) or ""
+    ench:SetText(name)
+    if name ~= "" then
+        local size = DB("charSheetEnchantSize") or 9
+        if DB("charSheetEnchantNames") then
+            ench:SetFont(FontPath(), size, "OUTLINE, SLUG")
+            ench:SetTextColor(r + (1 - r) * 0.5, g + (1 - g) * 0.5, b + (1 - b) * 0.5, 0.9)
+        else
+            ench:SetFont(FontPath(), size, "")
+            ench:SetTextColor(1, 1, 1, 0.8)
+        end
+        local head, hands = _G.CharacterHeadSlot, _G.CharacterHandsSlot
+        local lr, rl = head and head:GetRight(), hands and hands:GetLeft()
+        ench:SetWidth((lr and rl and rl > lr) and (rl - lr - 2 * (EX - EX_LOOK)) * 0.45 or 0)
+    end
+    if dps then
+        d.hasEnch = name ~= ""
+        StackWeaponText(d, d.anchor)
+    end
+end
+
+-- The slots went away (tab, pet view, close): nothing waits any more; a
+-- slot that was waiting repaints on its next show.
+local function ClearPending()
+    if pendingN == 0 then return end
+    for i = 1, #SLOTS do
+        if pending[i] then
+            pending[i] = nil
+            local d = FFD[_G[SLOTS[i]]]
+            if d then d.paintLink = nil end
+        end
+    end
+    pendingN = 0
+    itemWatch:UnregisterEvent("GET_ITEM_INFO_RECEIVED")
+end
+
+-- Item data landed: one repaint per waiting slot. A failed load is not
+-- asked for again (no retry loop); that slot stays blank until its item or
+-- a setting changes.
+local function OnItemInfo(_, _, itemID, success)
+    for i = 1, #SLOTS do
+        if pending[i] == itemID then
+            pending[i] = nil
+            pendingN = pendingN - 1
+            if success then
+                local slot = _G[SLOTS[i]]
+                local d = FFD[slot]
+                if d then d.paintLink = nil end
+                PaintSlotText(slot)
+            end
+        end
+    end
+    if pendingN == 0 then itemWatch:UnregisterEvent("GET_ITEM_INFO_RECEIVED") end
+end
+
+local slotOverlay   -- every slot's text; the eyeball fades it
+
+local function BuildSlotText()
+    local host = _G.PaperDollItemsFrame
+    if not host or itemWatch then return end
+    -- Blizz Default: the text goes past Blizzard's bronze slot frames.
+    local fv = ns.CharSheetForever()
+    if fv then
+        EX, WY = SLOT_FRAME + 4, 0
+        stockPane = _G.CharacterFrame and _G.CharacterFrame.LeftPaneHost
+    end
+    itemWatch = CreateFrame("Frame")
+    itemWatch:SetScript("OnEvent", OnItemInfo)
+    -- A child of the slots' own frame, so it goes with them (other tabs, the
+    -- pet view); above the model scene, below the slot buttons.
+    local overlay = CreateFrame("Frame", nil, host)
+    slotOverlay = overlay
+    overlay:SetAllPoints(host)
+    local scene = _G.CharacterModelScene
+    overlay:SetFrameLevel((scene and scene:GetFrameLevel() or 50) + 10)
+    local ranged = _G.CharacterRangedSlot
+    local rangedShown = ranged and ranged:IsShown()
+    local path = FontPath()
+    for i = 1, #SLOTS do
+        local name = SLOTS[i]
+        local side, slot = TEXT_SIDE[name], _G[name]
+        if side and slot then
+            -- Without a ranged slot the off hand is the outer one on the
+            -- right; under Blizz Default the middle one's text goes above
+            -- it.
+            if side == "B" then
+                if not rangedShown then side = "R"
+                elseif fv then side = "T" end
+            end
+            local d = GetFFD(slot)
+            d.idx, d.side, d.anchor = i, side, slot
+            -- One line each: a capped width (Blizz Default) cuts the
+            -- text short rather than wrapping it into the frames around.
+            d.stats = overlay:CreateFontString(nil, "OVERLAY")
+            d.stats:SetWordWrap(false)
+            if WEAPON_SLOT[name] then
+                d.dps = overlay:CreateFontString(nil, "OVERLAY")
+                d.dps:SetWordWrap(false)
+            end
+            d.ench = overlay:CreateFontString(nil, "OVERLAY")
+            d.ench:SetFont(path, DB("charSheetEnchantSize") or 9, "")
+            d.ench:SetWordWrap(false)
+            ApplyLabelFonts(d)
+            if slot == ranged then d.ammo = _G.CharacterAmmoSlot end
+            PlaceText(d, slot)
+        end
+    end
+    host:HookScript("OnHide", ClearPending)
+    -- A first open that skinned the sheet (or, under Blizz Default, the
+    -- slots' first show) has already had Blizzard's update.
+    for i = 1, #SLOTS do
+        local slot = _G[SLOTS[i]]
+        if slot and slot:IsVisible() then PaintSlotText(slot) end
+    end
+end
+
+-- Options refreshers: the retail slot text setters (the track key shown
+-- here as Show Item Stats, Enchants and its cog, the Fonts page's Enchant
+-- Text Size) land here; the retail versions walk retail-only state.
+-- The version bump feeds every setting into the paint memo, so a hidden
+-- sheet repaints on its next show.
+local function RefreshSlotText()
+    textVer = textVer + 1
+    if not TextEnabled() then return end
+    for i = 1, #SLOTS do
+        local slot = _G[SLOTS[i]]
+        if slot and slot:IsVisible() then PaintSlotText(slot) end
+    end
+end
+EllesmereUI._refreshItemLevelVisibility = RefreshSlotText
+EllesmereUI._refreshUpgradeTrackVisibility = RefreshSlotText
+EllesmereUI._refreshEnchantsVisibility = RefreshSlotText
+EllesmereUI._refreshCharSheetSlotLabels = RefreshSlotText
+EllesmereUI._applyCharSheetTextSizes = RefreshSlotText
+
 -- Blizzard refreshes every shown slot through this on equipment changes and
--- on show; the border follows. Foreign item buttons (bags) have no entry.
+-- on show; the border and the slot text follow. Foreign item buttons (bags)
+-- have no entry.
 local function OnSlotUpdate(slot)
     local d = FFD[slot]
-    if d and d.border then ColorSlotBorder(slot) end
+    if not d then return end
+    if d.border then ColorSlotBorder(slot) end
+    if d.stats then PaintSlotText(slot) end
+end
+
+-- Both looks follow that update through one hook, installed once.
+local slotHooked = false
+local function HookSlotUpdates()
+    if slotHooked or type(_G.PaperDollItemSlotButton_Update) ~= "function" then return end
+    slotHooked = true
+    hooksecurefunc("PaperDollItemSlotButton_Update", OnSlotUpdate)
 end
 
 local function SkinSlot(slotName, Fade)
@@ -273,13 +858,26 @@ local function SkinSlot(slotName, Fade)
     -- The bronze slot frame lives on a child frame; the button art is the
     -- named NormalTexture (hidden, not faded: the client rewrites its vertex
     -- colour, and with it the alpha, on every item update).
-    if slot.BorderFrame then Fade(slot.BorderFrame) end
+    if slot.BorderFrame then
+        Fade(slot.BorderFrame)
+    else
+        -- The ammo slot is built without that child: its ring is an atlas
+        -- texture on the button itself. The arrow pointing at the ranged slot
+        -- (an unnamed child frame of its own) stays.
+        local regions = { slot:GetRegions() }
+        for i = 1, #regions do
+            local r = regions[i]
+            if r.GetAtlas and r:GetAtlas() == "UI-Character-Info-GearSlotSmall" then r:SetAlpha(0) end
+        end
+    end
     local normal = _G[slotName .. "NormalTexture"]
     if normal then normal:Hide() end
     -- Blizzard's quality ring gets re-shown and recoloured on every item
     -- update, so it is collapsed onto one blank texel instead of hidden.
     if slot.IconBorder then slot.IconBorder:SetTexCoord(0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8) end
-    local icon = _G[slotName .. "IconTexture"]
+    -- The item icon is the button's own; the ammo slot also declares a
+    -- legacy texture under the same global name, which is not it.
+    local icon = slot.icon or _G[slotName .. "IconTexture"]
     if icon then
         local z = Zoom()
         icon:SetTexCoord(z, 1 - z, z, 1 - z)
@@ -306,7 +904,7 @@ function EllesmereUI._refreshCharSheetIconZoom()
     for i = 1, #SLOTS do
         local slot = _G[SLOTS[i]]
         if slot and FFD[slot] and FFD[slot].done then
-            local icon = _G[SLOTS[i] .. "IconTexture"]
+            local icon = slot.icon or _G[SLOTS[i] .. "IconTexture"]
             if icon then icon:SetTexCoord(z, 1 - z, z, 1 - z) end
         end
     end
@@ -436,12 +1034,44 @@ local function SkinFrame()
     SidebarPanel(frame, topBar)
 
     -- Item slots: frames off, icons cropped, a grey square and a quality
-    -- border on each; the border follows Blizzard's own slot refresh.
+    -- border on each, and the slot text beside them; both follow Blizzard's
+    -- own slot refresh.
     for i = 1, #SLOTS do SkinSlot(SLOTS[i], Fade) end
-    if not d.slotHook and type(_G.PaperDollItemSlotButton_Update) == "function" then
-        d.slotHook = true
-        hooksecurefunc("PaperDollItemSlotButton_Update", OnSlotUpdate)
+    BuildSlotText()
+    -- Top-left eyeball, as on retail: hides every slot's text for the
+    -- session by fading their shared overlay.
+    if slotOverlay and not d.eyeBtn then
+        local EYE_VISIBLE, EYE_INVISIBLE = EllesmereUI.EYE_VISIBLE_ICON, EllesmereUI.EYE_INVISIBLE_ICON
+        local hidden = false
+        -- On the slots' own frame: it goes with the slot text (other tabs,
+        -- the pet view) and sits above the mouse-enabled model scene, which
+        -- reaches up under the button's lower edge.
+        local items = slotOverlay:GetParent()
+        local eyeBtn = CreateFrame("Button", nil, items)
+        eyeBtn:SetSize(20, 20)
+        eyeBtn:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -6)
+        eyeBtn:SetFrameLevel(items:GetFrameLevel() + 5)
+        eyeBtn:SetAlpha(0.4)
+        local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+        eyeTex:SetAllPoints()
+        eyeTex:SetTexture(EYE_VISIBLE)
+        eyeBtn:SetScript("OnClick", function(self)
+            hidden = not hidden
+            eyeTex:SetTexture(hidden and EYE_INVISIBLE or EYE_VISIBLE)
+            slotOverlay:SetAlpha(hidden and 0 or 1)
+            EllesmereUI.ShowWidgetTooltip(self, hidden and "Show Item Text" or "Hide Item Text", { width = 135 })
+        end)
+        eyeBtn:SetScript("OnEnter", function(self)
+            self:SetAlpha(0.8)
+            EllesmereUI.ShowWidgetTooltip(self, hidden and "Show Item Text" or "Hide Item Text", { width = 135 })
+        end)
+        eyeBtn:SetScript("OnLeave", function(self)
+            self:SetAlpha(0.4)
+            EllesmereUI.HideWidgetTooltip()
+        end)
+        d.eyeBtn = eyeBtn
     end
+    HookSlotUpdates()
 
     -- Stats list colours.
     HookStatsList(_G.CharacterStatsPaneScrollBox)
@@ -459,14 +1089,26 @@ local function SkinFrame()
     return true
 end
 
+-- Blizz Default: the slot text alone, built at the slots' first show;
+-- every later show returns at once.
+local function BuildStockText()
+    if itemWatch then return end
+    BuildSlotText()
+    HookSlotUpdates()
+end
+
 local init = CreateFrame("Frame")
 init:RegisterEvent("PLAYER_LOGIN")
 init:SetScript("OnEvent", function(self)
     self:UnregisterEvent("PLAYER_LOGIN")
-    if not _G.CharacterFrame or not Enabled() then return end
-    if not SkinFrame() then
-        -- The engine loads after this addon's own files; one retry on the
-        -- first open covers a late shell.
-        _G.CharacterFrame:HookScript("OnShow", function() SkinFrame() end)
+    if not _G.CharacterFrame then return end
+    if Enabled() then
+        if not SkinFrame() then
+            -- The engine loads after this addon's own files; one retry on the
+            -- first open covers a late shell.
+            _G.CharacterFrame:HookScript("OnShow", function() SkinFrame() end)
+        end
+    elseif TextEnabled() and _G.PaperDollItemsFrame then
+        _G.PaperDollItemsFrame:HookScript("OnShow", BuildStockText)
     end
 end)

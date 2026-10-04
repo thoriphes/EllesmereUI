@@ -73,8 +73,9 @@ local STYLE = {
 }
 
 local function IsGreatVaultSkinEnabled()
-    -- Independent toggle, default on (not tied to any master reskin setting).
-    return not EllesmereUIDB or EllesmereUIDB.reskinGreatVault ~= false
+    -- Own toggle (default on), but like every window it honors the profile's
+    -- Window Skins kill switch: both resolve to "off" here.
+    return EllesmereUI.GetBlizzWindowStyle("greatvault") ~= "off"
 end
 
 local function BuildThemeContext()
@@ -82,7 +83,7 @@ local function BuildThemeContext()
     return {
         accent = { r = r, g = g, b = b },
         borderAPI = EllesmereUI.PP or EllesmereUI.PanelPP,
-        fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT,
+        fontPath = EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT,
         reskin = EllesmereUI.RESKIN or DEFAULT_RESKIN,
     }
 end
@@ -128,7 +129,7 @@ end
 local function ApplyFont(fontString, theme, size, r, g, b, a, flags)
     if not fontString then return end
 
-    if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fontString, true) end
+    EllesmereUI.PrimeFontShadow(fontString, true)
     fontString:SetFont((theme and theme.fontPath) or STANDARD_TEXT_FONT, size, flags or "")
     fontString:SetTextColor(r or 1, g or 1, b or 1, a or 1)
 end
@@ -296,8 +297,8 @@ local function ResolveItemBorderColor(itemLink)
         return STYLE.colors.itemDefaultBorder
     end
 
-    -- GetItemInfo reads the link (bonus-modified quality); ByID reads the base item.
-    local _, _, quality = GetItemInfo(itemLink)
+    -- C_Item.GetItemInfo reads the link (bonus-modified quality); ByID reads the base item.
+    local _, _, quality = C_Item.GetItemInfo(itemLink)
     if not quality and C_Item and C_Item.GetItemQualityByID then
         quality = C_Item.GetItemQualityByID(itemLink)
     end
@@ -375,8 +376,9 @@ local function SuppressItemButtonChrome(itemFrame)
         SuppressTexture(itemFrame:GetHighlightTexture())
     end
 
-    for i = 1, select("#", itemFrame:GetRegions()) do
-        local region = select(i, itemFrame:GetRegions())
+    local regions = { itemFrame:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region:IsObjectType("Texture") and region ~= itemFrame.Icon and not region._euiOwned then
             SuppressTexture(region)
         end
@@ -884,7 +886,7 @@ end
 
 local function HookGreatVault()
     local frame = _G.WeeklyRewardsFrame
-    if not frame then return end
+    if not frame or not IsGreatVaultSkinEnabled() then return end
     local d = GetFFD(frame)
     if d.hooked then return end
 
