@@ -83,7 +83,7 @@ end
 
 local DRUID_MELEE_FORMS = { [1] = true, [2] = true } -- Bear, Cat
 
-local EnsureLadder -- defined below; the no-spec fallback reads the ladder
+local EnsureLadder -- defined below; the WoW Forever caster cutoff reads the ladder
 
 -- Spec-derived attack cutoff, form check NOT included (that is the one live
 -- input; everything here only moves on spec/talent changes and is cached by
@@ -92,14 +92,18 @@ local function SpecAttackCutoff(holyPaladinMelee)
     local _, classFile = UnitClass("player")
     local specIndex = C_SpecializationInfo.GetSpecialization()
     local specID = specIndex and C_SpecializationInfo.GetSpecializationInfo(specIndex)
-    -- WoW Forever has no specs, so specID is nil for everyone. Caster cutoff
-    -- (Druid, Priest, Mage, Warlock) = the longest harmful spellbook rung
-    -- (<= 40 yd), so the cutoff lands on a real spell (Wrath, Shadow Bolt) that
-    -- Range_BeyondCutoff can probe directly, and follows talent range
-    -- extensions. Hunter (min-range shots are excluded from the ladder) and
-    -- hybrids (no spec to tell caster from melee) stay at 5, as before.
-    if not specID and EllesmereUI.IS_FOREVER == true then
-        if classFile == "DRUID" or classFile == "PRIEST" or classFile == "MAGE" or classFile == "WARLOCK" then
+    -- WoW Forever reports one class spec (1482-1491) whatever the player
+    -- plays, so the spec cannot tell caster from melee there. Casters (Druid,
+    -- Priest, Mage, Warlock, Shaman) take the longest harmful spellbook rung
+    -- (<= 40 yd), so the cutoff lands on a real spell (Wrath, Shadow Bolt,
+    -- Lightning Bolt) that Range_BeyondCutoff can probe directly, and follows
+    -- talent range extensions. Druid Cat and Bear Form get 5 from the live form
+    -- check in Range_GetAttackCutoff before this cached value is read.
+    -- Paladin, Hunter (min-range shots are excluded from the ladder), Warrior
+    -- and Rogue stay at 5.
+    if EllesmereUI.IS_FOREVER == true then
+        if classFile == "DRUID" or classFile == "PRIEST" or classFile == "MAGE" or classFile == "WARLOCK"
+            or classFile == "SHAMAN" then
             EnsureLadder()
             local best
             for i = 1, #RG.ladder do
@@ -114,7 +118,7 @@ local function SpecAttackCutoff(holyPaladinMelee)
 
     if classFile == "DRUID" then
         if specID == 102 or specID == 105 then
-            return IsPlayerSpell(197488) and 45 or 40 -- Astral Influence
+            return C_SpellBook.IsSpellKnown(197488) and 45 or 40 -- Astral Influence
         end
         return 5
     elseif classFile == "DEMONHUNTER" then

@@ -301,8 +301,9 @@ initFrame:SetScript("OnEvent", function(self)
             suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
             suffix:SetTextColor(1, 1, 1, 0.35)
             local rrLabel
-            for i = 1, rgn:GetNumRegions() do
-                local reg = select(i, rgn:GetRegions())
+            local regions = { rgn:GetRegions() }
+            for i = 1, #regions do
+                local reg = regions[i]
                 if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Refresh Rate" then
                     rrLabel = reg
                     break
@@ -1084,8 +1085,9 @@ initFrame:SetScript("OnEvent", function(self)
             suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
             suffix:SetTextColor(1, 1, 1, 0.35)
             local hnLabel
-            for i = 1, rgn:GetNumRegions() do
-                local reg = select(i, rgn:GetRegions())
+            local regions = { rgn:GetRegions() }
+            for i = 1, #regions do
+                local reg = regions[i]
                 if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Hide Rank Numbers" then
                     hnLabel = reg
                     break
@@ -1581,6 +1583,12 @@ initFrame:SetScript("OnEvent", function(self)
             { key = "iconHideInPvP",          label = "Hide in PvP" },
             { key = "iconHideOutOfInstance",   label = "Hide out of Instances" },
         }
+        -- No delves on WoW Forever: the list drops its Delves entry there.
+        if EllesmereUI.IS_FOREVER then
+            for i = #SH_ICON_VIS_ITEMS, 1, -1 do
+                if SH_ICON_VIS_ITEMS[i].key == "iconHideInDelve" then table.remove(SH_ICON_VIS_ITEMS, i) end
+            end
+        end
         local iconVisRow
         iconVisRow, h = W:DualRow(parent, y,
             { type = "dropdown", text = "Grow Direction",
@@ -1688,6 +1696,12 @@ initFrame:SetScript("OnEvent", function(self)
             { key = "barHideInPvP",          label = "Hide in PvP" },
             { key = "barHideOutOfInstance",   label = "Hide out of Instances" },
         }
+        -- No delves on WoW Forever: the list drops its Delves entry there.
+        if EllesmereUI.IS_FOREVER then
+            for i = #SH_BAR_VIS_ITEMS, 1, -1 do
+                if SH_BAR_VIS_ITEMS[i].key == "barHideInDelve" then table.remove(SH_BAR_VIS_ITEMS, i) end
+            end
+        end
         local barVisRow
         barVisRow, h = W:DualRow(parent, y,
             { type = "toggle", text = "Enable Bar History",

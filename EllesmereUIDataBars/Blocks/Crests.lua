@@ -1,4 +1,5 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+if EllesmereUI.IS_FOREVER then return end -- no season crests on WoW Forever: no factory, no ns.CrestColorMode (the main file drops the block from BLOCK_TYPES too)
 -- Blocks\Crests.lua
 -- Crests block factory.
 

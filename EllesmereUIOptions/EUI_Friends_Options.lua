@@ -127,6 +127,9 @@ initFrame:SetScript("OnEvent", function(self)
             if BS then BS.Gate("friends", cfg) end
             return cfg
         end
+        -- Border Size / Border Color drive only this module's own flat look;
+        -- the Window Skins "Friends List" card draws the frame otherwise.
+        local CHROME_BORDER_TIP = "The Friends List window skin draws this border (Blizz UI Enhanced > Blizzard Window Skins)."
 
         -- DISPLAY
         _, h = W:SectionHeader(parent, "DISPLAY", y);  y = y - h
@@ -157,6 +160,8 @@ initFrame:SetScript("OnEvent", function(self)
         -- Border Size | Border Color
         _, h = W:DualRow(parent, y,
             Gate({ type="slider", text="Border Size", min=0, max=4, step=1,
+              disabled=function() return ns.FR_ChromeShell() end,
+              disabledTooltip=CHROME_BORDER_TIP, rawTooltip=true,
               getValue=function() local f = FriendsDB(); return f and f.borderSize or 0 end,
               setValue=function(v)
                 local f = FriendsDB(); if not f then return end
@@ -166,10 +171,13 @@ initFrame:SetScript("OnEvent", function(self)
               end }),
             Gate({ type="multiSwatch", text="Border Color",
               disabled=function()
+                if ns.FR_ChromeShell() then return true end
                 local f = FriendsDB()
                 return not f or (f.borderSize or 0) == 0
               end,
-              disabledTooltip="Set Border Size above 0", rawTooltip=true,
+              disabledTooltip=function()
+                return ns.FR_ChromeShell() and CHROME_BORDER_TIP or "Set Border Size above 0"
+              end, rawTooltip=true,
               swatches = {
                 { tooltip = "Custom Color",
                   hasAlpha = false,

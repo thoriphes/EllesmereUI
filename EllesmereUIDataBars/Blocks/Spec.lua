@@ -1,4 +1,5 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+if EllesmereUI.IS_FOREVER then return end -- one spec per class on WoW Forever, nothing to switch: no factory, no loadout hook (the main file drops the block from BLOCK_TYPES too)
 -- Blocks\Spec.lua
 -- Specialization block factory (spec, loot spec, loadout popups).
 
@@ -575,7 +576,12 @@ ns.BlockFactories.spec = function(blockCfg, slot, content, barCtx)
             local _, classId = UnitClass("player")
             local files = classId and SPEC_ICON_FILES[classId]
             local file = files and files[currentSpecIdx]
-            if file then
+            local spec = specCache[currentSpecIdx]
+            -- Blizzard style: the game's own spec icon, cropped off its border.
+            if (blockCfg.settings or {}).iconStyle == "wow" and spec and spec.icon then
+                specIcon:SetTexture(spec.icon)
+                K.CropStockIcon(specIcon)
+            elseif file then
                 specIcon:SetTexture(SPEC_MEDIA .. file .. ".png")
                 specIcon:SetTexCoord(0, 1, 0, 1)
             end

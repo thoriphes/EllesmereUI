@@ -488,6 +488,7 @@ end
 -------------------------------------------------------------------------------
 local EngineTailObserver -- optional (session history); set via ECHAT below
 local EngineTabObserver -- optional (tab strip flash/unread); set via ECHAT below
+local EngineIdleObserver -- optional (idle fade wake, only while the fade can run); set via ECHAT below
 local QueueDivergedRebuild -- forward declaration (defined with the mirrors)
 local EngineUpdateProtectedState -- forward declaration (defined with the mirrors)
 
@@ -937,6 +938,9 @@ local function EngineTail(cf, msg, r, g, b, chatTypeID, accessID, typeID, event,
     if EngineTabObserver then
         EngineTabObserver(cf, event)
     end
+    if EngineIdleObserver then
+        EngineIdleObserver(cf, event)
+    end
 end
 
 function ECHAT.EngineSetTailObserver(fn)
@@ -945,6 +949,10 @@ end
 
 function ECHAT.EngineSetTabObserver(fn)
     EngineTabObserver = fn
+end
+
+function ECHAT.EngineSetIdleObserver(fn)
+    EngineIdleObserver = fn
 end
 
 -- Scroll authority is BLIZZARD'S view: it receives the wheel natively and

@@ -7,7 +7,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Does NOT parse secret values works around restricted APIs.
 -------------------------------------------------------------------------------
 local _, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS["EllesmereUICooldownManager"] = ns  -- LOD options files read this module ns via the registry
 
 -- CPU-attribution shell pool: the engine bills a handler's call tree to the addon
@@ -17,7 +17,7 @@ EllesmereUI._ModuleNS["EllesmereUICooldownManager"] = ns  -- LOD options files r
 -- events/scripts. No release -- throwaways use CreateFrame directly.
 do
     local pool = {}
-    local n = 32
+    local n = 36
     for i = 1, n do pool[i] = CreateFrame("Frame") end
     ns.TakeShell = function()
         if n > 0 then
@@ -30,6 +30,10 @@ do
         return CreateFrame("Frame")
     end
 end
+
+-- Run-once-after-combat queue (EllesmereUI_Ticker.lua). Frame taken in the main
+-- chunk, so drained work bills CooldownManager. Keys are per purpose.
+ns.CombatQueue = EllesmereUI.NewCombatQueue(ns.TakeShell())
 
 -- EMERGENCY CONFLICT GUARD: the addon detected below hooks the same Blizzard
 -- frames we do; running both crashes the client on the loading screen. Detect
@@ -639,6 +643,44 @@ local CDM_ITEM_PRESETS = {
 }
 ns.CDM_ITEM_PRESETS = CDM_ITEM_PRESETS
 
+-- WoW Forever: the lust, Time Spiral and current-season potion presets have no
+-- vanilla counterpart, so both lists drop them here, before any reader (the
+-- Tracking Bars copy, the pickers, the item-preset maps) is built from them.
+-- A bar or entry saved with one of these keys keeps it and finds no preset.
+-- The Healthstone preset tracks the vanilla stones instead: five tiers, each a
+-- base stone and two improved-talent stones. The Minor stone stays the primary
+-- so entries saved against it keep their identity; the picker art is the
+-- client's own stone icon. Vanilla stones are single-use items on a shared
+-- item cooldown, so the combat lockout is switched off there: the family's
+-- item cooldown drives the swipe for whichever stone is owned.
+if EllesmereUI.IS_FOREVER then
+    local drop = {
+        bloodlust = true, timespiral = true, lights_potential = true,
+        potion_recklessness = true, liquid_luster = true, invis_potion = true,
+        silvermoon_health = true, lightfused_mana = true, demonic_healthstone = true,
+    }
+    for _, list in ipairs({ BUFF_BAR_PRESETS, CDM_ITEM_PRESETS }) do
+        for i = #list, 1, -1 do
+            if drop[list[i].key] then table.remove(list, i) end
+        end
+    end
+    for _, p in ipairs(CDM_ITEM_PRESETS) do
+        if p.key == "healthstone" then
+            p.icon = (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(5512)) or 134400
+            -- Major, Greater, Healthstone and Lesser tiers, then the improved Minor stones.
+            p.altItemIDs = {
+                9421, 19012, 19013,
+                5510, 19010, 19011,
+                5509, 19008, 19009,
+                5511, 19006, 19007,
+                19004, 19005,
+            }
+            p.combatLockout = nil
+            break
+        end
+    end
+end
+
 
 local BuildAllCDMBars
 local RegisterCDMUnlockElements
@@ -649,8 +691,6 @@ local RegisterCDMUnlockElements
 local DEFAULTS = {
     global = {},
     profile = {
-        -- CDM Look
-        reskinBorders   = true,
         -- Style flags (Global Settings > Style). All default OFF and are
         -- reload-gated. Blizzard Style: icons keep Blizzard's rounded mask,
         -- overlay ring and swipe art; tracked buff bars use Blizzard's bar
@@ -664,6 +704,14 @@ local DEFAULTS = {
         -- Bar Glows (per-spec)
         spec            = {},
         activeSpecKey   = "0",
+        -- Independent display of Blizzard's current recommendation (opt-in).
+        rotationAssistIcon = {
+            enabled = false, onlyInCombat = false, iconSize = 48,
+            showGCD = false,
+            showKeybind = false, keybindSize = 14,
+            keybindOffsetX = 2, keybindOffsetY = -2,
+            keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
+        },
         -- CDM Bars (our replacement for Blizzard CDM)
         cdmBars = {
             enabled = true,
@@ -992,6 +1040,59 @@ function ns.ListHasHostedMarker(list, spellID)
 end
 
 -------------------------------------------------------------------------------
+--  Empty Slot markers: a purely decorative placeholder (no spell/item behind
+--  it) that reserves a grid position on a CD/utility bar. Unlike every other
+--  marker kind, there is no natural id to encode -- each Add mints a fresh one
+--  so every instance is globally unique and AddTrackedSpell/RemoveTrackedSpell/
+--  ReplaceTrackedSpell (dedup, cross-bar sweep, index-based remove/reorder) all
+--  handle it with zero special-casing, same as any other tracked entry.
+--
+--  Encoding: -(EMPTY_SLOT_MARKER_BASE + seq). BASE sits above the item-preset
+--  range (<= -100, real itemIDs never approach it) and below
+--  HOSTED_BUFF_MARKER_BASE, so it can never collide with either.
+--
+--  seq is derived from the data itself (highest existing seq across every
+--  spec's bars, +1) rather than a saved counter: the markers live in the
+--  per-spec spell store (SpellStore), but a profile-level counter lives in a
+--  DIFFERENT table -- an import/sync can bring in markers the counter never
+--  saw, so a freshly minted one could collide with an already-saved marker
+--  (the Add then either no-ops as a "duplicate" or steals the slot from
+--  whichever bar already held that id). Scanning is collision-proof by
+--  construction and only runs on an explicit Add (cold path).
+-------------------------------------------------------------------------------
+ns.EMPTY_SLOT_MARKER_BASE = 1000000000
+
+function ns.NewEmptySlotMarker()
+    local maxSeq = 0
+    local sp = SpellStore and SpellStore.GetSpecProfiles and SpellStore.GetSpecProfiles()
+    if sp then
+        for _, prof in pairs(sp) do
+            local barSpells = prof and prof.barSpells
+            if barSpells then
+                for _, bs in pairs(barSpells) do
+                    local assigned = bs and bs.assignedSpells
+                    if assigned then
+                        for _, id in ipairs(assigned) do
+                            if ns.IsEmptySlotMarker(id) then
+                                local seq = -id - ns.EMPTY_SLOT_MARKER_BASE
+                                if seq > maxSeq then maxSeq = seq end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return -(ns.EMPTY_SLOT_MARKER_BASE + maxSeq + 1)
+end
+
+-- True for any Empty Slot marker; bounded above HOSTED_BUFF_MARKER_BASE so it never misreads a hosted-buff marker.
+function ns.IsEmptySlotMarker(id)
+    return type(id) == "number" and id <= -ns.EMPTY_SLOT_MARKER_BASE
+        and id > -ns.HOSTED_BUFF_MARKER_BASE
+end
+
+-------------------------------------------------------------------------------
 --  Cd-claim markers: a collided buff (two Blizzard buff-viewer slots sharing one canonical
 --  spellID, e.g. Diabolist Demonic Art vs Diabolic Ritual) can't be told apart by spellID, so
 --  a claimed slot is tracked by its cooldownID instead, using the same marker-in-assignedSpells
@@ -1241,8 +1342,12 @@ function ns.SpecsWithCustomSpell(spellID)
     if not sp then return out end
     local curKey = ns.GetActiveSpecKey and ns.GetActiveSpecKey()
     for key, prof in pairs(sp) do
+        -- WoW Forever: the player's class is one spec there, so its other
+        -- stored keys are not other specs (no picker row reaches them).
         if key ~= curKey and key ~= "0" and type(prof) == "table"
-           and type(prof.barSpells) == "table" then
+           and type(prof.barSpells) == "table"
+           and not (EllesmereUI.IS_FOREVER and ns._playerClass
+                    and EllesmereUI.SpecClassOf(tonumber(key)) == ns._playerClass) then
             local found = false
             for _, bs in pairs(prof.barSpells) do
                 if type(bs) == "table" and type(bs.assignedSpells) == "table" then
@@ -1374,6 +1479,33 @@ function ns.GetSpellCdStateEffect(frame, settings)
     return settings and settings.cdStateEffect
 end
 
+-- CD Ready glow style (CDM saved numbering), read from the same settings table as
+-- the effect: the explicit pick, else what the effect name implies (pixel* =
+-- Pixel Glow, button* = Action Button Glow), so older settings render unchanged.
+function ns.CdReadyGlowStyle(cse, settings)
+    local st = settings and settings.cdStateGlowStyle
+    if type(st) == "number" and st >= 1 and st <= #ns.GLOW_STYLES then return st end
+    if cse == "pixelGlowReady" or cse == "pixelGlowReadyUsable" then return 1 end
+    if cse == "glowOnCD" then return 8 end  -- Blackout: the default look for this effect
+    return 3
+end
+
+-- CD Ready glow color: the icon's pick, else white for the drawn styles (their
+-- long-standing look) and nil for FlipBooks (the atlas's own untinted look).
+function ns.CdReadyGlowColor(style, settings)
+    local r, g, b = ns.ResolveGlowColor(settings)
+    if r then return r, g, b end
+    local e = ns.GLOW_STYLES[style]
+    if e and not (e.procedural or e.buttonGlow or e.autocast or e.shapeGlow) then return nil end
+    return 1, 1, 1
+end
+
+-- CD Ready / On CD glow opacity (Blackout only; other styles ignore it).
+-- nil = fully opaque, matches StartSolidFill's own default.
+function ns.CdReadyGlowAlpha(settings)
+    return settings and settings.cdStateGlowAlpha
+end
+
 -- Does this icon have a custom Cooldown State Effect (preset cd-state)? Appearance refresh
 -- uses this so it doesn't clear a preset's _cdStateHidden flag: presets store cdState in customActiveStates, not per-bar spellSettings.
 function ns.PresetHasCdState(frame)
@@ -1383,7 +1515,13 @@ function ns.PresetHasCdState(frame)
     -- Fake-Active engine applies before honoring one. Without it an orphaned
     -- profile-level entry both hid a plain tracked spell and stopped the
     -- appearance refresh from ever clearing the flag it set.
-    if ns.CdmIsInjectedFrame and not ns.CdmIsInjectedFrame(frame) then return false end
+    -- Racials are the one exception: the Presets cog is their ONLY cd-state
+    -- config surface (no separate per-spell settings menu, unlike custom
+    -- spells), so a racial natively tracked by Blizzard's CDM must still honor it.
+    if ns.CdmIsInjectedFrame and not ns.CdmIsInjectedFrame(frame)
+       and not (ns._myRacialsSet and ns._myRacialsSet[fc.spellID]) then
+        return false
+    end
     local cas = ns.GetEffectiveCustomActiveState(fc.spellID)
     local eff = cas and cas.cdStateEffect
     if eff == false then eff = nil end  -- blocking-false = no effect
@@ -1405,20 +1543,33 @@ function ns.RescanMaxStacksGlowFlag()
     end)
 end
 
--- Audio on Buff Gain/Loss gate: set ns._cdmAnyBuffSound once if any saved buff icon (any spec)
--- has a gain OR loss sound chosen, so DecorateFrame/RefreshCDMIconAppearance skip attaching the
--- apply-edge sound hook for non-users. Same scanned-once + runtime-enable contract as RescanMaxStacksGlowFlag.
+-- Audio on Buff Gain/Loss gate: set ns._cdmAnyBuffSound once if any saved buff icon or
+-- tracking bar (any spec) has a gain OR loss sound chosen, so DecorateFrame/RefreshCDMIconAppearance
+-- skip attaching the apply-edge sound hook for non-users. The icon half keeps the scanned-once +
+-- runtime-enable contract of RescanMaxStacksGlowFlag. ns._tbbAnyBuffSound is the tracking-bar
+-- half on its own, so icon-only users skip the tracking-bar lookup on every buff alert. Its scan
+-- is O(specs x bars) with no allocation, so it repeats on every rebuild until it finds a sound,
+-- which also picks up bar sounds a live profile switch brings in.
 function ns.RescanBuffSoundFlag()
-    if ns._cdmAnyBuffSound or ns._buffSoundFlagScanned then return end
     if not EllesmereUIDB then return end
-    ns._buffSoundFlagScanned = true
-    ns.ForEachSavedSettingsBlock(function(ss)
-        if (ss.buffActiveSoundKey and ss.buffActiveSoundKey ~= "none")
-            or (ss.buffLostSoundKey and ss.buffLostSoundKey ~= "none") then
-            ns._cdmAnyBuffSound = true
-            return true
+    if not ns._buffSoundFlagScanned then
+        ns._buffSoundFlagScanned = true
+        if not ns._cdmAnyBuffSound then
+            ns.ForEachSavedSettingsBlock(function(ss)
+                if (ss.buffActiveSoundKey and ss.buffActiveSoundKey ~= "none")
+                    or (ss.buffLostSoundKey and ss.buffLostSoundKey ~= "none") then
+                    ns._cdmAnyBuffSound = true
+                    return true
+                end
+            end)
         end
-    end)
+    end
+    -- Tracking Bars keep the same two keys on their bar configs, which the
+    -- settings-block walk above never visits. EnsureTBBSoundHooks flips both
+    -- gates and hooks the frames already out of the buff viewer pools.
+    if not ns._tbbAnyBuffSound and ns.TBBAnyBuffSound and ns.TBBAnyBuffSound() then
+        ns.EnsureTBBSoundHooks()
+    end
 end
 
 -- Resolve the configured buff gain/loss sound key for a spell id in the CURRENT
@@ -1597,9 +1748,9 @@ function ns.RescanCustomItemFlag()
                 local assigned = bs and bs.assignedSpells
                 if assigned then
                     for _, sid in ipairs(assigned) do
-                        -- Hosted-buff markers are also <= -100; they are not items.
+                        -- Hosted-buff and Empty Slot markers are also <= -100; they are not items.
                         if type(sid) == "number" and sid <= -100
-                           and sid > -ns.HOSTED_BUFF_MARKER_BASE then
+                           and sid > -ns.EMPTY_SLOT_MARKER_BASE then
                             ns._cdmAnyCustomItem = true
                             return
                         end
@@ -1767,6 +1918,41 @@ local function ComputeLiveSpecKey()
     return tostring(specID)
 end
 ns.ComputeLiveSpecKey = ComputeLiveSpecKey
+
+if EllesmereUI.IS_FOREVER then
+    -- WoW Forever reports one spec per class. The store key is the Forever
+    -- spec's own key if the ACTIVE profile's store holds it (the layout the
+    -- client has been showing), else the first retail spec of the class with
+    -- a bucket, else the class's first retail spec. Resolved once per store
+    -- table: an edit inside a profile never moves the key; a profile switch or
+    -- import (a new store table) re-resolves it before the rebuild reads
+    -- anything. SPELLS_CHANGED compares against this same memo, so it can
+    -- never mistake a data edit for a spec swap. Memo inputs: the store root
+    -- and the raw live spec ID. The active key also records the store root it
+    -- was resolved for (ns._fvSpecKeyRoot), so a key resolved against one
+    -- profile's store is never served against another's.
+    ComputeLiveSpecKey = function()
+        local specIndex = C_SpecializationInfo.GetSpecialization()
+        if not specIndex or specIndex == 0 then return nil end
+        local specID = select(1, C_SpecializationInfo.GetSpecializationInfo(specIndex))
+        if not specID or specID == 0 then return nil end
+        local sp = ns.GetActiveSpecProfiles()
+        local m = ns._fvSpecKeyMemo
+        if m and m.root == sp and m.raw == specID then return m.key end
+        local key = tostring(EllesmereUI.SpecFor(specID, EllesmereUI.SpecHasStringEntry, sp))
+        ns._fvSpecKeyMemo = { root = sp, raw = specID, key = key }
+        return key
+    end
+    ns.ComputeLiveSpecKey = ComputeLiveSpecKey
+    function ns.GetActiveSpecKey()
+        if _cachedSpecKey and ns._fvSpecKeyRoot == ns.GetActiveSpecProfiles() then return _cachedSpecKey end
+        local key = ComputeLiveSpecKey()
+        if not key then return nil end
+        _cachedSpecKey = key
+        ns._fvSpecKeyRoot = ns.GetActiveSpecProfiles()
+        return key
+    end
+end
 
 -- Per-character identifier for legacy callers; no longer used for spec storage.
 function ns.GetCharKey()
@@ -2066,157 +2252,15 @@ ns.CDM_BAR_ROOTS = {
 }
 
 -------------------------------------------------------------------------------
---  CDM Slot Helpers
--------------------------------------------------------------------------------
-local function GetAllCDMSlots(root)
-    if not root or not root.GetChildren then return {} end
-    local slots = {}
-    for i = 1, root:GetNumChildren() do
-        local c = select(i, root:GetChildren())
-        if c and c.GetWidth and c:GetWidth() > 5 then
-            slots[#slots + 1] = c
-        end
-    end
-    return slots
-end
-
--------------------------------------------------------------------------------
---  CDM Look: Border Reskinning
--------------------------------------------------------------------------------
-local cdmBorderFrames = {}
-
-local function GetOrCreateCDMBorder(slot)
-    local function SafeEq(a, b)
-        return a == b
-    end
-
-    if cdmBorderFrames[slot] then return cdmBorderFrames[slot] end
-
-    slot.__ECMEHidden   = slot.__ECMEHidden or {}
-    slot.__ECMEIcon     = slot.__ECMEIcon or nil
-    slot.__ECMECooldown = slot.__ECMECooldown or nil
-
-    if not slot.__ECMEScanned then
-        slot.__ECMEHidden = {}
-        slot.__ECMEIcon = nil
-        slot.__ECMECooldown = nil
-
-        for ri = 1, slot:GetNumRegions() do
-            local region = select(ri, slot:GetRegions())
-            if region and region.GetObjectType then
-                local objType = region:GetObjectType()
-                if objType == "MaskTexture" then
-                    slot.__ECMEHidden[#slot.__ECMEHidden + 1] = region
-                elseif objType == "Texture" then
-                    local ok, rawLayer = pcall(region.GetDrawLayer, region)
-                    if ok and rawLayer ~= nil then
-                        local okB, isBorder   = pcall(SafeEq, rawLayer, "BORDER")
-                        local okO, isOverlay  = pcall(SafeEq, rawLayer, "OVERLAY")
-                        local okA, isArtwork  = pcall(SafeEq, rawLayer, "ARTWORK")
-                        local okG, isBG       = pcall(SafeEq, rawLayer, "BACKGROUND")
-                        if (okB and isBorder) or (okO and isOverlay) then
-                            slot.__ECMEHidden[#slot.__ECMEHidden + 1] = region
-                        elseif not slot.__ECMEIcon and ((okA and isArtwork) or (okG and isBG)) then
-                            slot.__ECMEIcon = region
-                        end
-                    end
-                end
-            end
-        end
-
-        for ci = 1, slot:GetNumChildren() do
-            local child = select(ci, slot:GetChildren())
-            if child and child.GetObjectType then
-                local objType = child:GetObjectType()
-                if objType == "MaskTexture" then
-                    slot.__ECMEHidden[#slot.__ECMEHidden + 1] = child
-                elseif objType == "Cooldown" then
-                    slot.__ECMECooldown = child
-                    for k = 1, child:GetNumChildren() do
-                        local cdChild = select(k, child:GetChildren())
-                        if cdChild and cdChild.GetObjectType and cdChild:GetObjectType() == "MaskTexture" then
-                            slot.__ECMEHidden[#slot.__ECMEHidden + 1] = cdChild
-                        end
-                    end
-                    for k = 1, child:GetNumRegions() do
-                        local cdRegion = select(k, child:GetRegions())
-                        if cdRegion and cdRegion.GetObjectType and cdRegion:GetObjectType() == "MaskTexture" then
-                            slot.__ECMEHidden[#slot.__ECMEHidden + 1] = cdRegion
-                        end
-                    end
-                end
-            end
-        end
-        slot.__ECMEScanned = true
-    end
-
-    local iconSize = slot.__ECMEIcon and slot.__ECMEIcon:GetWidth() or slot:GetWidth() or 35
-    local edgeSize = iconSize < 35 and 2 or 1
-
-    local border = CreateFrame("Frame", nil, slot)
-    if slot.__ECMEIcon then border:SetAllPoints(slot.__ECMEIcon) else border:SetAllPoints() end
-    border:SetFrameLevel(slot:GetFrameLevel() + 5)
-    EllesmereUI.PP.CreateBorder(border, 0, 0, 0, 1, edgeSize)
-
-    cdmBorderFrames[slot] = border
-    return border
-end
-
-local CDM_ROOT_NAMES = {
-    "BuffIconCooldownViewer", "BuffBarCooldownViewer",
-    "EssentialCooldownViewer", "UtilityCooldownViewer",
-}
-
-local function UpdateAllCDMBorders()
-    local reskin = ECME.db and ECME.db.profile.reskinBorders
-    local crop = 0.06
-
-    for _, rootName in ipairs(CDM_ROOT_NAMES) do
-        local root = _G[rootName]
-        if root then
-            for _, slot in ipairs(GetAllCDMSlots(root)) do
-                local border = GetOrCreateCDMBorder(slot)
-                if reskin then
-                    border:Show()
-                    if slot.__ECMEIcon then slot.__ECMEIcon:SetTexCoord(crop, 1 - crop, crop, 1 - crop) end
-                    if slot.__ECMECooldown then
-                        slot.__ECMECooldown:SetSwipeTexture("Interface\\AddOns\\EllesmereUI\\media\\white-square.png")
-                    end
-                    for _, h in ipairs(slot.__ECMEHidden) do
-                        if h and h.Hide then h:Hide() end
-                    end
-                else
-                    border:Hide()
-                    if slot.__ECMEIcon then slot.__ECMEIcon:SetTexCoord(0, 1, 0, 1) end
-                    if slot.__ECMECooldown then
-                        slot.__ECMECooldown:SetSwipeTexture("Interface\\Cooldown\\cooldown-bling")
-                    end
-                    for _, h in ipairs(slot.__ECMEHidden) do
-                        if h and h.Show then h:Show() end
-                    end
-                end
-            end
-        end
-    end
-end
-ns.UpdateAllCDMBorders = UpdateAllCDMBorders
-
--------------------------------------------------------------------------------
 --  Native Glow System -- engines provided by shared EllesmereUI_Glows.lua
 --  CDM keeps its own GLOW_STYLES (different scale values) and Start/Stop
 --  wrappers that handle CDM-specific shape glow (icon masks/borders).
 -------------------------------------------------------------------------------
 local _G_Glows = EllesmereUI.Glows
-local GLOW_STYLES = {
-    { name = "Pixel Glow",           procedural = true },
-    { name = "Shape Glow",           shapeGlow = true },
-    { name = "Action Button Glow",   buttonGlow = true },
-    { name = "Auto-Cast Shine",      autocast = true },
-    { name = "GCD",                  atlas = "RotationHelper_Ants_Flipbook", texPadding = 1.6 },
-    { name = "Modern WoW Glow",      atlas = "UI-HUD-ActionBar-Proc-Loop-Flipbook", texPadding = 1.4 },
-    { name = "Classic WoW Glow",     texture = "Interface\\SpellActivationOverlay\\IconAlertAnts",
-      rows = 5, columns = 5, frames = 25, duration = 0.3, frameW = 48, frameH = 48, texPadding = 1.25 },
-}
+-- CDM saved glow numbering (1 Pixel, 2 Shape, 3 Action Button, 4 Auto-Cast,
+-- 5 GCD, 6 Modern, 7 Classic, 8 Blackout) as a view over the shared style table.
+ns.GLOW_VIEW = _G_Glows.MakeView({ 1, 4, 2, 3, 5, 6, 7, 8 })
+local GLOW_STYLES = ns.GLOW_VIEW.list
 ns.GLOW_STYLES = GLOW_STYLES
 
 -------------------------------------------------------------------------------
@@ -2260,7 +2304,9 @@ local function PG_NameplateIndexFromName(name)
     return 1  -- Pixel Glow (covers Blizzard Default / anything unsupported)
 end
 
--- Tracked Buff Bars render as rectangles: only Pixel(1)/Auto-Cast(4) work there.
+-- Tracked Buff Bars render as rectangles: Pixel Glow and Auto-Cast Shine only
+-- (the texture styles stretch on a bar, see Glows.RECT_EXCLUDES). Anything
+-- else, Blizzard Default included, coerces to Pixel.
 local function PG_TbbIndexFromName(name)
     return (name == "Auto-Cast Shine") and 4 or 1
 end
@@ -2268,6 +2314,7 @@ end
 local function PG_TbbEffectiveStyle(dst)
     return (dst.pandemicGlowStyle == 4) and 4 or 1
 end
+ns.PG_TbbEffectiveStyle = PG_TbbEffectiveStyle
 
 local function PG_GetNPProfile()
     if not EllesmereUIDB or not EllesmereUIDB.profiles then return nil end
@@ -2281,6 +2328,8 @@ local function PG_Write(dst, payload, indexFromName)
     dst.pandemicGlow          = payload.on
     dst.pandemicGlowStyle     = indexFromName(payload.styleName or "Pixel Glow")
     dst.pandemicGlowColor     = payload.color and CopyTable(payload.color) or nil
+    -- Color mode travels with the color (Default/Custom/Class); nil = Default.
+    dst.pandemicGlowMode      = payload.mode
     dst.pandemicGlowLines     = payload.lines
     dst.pandemicGlowThickness = payload.thickness
     dst.pandemicGlowSpeed     = payload.speed
@@ -2296,6 +2345,7 @@ local function PG_Matches(dst, payload, indexFromName, actualStyleFn)
     if not payload.on then return true end
     local actual = actualStyleFn and actualStyleFn(dst) or (dst.pandemicGlowStyle or 1)
     if actual ~= indexFromName(payload.styleName or "Pixel Glow") then return false end
+    if (dst.pandemicGlowMode or "default") ~= (payload.mode or "default") then return false end
     local dc = dst.pandemicGlowColor or {}
     local pc = payload.color or {}
     if (dc.r or 1) ~= (pc.r or 1) or (dc.g or 1) ~= (pc.g or 1) or (dc.b or 0) ~= (pc.b or 0) then return false end
@@ -2317,6 +2367,7 @@ function EllesmereUI.PandemicPayloadFromCdmBar(bd)
         on        = bd.pandemicGlow == true,
         styleName = PG_CdmNameFromIndex(bd.pandemicGlowStyle or 1),
         color     = bd.pandemicGlowColor,
+        mode      = bd.pandemicGlowMode,
         lines     = bd.pandemicGlowLines,
         thickness = bd.pandemicGlowThickness,
         speed     = bd.pandemicGlowSpeed,
@@ -2330,8 +2381,9 @@ end
 function EllesmereUI.PandemicPayloadFromRectBar(bd)
     return {
         on        = bd.pandemicGlow == true,
-        styleName = (bd.pandemicGlowStyle == 4) and "Auto-Cast Shine" or "Pixel Glow",
+        styleName = GLOW_STYLES[PG_TbbEffectiveStyle(bd)].name,
         color     = bd.pandemicGlowColor,
+        mode      = bd.pandemicGlowMode,
         lines     = bd.pandemicGlowLines,
         thickness = bd.pandemicGlowThickness,
         speed     = bd.pandemicGlowSpeed,
@@ -2358,7 +2410,9 @@ end
 -- Nameplates), best-effort. opts.skipCdmKey/opts.skipNameplates exclude the source surface; opts.skipTbbBar excludes one TBB (its source bar table).
 function EllesmereUI.ApplyPandemicGlowToAll(payload, opts)
     opts = opts or {}
-    if not opts.skipNameplates then
+    -- Nameplate auras have no pandemic renderer right now (their options are
+    -- hidden too), so the sync leaves that surface out while the flag is off.
+    if not opts.skipNameplates and EllesmereUI.NameplatePandemicGlowRendered then
         local np = PG_GetNPProfile()
         if np and EllesmereUI.NameplatePandemicGlowStyles then
             PG_Write(np, payload, PG_NameplateIndexFromName)
@@ -2389,7 +2443,7 @@ end
 -- True when every (non-skipped) surface already matches the payload.
 function EllesmereUI.IsPandemicGlowSyncedToAll(payload, opts)
     opts = opts or {}
-    if not opts.skipNameplates then
+    if not opts.skipNameplates and EllesmereUI.NameplatePandemicGlowRendered then
         local np = PG_GetNPProfile()
         if np and EllesmereUI.NameplatePandemicGlowStyles
            and not PG_Matches(np, payload, PG_NameplateIndexFromName) then
@@ -2556,6 +2610,8 @@ StartNativeGlow = function(overlay, style, cr, cg, cb, opts)
                 end
             end
         end
+        -- Options previews (opts.panel): draw the pixels the live glow shows.
+        if opts and opts.panel then th = _G_Glows.PanelThickness(th) end
         local lineLen = math.floor((pW + pH) * (2 / N - 0.1))
         lineLen = math.min(lineLen, math.min(pW, pH))
         if lineLen < 1 then lineLen = 1 end
@@ -2564,6 +2620,19 @@ StartNativeGlow = function(overlay, style, cr, cg, cb, opts)
         _G_Glows.StartButtonGlow(overlay, pW, cr, cg, cb, nil, pH)
     elseif entry.autocast then
         _G_Glows.StartAutoCastShine(overlay, pW, cr, cg, cb, 1.0, pH)
+    elseif entry.solidFill then
+        -- Clip to the shape mask only while a custom shape is applied, decided as
+        -- in the Shape branch above: a removed shape leaves its mask object on the
+        -- icon (emptied and hidden), which must not clip the fill. Without one, a
+        -- CDM icon under Blizzard Style clips to the rounded mask its own art
+        -- carries (nil under Classic WoW UI, whose icons are square).
+        local ifc2 = _ecmeFC[parent]
+        local shapeMask = (ifc2 and ifc2.shapeApplied and ifc2.shapeName) and ifc2.shapeMask or nil
+        if not shapeMask and ifc2 and ns.CdmBlizzIcons() then
+            shapeMask = ns.CdmBlizzIconMask(parent)
+        end
+        _G_Glows.StartSolidFill(overlay, noColor and 0 or cr, noColor and 0 or cg, noColor and 0 or cb,
+            { alpha = opts and opts.alpha, shapeMask = shapeMask })
     else
         if noColor then cr, cg, cb = nil, nil, nil end
         _G_Glows.StartFlipBookGlow(overlay, pW, entry, cr, cg, cb, pH)
@@ -2605,6 +2674,67 @@ StopNativeGlow = function(overlay)
 end
 ns.StartNativeGlow = StartNativeGlow
 ns.StopNativeGlow = StopNativeGlow
+
+-- Cooldown State Effect glow (CD Ready / On CD): Blackout renders on its own
+-- frame BELOW frame.Cooldown (fd.blackoutOverlay, icon+12) instead of the
+-- shared fd.glowOverlay (icon+16, ABOVE the cooldown widget), so the swipe and
+-- countdown text stay visible on top of the fill; every other style keeps
+-- using the shared overlay. Picks the overlay from the resolved style and
+-- stops a glow still held by the other one, so a style change (Blackout to
+-- Pixel or back) never leaves both lit. The active-state and proc glows own
+-- the shared overlay while they run (fd._faActiveGlow: the Fake-Active
+-- overlay's active glow, drawn on that overlay's own frame, holds it the same
+-- way): a Blackout shows alongside them, any other style starts nothing and
+-- returns nil, so the caller's memo stays off, and the refusal is recorded
+-- (fd._cdGlowOwed) so the edge that ends that glow lights this one at once
+-- (ns.CdGlowKick). Returns the overlay lit. alpha is the Blackout fill
+-- opacity (nil = opaque); the other styles take no opts at all.
+function ns.StartCdGlow(fd, style, cr, cg, cb, alpha)
+    if not fd then return end
+    local e = ns.GLOW_STYLES[style]
+    local busy = fd._activeGlowOn or fd.procGlowActive or fd._faActiveGlow
+    local overlay, other, opts
+    if e and e.solidFill then
+        -- The Blackout frame is made on the icon's first Blackout start (most
+        -- icons never use one), on the icon the shared overlay sits on;
+        -- DecorateFrame keeps its level through re-layouts.
+        local bo = fd.blackoutOverlay
+        if not bo and fd.glowOverlay then
+            local icon = fd.glowOverlay:GetParent()
+            bo = CreateFrame("Frame", nil, icon)
+            bo:SetAllPoints(icon)
+            bo:SetAlpha(0)
+            bo:EnableMouse(false)
+            bo:SetFrameLevel(icon:GetFrameLevel() + 12)
+            fd.blackoutOverlay = bo
+        end
+        -- A fresh table per start: StartNativeGlow keeps opts by reference in
+        -- its Show Glows Only in Combat record, which the replay restarts from.
+        overlay, opts = bo, { alpha = alpha }
+        if not busy then other = fd.glowOverlay end
+    else
+        overlay, other = fd.glowOverlay, fd.blackoutOverlay
+        if busy then overlay = nil; fd._cdGlowOwed = true end
+    end
+    if other and other._glowActive then StopNativeGlow(other) end
+    if overlay then StartNativeGlow(overlay, style, cr, cg, cb, opts) end
+    return overlay
+end
+
+-- Stops the CD-state glow regardless of which overlay it landed on. The
+-- Blackout overlay is only stopped while it holds a glow: most icons never
+-- use it. While the proc or active-state glow runs, the shared overlay is
+-- theirs (a CD-state glow there was replaced, and is owed back or re-asserted
+-- once they end), so only a Blackout can be the CD-state glow then: a
+-- Blackout ending with its cooldown never takes the proc or active glow down
+-- with it.
+function ns.StopCdGlow(fd)
+    if not fd then return end
+    local go = fd.glowOverlay
+    if go and not (fd.procGlowActive or fd._activeGlowOn) then StopNativeGlow(go) end
+    local bo = fd.blackoutOverlay
+    if bo and bo._glowActive then StopNativeGlow(bo) end
+end
 
 -- Combat edges for Show Glows Only in Combat. Entering combat replays what was
 -- suppressed; leaving combat takes the running glows down but keeps their
@@ -2894,9 +3024,21 @@ local function ShowProcGlow(icon, cr, cg, cb)
     -- the VISUAL: leaving _cdStateGlowOn true makes later re-evaluations skip the
     -- restart ("already on"), so a consumed proc kills the Resource Aware glow until
     -- usability flips off and on again (e.g. Shadowburn + Fiendish Cruelty). Proc
-    -- priority is enforced by the procGlowActive gates on the start sites.
+    -- priority is enforced by ns.StartCdGlow, which starts no glow on the shared
+    -- overlay while the proc runs. The replaced glow is owed: StopProcGlow lights
+    -- it again (ns.CdGlowKick) once the proc ends.
+    -- A Blackout CD-state glow sits on its own overlay (fd.blackoutOverlay), which
+    -- the proc glow does not replace: it stays lit beside the proc and keeps its
+    -- memo, so the memo-gated stop sites still take it down when its cooldown
+    -- ends, proc or not.
     if glow._glowActive then StopNativeGlow(glow) end
-    if fd then fd._cdStateGlowOn = false end
+    if fd then
+        local bo = fd.blackoutOverlay
+        if not (bo and bo._glowActive) then
+            if fd._cdStateGlowOn or fd._presetCdGlowOn then fd._cdGlowOwed = true end
+            fd._cdStateGlowOn = false
+        end
+    end
     StartNativeGlow(glow, style, cr, cg, cb)
     if fd then fd.procGlowActive = true end
 end
@@ -2908,9 +3050,14 @@ local function StopProcGlow(icon)
     StopNativeGlow(glow)
     if fd then fd.procGlowActive = false end
     -- The proc stomped any CD-state glow on this shared overlay; re-evaluate on the next frame
-    -- so a Resource Aware ready-glow comes straight back instead of waiting for the next
-    -- cooldown/power edge. Gated on _cdGlowBoundSid: only icons that actually ran a CD-state glow path carry it, so pure proc-glow users never wake the flush frame.
-    if fd._cdGlowBoundSid and ns.QueueCDGlowResourceCheck then
+    -- so the glow comes straight back instead of waiting for the next cooldown/power edge:
+    -- this icon alone when a CD-state glow is owed to it (replaced or held back by the proc),
+    -- else the watched Resource Aware set. Gated on _cdGlowOwed / _cdGlowBoundSid: only icons
+    -- that actually ran a CD-state glow path carry them, so pure proc-glow users never wake
+    -- the flush frame.
+    if fd._cdGlowOwed then
+        ns.CdGlowKick(icon)
+    elseif fd._cdGlowBoundSid and ns.QueueCDGlowResourceCheck then
         ns.QueueCDGlowResourceCheck()
     end
 end
@@ -3030,11 +3177,11 @@ CaptureCDMPositions = function()
 
             -- Icon size + spacing from child icons. Blizzard CDM icons have a base size plus a
             -- per-icon scale driven by the IconSize percentage slider; spacing is the gap between two adjacent visible icons in parent coordinates.
-            local childCount = frame:GetNumChildren()
             local numDistinctY = {}
             local shownIcons = {}
-            for ci = 1, childCount do
-                local child = select(ci, frame:GetChildren())
+            local children = { frame:GetChildren() }
+            for ci = 1, #children do
+                local child = children[ci]
                 if child and child.Icon then
                     local cw = child:GetWidth()
                     local cs = child:GetScale()
@@ -3167,23 +3314,11 @@ local function EnforceCooldownViewerEditModeSettings()
         return
     end
 
-    local layoutInfo = C_EditMode.GetLayouts()
-    if type(layoutInfo) ~= "table" or type(layoutInfo.layouts) ~= "table" then return end
-
-    -- Merge preset layouts so activeLayout index resolves correctly
-    local numPresets = 0
-    if EditModePresetLayoutManager and EditModePresetLayoutManager.GetCopyOfPresetLayouts then
-        local presets = EditModePresetLayoutManager:GetCopyOfPresetLayouts()
-        if type(presets) == "table" then
-            numPresets = #presets
-            tAppendAll(presets, layoutInfo.layouts)
-            layoutInfo.layouts = presets
-        end
-    end
-
-    -- Presets unresolved: activeLayout counts them, so without the merge it picks the WRONG
-    -- layout below and the save hands the client a list its own index no longer fits.
-    if numPresets == 0 then return end
+    -- Presets merged first so the activeLayout index resolves correctly. Presets unresolved:
+    -- activeLayout counts them, so without the merge it picks the WRONG layout below and the
+    -- save hands the client a list its own index no longer fits.
+    local layoutInfo, numPresets = EllesmereUI.EditModeLayoutsForSave()
+    if not layoutInfo then return end
 
     local activeLayout = type(layoutInfo.activeLayout) == "number"
         and layoutInfo.layouts[layoutInfo.activeLayout]
@@ -3208,10 +3343,14 @@ local function EnforceCooldownViewerEditModeSettings()
     -- Returns changed(bool). A layout stores a CooldownViewer setting ONLY when changed away
     -- from Blizzard's default, so an absent entry means "at the default" (defaultValue). When
     -- that already equals what we want, leave the entry absent (no change, no forced reload); only add an explicit entry when default differs from desired.
-    local function UpsertSetting(settings, settingEnum, desiredValue, defaultValue)
+    -- Each change is noted for Uninstall EUI (only the player's own earlier value is put
+    -- back: these are Blizzard's defaults, so there is no fallback).
+    local function UpsertSetting(sysInfo, settingEnum, desiredValue, defaultValue)
+        local settings = sysInfo.settings
         for _, s in ipairs(settings) do
             if s.setting == settingEnum then
                 if s.value ~= desiredValue then
+                    EllesmereUI.NoteEditModeSetting(activeLayout, sysInfo, settingEnum, s.value, desiredValue)
                     s.value = desiredValue
                     return true
                 end
@@ -3222,6 +3361,7 @@ local function EnforceCooldownViewerEditModeSettings()
         if desiredValue == defaultValue then
             return false
         end
+        EllesmereUI.NoteEditModeSetting(activeLayout, sysInfo, settingEnum, defaultValue, desiredValue)
         settings[#settings + 1] = { setting = settingEnum, value = desiredValue }
         return true
     end
@@ -3229,14 +3369,14 @@ local function EnforceCooldownViewerEditModeSettings()
     for _, sysInfo in ipairs(activeLayout.systems) do
         if sysInfo.system == cooldownSystem and type(sysInfo.settings) == "table" then
             -- VisibleSetting=Always on ALL viewers. That IS the default, so an absent entry is already correct and is left alone.
-            if UpsertSetting(sysInfo.settings, visSetting, visAlways, visAlways) then
+            if UpsertSetting(sysInfo, visSetting, visAlways, visAlways) then
                 changed = true
             end
             -- Both buff viewers keep Blizzard's default HideWhenInactive=1 (inactive entries
             -- stay hidden): Always Show Buffs is drawn by our own per-bar placeholder icons, NOT
             -- Blizzard's layout, so any stale HideWhenInactive=0 is reset. New installs are already at the default (no change, no reload).
             if sysInfo.systemIndex == buffIconIdx or sysInfo.systemIndex == buffBarIdx then
-                if UpsertSetting(sysInfo.settings, hideEnum, 1, 1) then
+                if UpsertSetting(sysInfo, hideEnum, 1, 1) then
                     changed = true
                 end
             end
@@ -5136,10 +5276,12 @@ local function ApplyCDMTooltipState(barKey)
             for i = 1, #icons do
                 local ic = icons[i]
                 if ic and ic.EnableMouseMotion then
-                    -- Invisible placeholders are excluded even with tooltips on: an
-                    -- alpha-0 slot has no art to hover, so capturing here would only
-                    -- take mouseover away from whatever the bar sits over.
-                    ic:EnableMouseMotion(wantHover and not IsPlaceholderRenderHidden(ic, bd))
+                    -- Invisible placeholders and Empty Slots are excluded even with
+                    -- tooltips on: a slot with no art has nothing to hover, so
+                    -- capturing here would only take mouseover away from whatever
+                    -- the bar sits over.
+                    ic:EnableMouseMotion(wantHover and not ic._isEmptySlotFrame
+                        and not IsPlaceholderRenderHidden(ic, bd))
                 end
             end
         end
@@ -5694,6 +5836,12 @@ local function RefreshCDMIconAppearance(barKey)
     if blizzArt then zoom = 0 end
 
     for _, icon in ipairs(icons) do
+        -- Empty Slot: pure grid spacer, deliberately never decorated (see
+        -- DecorateFrame) -- skip every bar-wide/per-icon style and cd-state pass
+        -- so a bar's Glow (CD Ready) or other "apply to bar" effect can never
+        -- attach to it (its bogus marker id never carries a real cooldown, so
+        -- it would otherwise resolve as permanently ready and glow forever).
+        if not icon._isEmptySlotFrame then
         local fd = _getFD(icon)
         local tex = fd and fd.tex or icon._tex
         local cd = fd and fd.cooldown or icon._cooldown
@@ -6037,20 +6185,7 @@ local function RefreshCDMIconAppearance(barKey)
 
         -- Update keybind text style
         if kbText then
-            EllesmereUI.ApplyIconTextFont(kbText, GetCDMFont(), (barData.keybindSize or 10) * fontScale, "cdm")
-            kbText:ClearAllPoints()
-            -- Scale-compensate the offset so it's visually consistent across icons with different Blizzard-assigned scales.
-            local kbX = (barData.keybindOffsetX or 2) * fontScale
-            local kbY = (barData.keybindOffsetY or -2) * fontScale
-            -- "right" alignment: anchor top-right and grow left (offset mirrored).
-            if barData.keybindAlign == "right" then
-                kbText:SetJustifyH("RIGHT")
-                kbText:SetPoint("TOPRIGHT", txOverlay, "TOPRIGHT", -kbX, kbY)
-            else
-                kbText:SetJustifyH("LEFT")
-                kbText:SetPoint("TOPLEFT", txOverlay, "TOPLEFT", kbX, kbY)
-            end
-            kbText:SetTextColor(barData.keybindR or 1, barData.keybindG or 1, barData.keybindB or 1, barData.keybindA or 0.9)
+            ns.StyleCDMKeybind(kbText, barData, txOverlay, fontScale, GetCDMFont())
         end
 
         -- Apply custom shape (overrides border/zoom set above). Pass the resolved per-icon
@@ -6073,11 +6208,27 @@ local function RefreshCDMIconAppearance(barKey)
             StopNativeGlow(glowOv)
             if ifd then ifd.procGlowActive = false end
             ShowProcGlow(icon)
+            -- A Blackout CD-state glow stays lit beside the proc on its own
+            -- overlay: take it down so the pass below restarts it with the
+            -- updated settings (or leaves it off when the effect is gone).
+            local bo = ifd.blackoutOverlay
+            if ifd._cdStateGlowOn and bo and bo._glowActive then
+                StopNativeGlow(bo)
+                ifd._cdStateGlowOn = false
+            end
         elseif hadActiveGlow then
             -- Don't touch: active glow is managed by the SetSwipeColor hook. Stopping it here causes a visible blink.
+            -- A Blackout CD-state glow has its own overlay: take only that one down,
+            -- so the pass below restarts it with the updated settings (or leaves it
+            -- off when the effect is gone).
+            local bo = ifd.blackoutOverlay
+            if ifd._cdStateGlowOn and bo and bo._glowActive then
+                StopNativeGlow(bo)
+                ifd._cdStateGlowOn = false
+            end
         elseif ifd and ifd._cdStateGlowOn then
             -- cdState glow active: stop it so the desat hook restarts with the updated style. Also re-evaluate immediately for off-CD spells (desat hook won't fire for those).
-            if glowOv then StopNativeGlow(glowOv) end
+            ns.StopCdGlow(ifd)
             ifd._cdStateGlowOn = false
             local fc = _ecmeFC[icon]
             local sid = fc and fc.spellID
@@ -6087,15 +6238,26 @@ local function RefreshCDMIconAppearance(barKey)
                 -- Shared resolver: direct hit + full identity/override matching against the family store, with bar-tier fallback.
                 local ss = ns.ResolveSpellSettings and ns.ResolveSpellSettings(icon, sid, sd, bk)
                 local cse = ns.GetSpellCdStateEffect(icon, ss)
-                if (cse == "pixelGlowReady" or cse == "buttonGlowReady"
-                    or cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable") and glowOv then
+                local isReadyGlow = (cse == "pixelGlowReady" or cse == "buttonGlowReady"
+                    or cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable")
+                local isOnCdGlow = cse == "glowOnCD"
+                if (isReadyGlow or isOnCdGlow) and glowOv then
                     local glowUsable = (cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable")
                     local glowLive = sid
                     if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
                         glowLive = C_SpellBook.FindSpellOverrideByID(sid) or sid
                     end
                     local cseInfo = C_Spell.GetSpellCooldown(glowLive)
-                    if cseInfo and (not cseInfo.isActive or cseInfo.isOnGCD) then
+                    -- Glow (On CD) wants the opposite cooldown state of the ready variants.
+                    local wantsGlow
+                    if cseInfo then
+                        if isOnCdGlow then
+                            wantsGlow = cseInfo.isActive and not cseInfo.isOnGCD
+                        else
+                            wantsGlow = not cseInfo.isActive or cseInfo.isOnGCD
+                        end
+                    end
+                    if wantsGlow then
                         -- Plain variants glow purely from cooldown state (legacy behavior, zero
                         -- extra reads). Resource Aware variants also require usability, except during the loading-screen settle window (API untrustworthy; the watched-set pass after the window corrects it).
                         local isUsable = true
@@ -6107,14 +6269,15 @@ local function RefreshCDMIconAppearance(barKey)
                             end
                         end
                         if isUsable == true then
-                            local gr, gg, gb = ResolveGlowColor(ss)
-                            local isPixel = (cse == "pixelGlowReady" or cse == "pixelGlowReadyUsable")
-                            StartNativeGlow(glowOv, isPixel and 1 or 3, gr or 1, gg or 1, gb or 1)
-                            ifd._cdStateGlowOn = true
+                            local style = ns.CdReadyGlowStyle(cse, ss)
+                            local cr, cg, cb = ns.CdReadyGlowColor(style, ss)
+                            ifd._cdStateGlowOn = ns.StartCdGlow(ifd, style, cr, cg, cb, ns.CdReadyGlowAlpha(ss)) ~= nil
                         end
                     end
-                    -- Event-driven re-evaluation: Resource Aware glows always, plus plain glows on
-                    -- EUI custom frames (their SetDesaturation never fires the SetDesaturated hook that would re-evaluate them). Fake-Active-owned frames (PresetHasCdState) excluded.
+                    -- Event-driven re-evaluation: Resource Aware glows always, plus plain/on-CD
+                    -- glows on EUI custom frames (their SetDesaturation never fires the
+                    -- SetDesaturated hook that would re-evaluate them). Fake-Active-owned
+                    -- frames (PresetHasCdState) excluded.
                     local watchGlow = glowUsable
                     if not watchGlow
                         and (icon._isRacialFrame or icon._isTrinketFrame or icon._isPresetFrame
@@ -6126,7 +6289,7 @@ local function RefreshCDMIconAppearance(barKey)
                 end
             end
         elseif glowOv then
-            StopNativeGlow(glowOv)
+            ns.StopCdGlow(ifd)
             if ifd then ifd.procGlowActive = false end
         end
 
@@ -6141,8 +6304,10 @@ local function RefreshCDMIconAppearance(barKey)
             local csSs = ns.ResolveSpellSettings and ns.ResolveSpellSettings(icon, csSid, csSd, csBk)
             local cse = ns.GetSpellCdStateEffect(icon, csSs)
             -- Shift-Icons variants behave exactly like their base hidden mode plus the layout flag; normalize so the branches below stay as-is.
-            local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift")
-            if cse == "hiddenOnCDShift" then cse = "hiddenOnCD"
+            -- Hidden Until Usable = Hidden (On CD) + "not usable" counting as unavailable.
+            local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift" or cse == "hiddenUnusableShift")
+            local cseUsable = (cse == "hiddenUnusable" or cse == "hiddenUnusableShift")
+            if cse == "hiddenOnCDShift" or cseUsable then cse = "hiddenOnCD"
             elseif cse == "hiddenReadyShift" then cse = "hiddenReady" end
             if cse then
                 local csLive = csSid
@@ -6151,6 +6316,11 @@ local function RefreshCDMIconAppearance(barKey)
                 end
                 local cseInfo = C_Spell.GetSpellCooldown(csLive)
                 local onCD = cseInfo and cseInfo.isActive and not cseInfo.isOnGCD
+                if cseUsable then
+                    if not onCD then onCD = ns.CdmSpellNotUsable(csLive) end
+                    -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
+                    ns.WatchCdUsable(icon)
+                end
                 if cse == "hiddenOnCD" or cse == "hiddenReady" then
                     local hide
                     if cse == "hiddenOnCD" then
@@ -6187,10 +6357,14 @@ local function RefreshCDMIconAppearance(barKey)
                     if fc and ns.SetCdStateShiftHidden then
                         ns.SetCdStateShiftHidden(fc, false)
                     end
+                    -- A live proc or active-state glow keeps the shared overlay:
+                    -- ns.StartCdGlow lights only a Blackout beside it.
                     if not ifd or not ifd._cdStateGlowOn then
-                        if (cse == "pixelGlowReady" or cse == "buttonGlowReady"
+                        local isReadyGlow = (cse == "pixelGlowReady" or cse == "buttonGlowReady"
                             or cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable")
-                           and not onCD and glowOv then
+                        local isOnCdGlow = cse == "glowOnCD"
+                        local wantsGlow = (isOnCdGlow and onCD) or (isReadyGlow and not onCD)
+                        if wantsGlow and glowOv then
                             -- Plain variants glow purely from cooldown state (legacy). Resource Aware variants also require usability outside the loading-screen settle window.
                             local isUsable = true
                             if cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable" then
@@ -6200,21 +6374,20 @@ local function RefreshCDMIconAppearance(barKey)
                                     isUsable = C_Spell.IsSpellUsable and C_Spell.IsSpellUsable(csLive)
                                 end
                             end
-                            if isUsable == true then
-                                local gr, gg, gb = ResolveGlowColor(csSs)
-                                local isPixel = (cse == "pixelGlowReady" or cse == "pixelGlowReadyUsable")
-                                StartNativeGlow(glowOv, isPixel and 1 or 3, gr or 1, gg or 1, gb or 1)
-                                if ifd then ifd._cdStateGlowOn = true end
+                            if isUsable == true and ifd then
+                                local style = ns.CdReadyGlowStyle(cse, csSs)
+                                local cr, cg, cb = ns.CdReadyGlowColor(style, csSs)
+                                ifd._cdStateGlowOn = ns.StartCdGlow(ifd, style, cr, cg, cb, ns.CdReadyGlowAlpha(csSs)) ~= nil
                             end
                         end
                     end
-                    -- Resource Aware glows always watch cooldown events. Plain glows normally
+                    -- Resource Aware glows always watch cooldown events. Plain/on-CD glows normally
                     -- re-evaluate through the SetDesaturated hook, but EUI's custom frames
                     -- (racial/trinket/potion/custom) drive desaturation via SetDesaturation(float),
                     -- which never fires that hook -- without a watch their glow stays lit for the
                     -- whole cooldown. Frames owned by the Fake-Active preset path (PresetHasCdState) are excluded; that engine glows them.
                     local watchGlow = cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable"
-                    if not watchGlow and (cse == "pixelGlowReady" or cse == "buttonGlowReady")
+                    if not watchGlow and (cse == "pixelGlowReady" or cse == "buttonGlowReady" or cse == "glowOnCD")
                         and (icon._isRacialFrame or icon._isTrinketFrame or icon._isPresetFrame
                              or icon._isItemPresetFrame or icon._isCustomSpellFrame)
                         and not (ns.PresetHasCdState and ns.PresetHasCdState(icon)) then
@@ -6233,9 +6406,12 @@ local function RefreshCDMIconAppearance(barKey)
                 end
             end
         end
+        end -- not icon._isEmptySlotFrame
         -- Only Show Numbers (bar setting): re-hide the icon art AFTER the passes above re-applied
         -- borders/shapes/textures, so the countdown number is all that remains. One field read when the bar is off; also restores one-shot right after the bar toggles off.
-        if ns.ApplyOnlyNumbers then ns.ApplyOnlyNumbers(icon, fd, barData) end
+        -- Re-fetched (never the wrapped block's `fd`): always nil for an Empty Slot, and cheap
+        -- either way, so both kinds share this one line without widening the skip above.
+        if ns.ApplyOnlyNumbers then ns.ApplyOnlyNumbers(icon, _getFD(icon), barData) end
     end
 end
 ns.RefreshCDMIconAppearance = RefreshCDMIconAppearance
@@ -6514,10 +6690,10 @@ local function RefreshFocusCastProxyUnit()
 end
 ns.RefreshFocusCastProxyUnit = RefreshFocusCastProxyUnit
 
-function ns.IsSpellInPlayerBook(id)
+function ns.IsSpellInPlayerBook(id, includeOverrides)
     if IsPlayerSpell and IsPlayerSpell(id) then return true end
     if C_SpellBook and C_SpellBook.IsSpellKnownOrInSpellBook
-        and C_SpellBook.IsSpellKnownOrInSpellBook(id) then
+        and C_SpellBook.IsSpellKnownOrInSpellBook(id, Enum.SpellBookSpellBank.Player, includeOverrides ~= false) then
         return true
     end
     return false
@@ -6652,10 +6828,27 @@ do
     local _soundThrottleLost = {}        -- [spellID] = last GetTime() (loss)
     local SOUND_MIN_GAP = 0.3
 
-    -- Per-spell tier then bar tier, for one setting key. nil = silent.
-    local function PickBuffSoundKey(ss, sid, field)
+    -- Setting key for one edge, nil = silent. A frame the CDM decorates answers
+    -- from its own settings first. A Tracked Bars frame then asks its tracking
+    -- bar before FindBuffSoundKey, whose bar tier answers for every spell no
+    -- extra buff bar claims (a Buffs bar "Apply to Bar" sound would otherwise
+    -- shadow the bar's own). A bar with a sound on its other edge only keeps
+    -- this edge silent (false), so the Buffs bar is not asked either. A buff
+    -- icon frame asks the tracking bars last.
+    local function PickBuffSoundKey(ss, sid, field, f)
         local k = ss and ss[field]
-        if not k then k = ns.FindBuffSoundKey and ns.FindBuffSoundKey(sid, field) end
+        if not k then
+            local tbbOn = ns._tbbAnyBuffSound
+            local bv = tbbOn and f and _G.BuffBarCooldownViewer
+            local barFrame = bv and f.viewerFrame == bv
+            local owned
+            if barFrame then
+                k = ns.FindTBBSoundKey(f, sid, field)
+                owned = k == false
+            end
+            if not k and not owned then k = ns.FindBuffSoundKey(sid, field) end
+            if not k and tbbOn and not barFrame then k = ns.FindTBBSoundKey(f, sid, field) end
+        end
         if not k or k == "none" then return nil end
         return k
     end
@@ -6668,6 +6861,16 @@ do
         throttle[sid] = now
         local path = FOCUSKICK_SOUND_PATHS[key]
         if path then PlaySoundFile(path, "Master") end
+    end
+
+    -- Edge entry point for Tracking Bars' self-timed presets (Bloodlust, Time
+    -- Spiral, potions). They never fire a Blizzard aura alert, so their own timer
+    -- start/stop hands the cue here: same loading-screen suppression, same 0.3s
+    -- overlap guard (id is a "tbb:<preset>" string, clear of spell ids).
+    function ns.PlayBuffSoundEdge(key, id, gainEdge)
+        if not key or key == "none" then return end
+        if ns._cdmSoundSuppressed and ns._cdmSoundSuppressed() then return end
+        PlayThrottled(key, id, gainEdge and _soundThrottle or _soundThrottleLost)
     end
 
     local function FlushBuffEdges()
@@ -6717,8 +6920,8 @@ do
         end
         -- A silent edge still has to be recorded so it can cancel its partner, but only
         -- when the OTHER edge has a cue -- so the second lookup runs only on that path.
-        local key = PickBuffSoundKey(ss, sid, gainEdge and "buffActiveSoundKey" or "buffLostSoundKey")
-        if not key and not PickBuffSoundKey(ss, sid, gainEdge and "buffLostSoundKey" or "buffActiveSoundKey") then
+        local key = PickBuffSoundKey(ss, sid, gainEdge and "buffActiveSoundKey" or "buffLostSoundKey", f)
+        if not key and not PickBuffSoundKey(ss, sid, gainEdge and "buffLostSoundKey" or "buffActiveSoundKey", f) then
             return
         end
         -- A new frame closes the previous batch: pairing must never reach across the
@@ -7807,6 +8010,29 @@ local function RebuildKeybindCache()
     end
 end
 
+-- Spell half of the keybind lookup, shared by the CDM icons and the Rotation
+-- Assist Icon: the id itself, then its override, its base, then its name.
+-- The item and trinket fallbacks stay with the CDM icons below.
+local function ResolveCDMKeybind(sid)
+    local key = _cdmKeybindCache[sid]
+    if key then return key end
+    local ovr = C_Spell.GetOverrideSpell(sid)
+    if ovr and not issecretvalue(ovr) and ovr ~= sid then
+        key = _cdmKeybindCache[ovr]
+        if key then return key end
+    end
+    local base = C_Spell.GetBaseSpell(sid)
+    if base and not issecretvalue(base) and base ~= sid then
+        key = _cdmKeybindCache[base]
+        if key then return key end
+    end
+    if sid > 0 then
+        local name = C_Spell.GetSpellName(sid)
+        if name and not issecretvalue(name) then return _cdmKeybindCache[name] end
+    end
+end
+ns.ResolveCDMKeybind = ResolveCDMKeybind
+
 -- Apply the current cache to all visible CDM icon keybind texts
 local function ApplyCachedKeybinds()
     for barKey, icons in pairs(cdmBarIcons) do
@@ -7818,17 +8044,7 @@ local function ApplyCachedKeybinds()
                 local ifc = _ecmeFC[icon]
                 local sid = ifc and ifc.spellID
                 if bd and bd.showKeybind and sid then
-                    local key = _cdmKeybindCache[sid]
-                    if not key then
-                        local ovr = C_Spell.GetOverrideSpell and C_Spell.GetOverrideSpell(sid)
-                        if ovr and ovr ~= sid then key = _cdmKeybindCache[ovr] end
-                    end
-                    if not key then
-                        local base = C_Spell.GetBaseSpell and C_Spell.GetBaseSpell(sid)
-                        if base and base ~= sid then key = _cdmKeybindCache[base] end
-                    end
-                    local name = sid > 0 and C_Spell.GetSpellName and C_Spell.GetSpellName(sid)
-                    if not key and name then key = _cdmKeybindCache[name] end
+                    local key = ResolveCDMKeybind(sid)
                     -- Item presets: the resolved display variant first (pot presets may be showing another rank/Fleeting/the swapped-in partner pot), then the static alt ids.
                     if not key and icon._isItemPresetFrame and icon._displayItemID then
                         key = _cdmKeybindCache[-icon._displayItemID]
@@ -7854,9 +8070,13 @@ local function ApplyCachedKeybinds()
                 else
                     kbText:Hide()
                 end
+                -- Visibility pass only: settings edges restyle the badge
+                -- through StyleCDMKeybind.
+                ns.ShowCDMKeybindBadge(kbText, bd)
             end
         end
     end
+    if ns.UpdateRotationAssistIconKeybind then ns.UpdateRotationAssistIconKeybind() end
 end
 
 UpdateCDMKeybinds = function()
@@ -8046,35 +8266,6 @@ BuildAllCDMBars = function()
 
     -- Apply visibility (hides bars set to "in combat only", "never", etc; handles unlock-mode override and viewer alpha sync). Single authority.
     _CDMApplyVisibility()
-
-    -- Batch-apply pending cooldown font styling (single deferred call, no per-icon closures)
-    C_Timer.After(0, function()
-        for _, icons in pairs(cdmBarIcons) do
-            for _, icon in ipairs(icons) do
-                local ifc = _ecmeFC[icon]
-                local pendFP = ifc and ifc.pendingFontPath
-                if pendFP then
-                    local ifd = _getFD(icon)
-                    local cd = ifd and ifd.cooldown or icon._cooldown
-                    if cd then
-                        local fontPath, fontSize = pendFP, ifc.pendingFontSize
-                        local fR = ifc.pendingFontR
-                        local fG = ifc.pendingFontG
-                        local fB = ifc.pendingFontB
-                        for ri = 1, cd:GetNumRegions() do
-                            local region = select(ri, cd:GetRegions())
-                            if region and region.GetObjectType and region:GetObjectType() == "FontString" then
-                                SetBlizzCDMFont(region, fontPath, fontSize, fR, fG, fB)
-                                break
-                            end
-                        end
-                        ifc.pendingFontPath = nil; ifc.pendingFontSize = nil
-                        ifc.pendingFontR = nil; ifc.pendingFontG = nil; ifc.pendingFontB = nil
-                    end
-                end
-            end
-        end
-    end)
 
     -- Every full rebuild re-evaluates the FocusKick demand gate, so assigning the first kick spell (or removing the last) flips the feature family on/off live.
     if ns.RefreshFocusKickProxies then ns.RefreshFocusKickProxies() end
@@ -8581,26 +8772,20 @@ EllesmereUI.CDMReconcileActiveSpecSpells = function()
     if ns.PruneEquipmentBuffRows then ns.PruneEquipmentBuffRows() end
 end
 
--- Shared PLAYER_REGEN_ENABLED waiter for the automatic keep/drop pass below.
--- Deliberately its OWN frame, not the module's big shared event handler
+-- Shared after-combat waiter for the automatic keep/drop pass below, via the
+-- module combat queue rather than the module's big shared event handler
 -- further down this file -- that frame's registration set is static and
--- must not churn. Registers the event ONLY while a pass is pending and
--- unregisters itself the instant it fires, so an idle session where no pass
--- is ever deferred carries zero event traffic from this path.
-local _cdmRegenWaiter
-local function ArmCDMDropRegenWaiter()
-    ns._cdmDropPending = true
-    if not _cdmRegenWaiter then
-        _cdmRegenWaiter = CreateFrame("Frame")
-        _cdmRegenWaiter:Hide()
-        _cdmRegenWaiter:SetScript("OnEvent", function(self)
-            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-            ns._cdmDropPending = false
-            if ns.RequestCDMDropPass then ns.RequestCDMDropPass("regen") end
-        end)
+-- must not churn. The queue holds PLAYER_REGEN_ENABLED only while something
+-- is pending, so an idle session carries zero event traffic from this path.
+local ArmCDMDropRegenWaiter
+do
+    local function DropPassAfterCombat()
+        ns._cdmDropPending = false
+        if ns.RequestCDMDropPass then ns.RequestCDMDropPass("regen") end
     end
-    if not _cdmRegenWaiter:IsEventRegistered("PLAYER_REGEN_ENABLED") then
-        _cdmRegenWaiter:RegisterEvent("PLAYER_REGEN_ENABLED")
+    ArmCDMDropRegenWaiter = function()
+        ns._cdmDropPending = true
+        ns.CombatQueue.Defer("CDMDropPass", DropPassAfterCombat)
     end
 end
 
@@ -8757,6 +8942,8 @@ function ns.ReconcileAssignedSpellDrops(barKey)
         end
     end
 
+    -- WoW Forever's full catalogue set, built on first need (see below).
+    local foreverListed
     local writeIdx = 1
     for readIdx = 1, #sd.assignedSpells do
         local id = sd.assignedSpells[readIdx]
@@ -8800,11 +8987,22 @@ function ns.ReconcileAssignedSpellDrops(barKey)
                 -- Owned but no longer tracked: the user cleared it from
                 -- Blizzard's CDM tracking -> drop.
                 keep = false
-            elseif catalogSet then
+            elseif catalogSet and not EllesmereUI.IS_FOREVER then
                 -- Untalented: it only reached the preview by being
                 -- materialized from the settings catalog, so it must also
                 -- LEAVE when removed from tracking -> drop.
                 keep = false
+            elseif catalogSet then
+                -- WoW Forever: the same, but only for an id its catalogue
+                -- lists (Not Displayed included). An id it does not list is
+                -- a spell this client cannot see (a retail layout's), so it
+                -- holds its place instead.
+                if foreverListed == nil then
+                    foreverListed = ns.CDMForeverListedSet() or false
+                end
+                keep = not (foreverListed and (foreverListed[id]
+                    or foreverListed[NormalizeToBase(id)]
+                    or foreverListed[ResolveToLive(id)]))
             else
                 -- Untalented with no catalog signal (provider down): hold
                 -- rank as the safe fallback so a transient gap never wipes
@@ -9117,6 +9315,44 @@ function ns.CDMEntryHiddenOrRemoved(cdID, mergedInfo, rawInfo, liveSetLookup)
     return nil
 end
 
+-- WoW Forever: every spell id Forever's Cooldown Manager catalogue lists, in
+-- any category, shown or Not Displayed, with base and live forms. A stored id
+-- outside it is a spell this client cannot see (a retail-only spell a retail
+-- layout carried in): the drop passes keep it and the options preview gives
+-- it no slot. nil off Forever or while the catalogue is not readable (callers
+-- then keep everything). Read-only, drop-pass and options time only.
+function ns.CDMForeverListedSet()
+    if not EllesmereUI.IS_FOREVER then return nil end
+    local settings = _G.CooldownViewerSettings
+    if not settings or type(settings.GetDataProvider) ~= "function" then return nil end
+    local okP, provider = pcall(settings.GetDataProvider, settings)
+    if not okP or type(provider) ~= "table" then return nil end
+    local ordered = ns.CDMGetProviderDisplayData(provider)
+    local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+    if not (ordered and gci) then return nil end
+    local NormalizeToBase, ResolveToLive = ns.NormalizeToBase, ns.ResolveToLive
+    local set = {}
+    local function Add(v)
+        if _IsUsableSID(v) then
+            set[v] = true
+            set[NormalizeToBase(v)] = true
+            set[ResolveToLive(v)] = true
+        end
+    end
+    for _, cdID in ipairs(ordered) do
+        local info = _IsUsableSID(cdID) and gci(cdID)
+        if info then
+            Add(info.spellID)
+            Add(info.overrideSpellID)
+            if type(info.linkedSpellIDs) == "table" then
+                for _, lid in ipairs(info.linkedSpellIDs) do Add(lid) end
+            end
+        end
+    end
+    if not next(set) then return nil end
+    return set
+end
+
 -------------------------------------------------------------------------------
 --  Buff-family assigned-spell reconcile
 --
@@ -9231,8 +9467,8 @@ function ns.ReconcileBuffFamilyDrops(barKey)
     if not ns._cdmDataLoaded then return sd end
     if InCombatLockdown() then
         -- Shared regen waiter (defined with ns.ReconcileAssignedSpellDrops /
-        -- ns.RequestCDMDropPass, RS3/RS4 above): arms the PLAYER_REGEN_ENABLED
-        -- listener that clears ns._cdmDropPending and re-requests a pass. Bare-setting
+        -- ns.RequestCDMDropPass, RS3/RS4 above): queues the after-combat entry
+        -- that clears ns._cdmDropPending and re-requests a pass. Bare-setting
         -- the flag without arming the waiter would permanently disable every future
         -- automatic pass this session (cd/utility included) since nothing would ever clear it.
         ArmCDMDropRegenWaiter()
@@ -9251,6 +9487,8 @@ function ns.ReconcileBuffFamilyDrops(barKey)
     local hosted  = sd.hostedBuffSpellIDs
 
     local dropped = false
+    -- WoW Forever's full catalogue set, built on first need (see below).
+    local foreverListed
     local writeIdx = 1
     for readIdx = 1, #sd.assignedSpells do
         local id = sd.assignedSpells[readIdx]
@@ -9314,7 +9552,22 @@ function ns.ReconcileBuffFamilyDrops(barKey)
             for member in pairs(family) do
                 if present[member] then anyPresent = true; break end
             end
-            if vouched and not anyPresent then
+            -- WoW Forever: a family its catalogue does not list at all (Not
+            -- Displayed included) is a buff this client cannot see (a retail
+            -- layout's): it holds its place instead.
+            local unseen = false
+            if vouched and not anyPresent and EllesmereUI.IS_FOREVER then
+                if foreverListed == nil then
+                    foreverListed = ns.CDMForeverListedSet() or false
+                end
+                unseen = true
+                if foreverListed then
+                    for member in pairs(family) do
+                        if foreverListed[member] then unseen = false; break end
+                    end
+                end
+            end
+            if vouched and not anyPresent and not unseen then
                 keep = false
                 dropped = true
             end
@@ -9799,6 +10052,7 @@ function ECME:OnInitialize()
     -- the first PLAYER_ENTERING_WORLD and only works because nil is falsy.
     ns.RefreshGlowCombatGate()
     _G._ECME_Apply = function()
+        ns.RefreshRotationAssistIcon()
         -- Profile switches land here, so the cached glow gate is re-read before
         -- the rebuild restarts any glow under the new profile's setting.
         ns.RefreshGlowCombatGate()
@@ -9920,9 +10174,7 @@ function ECME:OnEnable()
     -- reanchor tail in CdmHooks). Removal sync = settled-state triggers only.
 
     -- Enable CDM cooldown viewer (keep Blizzard CDM running in background so we can read its children even while hidden)
-    if C_CVar and C_CVar.SetCVar then
-        pcall(C_CVar.SetCVar, "cooldownViewerEnabled", "1")
-    end
+    pcall(EllesmereUI.SetCVar, "cooldownViewerEnabled", "1", "EllesmereUICooldownManager")
 
     -- Spec-gated build: only run CDMFinishSetup once a real spec key exists from the live API; if
     -- the API isn't ready, defer until it is. Wait until the truth is known, then build once -- never guess the spec and repair later.
@@ -9976,13 +10228,12 @@ function ECME:OnEnable()
     -- Initialize Bar Glows overlay system
     if ns.InitBarGlows then ns.InitBarGlows() end
 
+    ns.RefreshRotationAssistIcon()
+
 end
 
 function ECME:OnCDMFirstLogin()
     self:UnregisterEvent("PLAYER_ENTERING_WORLD")
-    -- WoW Forever starts every install from the base layout, never from a
-    -- snapshot of Blizzard's cooldown viewer (EllesmereUI_ForeverLayout.lua).
-    if EllesmereUI.IS_FOREVER then self.db.sv._capturedOnce_CDM = true end
     -- A profile import can stamp the capture flag mid-session (imported data is a chosen layout).
     -- Honor the stamp here so a still-pending capture never overwrites the imported profile; just finish the deferred setup.
     if not self.db.sv._capturedOnce_CDM then
@@ -10252,7 +10503,9 @@ local function _rotResolveColor(cfg)
                cfg.rotationAssistColorG or 0,
                cfg.rotationAssistColorB or 0
     end
-    return 1.0, 0.788, 0.137
+    -- Default: no tint request, like every other glow site (gold for the drawn
+    -- styles via StartNativeGlow, the atlas's own look for FlipBooks).
+    return nil
 end
 
 local function _rotHide(icon)
@@ -10298,19 +10551,21 @@ local function _rotShow(icon)
         if thickness < 1 then thickness = 1 elseif thickness > 8 then thickness = 8 end
         local cr, cg, cb = _rotResolveColor(cfg)
         local glowStyle = ROT_STYLE_TO_GLOW[style]
-        if glowStyle and rfc.isReplacementBuff then
-            -- Blizzard aura hosts: driver-ticked styles freeze under secret
-            -- visibility, so the glow engine's own remap picks the FlipBook
-            -- twin (pixel -> classic, the rest -> modern).
-            local safe = EllesmereUI.Glows and EllesmereUI.Glows.RestrictionSafeStyle
-            if safe then glowStyle = safe(glowStyle) end
-        end
-        local cfgKey = table.concat({ style, cr, cg, cb, thickness, outset, glowStyle or 0 }, ":")
+        -- Pixel Glow lines/speed/background (unset = the engine defaults).
+        local lines, speed = cfg.rotationAssistLines or 8, cfg.rotationAssistSpeed or 4
+        local bgc = cfg.rotationAssistBackground and cfg.rotationAssistBackgroundColor
+        -- One reused key table (this runs on every suggestion update in combat).
+        local kt = ns._rotKeyScratch
+        if not kt then kt = {}; ns._rotKeyScratch = kt end
+        kt[1], kt[2], kt[3], kt[4], kt[5], kt[6], kt[7] = style, cr or -1, cg or -1, cb or -1, thickness, outset, glowStyle or 0
+        kt[8], kt[9], kt[10] = lines, speed, cfg.rotationAssistBackground and 1 or 0
+        kt[11], kt[12], kt[13] = bgc and bgc.r or 0, bgc and bgc.g or 0, bgc and bgc.b or 0
+        local cfgKey = table.concat(kt, ":", 1, 13)
         if overlay._rotCfgKey ~= cfgKey or not overlay._glowActive then
             overlay._rotCfgKey = cfgKey
             if style == "solid" then
                 StopNativeGlow(overlay)
-                _rotSolidBorder(overlay, thickness, cr, cg, cb)
+                _rotSolidBorder(overlay, thickness, cr or 1.0, cg or 0.788, cb or 0.137)
                 overlay._glowActive = true
                 overlay:SetAlpha(1)
             else
@@ -10318,7 +10573,10 @@ local function _rotShow(icon)
                 local w = (icon:GetWidth() or 36) + outset * 2
                 local h = (icon:GetHeight() or 36) + outset * 2
                 StartNativeGlow(overlay, glowStyle, cr, cg, cb, {
-                    th = thickness,
+                    N = lines, th = thickness, period = speed,
+                    bg = cfg.rotationAssistBackground and {
+                        r = (bgc and bgc.r) or 0, g = (bgc and bgc.g) or 0, b = (bgc and bgc.b) or 0,
+                    } or nil,
                     width = w,
                     height = h,
                 })
@@ -10906,6 +11164,8 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
         -- Talent Conditions read node ranks from a cache; the rebuild's reanchor re-evaluates them.
         -- Unconditional: the options popup fills the cache before the gate is ever set.
         ns.TalentCondInvalidate()
+        -- Bar Glows limited to a hero tree: re-check them now (only while one exists).
+        if ns._barGlowAnyHero and ns.UpdateOverlayVisuals then ns.UpdateOverlayVisuals() end
         ScheduleTalentRebuild()
         return
     end

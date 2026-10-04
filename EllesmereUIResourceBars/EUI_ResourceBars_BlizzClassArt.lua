@@ -63,7 +63,6 @@ local origStrata    -- the held frame's strata before we took it
 local mouseMotion, mouseClick  -- its mouse state before we took it (restored exactly)
 local homePt = {}   -- its last point in Blizzard's layout (reused)
 local hooked = setmetatable({}, { __mode = "k" })  -- frames carrying our OnShow hook
-local regen         -- one-shot PLAYER_REGEN_ENABLED retry (created on demand)
 local lvlWatch      -- PLAYER_LEVEL_UP while a held frame waits for its level
 
 local function UFns()
@@ -131,15 +130,12 @@ local function HomePending(bar)
     return uf.GetUnitFrameSource("player") ~= "blizzard"
 end
 
+local function RegenApply()
+    if _G._ERB_Apply then _G._ERB_Apply() end
+end
+
 local function QueueRegen()
-    if not regen then
-        regen = CreateFrame("Frame")
-        regen:SetScript("OnEvent", function(self)
-            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-            if _G._ERB_Apply then _G._ERB_Apply() end
-        end)
-    end
-    regen:RegisterEvent("PLAYER_REGEN_ENABLED")
+    ns.CombatQueue.Defer("ERBApply", RegenApply)
 end
 
 -- A held frame below its minimum level (Soul Shards, 10) is shown by Blizzard the

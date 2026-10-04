@@ -4,7 +4,6 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 
 local ADDON_NAME, ns = ...
 local L = ns.L
-local MEDIA = ns.MEDIA
 local K = ns.BlockKit
 
 -- Upvalues
@@ -188,7 +187,6 @@ ns.BlockFactories.travel = function(blockCfg, slot, content, barCtx)
     inst.events = { "HEARTHSTONE_BOUND", "PLAYER_ENTERING_WORLD",
         "BAG_UPDATE_DELAYED", "SPELLS_CHANGED" }
 
-    local HEARTH_TEX = MEDIA .. "hearthstone.png"
     local _trvFitBuf1 = { "" }
     local _trvFitBuf2 = { "" }
     local mouseOver = false
@@ -301,8 +299,9 @@ ns.BlockFactories.travel = function(blockCfg, slot, content, barCtx)
         end
 
         -- Show M+ Portals: nil reads as shown (no migration needed). OFF skips the section and its spell-resolution work entirely.
+        -- WoW Forever has no Mythic+ teleports: the section never builds there.
         _mythicLineCount = 0
-        if D().clickableTeleports ~= false then
+        if not EllesmereUI.IS_FOREVER and D().clickableTeleports ~= false then
             for _, entry in ipairs(SEASON_TELEPORTS) do
                 local spellId = TravelResolveMythicId(entry.spellIds)
                 if spellId then
@@ -385,7 +384,7 @@ ns.BlockFactories.travel = function(blockCfg, slot, content, barCtx)
         hearthButton:SetAttribute("*type2", "macro")
         hearthButton:SetAttribute("*macrotext2", "")
 
-        hearthIcon   = hearthButton:CreateTexture(nil, "OVERLAY"); hearthIcon:SetTexture(HEARTH_TEX)
+        hearthIcon   = hearthButton:CreateTexture(nil, "OVERLAY")
         hearthText   = hearthButton:CreateFontString(nil, "OVERLAY")
         AttachTextOffset(inst, hearthText)
 
@@ -439,7 +438,7 @@ ns.BlockFactories.travel = function(blockCfg, slot, content, barCtx)
     -- Combat-deferred construction: dimmed non-interactive icon until OOC.
     if InCombatLockdown() then
         placeholder = content:CreateTexture(nil, "OVERLAY")
-        placeholder:SetTexture(HEARTH_TEX)
+        K.SetBlockIcon(placeholder, blockCfg)
         placeholder:SetVertexColor(0.6, 0.6, 0.6, 0.6)
         placeholder:SetSize(16, 16)
         placeholder:SetPoint("CENTER")
@@ -454,6 +453,7 @@ ns.BlockFactories.travel = function(blockCfg, slot, content, barCtx)
 
     function inst:Refresh()
         if not built then return end
+        K.SetBlockIcon(hearthIcon, blockCfg)
         local barCfg = BC()
         local barH = barCtx.GetThickness()
         local fontSize = max(9, floor(CONTENT_BASE * 0.4333 + 0.5))

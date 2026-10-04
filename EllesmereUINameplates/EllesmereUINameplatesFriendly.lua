@@ -1039,8 +1039,7 @@ local friendlyFrameCache = CreateFramePool("Frame", UIParent, nil, nil, false, f
 
     plate.health = CreateFrame("StatusBar", nil, plate)
     plate.health:SetFrameLevel(10)
-    -- WoW Forever: shifted left so the bar and its level box centre on the unit.
-    plate.health:SetPoint("CENTER", -ns.NP_ForeverNameDX(plate), FRIENDLY_PLATE_Y_OFFSET)
+    plate.health:SetPoint("CENTER", 0, FRIENDLY_PLATE_Y_OFFSET)
     plate.health:SetSize(GetFriendlyHealthBarWidth(), GetFriendlyHealthBarHeight())
     plate.health:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
 
@@ -1199,6 +1198,7 @@ local friendlyFrameCache = CreateFramePool("Frame", UIParent, nil, nil, false, f
     plate.leftArrow = plate:CreateTexture(nil, "OVERLAY")
     plate.leftArrow:SetTexture(ns.TARGET_ARROW_DIR .. _aSt.l .. ".png")
     plate.leftArrow:SetWidth(_aSt.w)
+    plate._arrowW = _aSt.w
     plate.leftArrow:SetPoint("TOP", plate.name, "LEFT", -(2 + _aSt.w / 2), 8)
     plate.leftArrow:SetPoint("BOTTOM", plate.name, "LEFT", -(2 + _aSt.w / 2), -8)
     plate.leftArrow:Hide()
@@ -1374,12 +1374,10 @@ function FriendlyFrame:UpdateSubText()
         -- Both texts hang off the HEALTH BAR (a frame) with computed numbers:
         -- the name's bottom sits at off, so the guild line's top sits 1px
         -- under it. Chaining the line off the name's rect instead is what
-        -- made it jitter on moving plates. WoW Forever centres both over the
-        -- bar and its level box together.
-        local dx = ns.NP_ForeverNameDX(self)
-        self.name:SetPoint("BOTTOM", self.health, "TOP", dx, off)
+        -- made it jitter on moving plates.
+        self.name:SetPoint("BOTTOM", self.health, "TOP", 0, off)
         self.subText1:ClearAllPoints()
-        self.subText1:SetPoint("TOP", self.health, "TOP", dx, off - 1)
+        self.subText1:SetPoint("TOP", self.health, "TOP", 0, off - 1)
     end
 end
 
@@ -1427,6 +1425,7 @@ function FriendlyFrame:ApplyTarget()
         self.rightArrow:SetVertexColor(acr, acg, acb)
         self.leftArrow:SetSize(st.w, 16)
         self.rightArrow:SetSize(st.w, 16)
+        self._arrowW = st.w
     end
     self.leftArrow:SetShown(showArrows or false)
     self.rightArrow:SetShown(showArrows or false)
@@ -1643,9 +1642,8 @@ function ns.RefreshFriendlyPlateSize()
 end
 
 -- WoW Forever's Show Level Box flipped (ns.RefreshAllSettings): each shown
--- friendly plate gains or parks its box, the bar and name re-centring with
--- it, and a side raid marker re-gaps off the bar. A pooled plate catches up
--- through its next ApplyBorder.
+-- friendly plate gains or parks its box, and a side raid marker re-gaps off
+-- the bar. A pooled plate catches up through its next ApplyBorder.
 function ns.NP_ForeverFriendlyBoxes()
     local h = GetFriendlyHealthBarHeight()
     for _, plate in pairs(friendlyPlates) do
@@ -1706,12 +1704,11 @@ end
 --  click hit-test rectangle to nothing via a large positive inset on every
 --  edge. An inset of 0 restores the natural (fully clickable) hit rect.
 --  The hit-test API is protected in combat, so we gate on InCombatLockdown and
---  retry once on combat end. The retry listener is only registered while a
---  change is actually pending, so this costs nothing when idle.
+--  retry once on combat end through the module combat queue, which costs
+--  nothing while no change is pending.
 -------------------------------------------------------------------------------
 local CLICK_THROUGH_INSET = 10000
 local clickThroughApplied = false
-local clickThroughRetry = CreateFrame("Frame")
 
 local function ApplyFriendlyClickThrough()
     if not (C_NamePlateManager and C_NamePlateManager.SetNamePlateHitTestInsets
@@ -1723,17 +1720,14 @@ local function ApplyFriendlyClickThrough()
     -- Never applied and feature is off: leave Blizzard's hit rect untouched.
     if not on and not clickThroughApplied then return end
     if InCombatLockdown() then
-        clickThroughRetry:RegisterEvent("PLAYER_REGEN_ENABLED")
+        ns.CombatQueue.Defer("FriendlyClickThrough", ApplyFriendlyClickThrough)
         return
     end
-    clickThroughRetry:UnregisterEvent("PLAYER_REGEN_ENABLED")
     local inset = on and CLICK_THROUGH_INSET or 0
     C_NamePlateManager.SetNamePlateHitTestInsets(Enum.NamePlateType.Friendly, inset, inset, inset, inset)
     clickThroughApplied = on
 end
 ns.UpdateFriendlyClickThrough = ApplyFriendlyClickThrough
-
-clickThroughRetry:SetScript("OnEvent", function() ApplyFriendlyClickThrough() end)
 
 -------------------------------------------------------------------------------
 --  Friendly player visibility CVars
@@ -1778,9 +1772,8 @@ end
 --- dungeon capture: an explicit "show them" must not be undone later by a
 --- restore that was queued before the user changed their mind.
 function ns.ForceFriendlyPlayerCVarsOn()
-    if not SetCVar then return end
     for i = 1, #FRIENDLY_VIS_CVARS do
-        pcall(SetCVar, FRIENDLY_VIS_CVARS[i], 1)
+        pcall(EllesmereUI.SetCVar, FRIENDLY_VIS_CVARS[i], 1, "EllesmereUINameplates")
     end
     if EllesmereUIDB then EllesmereUIDB.friendlyPlateVisSaved = nil end
 end
@@ -1802,24 +1795,14 @@ local function CaptureFriendlyVis()
 end
 
 local function RestoreFriendlyVis()
-    if not (EllesmereUIDB and SetCVar) then return end
+    if not EllesmereUIDB then return end
     local saved = EllesmereUIDB.friendlyPlateVisSaved
     if saved == nil then return end   -- nothing of ours to undo: leave them alone
     EllesmereUIDB.friendlyPlateVisSaved = nil
     for i = 1, #FRIENDLY_VIS_CVARS do
-        pcall(SetCVar, FRIENDLY_VIS_CVARS[i], saved)
+        pcall(EllesmereUI.ReleaseCVar, FRIENDLY_VIS_CVARS[i], saved, "EllesmereUINameplates")
     end
 end
-
--- SetCVar on nameplate CVars is skipped in combat to avoid taint, so a zone
--- transition that lands mid-combat drops the whole visibility pass. Without a
--- retry that silently strands a follower-dungeon capture unclaimed and leaves
--- friendly plates hidden until the next transition, so re-run once combat ends.
-local visCVarRetry = CreateFrame("Frame")
-visCVarRetry:SetScript("OnEvent", function(self)
-    self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-    ns.UpdateFriendlyNameplateSystem()
-end)
 
 -------------------------------------------------------------------------------
 --  System enable / disable  (called from toggle setValue and on login)
@@ -1841,8 +1824,7 @@ function ns.UpdateFriendlyNameplateSystem()
     -- player nameplates. When disabled we leave those CVars alone so Blizzard's own
     -- Nameplate settings own them. Friendly NPC CVars are always managed because they
     -- have their own EUI toggle.
-    if not InCombatLockdown() and SetCVar then
-        visCVarRetry:UnregisterEvent("PLAYER_REGEN_ENABLED")
+    if not InCombatLockdown() then
         local fp = FP()
         local euiManagesPlayers = fp and (fp.showFriendlyPlayers ~= false)
         local _, iType = GetInstanceInfo()
@@ -1852,11 +1834,11 @@ function ns.UpdateFriendlyNameplateSystem()
             -- Hiding without a capture has no matching restore, so the plates
             -- would never come back.
             if euiManagesPlayers and CaptureFriendlyVis() then
-                pcall(SetCVar, "nameplateShowFriendlyPlayers", 0)
-                pcall(SetCVar, "nameplateShowFriends", 0)
+                pcall(EllesmereUI.HoldCVar, "nameplateShowFriendlyPlayers", 0, "EllesmereUINameplates")
+                pcall(EllesmereUI.HoldCVar, "nameplateShowFriends", 0, "EllesmereUINameplates")
             end
-            pcall(SetCVar, "nameplateShowFriendlyNPCs", 0)
-            pcall(SetCVar, "nameplateShowFriendlyNpcs", 0)
+            pcall(EllesmereUI.SetCVar, "nameplateShowFriendlyNPCs", 0, "EllesmereUINameplates")
+            pcall(EllesmereUI.SetCVar, "nameplateShowFriendlyNpcs", 0, "EllesmereUINameplates")
         elseif inInstance then
             -- NPC plates only: force off in instances since our frame
             -- suppression doesn't work on protected nameplate frames.
@@ -1870,11 +1852,11 @@ function ns.UpdateFriendlyNameplateSystem()
                 -- well as in the open-world branch. Leaving it out let the health bars
                 -- return on zone-in and stay for the whole instance, since nothing else
                 -- rewrites this CVar until the player is back outside.
-                pcall(SetCVar, "nameplateShowOnlyNameForFriendlyPlayerUnits",
-                    (fp and fp.friendlyNameOnly ~= false) and 1 or 0)
+                pcall(EllesmereUI.SetCVar, "nameplateShowOnlyNameForFriendlyPlayerUnits",
+                    (fp and fp.friendlyNameOnly ~= false) and 1 or 0, "EllesmereUINameplates")
             end
-            pcall(SetCVar, "nameplateShowFriendlyNPCs", 0)
-            pcall(SetCVar, "nameplateShowFriendlyNpcs", 0)
+            pcall(EllesmereUI.SetCVar, "nameplateShowFriendlyNPCs", 0, "EllesmereUINameplates")
+            pcall(EllesmereUI.SetCVar, "nameplateShowFriendlyNpcs", 0, "EllesmereUINameplates")
         else
             -- Restore user's preferred friendly CVar state
             if fp then
@@ -1884,15 +1866,18 @@ function ns.UpdateFriendlyNameplateSystem()
                     -- Hand back only what a follower dungeon took. Outside that
                     -- case visibility is the user's to own, so nothing is written.
                     RestoreFriendlyVis()
-                    pcall(SetCVar, "nameplateShowOnlyNameForFriendlyPlayerUnits", nameOnlyVal)
+                    pcall(EllesmereUI.SetCVar, "nameplateShowOnlyNameForFriendlyPlayerUnits", nameOnlyVal, "EllesmereUINameplates")
                 end
-                pcall(SetCVar, "nameplateShowFriendlyNPCs", showNPCs and 1 or 0)
-                pcall(SetCVar, "nameplateShowFriendlyNpcs", showNPCs and 1 or 0)
+                pcall(EllesmereUI.SetCVar, "nameplateShowFriendlyNPCs", showNPCs and 1 or 0, "EllesmereUINameplates")
+                pcall(EllesmereUI.SetCVar, "nameplateShowFriendlyNpcs", showNPCs and 1 or 0, "EllesmereUINameplates")
             end
         end
-    elseif SetCVar then
-        -- Skipped for combat: run the visibility pass again once it drops.
-        visCVarRetry:RegisterEvent("PLAYER_REGEN_ENABLED")
+    else
+        -- A zone transition that lands mid-combat drops the whole visibility
+        -- pass. Without a retry that silently strands a follower-dungeon
+        -- capture unclaimed and leaves friendly plates hidden until the next
+        -- transition, so re-run it once combat ends.
+        ns.CombatQueue.Defer("FriendlyVisibility", ns.UpdateFriendlyNameplateSystem)
     end
 
     if shouldEnable and not friendlyEnabled then
@@ -1953,7 +1938,7 @@ function ns.UpdateFriendlyNameplateSystem()
     -- in name-only mode, the protected instance plates in full-plate mode. A
     -- combat skip is caught by the visibility retry above.
     if (nameOnly or shouldEnable) and not InCombatLockdown() then
-        pcall(SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(_fp))
+        pcall(EllesmereUI.SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(_fp), "EllesmereUINameplates")
     end
     if nameOnly and showFriendly then
         ApplyFriendlyFontOverride()

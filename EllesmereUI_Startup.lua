@@ -24,20 +24,16 @@ do
 
     local function ApplyScaleSafe(scale)
         if InCombatLockdown() then
-            local f = CreateFrame("Frame")
-            f:RegisterEvent("PLAYER_REGEN_ENABLED")
-            f:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                UIParent:SetScale(scale)
-                if EllesmereUI and EllesmereUI.PP and EllesmereUI.PP.UpdateMult then
-                    EllesmereUI.PP.UpdateMult()
-                end
+            -- Re-read the saved scale at drain: a UI Scale change made later in the
+            -- same fight (SetUIScale) must not be undone by this older value.
+            EllesmereUI.CombatQueue.Defer("StartupScale", function()
+                ApplyScaleSafe(EllesmereUIDB and EllesmereUIDB.ppUIScale or scale)
             end)
-        else
-            UIParent:SetScale(scale)
-            if EllesmereUI and EllesmereUI.PP and EllesmereUI.PP.UpdateMult then
-                EllesmereUI.PP.UpdateMult()
-            end
+            return
+        end
+        UIParent:SetScale(scale)
+        if EllesmereUI and EllesmereUI.PP and EllesmereUI.PP.UpdateMult then
+            EllesmereUI.PP.UpdateMult()
         end
     end
 

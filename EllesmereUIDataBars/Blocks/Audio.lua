@@ -4,7 +4,6 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 
 local ADDON_NAME, ns = ...
 local L = ns.L
-local MEDIA = ns.MEDIA
 local K = ns.BlockKit
 
 -- Upvalues
@@ -13,6 +12,7 @@ local ipairs      = ipairs
 local type        = type
 local floor       = math.floor
 local max         = math.max
+local Clamp       = Clamp
 
 local ICON_GAP             = K.ICON_GAP
 local CONTENT_BASE         = K.CONTENT_BASE
@@ -29,11 +29,11 @@ local IconColorOf          = K.IconColorOf
 --  Volume rides the sound CVars, which are unprotected: reads and writes are combat-legal.
 -------------------------------------------------------------------------------
 local AUDIO_CHANNELS = {
-    master   = { cvar = "Sound_MasterVolume",   label = "AUDIO_MASTER" },
-    sfx      = { cvar = "Sound_SFXVolume",      label = "AUDIO_SFX" },
-    music    = { cvar = "Sound_MusicVolume",    label = "AUDIO_MUSIC" },
-    ambience = { cvar = "Sound_AmbienceVolume", label = "AUDIO_AMBIENCE" },
-    dialog   = { cvar = "Sound_DialogVolume",   label = "AUDIO_DIALOG" },
+    master   = { cvar = "Sound_MasterVolume",   enable = "Sound_EnableAllSound", label = "AUDIO_MASTER" },
+    sfx      = { cvar = "Sound_SFXVolume",      enable = "Sound_EnableSFX",      label = "AUDIO_SFX" },
+    music    = { cvar = "Sound_MusicVolume",    enable = "Sound_EnableMusic",    label = "AUDIO_MUSIC" },
+    ambience = { cvar = "Sound_AmbienceVolume", enable = "Sound_EnableAmbience", label = "AUDIO_AMBIENCE" },
+    dialog   = { cvar = "Sound_DialogVolume",   enable = "Sound_EnableDialog",   label = "AUDIO_DIALOG" },
 }
 local AUDIO_CHANNEL_ORDER = { "master", "sfx", "music", "ambience", "dialog" }
 ns.AUDIO_CHANNELS = AUDIO_CHANNELS
@@ -44,7 +44,6 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     inst.key = InstKey(barCtx, blockCfg)
     inst.events = { "CVAR_UPDATE", "PLAYER_ENTERING_WORLD" }
 
-    local AUDIO_TEX = MEDIA .. "audio.png"
     local mouseOver = false
     local dragging = false
 
@@ -54,15 +53,24 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     local function Chan()
         return AUDIO_CHANNELS[D().channel] or AUDIO_CHANNELS.master
     end
-    local function GetVol()
-        local v = tonumber(GetCVar(Chan().cvar)) or 1
-        if v < 0 then v = 0 elseif v > 1 then v = 1 end
-        return v
+    -- Channel volume 0..1. A missing CVar reads as full volume on every path (bar, rows, wheel).
+    local function ReadVol(ch)
+        return Clamp(tonumber(GetCVar(ch.cvar)) or 1, 0, 1)
     end
-    local function SetVol(v)
-        if v < 0 then v = 0 elseif v > 1 then v = 1 end
-        SetCVar(Chan().cvar, v)
+    local function GetVol() return ReadVol(Chan()) end
+    -- Wheel step: 1%, or 10% with Shift. Rounds to whole percents so repeated steps never drift; SetChanVol clamps.
+    local function WheelStep(v, delta)
+        return floor((v + delta * (IsShiftKeyDown() and 0.10 or 0.01)) * 100 + 0.5) / 100
     end
+    -- The one volume writer, clamped to 0..1. A sound CVar write fires CVAR_UPDATE
+    -- synchronously and the block's handler repaints the bar (and the owned tip,
+    -- outside a drag), so callers never repaint on their own. Plain SetCVar, not
+    -- EllesmereUI.SetCVar: this is the player's own volume (and mute), which
+    -- Uninstall EUI leaves as it is.
+    local function SetChanVol(ch, v)
+        SetCVar(ch.cvar, Clamp(v, 0, 1))
+    end
+    local function SetVol(v) SetChanVol(Chan(), v) end
 
     local audioButton = CreateFrame("Button", nil, content)
     audioButton:SetAllPoints()
@@ -70,7 +78,6 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     audioButton:EnableMouseWheel(true)
 
     local audioIcon = audioButton:CreateTexture(nil, "OVERLAY")
-    audioIcon:SetTexture(AUDIO_TEX)
 
     -- Volume bar: flat fill + dark track, same visual recipe as the profession skill bars.
     local volTrack = audioButton:CreateTexture(nil, "BACKGROUND")
@@ -90,11 +97,8 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
         local scale = volTrack:GetEffectiveScale()
         if not scale or scale == 0 then scale = 1 end
         local cx = GetCursorPosition() / scale
-        local frac = (cx - left) / w
-        if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
-        SetVol(frac)
-        -- Direct paint for zero-lag feedback; the CVAR_UPDATE refresh reconciles anything else (tooltip, other blocks).
-        volBar:SetValue(frac)
+        -- SetVol clamps; the synchronous CVAR_UPDATE refresh paints the bar.
+        SetVol((cx - left) / w)
     end
 
     hit:SetScript("OnMouseDown", function(_, btn)
@@ -112,53 +116,58 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     end)
 
     audioButton:SetScript("OnMouseWheel", function(_, delta)
-        SetVol(GetVol() + delta * 0.05)
-        inst:Refresh()
+        SetVol(WheelStep(GetVol(), delta))
     end)
 
-    -- Right-click: exact-value entry through the house input popup (never StaticPopup). Accepts 0-100; non-numbers are ignored.
-    local function OpenVolumeInput()
-        local ch = Chan()
-        local cur = floor(GetVol() * 100 + 0.5)
-        EllesmereUI:ShowInputPopup({
-            title = "Set Volume",
-            message = EllesmereUI.Lf("Enter a volume from 0 to 100 for %1$s:", L[ch.label]),
-            placeholder = tostring(cur),
-            confirmText = "Apply",
-            cancelText = "Cancel",
-            onConfirm = function(text)
-                local n = tonumber(text)
-                if not n then return end
-                SetVol(n / 100)
-                inst:Refresh()
-            end,
-        })
+    -- Mute flips repaint through the same synchronous CVAR_UPDATE path as volume writes.
+    local function ToggleMute(ch)
+        SetCVar(ch.enable, GetCVarBool(ch.enable) and 0 or 1)
     end
-    audioButton:RegisterForClicks("AnyUp")
-    audioButton:SetScript("OnClick", function(_, btn)
-        if btn == "RightButton" then OpenVolumeInput() end
-    end)
-    hit:RegisterForClicks("AnyUp")
-    hit:SetScript("OnClick", function(_, btn)
-        if btn == "RightButton" then OpenVolumeInput() end
-    end)
+
+    -- Left-click off the bar (icon) toggles mute for the block's channel; the bar's hit frame keeps drag-to-set.
+    audioButton:RegisterForClicks("LeftButtonUp")
+    audioButton:SetScript("OnClick", function() ToggleMute(Chan()) end)
+
+    -- Per-channel tooltip row handlers, built once: left-click toggles mute, wheel steps volume; other buttons do nothing.
+    local rowClick, rowWheel = {}, {}
+    for _, key in ipairs(AUDIO_CHANNEL_ORDER) do
+        local ch = AUDIO_CHANNELS[key]
+        rowClick[key] = function(mouseButton)
+            if mouseButton == "LeftButton" then ToggleMute(ch) end
+        end
+        rowWheel[key] = function(delta)
+            SetChanVol(ch, WheelStep(ReadVol(ch), delta))
+        end
+    end
 
     local function AudioTooltip()
         ns.Tip_Begin(audioButton)
         ns.Tip_AddLine("|cFFFFFFFF[|r" .. L["AUDIO"] .. "|cFFFFFFFF]|r", 1, 1, 1)
         ns.Tip_AddLine(" ")
-        local selected = D().channel or "master"
+        local selected = Chan()
+        -- Master off silences every other channel, so their rows dim (the selected
+        -- row stays a step brighter); a muted channel keeps its red "Muted".
+        local masterOn = GetCVarBool(AUDIO_CHANNELS.master.enable)
         for _, key in ipairs(AUDIO_CHANNEL_ORDER) do
             local ch = AUDIO_CHANNELS[key]
-            local pct = floor((tonumber(GetCVar(ch.cvar)) or 0) * 100 + 0.5)
-            local lr, lg, lb = 0.65, 0.65, 0.65
-            if key == selected then lr, lg, lb = 1, 1, 1 end
-            ns.Tip_AddDouble(L[ch.label], pct .. "%", lr, lg, lb, 1, 1, 1)
+            local isSel = ch == selected
+            local lc, vc = isSel and 1 or 0.65, 1
+            if not masterOn and key ~= "master" then
+                lc, vc = isSel and 0.55 or 0.35, 0.45
+            end
+            if GetCVarBool(ch.enable) then
+                local pct = floor(ReadVol(ch) * 100 + 0.5)
+                ns.Tip_AddClickable(L[ch.label], pct .. "%", rowClick[key], lc, lc, lc, vc, vc, vc)
+            else
+                ns.Tip_AddClickable(L[ch.label], L["AUDIO_MUTED"], rowClick[key], lc, lc, lc, 1, 0.3, 0.3)
+            end
+            ns.Tip_SetRowWheel(rowWheel[key])
         end
         ns.Tip_AddLine(" ")
-        ns.Tip_AddDouble(L["LEFT_CLICK"], L["AUDIO_SET_HINT"], 1, 1, 1, 1, 1, 1)
-        ns.Tip_AddDouble(L["RIGHT_CLICK"], L["AUDIO_INPUT_HINT"], 1, 1, 1, 1, 1, 1)
+        ns.Tip_AddDouble(L["LEFT_CLICK"], L["AUDIO_MUTE_HINT"], 1, 1, 1, 1, 1, 1)
+        ns.Tip_AddDouble(L["DRAG_BAR"], L["AUDIO_SET_HINT"], 1, 1, 1, 1, 1, 1)
         ns.Tip_AddDouble(L["SCROLL_WHEEL"], L["AUDIO_SCROLL_HINT"], 1, 1, 1, 1, 1, 1)
+        ns.Tip_AddLine(L["AUDIO_SHIFT_HINT"], 0.65, 0.65, 0.65)
         ns.Tip_Show()
     end
 
@@ -184,6 +193,7 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     end)
 
     function inst:Refresh()
+        K.SetBlockIcon(audioIcon, blockCfg)
         local barCfg = BC()
         local barH = barCtx.GetThickness()
         local fontSize = max(9, floor(CONTENT_BASE * 0.4333 + 0.5))
@@ -196,9 +206,12 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
         local showIcon = D().showIcon ~= false
         if showIcon then audioIcon:Show() else audioIcon:Hide(); iconSz = 0 end
 
-        -- Icon color follows the Icon Color row; hover sweeps to accent.
+        -- Icon color follows the Icon Color row; hover sweeps to accent. Muted (channel or master) paints icon and fill red.
         local ar, ag, ab = ns.GetAccent()
-        if mouseOver then
+        if not (GetCVarBool(Chan().enable) and GetCVarBool(AUDIO_CHANNELS.master.enable)) then
+            audioIcon:SetVertexColor(1, 0.3, 0.3, 1)
+            ar, ag, ab = 1, 0.3, 0.3
+        elseif mouseOver then
             audioIcon:SetVertexColor(ar, ag, ab, 1)
         else
             local ir, ig, ib = IconColorOf(blockCfg)
@@ -239,7 +252,8 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
         audioButton:ClearAllPoints()
         audioButton:SetAllPoints(content)
 
-        if mouseOver and not dragging then AudioTooltip() end
+        -- Owned, not mouseOver: the tip must also repaint while the cursor sits on its rows.
+        if ns.Tip_IsOwned(audioButton) and not dragging then AudioTooltip() end
         MaybeRelayout(inst)
     end
 

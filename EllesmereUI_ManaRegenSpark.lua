@@ -3,30 +3,32 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -- EllesmereUI_ManaRegenSpark.lua
 -- WoW FOREVER ONLY: mana regen spark on mana power bars.
 --
--- Mana regenerates in ticks every 2 seconds, and Spirit regen stops when a
--- spell finishes casting, resuming five seconds after the last cast. The
--- spark shows both:
---   * a completed cast of a spell that costs mana starts a 5s sweep
---   * when it ends (or mana starts changing while idle) 2s sweeps run back to
---     back, never reset mid-sweep; a sweep with no mana update during it ends
---     the cycle (mana full, the event only fires on a change)
--- The 2s sweeps estimate the server tick: mana is SECRET, so no tick signal
--- exists, and nothing here reads or compares a mana value. The signals are
--- the cast event, the spell's cost type and UNIT_POWER_UPDATE as a
--- keep-alive. UNIT_POWER_FREQUENT is unusable: it fires many times per tick.
+-- The five second rule: Spirit regen stops when a spell that costs mana
+-- finishes casting and resumes five seconds later. A completed cast of a
+-- spell that costs mana starts one 5s sweep, and another such cast restarts
+-- it. A host in Regen Ticks mode also shows the 2s regen ticks: when the
+-- window ends (or mana starts changing while idle) 2s sweeps run back to
+-- back, never reset mid-sweep, until a sweep sees no mana update (mana full:
+-- the event only fires on a change). The ticks are an estimate of the server
+-- tick. Mana is SECRET, so nothing here reads or compares a mana value: the
+-- signals are the cast event, the spell's cost type and, for ticks only,
+-- UNIT_POWER_UPDATE as a keep-alive (UNIT_POWER_FREQUENT fires many times
+-- per tick). All hosts share one timer; a 5-Second Rule host hides during
+-- the tick sweeps.
 --
 -- Hosts ("erb" Resource Bars power bar, "uf" Unit Frames player power bar)
 -- Attach their StatusBar while their option is on and the bar can draw, and
 -- Detach it otherwise. Attach also lays the spark out, so hosts call it on
 -- every rebuild, after the bar's orientation and reverse fill are set.
 -- SetMana reports whether the bar shows mana, attached or not. The spark
--- rides an overlay StatusBar, shown only while a sweep draws on it, whose
+-- rides an overlay StatusBar, shown only while the sweep draws on it, whose
 -- fill the engine animates (SetTimerDuration); one reused animation group
--- times the sweeps, so no Lua runs per frame and no sweep creates a timer.
--- Cost: the events are registered only while an attached host bar is
--- visible (OnShow/OnHide of our own bars). A bar showing Energy or Rage (a
--- druid in a form) keeps them, so a cast there still starts the cycle and
--- the spark joins it on the return to mana. Off, only the unregistered event
+-- times the sweep, so no Lua runs per frame and no sweep creates a timer.
+-- Cost: the cast event is registered only while an attached host bar is
+-- visible (OnShow/OnHide of our own bars), UNIT_POWER_UPDATE only while such
+-- a bar is in Regen Ticks mode. A bar showing Energy or Rage (a
+-- druid in a form) keeps it, so a cast there still starts the sweep and the
+-- spark joins it on the return to mana. Off, only the unregistered event
 -- frame, its animation group and one duration object exist; warriors and
 -- rogues, who have no mana, get nothing at all.
 -------------------------------------------------------------------------------
@@ -38,7 +40,7 @@ if PLAYER_CLASS == "WARRIOR" or PLAYER_CLASS == "ROGUE" then return end
 
 local MANA = Enum.PowerType.Mana
 local WINDOW = 5   -- five second rule
-local TICK = 2     -- regen tick interval
+local TICK = 2     -- regen tick interval (Regen Ticks mode)
 local SPARK_W = 8  -- spark thickness along the fill direction
 local SPARK_TEX = "Interface\\AddOns\\EllesmereUI\\media\\cast_spark.tga"
 local IMMEDIATE = Enum.StatusBarInterpolation.Immediate
@@ -47,10 +49,11 @@ local ELAPSED = Enum.StatusBarTimerDirection.ElapsedTime
 local hosts = {}   -- key -> host record while attached
 local built = {}   -- bar -> host record (kept across detach)
 local mana = {}    -- key -> true while that host's bar shows mana
-local listening = false
-local sweepEnd           -- end time of the running sweep; nil while idle
-local inWindow = false   -- true while the 5s sweep runs
-local regenSeen = false  -- mana update seen during the current tick sweep
+local listening = false   -- the cast event is registered
+local ticking = false     -- UNIT_POWER_UPDATE is registered (a Regen Ticks host)
+local sweepEnd            -- end time of the running sweep; nil while idle
+local inWindow = false    -- true while the 5s sweep runs
+local regenSeen = false   -- mana update seen during the current tick sweep
 local dur = C_DurationUtil.CreateDuration()
 local ev = CreateFrame("Frame")
 local timer = ev:CreateAnimationGroup()   -- one-shot, one sweep long
@@ -102,11 +105,12 @@ local function Layout(h)
 end
 
 -- Puts an attached host's spark into the running sweep, at its current
--- position, or hides it: it draws only while a sweep runs, the bar shows
+-- position, or hides it: it draws only while a sweep runs that the host
+-- shows (the 5s window, or any sweep in Regen Ticks mode), the bar shows
 -- mana and the bar is visible.
 local function Arm(h)
     local o = h.overlay
-    if sweepEnd and mana[h.key] and h.bar:IsVisible() then
+    if sweepEnd and (inWindow or h.ticks) and mana[h.key] and h.bar:IsVisible() then
         o:Show()
         o:SetTimerDuration(dur, IMMEDIATE, ELAPSED)
     else
@@ -136,10 +140,11 @@ local function Sweep(len, start)
     timer:Play()
 end
 
--- A sweep ended: the window just closing or a mana update during it runs
--- another tick sweep, anything else ends the cycle.
+-- A sweep ended. With a Regen Ticks host listening, the window just closing
+-- or a mana update during a tick sweep runs another tick sweep; anything
+-- else ends the cycle (regen has resumed, or mana is full).
 timer:SetScript("OnFinished", function()
-    if inWindow or regenSeen then
+    if ticking and (inWindow or regenSeen) then
         inWindow = false
         regenSeen = false
         Sweep(TICK, sweepEnd)
@@ -156,24 +161,37 @@ ev:SetScript("OnEvent", function(_, event, _, arg2, arg3)
             Sweep(WINDOW)
         end
     elseif arg2 == "MANA" and not inWindow then
+        -- UNIT_POWER_UPDATE, registered only for a Regen Ticks host.
         if sweepEnd then regenSeen = true else Sweep(TICK) end
     end
 end)
 
--- Events are heard while at least one attached host bar is visible; when the
--- last one hides or detaches they are dropped and the cycle ends.
+-- The cast event is heard while at least one attached host bar is visible,
+-- UNIT_POWER_UPDATE while one of those is in Regen Ticks mode. When the last
+-- visible host goes, both are dropped and the cycle ends.
 local function Listen()
-    local on = false
+    local on, tk = false, false
     for _, h in pairs(hosts) do
-        if h.bar:IsVisible() then on = true; break end
+        if h.bar:IsVisible() then
+            on = true
+            if h.ticks then tk = true end
+        end
+    end
+    if tk ~= ticking then
+        ticking = tk
+        if tk then
+            ev:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
+        else
+            ev:UnregisterEvent("UNIT_POWER_UPDATE")
+        end
     end
     if on == listening then return end
     listening = on
     if on then
-        ev:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
         ev:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
     else
         ev:UnregisterAllEvents()
+        ticking = false
         Idle()
     end
 end
@@ -196,9 +214,10 @@ end
 local MRS = {}
 EllesmereUI.ManaRegenSpark = MRS
 
--- The host's option is on and its bar can draw. Lays the spark out on every
--- call, so hosts call it on every rebuild.
-function MRS.Attach(key, bar)
+-- The host's option is on and its bar can draw; ticks = Regen Ticks mode.
+-- Lays the spark out on every call, so hosts call it on every rebuild.
+function MRS.Attach(key, bar, ticks)
+    ticks = ticks and true or false
     local h = built[bar]
     if not h then
         local o = CreateFrame("StatusBar", nil, bar)
@@ -219,9 +238,17 @@ function MRS.Attach(key, bar)
     end
     Layout(h)
     local old = hosts[key]
-    if old == h then return end
+    if old == h then
+        -- Same bar: only a mode change needs the events and the spark redone.
+        if h.ticks ~= ticks then
+            h.ticks = ticks
+            Listen()
+            Arm(h)
+        end
+        return
+    end
     if old then old.overlay:Hide() end
-    h.key = key
+    h.key, h.ticks = key, ticks
     hosts[key] = h
     Listen()
     Arm(h)

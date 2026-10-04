@@ -78,6 +78,8 @@ function EllesmereUI_ApplyDimLights()
     if dimLightsActive then return end
     savedContrast = tonumber(GetCVar("contrast")) or 50
     savedBrightness = tonumber(GetCVar("brightness")) or 50
+    -- Plain SetCVar: graphics settings stay out of Uninstall EUI's record (this
+    -- puts them back itself, on toggle-off and at logout).
     SetCVar("contrast", math.max(0, math.min(100, savedContrast + 14)))
     SetCVar("brightness", math.max(0, savedBrightness - (savedBrightness - 10) * 0.7))
     dimLightsActive = true
@@ -424,9 +426,11 @@ pmInit:RegisterEvent("PLAYER_LOGOUT")
 
 -- Register the player-only UNIT_AURA listener only while the Bloodlust trigger
 -- is enabled (UNIT_AURA is high-frequency). Global so the options checkbox can
--- toggle it live, mirroring EllesmereUI_StartRandomTrigger.
+-- toggle it live, mirroring EllesmereUI_StartRandomTrigger. WoW Forever has no
+-- Sated or Exhaustion debuffs, so the listener never registers there, even when
+-- the saved trigger key is on.
 function EllesmereUI_UpdatePartyModeLustListener()
-    if EllesmereUIDB and EllesmereUIDB.partyModeTriggerBloodlust then
+    if not EllesmereUI.IS_FOREVER and EllesmereUIDB and EllesmereUIDB.partyModeTriggerBloodlust then
         _pmSatedPresent = _pmPlayerHasSated()  -- baseline so only NEW edges fire
         pmInit:RegisterUnitEvent("UNIT_AURA", "player")
     else
@@ -588,12 +592,15 @@ end)
 --  default 120), collect() -> { { pivot = frame, frames = {...} }, ... }
 --  (runs about once a second while spinning, so it reuses its tables), and
 --  optional onClaim() (idempotent, same cadence) and onRestore().
+--  opts.homeInCombat: members go home as each fight starts instead of
+--  freezing mid-orbit (frames clicked in combat: party and raid frames).
 --  EllesmereUI.PartySpin_RefreshAll() re-applies every engine.
 --  A SetPoint post-hook marks a member dirty when its module re-anchors it.
 --  Pauses in combat and while Unlock Mode is open (members go home to drag).
 -------------------------------------------------------------------------------
 do
-local SPIN_TARGETS = { "actionBars", "dataBars", "unitFrames", "resource", "power" }
+local SPIN_TARGETS = { "actionBars", "dataBars", "unitFrames", "resource", "power",
+                       "partyFrames", "raidFrames" }
 
 -- EllesmereUIDB.partyModeSpinBars: nil / false = nothing spins, true = Action
 -- Bars only, a table = one boolean per target. Every reader comes through
@@ -695,7 +702,7 @@ EllesmereUI.PartySpin_RefreshAll = RefreshAll
 
 function EllesmereUI.PartySpin_Create(opts)
     local target = opts.target
-    local driver, deferF
+    local driver, combatWatch
     local angle, held, since, claimed = 0, false, 0, false
     local members = {}     -- frame -> its recOf record
     local order = {}       -- array of frames (stable iteration)
@@ -710,7 +717,24 @@ function EllesmereUI.PartySpin_Create(opts)
         end
         wipe(members); wipe(order)
         claimed = false
+        if combatWatch then combatWatch:UnregisterEvent("PLAYER_REGEN_DISABLED") end
         if opts.onRestore then opts.onRestore() end
+    end
+
+    -- InCombatLockdown() already reports true at PLAYER_REGEN_DISABLED, but
+    -- protected writes stay legal until its handler returns (the DataBars
+    -- tooltip host relies on the same window). Registered only while claimed.
+    local function WatchCombat()
+        if not opts.homeInCombat then return end
+        if not combatWatch then
+            combatWatch = CreateFrame("Frame")
+            combatWatch:SetScript("OnEvent", function()
+                if not claimed then return end
+                RestoreAll()
+                angle, held = 0, true
+            end)
+        end
+        combatWatch:RegisterEvent("PLAYER_REGEN_DISABLED")
     end
 
     local function Claim()
@@ -734,7 +758,8 @@ function EllesmereUI.PartySpin_Create(opts)
                             rec.pivot = pivot
                             members[f] = rec
                             order[#order + 1] = f
-                            Measure(f, rec)
+                            -- Measured by the next tick, with the set at rest.
+                            rec.dirty = true
                         end
                     end
                 end
@@ -750,18 +775,38 @@ function EllesmereUI.PartySpin_Create(opts)
             end
         end
         wipe(seen)
+        WatchCombat()
         if opts.onClaim then opts.onClaim() end
     end
 
     local function Tick(c, s)
         guardDepth = guardDepth + 1
+        -- Settle: re-anchored or new members are measured with every other
+        -- member back on its rest anchors. Header buttons anchor to each other,
+        -- so one still mid-orbit would skew the next one's rest.
+        local settle = false
+        for i = 1, #order do
+            if members[order[i]].dirty then settle = true; break end
+        end
+        if settle then
+            for i = 1, #order do
+                local f = order[i]
+                local rec = members[f]
+                if not rec.dirty then Restore(f, rec) end
+            end
+            for i = 1, #order do
+                local f = order[i]
+                local rec = members[f]
+                if rec.dirty then Measure(f, rec) end
+            end
+        end
         -- Members come grouped by pivot, so each pivot is read once a tick.
         local lastPivot, px, py, ps
         for i = 1, #order do
             local f = order[i]
             local rec = members[f]
-            -- The module just re-anchored it: that IS rest.
-            if rec.dirty or not rec.dx then Measure(f, rec) end
+            -- No position yet: retry.
+            if not rec.dx then Measure(f, rec) end
             local pivot = rec.pivot
             if pivot ~= lastPivot then
                 lastPivot = pivot
@@ -796,14 +841,7 @@ function EllesmereUI.PartySpin_Create(opts)
         -- half (Show/Hide of our own driver) runs there; the rest re-runs on
         -- PLAYER_REGEN_ENABLED with the member table left intact.
         if InCombatLockdown() then
-            if not deferF then
-                deferF = CreateFrame("Frame")
-                deferF:SetScript("OnEvent", function(self)
-                    self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                    refresh()
-                end)
-            end
-            deferF:RegisterEvent("PLAYER_REGEN_ENABLED")
+            EllesmereUI.CombatQueue.Defer(refresh, refresh)
             if not on then
                 if driver then driver:Hide() end
                 angle = 0

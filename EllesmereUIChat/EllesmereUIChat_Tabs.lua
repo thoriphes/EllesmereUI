@@ -303,8 +303,9 @@ end
 --  path ever touches an art texture's alpha slot.
 -------------------------------------------------------------------------------
 local function SuppressTabRegions(tab)
-    for i = 1, select("#", tab:GetRegions()) do
-        local region = select(i, tab:GetRegions())
+    local regions = { tab:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         -- GetAlpha reads secret on chat-roleset widgets in lockdown; a
         -- secret skips the compare and re-asserts.
         local a = region and region.SetAlpha and region:GetAlpha()
@@ -323,8 +324,9 @@ end
 -- chat is hidden) and skips every tab with nothing recorded.
 local stockTabRegionsOff = setmetatable({}, { __mode = "k" })
 local function StockHideTabRegions(tab)
-    for i = 1, select("#", tab:GetRegions()) do
-        local region = select(i, tab:GetRegions())
+    local regions = { tab:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         local a = region and region.SetAlpha and region:GetAlpha()
         if a and not stockTabRegionsOff[region]
             and ((issecretvalue and issecretvalue(a)) or a ~= 0) then
@@ -338,8 +340,9 @@ local function StockRestoreTabRegions(tab)
     local d = CFD(tab)
     if not d.stockRegionsOff then return end
     d.stockRegionsOff = nil
-    for i = 1, select("#", tab:GetRegions()) do
-        local region = select(i, tab:GetRegions())
+    local regions = { tab:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and stockTabRegionsOff[region] then
             stockTabRegionsOff[region] = nil
             region:SetAlpha(1)

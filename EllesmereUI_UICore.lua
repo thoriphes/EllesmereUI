@@ -959,6 +959,37 @@ do
         end
         return full
     end
+
+    -- Name Format (WoW Forever only; nil on retail, where no caller runs):
+    --     EllesmereUI.ForeverShortName(name, mode)
+    -- mode "first" keeps the name's first word, "last" its last; any other
+    -- mode (nil = First and Last) returns it unchanged, as does a one-word,
+    -- secret or non-string name. Words split at spaces and at the surname
+    -- separator. Short forms are cached per mode and name, so repaints build
+    -- no strings; a mode's cache is wiped once it holds 256 names.
+    if IS_FOREVER then
+        local short = { first = {}, last = {} }   -- [mode][name] = short form
+        local count = { first = 0, last = 0 }
+        local sepPat = (SEP ~= " " and SEP ~= "") and SEP:gsub("%W", "%%%0") or nil
+
+        function EllesmereUI.ForeverShortName(name, mode)
+            local cache = short[mode]
+            if not cache or issecretvalue(name) or type(name) ~= "string" then return name end
+            local s = cache[name]
+            if s then return s end
+            local words = sepPat and name:gsub(sepPat, " ") or name
+            if mode == "first" then
+                s = words:match("^%s*(%S+)")
+            else
+                s = words:match("(%S+)%s*$")
+            end
+            s = s or name
+            if count[mode] >= 256 then wipe(cache); count[mode] = 0 end
+            cache[name] = s
+            count[mode] = count[mode] + 1
+            return s
+        end
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -1008,10 +1039,16 @@ end -- IS_FOREVER
 --  so load order never matters). Mouse/keyboard players pay one table lookup
 --  or one C call at an edge that already runs (open, show, click, Escape):
 --  nothing here registers an event, runs an OnUpdate or ticker, creates a
---  frame or writes SavedVariables unless a controller signal is present.
+--  frame or writes SavedVariables unless a controller signal is present or
+--  a feature follows PadConnected() through WatchPad (its three events stay
+--  registered only while a watcher exists).
 --    PadCP()                the controller UI addon's API table, or nil
 --    PadNative()            Blizzard's gamepad is the active input right now
 --    PadInUse()             PadCP() or PadNative(): the controller signal
+--    PadConnected()         gamepad support is on and a controller is
+--                           connected (not the last input: no mouse flicker)
+--    WatchPad(owner, fn)    fn(padOn) once per burst of PadConnected() edges
+--    UnwatchPad(owner)      stop following; the last one drops the events
 --    PadGamepadUI()         WoW Forever's Gamepad interface style is on
 --    RaiseGamePadCursor()   gamepad pointer on at a user-requested open
 --    RegisterPadFrame(f)    a NAMED, hidden window root we own joins the
@@ -1040,6 +1077,18 @@ do
         return PadCP() ~= nil or PadNative()
     end
 
+    -- Connected, not in use: gamepad support is on (the GamePadEnable CVar)
+    -- and a device reports a raw state, so touching the mouse never changes
+    -- it. Read live; a feature that follows it registers through WatchPad
+    -- below, never on the device events itself.
+    local function PadConnected()
+        if not C_GamePad.IsEnabled() then return false end
+        for _, id in ipairs(C_GamePad.GetAllDeviceIDs()) do
+            if C_GamePad.GetDeviceRawState(id) then return true end
+        end
+        return false
+    end
+
     -- Forever's Gamepad interface style replaces the free pointer with D-pad
     -- navigation; read live (no event), false on retail.
     local function PadGamepadUI()
@@ -1051,7 +1100,72 @@ do
     EllesmereUI.PadCP        = PadCP
     EllesmereUI.PadNative    = PadNative
     EllesmereUI.PadInUse     = PadInUse
+    EllesmereUI.PadConnected = PadConnected
     EllesmereUI.PadGamepadUI = PadGamepadUI
+
+    -- Following PadConnected(): one shared watcher for every feature that hides
+    -- or shows something with the controller. Its frame is built at the first
+    -- WatchPad and holds GAME_PAD_CONNECTED / GAME_PAD_DISCONNECTED and the
+    -- GamePadEnable CVAR_UPDATE only while at least one watcher exists. Edges
+    -- come in bursts (a reconnect is DISCONNECTED then CONNECTED, a second pad
+    -- adds its own, the CVar can land beside them), so a burst arms ONE flush
+    -- next frame that reads PadConnected() once and calls every watcher's
+    -- fn(padOn). WatchPad never calls fn itself: the caller reads
+    -- PadConnected() when it starts watching. Watching again replaces fn.
+    do
+        local watchers, watchFrame, flushArmed, flushOwners
+
+        local function FlushPad()
+            flushArmed = nil
+            if next(watchers) == nil then return end
+            -- Snapshot first: a watcher may watch or unwatch while this runs.
+            local n = 0
+            for owner in pairs(watchers) do
+                n = n + 1
+                flushOwners[n] = owner
+            end
+            local on = PadConnected()
+            -- One failing watcher must not stop the rest (or strand the
+            -- snapshot slots): report it and carry on.
+            for i = 1, n do
+                local fn = watchers[flushOwners[i]]
+                flushOwners[i] = nil
+                if fn then
+                    local ok, err = pcall(fn, on)
+                    if not ok then geterrorhandler()(err) end
+                end
+            end
+        end
+
+        local function OnPadEdge(_, event, name)
+            -- CVAR_UPDATE fires for every cvar, dozens of times at login.
+            if event == "CVAR_UPDATE" and name ~= "GamePadEnable" then return end
+            if flushArmed then return end
+            flushArmed = true
+            C_Timer.After(0, FlushPad)
+        end
+
+        function EllesmereUI.WatchPad(owner, fn)
+            if owner == nil or not fn then return end
+            if not watchFrame then
+                watchers, flushOwners = {}, {}
+                watchFrame = CreateFrame("Frame")
+                watchFrame:SetScript("OnEvent", OnPadEdge)
+            end
+            if next(watchers) == nil then
+                watchFrame:RegisterEvent("GAME_PAD_CONNECTED")
+                watchFrame:RegisterEvent("GAME_PAD_DISCONNECTED")
+                watchFrame:RegisterEvent("CVAR_UPDATE")
+            end
+            watchers[owner] = fn
+        end
+
+        function EllesmereUI.UnwatchPad(owner)
+            if not watchers or owner == nil or watchers[owner] == nil then return end
+            watchers[owner] = nil
+            if next(watchers) == nil then watchFrame:UnregisterAllEvents() end
+        end
+    end
 
     -- Blizzard's own open-edge call (ShowUIPanel, the pause menu, single bags).
     -- Never turned off here: Back/Escape (CloseAllWindows) owns that edge. The

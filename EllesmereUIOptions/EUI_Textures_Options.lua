@@ -131,8 +131,11 @@ local function TileActionBars(parent, y, W, tile)
     local _, h = W:DualRow(parent, y,
         barTexCfg("XP Bar Texture", "XPBar"),
         barTexCfg("Reputation Bar Texture", "RepBar"));  y = y - h
+    -- WoW Forever has no House Favor bar: its row is not built there.
+    if not EllesmereUI.IS_FOREVER then
     _, h = W:DualRow(parent, y,
         barTexCfg("House Favor Bar Texture", "FavorBar"), BLANK());  y = y - h
+    end -- not IS_FOREVER
     y = LinkRow(parent, y, "Bar & Button Border Styles",
         tile.folder, "Bar Display", nil, "Border Style")
     return y

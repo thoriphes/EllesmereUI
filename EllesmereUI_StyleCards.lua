@@ -18,9 +18,9 @@ local IS_FOREVER = EllesmereUI.IS_FOREVER == true
 -- The vanilla frame sheet: the player frame samples it flipped (portrait on
 -- the left); 193x77 of visible art at 1x.
 local CLASSIC_FRAME = "Interface\\TargetingFrame\\UI-TargetingFrame"
-local CLASSIC_SLOT  = "Interface\\Buttons\\UI-Quickslot2"
+local CLASSIC_EMPTY = "Interface\\Buttons\\UI-Quickslot"
 local CLASSIC_FILL  = "Interface\\TargetingFrame\\UI-StatusBar"
-local CLASSIC_DISC  = "Interface\\AddOns\\EllesmereUI\\media\\portraits\\circle_mask.tga"
+local CLASSIC_CAP   = "Interface\\MainMenuBar\\UI-MainMenuBar-EndCap-Dwarf"
 
 local CARD_W, CARD_H, CARD_GAP = 212, 296, 16
 -- Display cards (announcements) have no button: the caption is the last row.
@@ -97,10 +97,11 @@ end
 
 -------------------------------------------------------------------------------
 --  Blizzard mock: the stock player frame art with its health and mana
---  fills, over a row of the rounded stock button slots. Every atlas is
---  validated; a missing one falls back to a plain gold-framed box so the
---  card never shows a blank stage. forever: the WoW Forever card's base
---  (four slots, room for its end caps). Returns the unit frame.
+--  fills, over four rounded stock button slots flanked by retail's gryphon
+--  end caps. Every atlas is validated; a missing one falls back to a plain
+--  gold-framed box (or leaves its cap out) so the card never shows a blank
+--  stage. forever: the WoW Forever card's base (its own art, its caps drawn
+--  by DrawForeverMock). Returns the unit frame.
 -------------------------------------------------------------------------------
 local function DrawBlizzMock(stage, PP, MakeBorder, _eg, _font, forever)
     local ART = "UI-HUD-UnitFrame-Player-PortraitOn"
@@ -150,7 +151,7 @@ local function DrawBlizzMock(stage, PP, MakeBorder, _eg, _font, forever)
         PP.Size(power, 96, 12)
     end
 
-    local ICON, GAP, N = 24, 4, forever and 4 or 5
+    local ICON, GAP, N = 24, 4, 4
     local rowW = N * ICON + (N - 1) * GAP
     local slotOK = AtlasOK(SLOT)
     for i = 1, N do
@@ -167,6 +168,27 @@ local function DrawBlizzMock(stage, PP, MakeBorder, _eg, _font, forever)
             t:SetAllPoints()
             t:SetColorTexture(0.2, 0.17, 0.1, 1)
             MakeBorder(ic, GOLD_R, GOLD_G, GOLD_B, 0.6, PP)
+        end
+    end
+    -- Blizzard Style: retail's gryphon end caps (retail art on every client,
+    -- at the live caps' 104.5x98), bottoms a little below the slots.
+    if not forever then
+        local CAP_H, OVERLAP = 28, 3
+        for side = 1, 2 do
+            local name = (side == 1) and "ui-hud-actionbar-gryphon-left" or "ui-hud-actionbar-gryphon-right"
+            if AtlasOK(name) then
+                local cap = CreateFrame("Frame", nil, stage)
+                cap:SetFrameLevel(stage:GetFrameLevel() + 2)
+                PP.Size(cap, CAP_H * 104.5 / 98, CAP_H)
+                if side == 1 then
+                    PP.Point(cap, "BOTTOMRIGHT", stage, "TOP", -rowW / 2 + OVERLAP, -104)
+                else
+                    PP.Point(cap, "BOTTOMLEFT", stage, "TOP", rowW / 2 - OVERLAP, -104)
+                end
+                local t = cap:CreateTexture(nil, "ARTWORK")
+                t:SetAllPoints()
+                EllesmereUI.StockAtlas(t, name, false)
+            end
         end
     end
     return frame, rowW
@@ -222,10 +244,11 @@ end
 -------------------------------------------------------------------------------
 --  Classic mock: the vanilla player frame sheet (193x77 of art, sampled
 --  flipped so the portrait sits on the left) with its health and mana
---  bars at the vanilla spots, over a row of the vanilla square slots with
---  their gold ring. Plain files, so nothing needs validating.
+--  bars at the vanilla spots and the level in its ring, over four vanilla
+--  empty slots flanked by the vanilla gryphon end caps. Plain files, so
+--  nothing needs validating.
 -------------------------------------------------------------------------------
-local function DrawClassicMock(stage, PP)
+local function DrawClassicMock(stage, PP, _mb, _eg, font)
     local s = 0.78
     local frame = CreateFrame("Frame", nil, stage)
     frame:SetFrameLevel(stage:GetFrameLevel() + 1)
@@ -251,39 +274,47 @@ local function DrawClassicMock(stage, PP)
     mrest:SetColorTexture(0, 0, 0, 0.5)
     PP.Point(mrest, "TOPLEFT", mana, "TOPRIGHT", 0, 0)
     PP.Size(mrest, 119 * s * 0.4, 12 * s)
-    -- Portrait disc where the ring opens (64x64 at 24,-16 in the box).
-    local disc = frame:CreateTexture(nil, "ARTWORK", nil, 0)
-    disc:SetColorTexture(0.18, 0.16, 0.13, 1)
-    PP.Size(disc, 58 * s, 58 * s)
-    PP.Point(disc, "TOPLEFT", frame, "TOPLEFT", (27 - 19.5) * s, -(19 - 11.5) * s)
-    local discMask = frame:CreateMaskTexture()
-    discMask:SetTexture(CLASSIC_DISC, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-    discMask:SetAllPoints(disc)
-    disc:AddMaskTexture(discMask)
     local art = frame:CreateTexture(nil, "ARTWORK", nil, 2)
     art:SetTexture(CLASSIC_FRAME)
     art:SetTexCoord(0.85546875, 0.1015625, 0.0625, 0.6640625)
     art:SetAllPoints(frame)
-    local nameLine = frame:CreateTexture(nil, "OVERLAY")
-    nameLine:SetColorTexture(1, 0.82, 0, 0.9)
-    PP.Size(nameLine, 44 * s, 4)
-    PP.Point(nameLine, "TOPLEFT", frame, "TOPLEFT", (92 - 19.5) * s, -(31 - 11.5) * s)
+    -- Level in the ring by the portrait: vanilla's PlayerLevelText sits CENTER
+    -- at BOTTOMLEFT 35.25,30 of the 232x100 box.
+    local lvl = frame:CreateFontString(nil, "OVERLAY")
+    lvl:SetFont(font, 9, "")
+    lvl:SetTextColor(1, 0.82, 0, 1)
+    PP.Point(lvl, "CENTER", frame, "TOPLEFT", (35.25 - 19.5) * s, -(70 - 11.5) * s)
+    lvl:SetText("60")
 
-    local ICON, GAP, N = 24, 4, 5
+    local ICON, GAP, N = 24, 4, 4
     local rowW = N * ICON + (N - 1) * GAP
     for i = 1, N do
         local ic = CreateFrame("Frame", nil, stage)
         ic:SetFrameLevel(stage:GetFrameLevel() + 1)
         PP.Size(ic, ICON, ICON)
         PP.Point(ic, "TOPLEFT", stage, "TOP", -rowW / 2 + (i - 1) * (ICON + GAP), -76)
-        local ibg = ic:CreateTexture(nil, "BACKGROUND")
-        ibg:SetAllPoints()
-        ibg:SetColorTexture(0.16 + i * 0.03, 0.14, 0.1 + i * 0.02, 1)
-        -- The vanilla slot ring: 66/36 of the button, a pixel low.
-        local ring = ic:CreateTexture(nil, "ARTWORK")
-        ring:SetTexture(CLASSIC_SLOT)
-        PP.Size(ring, ICON * 66 / 36, ICON * 66 / 36)
-        PP.Point(ring, "CENTER", ic, "CENTER", 0, -ICON / 36)
+        -- The vanilla empty slot: 66/36 of the button, a pixel low.
+        local slot = ic:CreateTexture(nil, "ARTWORK")
+        slot:SetTexture(CLASSIC_EMPTY)
+        PP.Size(slot, ICON * 66 / 36, ICON * 66 / 36)
+        PP.Point(slot, "CENTER", ic, "CENTER", 0, -ICON / 36)
+    end
+    -- Vanilla's gryphon end caps (one file, the right one mirrored), bottoms a
+    -- little below the slots, each overlapping the bar's end.
+    local CAP, OVERLAP = 36, 8
+    for side = 1, 2 do
+        local cap = CreateFrame("Frame", nil, stage)
+        cap:SetFrameLevel(stage:GetFrameLevel() + 2)
+        PP.Size(cap, CAP, CAP)
+        if side == 1 then
+            PP.Point(cap, "BOTTOMRIGHT", stage, "TOP", -rowW / 2 + OVERLAP, -102)
+        else
+            PP.Point(cap, "BOTTOMLEFT", stage, "TOP", rowW / 2 - OVERLAP, -102)
+        end
+        local t = cap:CreateTexture(nil, "ARTWORK")
+        t:SetAllPoints()
+        t:SetTexture(CLASSIC_CAP)
+        if side == 2 then t:SetTexCoord(1, 0, 0, 1) end
     end
 end
 

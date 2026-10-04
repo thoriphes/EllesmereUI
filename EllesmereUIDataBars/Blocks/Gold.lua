@@ -4,7 +4,6 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 
 local ADDON_NAME, ns = ...
 local L = ns.L
-local MEDIA = ns.MEDIA
 local K = ns.BlockKit
 
 -- Upvalues
@@ -116,11 +115,13 @@ local function UpdateGoldEvents()
     end
 end
 
+-- General-purpose bags only (family 0), like the Bags block: a quiver, soul
+-- bag or profession bag cannot take ordinary loot.
 local function GetFreeBagSlots()
     local free = 0
     for i = 0, 4 do
-        local n = C_Container and C_Container.GetContainerNumFreeSlots(i)
-        if n then free = free + n end
+        local n, family = C_Container.GetContainerNumFreeSlots(i)
+        if n and (not family or family == 0) then free = free + n end
     end
     return free
 end
@@ -129,7 +130,6 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
     local inst = { cfg = blockCfg, slot = slot, content = content, ctx = barCtx }
     inst.key = InstKey(barCtx, blockCfg)
 
-    local GOLD_TEX = MEDIA .. "lootbag.png"
     local _goldFitBuf = { "", "" }
     local mouseOver = false
 
@@ -151,13 +151,14 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
     goldButton:SetSize(120, 20); goldButton:SetPoint("CENTER")
     goldButton:EnableMouse(true); goldButton:RegisterForClicks("AnyUp")
 
-    local goldIcon = goldButton:CreateTexture(nil, "OVERLAY"); goldIcon:SetTexture(GOLD_TEX)
+    local goldIcon = goldButton:CreateTexture(nil, "OVERLAY")
     local goldText = goldButton:CreateFontString(nil, "OVERLAY")
     local bagText  = goldButton:CreateFontString(nil, "OVERLAY")
     AttachTextOffset(inst, goldText)   -- bagText chains to goldText
 
     function inst:Refresh()
         local dg = D()
+        K.SetBlockIcon(goldIcon, blockCfg)
         local barCfg = BC()
         local barH = barCtx.GetThickness()
         -- 0.4333 ratio = 13px at the 30 base (matches the stat blocks).

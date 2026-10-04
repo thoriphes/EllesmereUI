@@ -448,9 +448,9 @@ local function SkinInspectSheet()
     -- are theirs to draw (see WSkin.IsForeignFrame).
     local IsForeign = ns.WSkin and ns.WSkin.IsForeignFrame
     if InspectPVPFrame then
-        local numChildren = InspectPVPFrame:GetNumChildren()
-        for i = 1, numChildren do
-            local child = select(i, InspectPVPFrame:GetChildren())
+        local children = { InspectPVPFrame:GetChildren() }
+        for i = 1, #children do
+            local child = children[i]
             if child and not child:GetName()
                and not (IsForeign and IsForeign(child, InspectPVPFrame)) then
                 child:Hide()
@@ -460,9 +460,9 @@ local function SkinInspectSheet()
 
     -- Hide Guild Frame background elements
     if InspectGuildFrame then
-        local numChildren = InspectGuildFrame:GetNumChildren()
-        for i = 1, numChildren do
-            local child = select(i, InspectGuildFrame:GetChildren())
+        local children = { InspectGuildFrame:GetChildren() }
+        for i = 1, #children do
+            local child = children[i]
             if child and not child:GetName()
                and not (IsForeign and IsForeign(child, InspectGuildFrame)) then
                 child:Hide()
@@ -471,9 +471,9 @@ local function SkinInspectSheet()
     end
 
     -- Hide unnamed decoration frames in main InspectFrame
-    local numChildren = frame:GetNumChildren()
-    for i = 1, numChildren do
-        local child = select(i, frame:GetChildren())
+    local children = { frame:GetChildren() }
+    for i = 1, #children do
+        local child = children[i]
         if child and not child:GetName() and child:GetObjectType() == "Frame"
            and not (IsForeign and IsForeign(child, frame)) then
             -- Only hide if it's not one of our known frames and not the TitleFrame or title parent
@@ -544,8 +544,9 @@ local function SkinInspectSheet()
         if paperDollItemsFrame then
             local IsForeignBtn = ns.WSkin and ns.WSkin.IsForeignFrame
             local talentsBtn = paperDollItemsFrame.InspectTalents
-            for i = 1, paperDollItemsFrame:GetNumChildren() do
-                local child = select(i, paperDollItemsFrame:GetChildren())
+            local children2 = { paperDollItemsFrame:GetChildren() }
+            for i = 1, #children2 do
+                local child = children2[i]
                 if child and child:GetObjectType() == "Button" and not child:GetName()
                    and child ~= talentsBtn
                    and not (IsForeignBtn and IsForeignBtn(child, paperDollItemsFrame)) then
@@ -575,9 +576,9 @@ local function SkinInspectSheet()
             slot:Show()
 
             -- Hide ALL unnamed Texturen in den Slots (die Dekoration)
-            local numRegions = slot:GetNumRegions()
-            for i = 1, numRegions do
-                local region = select(i, slot:GetRegions())
+            local regions = { slot:GetRegions() }
+            for i = 1, #regions do
+                local region = regions[i]
                 if region and region:IsObjectType("Texture") then
                     local regionName = region:GetName()
                     -- Hide nur unnamed Texturen (nicht die Icon)
@@ -788,8 +789,9 @@ local function SkinInspectSheet()
         if tab then
             inspTabs[#inspTabs + 1] = tab
             -- Remove Blizzard textures
-            for j = 1, select("#", tab:GetRegions()) do
-                local region = select(j, tab:GetRegions())
+            local regions = { tab:GetRegions() }
+            for j = 1, #regions do
+                local region = regions[j]
                 if region and region:IsObjectType("Texture") then
                     region:SetTexture("")
                     if region.SetAtlas then region:SetAtlas("") end
@@ -957,8 +959,9 @@ local function SkinInspectSheet()
         frame.TitleContainer:SetWidth(406)
         frame.TitleContainer:SetPoint("TOP", frame, "TOP", 0, 0)
 
-        for i = 1, frame.TitleContainer:GetNumChildren() do
-            local child = select(i, frame.TitleContainer:GetChildren())
+        local children2 = { frame.TitleContainer:GetChildren() }
+        for i = 1, #children2 do
+            local child = children2[i]
             if child and child:GetObjectType() == "FontString" then
                 child:SetJustifyH("CENTER")
             end
@@ -1081,7 +1084,8 @@ end
 local function RefreshDock()
     local insp, cf = InspectFrame, _G.CharacterFrame
     if not insp or not cf then return end
-    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
+    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()
+        or EllesmereUI.BlizzSkinPadStandDown()) then return end
 
     if not (insp:IsShown() and cf:IsShown()) then
         _ignoreSP = true
@@ -1109,7 +1113,8 @@ end
 
 -- Main function to apply themed inspect sheet
 local function ApplyThemedInspectSheet()
-    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then
+    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()
+        or EllesmereUI.BlizzSkinPadStandDown()) then
         return
     end
 
@@ -1122,7 +1127,8 @@ end
 
 -- Persistently hide NineSlice borders
 local function EnsureInspectNineSliceHidden()
-    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
+    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()
+        or EllesmereUI.BlizzSkinPadStandDown()) then return end
     if not InspectFrame then return end
 
     local frame = InspectFrame
