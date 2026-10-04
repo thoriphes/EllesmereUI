@@ -1410,6 +1410,33 @@ initFrame:SetScript("OnEvent", function(self)
 
             y = BuildForeverCustomRows(parent, y)
 
+            -- PALADIN section (paladins only): Auras | Blessings, Righteous Fury.
+            -- Each toggle also re-runs the event registration, since only an
+            -- enabled reminder may register anything.
+            if select(2, UnitClass("player")) == "PALADIN" then
+                local function PalToggle(field, text, tooltip)
+                    return { type="toggle", text=text, tooltip=tooltip,
+                        getValue=function() local f = FDB(); return f and f[field] == true end,
+                        setValue=function(v)
+                            local f = FDB(); if not f then return end; f[field] = v
+                            if _G._EABR_UpdateGroupAuraRegistration then _G._EABR_UpdateGroupAuraRegistration() end
+                            RefreshAll()
+                        end }
+                end
+                _, h = W:SectionHeader(parent, "PALADIN", y);  y = y - h
+                _, h = W:DualRow(parent, y,
+                    PalToggle("palAura", "Auras",
+                        "Reminds you when you run no aura, or the same aura as another paladin.\nClick casts the first aura nobody else runs: Retribution, Devotion, Concentration, then Fire, Shadow and Frost Resistance.\nShown everywhere except rested areas; uses the WoW Forever reminder sound."),
+                    PalToggle("palBlessings", "Blessings",
+                        "One button per party member (you included) who has none of your blessings.\nClick casts the blessing their class and role want most that no other paladin has given them. Right-click switches that player to your next blessing and remembers it.\nShown everywhere except rested areas; uses the WoW Forever reminder sound.")
+                );  y = y - h
+                _, h = W:DualRow(parent, y,
+                    PalToggle("palRF", "Righteous Fury",
+                        "Reminds you when Righteous Fury is missing while you are in a group with the Tank role.\nShown everywhere except rested areas; uses the WoW Forever reminder sound."),
+                    EllesmereUI.BlankRowCfg()
+                );  y = y - h
+            end
+
             -- No preview header here, so no click-to-scroll mappings to wire.
             return math.abs(y)
         end
