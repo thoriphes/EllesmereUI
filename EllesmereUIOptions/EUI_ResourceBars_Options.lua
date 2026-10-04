@@ -2508,6 +2508,7 @@ initFrame:SetScript("OnEvent", function(self)
             local curY = 0
             local ENTRY_W = POPUP_W - POPUP_PAD * 2
             local ENTRY_H = (cfg.singleSpec and not formMode) and 40 or (cfg.showHash and 89 or 60)
+            if cfg.showSpenders then ENTRY_H = ENTRY_H + 28 end
             local effThreshY = (cfg.singleSpec and not formMode) and -8 or (cfg.showHash and -61 or -33)
 
             for i = 1, #_entryFrames do
@@ -2718,6 +2719,7 @@ initFrame:SetScript("OnEvent", function(self)
                                 end }
                         end
                         cogRows[#cogRows + 1] = { type = "toggle", label = "Recolor Text Instead Of Bar",
+                            tooltip = cfg.showSpenders and "Also applies to Spender Colors." or nil,
                             get = function()
                                 if not ef._entryIdx then return false end
                                 local bd2 = cfg.getBarData(); if not bd2 then return false end
@@ -2809,6 +2811,65 @@ initFrame:SetScript("OnEvent", function(self)
                     multiLbl:SetPoint("RIGHT", multiToggle, "LEFT", -4, 0)
                     ef._multiLbl = multiLbl
 
+                    -- Spender colors label + toggle + "Spenders" editor button (left, second line)
+                    if cfg.showSpenders then
+                        local spLbl = EllesmereUI.MakeFont(ef, 13, nil, 1, 1, 1)
+                        spLbl:SetAlpha(0.6)
+                        spLbl:SetPoint("LEFT", ef, "TOPLEFT", 8, threshY - 39)
+                        spLbl:SetText(EllesmereUI.L("Spender Colors"))
+                        ef._spenderLbl = spLbl
+
+                        local spToggle, _, spSnap = EllesmereUI.BuildToggleControl(
+                            ef, ef:GetFrameLevel() + 4,
+                            function()
+                                if not ef._entryIdx then return false end
+                                local bd2 = cfg.getBarData(); if not bd2 then return false end
+                                local ent = bd2.thresholdSpecs and bd2.thresholdSpecs[ef._entryIdx]
+                                return ent and ent.spenderColorEnabled or false
+                            end,
+                            function(v)
+                                if not ef._entryIdx then return end
+                                local bd2 = cfg.getBarData(); if not bd2 then return end
+                                local ent = bd2.thresholdSpecs and bd2.thresholdSpecs[ef._entryIdx]
+                                if ent then ent.spenderColorEnabled = v; cfg.refreshFn() end
+                                if RefreshPopupEntries_L then RefreshPopupEntries_L() end
+                            end,
+                            { sizeRatio = 0.95 }
+                        )
+                        spToggle:SetPoint("LEFT", spLbl, "RIGHT", 8, 0)
+                        ef._spenderSnap = spSnap
+                        spToggle:HookScript("OnEnter", function(self) EllesmereUI.ShowWidgetTooltip(self, SPENDER_HELP_TIP) end)
+                        spToggle:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                        local spBtn = CreateFrame("Button", nil, ef)
+                        spBtn:SetSize(58, 22)
+                        spBtn:SetPoint("LEFT", spToggle, "RIGHT", 8, 0)
+                        spBtn:SetFrameLevel(ef:GetFrameLevel() + 4)
+                        local sbBg = spBtn:CreateTexture(nil, "BACKGROUND")
+                        sbBg:SetAllPoints()
+                        sbBg:SetColorTexture(0.12, 0.12, 0.12, 0.8)
+                        spBtn._border = EllesmereUI.MakeBorder(spBtn, 1, 1, 1, 0.08, PP)
+                        local sbLbl = EllesmereUI.MakeFont(spBtn, 12, nil, 1, 1, 1)
+                        sbLbl:SetAlpha(0.8)
+                        sbLbl:SetPoint("CENTER")
+                        sbLbl:SetText(EllesmereUI.L("Spenders"))
+                        spBtn:SetScript("OnEnter", function(self)
+                            sbBg:SetColorTexture(0.16, 0.16, 0.16, 0.9)
+                            EllesmereUI.ShowWidgetTooltip(self, SPENDER_HELP_TIP)
+                        end)
+                        spBtn:SetScript("OnLeave", function(self)
+                            sbBg:SetColorTexture(0.12, 0.12, 0.12, 0.8)
+                            EllesmereUI.HideWidgetTooltip()
+                        end)
+                        spBtn:SetScript("OnClick", function(self)
+                            if not ef._entryIdx then return end
+                            ShowSpenderEditor({
+                                getBarData = cfg.getBarData, refreshFn = cfg.refreshFn,
+                                entryIdx = ef._entryIdx, anchor = self,
+                            })
+                        end)
+                    end
+
                     -- Disabled overlay (excludes toggle)
                     local threshDis = CreateFrame("Frame", nil, ef)
                     threshDis:SetPoint("TOPLEFT", threshLbl2, "TOPLEFT", -2, 4)
@@ -2839,6 +2900,10 @@ initFrame:SetScript("OnEvent", function(self)
                 if ef._bandsBtn then
                     ef._bandsBtn:ClearAllPoints()
                     ef._bandsBtn:SetPoint("RIGHT", ef, "TOPRIGHT", -8, effThreshY - 11)
+                end
+                if ef._spenderLbl then
+                    ef._spenderLbl:ClearAllPoints()
+                    ef._spenderLbl:SetPoint("LEFT", ef, "TOPLEFT", 8, effThreshY - 39)
                 end
 
                 if formMode then
@@ -2931,6 +2996,7 @@ initFrame:SetScript("OnEvent", function(self)
                 if ef._entrySnap then ef._entrySnap() end
                 if ef._entrySwatchSnap then ef._entrySwatchSnap() end
                 if ef._multiSnap then ef._multiSnap() end
+                if ef._spenderSnap then ef._spenderSnap() end
 
                 -- Multi-band on: bands replace the single-threshold input + swatch
                 local entEnabled = entry.thresholdEnabled

@@ -15,4 +15,6 @@ EllesmereUIBags_DB.lua
 # Core
 EllesmereUIBags_Categories.lua
 EllesmereUIBags.lua
+EllesmereUIBags_Grid.lua
+EllesmereUIBags_List.lua
 EllesmereUIBags_Bank.lua

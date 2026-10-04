@@ -1129,12 +1129,10 @@ local function BuildCDMLivePreview(parent, yOff)
             -- AddTrackedSpell -- the family sweep removes the spell from every other buff-family bar (including the ghost hidden bar, the "unhide" step) before claiming it for bd.key.
             ns.CDMO_ShowBuffBarPicker(self, bd.key, function(newSpellID, newCdID)
                 if newSpellID then
-                    -- Collided pair (two viewer slots, one shared spellID): claim by cooldownID
-                    -- so each slot is addable on its own. Non-collided buffs keep the sid path -- spellID identity survives talent swaps, cooldownIDs drift.
-                    if newCdID and ns.IsCollidedBuffSid
-                       and ns.IsCollidedBuffSid(newSpellID)
-                       and ns.AddTrackedBuffByCdID then
-                        ns.AddTrackedBuffByCdID(bd.key, newCdID)
+                    -- Collided pair (two viewer slots, one shared spellID) or tracked trinket row:
+                    -- claim by cooldownID so each slot is addable on its own. Other buffs keep the sid path -- spellID identity survives talent swaps, cooldownIDs drift.
+                    if ns.ClaimBuffByCdID(newSpellID, newCdID) then
+                        ns.AddTrackedBuffByCdID(bd.key, newCdID, newSpellID)
                     else
                         ns.AddTrackedSpell(bd.key, newSpellID)
                     end
@@ -1561,9 +1559,10 @@ local function BuildCDMLivePreview(parent, yOff)
                     local hostedSid = (not cdClaim) and ns.HostedBuffMarkerToSpell
                         and ns.HostedBuffMarkerToSpell(id)
                     if cdClaim then
-                        -- Cd-claimed collided-buff slot on a CD/util bar
-                        -- (Diabolist Demonic Art vs Diabolic Ritual): here
-                        -- `tracked` ALIASES sd.assignedSpells (the buff-bar
+                        -- Cd-claimed slot (a collided pair, e.g. Diabolist
+                        -- Demonic Art vs Diabolic Ritual, or a tracked trinket
+                        -- row; a buff bar's unresolved claim lands here too).
+                        -- On a CD/util bar `tracked` ALIASES sd.assignedSpells (the buff-bar
                         -- branch above builds a fresh dedup list), so resolve
                         -- the marker to a display sid IN THIS RENDER STEP
                         -- ONLY -- never write back into `id`/`tracked[i]`
@@ -1594,6 +1593,16 @@ local function BuildCDMLivePreview(parent, yOff)
                             slot._previewSpellID = csid
                             slot._previewCdID = cdClaim
                             slot._previewHostedBuff = true
+                        else
+                            -- Tracked trinket row with its buff down reads no
+                            -- spellID: show the item worn in that slot.
+                            local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+                            local info = gci and gci(cdClaim)
+                            local eqSlot = info and info.equipSlot
+                            if type(eqSlot) == "number" and not issecretvalue(eqSlot) then
+                                local itemID = GetInventoryItemID("player", eqSlot)
+                                tex = itemID and C_Item.GetItemIconByID(itemID) or nil
+                            end
                         end
                     elseif hostedSid then
                         -- Hosted-buff marker: previews as its spell, flagged so

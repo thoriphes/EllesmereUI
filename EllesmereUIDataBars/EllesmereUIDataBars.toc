@@ -23,6 +23,7 @@ Blocks\Spec.lua
 Blocks\Profession.lua
 Blocks\MicroMenu.lua
 Blocks\Currency.lua
+Blocks\Supplies.lua
 Blocks\Crests.lua
 Blocks\ItemLevel.lua
 Blocks\GreatVault.lua

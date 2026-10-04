@@ -893,6 +893,12 @@ local function TileBags(parent, y, W, tile)
     _, h = W:DualRow(parent, y,
         size("Set Name Text Size", "bagSetNameFontSize", 7, 14, 9, TextSizes),
         size("BoE / Warbound Text Size", "bagBindTypeFontSize", 8, 16, 11, TextSizes));  y = y - h
+    _, h = W:DualRow(parent, y,
+        size("List Text Size", "bagListFontSize", 8, 16, 11, function()
+            if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+            if _G.EUI_BankFrame and _G.EUI_BankFrame.RefreshBank then _G.EUI_BankFrame:RefreshBank() end
+        end),
+        BLANK());  y = y - h
     return y
 end
 
@@ -1079,7 +1085,7 @@ local function TileCombatText(parent, y, W, tile)
           setValue = function(v)
               if InCombatLockdown() then return end
               v = math.floor(v * 10 + 0.5) / 10
-              SetCVar("WorldTextScale_v2", v)
+              EllesmereUI.SetCVar("WorldTextScale_v2", v)
           end },
         BLANK());  y = y - h
     y = LinkRow(parent, y, "Combat Text Font (logout required)",

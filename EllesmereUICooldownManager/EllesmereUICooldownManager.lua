@@ -17,7 +17,7 @@ EllesmereUI._ModuleNS["EllesmereUICooldownManager"] = ns  -- LOD options files r
 -- events/scripts. No release -- throwaways use CreateFrame directly.
 do
     local pool = {}
-    local n = 32
+    local n = 36
     for i = 1, n do pool[i] = CreateFrame("Frame") end
     ns.TakeShell = function()
         if n > 0 then
@@ -2623,9 +2623,14 @@ StartNativeGlow = function(overlay, style, cr, cg, cb, opts)
     elseif entry.solidFill then
         -- Clip to the shape mask only while a custom shape is applied, decided as
         -- in the Shape branch above: a removed shape leaves its mask object on the
-        -- icon (emptied and hidden), which must not clip the fill.
+        -- icon (emptied and hidden), which must not clip the fill. Without one, a
+        -- CDM icon under Blizzard Style clips to the rounded mask its own art
+        -- carries (nil under Classic WoW UI, whose icons are square).
         local ifc2 = _ecmeFC[parent]
         local shapeMask = (ifc2 and ifc2.shapeApplied and ifc2.shapeName) and ifc2.shapeMask or nil
+        if not shapeMask and ifc2 and ns.CdmBlizzIcons() then
+            shapeMask = ns.CdmBlizzIconMask(parent)
+        end
         _G_Glows.StartSolidFill(overlay, noColor and 0 or cr, noColor and 0 or cg, noColor and 0 or cb,
             { alpha = opts and opts.alpha, shapeMask = shapeMask })
     else
@@ -2677,14 +2682,17 @@ ns.StopNativeGlow = StopNativeGlow
 -- using the shared overlay. Picks the overlay from the resolved style and
 -- stops a glow still held by the other one, so a style change (Blackout to
 -- Pixel or back) never leaves both lit. The active-state and proc glows own
--- the shared overlay while they run: a Blackout shows alongside them, any
--- other style starts nothing and returns nil, so the caller's memo stays off
--- and a later pass lights it. Returns the overlay lit. alpha is the Blackout
--- fill opacity (nil = opaque); the other styles take no opts at all.
+-- the shared overlay while they run (fd._faActiveGlow: the Fake-Active
+-- overlay's active glow, drawn on that overlay's own frame, holds it the same
+-- way): a Blackout shows alongside them, any other style starts nothing and
+-- returns nil, so the caller's memo stays off, and the refusal is recorded
+-- (fd._cdGlowOwed) so the edge that ends that glow lights this one at once
+-- (ns.CdGlowKick). Returns the overlay lit. alpha is the Blackout fill
+-- opacity (nil = opaque); the other styles take no opts at all.
 function ns.StartCdGlow(fd, style, cr, cg, cb, alpha)
     if not fd then return end
     local e = ns.GLOW_STYLES[style]
-    local busy = fd._activeGlowOn or fd.procGlowActive
+    local busy = fd._activeGlowOn or fd.procGlowActive or fd._faActiveGlow
     local overlay, other, opts
     if e and e.solidFill then
         -- The Blackout frame is made on the icon's first Blackout start (most
@@ -2706,7 +2714,7 @@ function ns.StartCdGlow(fd, style, cr, cg, cb, alpha)
         if not busy then other = fd.glowOverlay end
     else
         overlay, other = fd.glowOverlay, fd.blackoutOverlay
-        if busy then overlay = nil end
+        if busy then overlay = nil; fd._cdGlowOwed = true end
     end
     if other and other._glowActive then StopNativeGlow(other) end
     if overlay then StartNativeGlow(overlay, style, cr, cg, cb, opts) end
@@ -2715,10 +2723,15 @@ end
 
 -- Stops the CD-state glow regardless of which overlay it landed on. The
 -- Blackout overlay is only stopped while it holds a glow: most icons never
--- use it.
+-- use it. While the proc or active-state glow runs, the shared overlay is
+-- theirs (a CD-state glow there was replaced, and is owed back or re-asserted
+-- once they end), so only a Blackout can be the CD-state glow then: a
+-- Blackout ending with its cooldown never takes the proc or active glow down
+-- with it.
 function ns.StopCdGlow(fd)
     if not fd then return end
-    if fd.glowOverlay then StopNativeGlow(fd.glowOverlay) end
+    local go = fd.glowOverlay
+    if go and not (fd.procGlowActive or fd._activeGlowOn) then StopNativeGlow(go) end
     local bo = fd.blackoutOverlay
     if bo and bo._glowActive then StopNativeGlow(bo) end
 end
@@ -3011,17 +3024,20 @@ local function ShowProcGlow(icon, cr, cg, cb)
     -- the VISUAL: leaving _cdStateGlowOn true makes later re-evaluations skip the
     -- restart ("already on"), so a consumed proc kills the Resource Aware glow until
     -- usability flips off and on again (e.g. Shadowburn + Fiendish Cruelty). Proc
-    -- priority is enforced by the procGlowActive gates on the start sites.
+    -- priority is enforced by ns.StartCdGlow, which starts no glow on the shared
+    -- overlay while the proc runs. The replaced glow is owed: StopProcGlow lights
+    -- it again (ns.CdGlowKick) once the proc ends.
     -- A Blackout CD-state glow sits on its own overlay (fd.blackoutOverlay), which
-    -- the proc glow does not replace, so it goes out with the memo: every CD-state
-    -- stop site is memo-gated and would never reach it again, and the start sites
-    -- wait for the proc to end. A Blackout lit by the Fake-Active engine belongs
-    -- to that engine's memo and stays lit beside the proc.
+    -- the proc glow does not replace: it stays lit beside the proc and keeps its
+    -- memo, so the memo-gated stop sites still take it down when its cooldown
+    -- ends, proc or not.
     if glow._glowActive then StopNativeGlow(glow) end
     if fd then
         local bo = fd.blackoutOverlay
-        if fd._cdStateGlowOn and bo and bo._glowActive then StopNativeGlow(bo) end
-        fd._cdStateGlowOn = false
+        if not (bo and bo._glowActive) then
+            if fd._cdStateGlowOn or fd._presetCdGlowOn then fd._cdGlowOwed = true end
+            fd._cdStateGlowOn = false
+        end
     end
     StartNativeGlow(glow, style, cr, cg, cb)
     if fd then fd.procGlowActive = true end
@@ -3034,9 +3050,14 @@ local function StopProcGlow(icon)
     StopNativeGlow(glow)
     if fd then fd.procGlowActive = false end
     -- The proc stomped any CD-state glow on this shared overlay; re-evaluate on the next frame
-    -- so a Resource Aware ready-glow comes straight back instead of waiting for the next
-    -- cooldown/power edge. Gated on _cdGlowBoundSid: only icons that actually ran a CD-state glow path carry it, so pure proc-glow users never wake the flush frame.
-    if fd._cdGlowBoundSid and ns.QueueCDGlowResourceCheck then
+    -- so the glow comes straight back instead of waiting for the next cooldown/power edge:
+    -- this icon alone when a CD-state glow is owed to it (replaced or held back by the proc),
+    -- else the watched Resource Aware set. Gated on _cdGlowOwed / _cdGlowBoundSid: only icons
+    -- that actually ran a CD-state glow path carry them, so pure proc-glow users never wake
+    -- the flush frame.
+    if fd._cdGlowOwed then
+        ns.CdGlowKick(icon)
+    elseif fd._cdGlowBoundSid and ns.QueueCDGlowResourceCheck then
         ns.QueueCDGlowResourceCheck()
     end
 end
@@ -3293,23 +3314,11 @@ local function EnforceCooldownViewerEditModeSettings()
         return
     end
 
-    local layoutInfo = C_EditMode.GetLayouts()
-    if type(layoutInfo) ~= "table" or type(layoutInfo.layouts) ~= "table" then return end
-
-    -- Merge preset layouts so activeLayout index resolves correctly
-    local numPresets = 0
-    if EditModePresetLayoutManager and EditModePresetLayoutManager.GetCopyOfPresetLayouts then
-        local presets = EditModePresetLayoutManager:GetCopyOfPresetLayouts()
-        if type(presets) == "table" then
-            numPresets = #presets
-            tAppendAll(presets, layoutInfo.layouts)
-            layoutInfo.layouts = presets
-        end
-    end
-
-    -- Presets unresolved: activeLayout counts them, so without the merge it picks the WRONG
-    -- layout below and the save hands the client a list its own index no longer fits.
-    if numPresets == 0 then return end
+    -- Presets merged first so the activeLayout index resolves correctly. Presets unresolved:
+    -- activeLayout counts them, so without the merge it picks the WRONG layout below and the
+    -- save hands the client a list its own index no longer fits.
+    local layoutInfo, numPresets = EllesmereUI.EditModeLayoutsForSave()
+    if not layoutInfo then return end
 
     local activeLayout = type(layoutInfo.activeLayout) == "number"
         and layoutInfo.layouts[layoutInfo.activeLayout]
@@ -3334,10 +3343,14 @@ local function EnforceCooldownViewerEditModeSettings()
     -- Returns changed(bool). A layout stores a CooldownViewer setting ONLY when changed away
     -- from Blizzard's default, so an absent entry means "at the default" (defaultValue). When
     -- that already equals what we want, leave the entry absent (no change, no forced reload); only add an explicit entry when default differs from desired.
-    local function UpsertSetting(settings, settingEnum, desiredValue, defaultValue)
+    -- Each change is noted for Uninstall EUI (only the player's own earlier value is put
+    -- back: these are Blizzard's defaults, so there is no fallback).
+    local function UpsertSetting(sysInfo, settingEnum, desiredValue, defaultValue)
+        local settings = sysInfo.settings
         for _, s in ipairs(settings) do
             if s.setting == settingEnum then
                 if s.value ~= desiredValue then
+                    EllesmereUI.NoteEditModeSetting(activeLayout, sysInfo, settingEnum, s.value, desiredValue)
                     s.value = desiredValue
                     return true
                 end
@@ -3348,6 +3361,7 @@ local function EnforceCooldownViewerEditModeSettings()
         if desiredValue == defaultValue then
             return false
         end
+        EllesmereUI.NoteEditModeSetting(activeLayout, sysInfo, settingEnum, defaultValue, desiredValue)
         settings[#settings + 1] = { setting = settingEnum, value = desiredValue }
         return true
     end
@@ -3355,14 +3369,14 @@ local function EnforceCooldownViewerEditModeSettings()
     for _, sysInfo in ipairs(activeLayout.systems) do
         if sysInfo.system == cooldownSystem and type(sysInfo.settings) == "table" then
             -- VisibleSetting=Always on ALL viewers. That IS the default, so an absent entry is already correct and is left alone.
-            if UpsertSetting(sysInfo.settings, visSetting, visAlways, visAlways) then
+            if UpsertSetting(sysInfo, visSetting, visAlways, visAlways) then
                 changed = true
             end
             -- Both buff viewers keep Blizzard's default HideWhenInactive=1 (inactive entries
             -- stay hidden): Always Show Buffs is drawn by our own per-bar placeholder icons, NOT
             -- Blizzard's layout, so any stale HideWhenInactive=0 is reset. New installs are already at the default (no change, no reload).
             if sysInfo.systemIndex == buffIconIdx or sysInfo.systemIndex == buffBarIdx then
-                if UpsertSetting(sysInfo.settings, hideEnum, 1, 1) then
+                if UpsertSetting(sysInfo, hideEnum, 1, 1) then
                     changed = true
                 end
             end
@@ -6194,6 +6208,14 @@ local function RefreshCDMIconAppearance(barKey)
             StopNativeGlow(glowOv)
             if ifd then ifd.procGlowActive = false end
             ShowProcGlow(icon)
+            -- A Blackout CD-state glow stays lit beside the proc on its own
+            -- overlay: take it down so the pass below restarts it with the
+            -- updated settings (or leaves it off when the effect is gone).
+            local bo = ifd.blackoutOverlay
+            if ifd._cdStateGlowOn and bo and bo._glowActive then
+                StopNativeGlow(bo)
+                ifd._cdStateGlowOn = false
+            end
         elseif hadActiveGlow then
             -- Don't touch: active glow is managed by the SetSwipeColor hook. Stopping it here causes a visible blink.
             -- A Blackout CD-state glow has its own overlay: take only that one down,
@@ -6282,8 +6304,10 @@ local function RefreshCDMIconAppearance(barKey)
             local csSs = ns.ResolveSpellSettings and ns.ResolveSpellSettings(icon, csSid, csSd, csBk)
             local cse = ns.GetSpellCdStateEffect(icon, csSs)
             -- Shift-Icons variants behave exactly like their base hidden mode plus the layout flag; normalize so the branches below stay as-is.
-            local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift")
-            if cse == "hiddenOnCDShift" then cse = "hiddenOnCD"
+            -- Hidden Until Usable = Hidden (On CD) + "not usable" counting as unavailable.
+            local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift" or cse == "hiddenUnusableShift")
+            local cseUsable = (cse == "hiddenUnusable" or cse == "hiddenUnusableShift")
+            if cse == "hiddenOnCDShift" or cseUsable then cse = "hiddenOnCD"
             elseif cse == "hiddenReadyShift" then cse = "hiddenReady" end
             if cse then
                 local csLive = csSid
@@ -6292,6 +6316,11 @@ local function RefreshCDMIconAppearance(barKey)
                 end
                 local cseInfo = C_Spell.GetSpellCooldown(csLive)
                 local onCD = cseInfo and cseInfo.isActive and not cseInfo.isOnGCD
+                if cseUsable then
+                    if not onCD then onCD = ns.CdmSpellNotUsable(csLive) end
+                    -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
+                    ns.WatchCdUsable(icon)
+                end
                 if cse == "hiddenOnCD" or cse == "hiddenReady" then
                     local hide
                     if cse == "hiddenOnCD" then
@@ -6328,9 +6357,9 @@ local function RefreshCDMIconAppearance(barKey)
                     if fc and ns.SetCdStateShiftHidden then
                         ns.SetCdStateShiftHidden(fc, false)
                     end
-                    -- procGlowActive: the proc glow has priority, as at every other
-                    -- CD-state start site.
-                    if not ifd or (not ifd._cdStateGlowOn and not ifd.procGlowActive) then
+                    -- A live proc or active-state glow keeps the shared overlay:
+                    -- ns.StartCdGlow lights only a Blackout beside it.
+                    if not ifd or not ifd._cdStateGlowOn then
                         local isReadyGlow = (cse == "pixelGlowReady" or cse == "buttonGlowReady"
                             or cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable")
                         local isOnCdGlow = cse == "glowOnCD"
@@ -6661,10 +6690,10 @@ local function RefreshFocusCastProxyUnit()
 end
 ns.RefreshFocusCastProxyUnit = RefreshFocusCastProxyUnit
 
-function ns.IsSpellInPlayerBook(id)
+function ns.IsSpellInPlayerBook(id, includeOverrides)
     if IsPlayerSpell and IsPlayerSpell(id) then return true end
     if C_SpellBook and C_SpellBook.IsSpellKnownOrInSpellBook
-        and C_SpellBook.IsSpellKnownOrInSpellBook(id) then
+        and C_SpellBook.IsSpellKnownOrInSpellBook(id, Enum.SpellBookSpellBank.Player, includeOverrides ~= false) then
         return true
     end
     return false
@@ -10145,9 +10174,7 @@ function ECME:OnEnable()
     -- reanchor tail in CdmHooks). Removal sync = settled-state triggers only.
 
     -- Enable CDM cooldown viewer (keep Blizzard CDM running in background so we can read its children even while hidden)
-    if C_CVar and C_CVar.SetCVar then
-        pcall(C_CVar.SetCVar, "cooldownViewerEnabled", "1")
-    end
+    pcall(EllesmereUI.SetCVar, "cooldownViewerEnabled", "1", "EllesmereUICooldownManager")
 
     -- Spec-gated build: only run CDMFinishSetup once a real spec key exists from the live API; if
     -- the API isn't ready, defer until it is. Wait until the truth is known, then build once -- never guess the spec and repair later.
@@ -11137,6 +11164,8 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
         -- Talent Conditions read node ranks from a cache; the rebuild's reanchor re-evaluates them.
         -- Unconditional: the options popup fills the cache before the gate is ever set.
         ns.TalentCondInvalidate()
+        -- Bar Glows limited to a hero tree: re-check them now (only while one exists).
+        if ns._barGlowAnyHero and ns.UpdateOverlayVisuals then ns.UpdateOverlayVisuals() end
         ScheduleTalentRebuild()
         return
     end

@@ -71,7 +71,7 @@ end
 local function SheetOn()
     if not EllesmereUIDB then return true end
     if EllesmereUIDB.themedCharacterSheet == false then return false end
-    return not EllesmereUI.BlizzWindowSkinsKilled()
+    return not EllesmereUI.BlizzWindowSkinsKilled() and not EllesmereUI.BlizzSkinPadStandDown()
 end
 
 -- The EllesmereUI look (the card's style is latched at login, so a change

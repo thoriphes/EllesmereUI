@@ -426,6 +426,8 @@ do
             charSheetHideSlotFlyoutArrows = false,
             charSheetDurabilityLocation  = "model",
             charSheetDurabilityShowLabel = true,
+            highlightSecondaryItems      = false,
+            highlightTertiaryItems       = false,
         }
         for k, v in pairs(defaults) do
             if EllesmereUIDB[k] == nil then
@@ -837,6 +839,13 @@ local function PreSkinCharacterSheet()
 
     -- Scale fully owned by Blizzard (SetScale on secure panels taints UIParentPanelManager execution context).
     frame:SetFrameStrata("HIGH")
+    -- The equipment set icon picker inherits HIGH from PaperDollFrame, but its template
+    -- keeps the icon grid clickable only by sitting one strata above the rest of the popup.
+    -- Restore that gap, or the popup's BG and BorderBox cover the grid.
+    local gearPopup = _G.GearManagerPopupFrame
+    if gearPopup and gearPopup.IconSelector then
+        gearPopup.IconSelector:SetFrameStrata("DIALOG")
+    end
 
     -- Frame size is entirely Blizzard's -- no SetWidth/SetHeight or OnUpdate enforcers on the secure frame; our layout fits inside native dimensions.
     if CharacterFrameInset then
@@ -2027,8 +2036,11 @@ local function SkinCharacterSheet()
     local function GetCategoryColor(title)
         local blizz = ns.CharSheetBlizzColor()
         if blizz then return blizz end
-        local custom = EllesmereUIDB and EllesmereUIDB.statCategoryColors and EllesmereUIDB.statCategoryColors[title]
-        if custom then return custom end
+        local useCustom = EllesmereUIDB and EllesmereUIDB.statCategoryUseColor and EllesmereUIDB.statCategoryUseColor[title]
+        if useCustom then
+            local custom = EllesmereUIDB and EllesmereUIDB.statCategoryColors and EllesmereUIDB.statCategoryColors[title]
+            if custom then return custom end
+        end
         return DEFAULT_CATEGORY_COLORS[title] or { r = 1, g = 1, b = 1 }
     end
 
@@ -2155,6 +2167,74 @@ local function SkinCharacterSheet()
             return #orderedSections == #defaultOrder and orderedSections or defaultOrder
         end
         return defaultOrder
+    end
+
+    -- Per stat hover highlighters (reuse Glows system to match the socket panel).
+    -- Keyed by the exact ITEM_MOD_* token GetItemStats returns -- these are fixed
+    -- Blizzard identifiers, not localized text, so matching is locale-independent
+    -- (see the same convention in EllesmereUIBlizzardSkin_SocketPanel.lua's GetGemStatText).
+    local STAT_NAME_TO_ITEM_MOD = {
+        -- Secondary stats
+        ["Critical Strike"] = { ITEM_MOD_CRIT_RATING_SHORT = true },
+        ["Haste"]           = { ITEM_MOD_HASTE_RATING_SHORT = true },
+        ["Mastery"]         = { ITEM_MOD_MASTERY_RATING_SHORT = true },
+        ["Versatility"]     = { ITEM_MOD_VERSATILITY = true, ITEM_MOD_VERSATILITY_2 = true },
+        -- Tertiary stats
+        ["Leech"]           = { ITEM_MOD_CR_LIFESTEAL_SHORT = true },
+        ["Avoidance"]       = { ITEM_MOD_CR_AVOIDANCE_SHORT = true },
+        ["Speed"]           = { ITEM_MOD_CR_SPEED_SHORT = true },
+    }
+    local _statHighlighters = {}
+    local function StartStatHighlights(statName)
+        if not (EllesmereUI and EllesmereUI.Glows and EllesmereUI.Glows.StartGlow) then return end
+        local wantedMods = statName and STAT_NAME_TO_ITEM_MOD[statName]
+        if not wantedMods then return end
+        local G = EllesmereUI.Glows
+        for _, slotName in ipairs(EUI_GEAR_SLOTS) do
+            local slot = _G[slotName]
+            if slot and slot.GetID then
+                local slotID = slot:GetID()
+                local link = GetInventoryItemLink("player", slotID)
+                if link and C_Item and C_Item.GetItemStats then
+                    local stats = C_Item.GetItemStats(link)
+                    if stats then
+                        for key, val in pairs(stats) do
+                            if type(val) == "number" and val > 0 and wantedMods[key] then
+                                if not _statHighlighters[slotID] then
+                                    local slotBtn = slot
+                                    local f = CreateFrame("Frame", nil, CharacterFrame)
+                                    f:ClearAllPoints()
+                                    f:SetAllPoints(slotBtn)
+                                    f:SetFrameStrata(slotBtn:GetFrameStrata())
+                                    f:SetFrameLevel(slotBtn:GetFrameLevel() + 5)
+                                    f:Show()
+                                    local w, h = slotBtn:GetWidth(), slotBtn:GetHeight()
+                                    if not w or w < 1 then w = 37 end
+                                    if not h or h < 1 then h = w end
+                                    G.StartGlow(f, 6, w, 1, 1, 1, nil, h)
+                                    _statHighlighters[slotID] = f
+                                end
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local function StopStatHighlights()
+        if not (EllesmereUI and EllesmereUI.Glows) then
+            _statHighlighters = {}
+            return
+        end
+        local G = EllesmereUI.Glows
+        for id, f in pairs(_statHighlighters) do
+            if f then
+                G.StopGlow(f)
+                f:Hide()
+            end
+            _statHighlighters[id] = nil
+        end
     end
 
     local statSections = GetStatSectionsOrder()
@@ -2302,6 +2382,9 @@ local function SkinCharacterSheet()
                 EllesmereUI._updateStatCategoryVisibility()
             end
         end)
+    end)
+    frame:HookScript("OnHide", function()
+        StopStatHighlights()
     end)
 
     -- Show/hide whole stat categories per their DB setting.
@@ -2698,10 +2781,21 @@ local function SkinCharacterSheet()
                     end
 
                     GameTooltip:Show()
+                    -- Highlight equipped items that grant this secondary stat (opt-in)
+                    if section and (section.settingKey == "SecondaryStats")
+                       and EllesmereUIDB and EllesmereUIDB.highlightSecondaryItems then
+                        StartStatHighlights(stat.name)
+                    end
+                    -- Tertiary highlight opt-in
+                    if section and (section.settingKey == "Tertiary")
+                       and EllesmereUIDB and EllesmereUIDB.highlightTertiaryItems then
+                        StartStatHighlights(stat.name)
+                    end
                 end)
 
                 valueButton:SetScript("OnLeave", function()
                     GameTooltip:Hide()
+                    StopStatHighlights()
                 end)
 
                 table.insert(GetFFD(frame).statsValues, {

@@ -38,7 +38,8 @@ end
 --  Section / page names  (edit here to rename everywhere)
 -------------------------------------------------------------------------------
 local PAGE_DISPLAY        = "Bar Display"
-local PAGE_MENUBAGSXP     = "Menu, Bags & XP Bars"
+local PAGE_XPBAR          = "XP Bar"
+local PAGE_MENUBAGSREP    = "Menu, Bags & Rep Bars"
 local PAGE_ANIMATIONS     = "Bar Animations"
 local SECTION_ICON_APPEARANCE = "ICONS"
 local SECTION_LAYOUT      = "LAYOUT"
@@ -122,8 +123,8 @@ initFrame:SetScript("OnEvent", function(self)
     local barLabels = {}
     local barOrder  = {}
     for _, key in ipairs(BAR_DROPDOWN_ORDER) do
-        -- Micro/Bag/XP/Rep/Favor live on the "Menu, Bags & XP Bars" tab, not
-        -- the Bar Display bar selector.
+        -- XP lives on the "XP Bar" tab and Micro/Bag/Rep/Favor on the "Menu,
+        -- Bags & Rep Bars" tab, not the Bar Display bar selector.
         if key ~= "MicroBar" and key ~= "BagBar" and key ~= "XPBar" and key ~= "RepBar" and key ~= "FavorBar" then
             barLabels[key] = BAR_DROPDOWN_VALUES[key]
             barOrder[#barOrder + 1] = key
@@ -889,14 +890,16 @@ initFrame:SetScript("OnEvent", function(self)
     EllesmereUI:RegisterModule("EllesmereUIActionBars", {
         title       = "Action Bars",
         description = "Configure visuals and behavior for your action bars.",
-        pages       = { PAGE_DISPLAY, PAGE_MENUBAGSXP, PAGE_ANIMATIONS },
+        pages       = { PAGE_DISPLAY, PAGE_XPBAR, PAGE_MENUBAGSREP, PAGE_ANIMATIONS },
         buildPage   = function(pageName, parent, yOffset)
             -- BuildBarDisplayPage calls ShowEditOverlay() unconditionally at build time, showing a
             -- real UIParent-parented overlay over the live action bars. A hidden search pre-build
             -- would flash it onscreen, so skip PAGE_DISPLAY here; it indexes on first visit.
             if EllesmereUI._prebuilding then
-                if pageName == PAGE_MENUBAGSXP then
-                    return ns.ABO_BuildMenuBagsXPPage(pageName, parent, yOffset)
+                if pageName == PAGE_XPBAR then
+                    return ns.ABO_BuildXPBarPage(pageName, parent, yOffset)
+                elseif pageName == PAGE_MENUBAGSREP then
+                    return ns.ABO_BuildMenuBagsRepPage(pageName, parent, yOffset)
                 elseif pageName == PAGE_ANIMATIONS then
                     return BuildAnimationsPage(pageName, parent, yOffset)
                 end
@@ -907,8 +910,10 @@ initFrame:SetScript("OnEvent", function(self)
             end
             if pageName == PAGE_DISPLAY then
                 return BuildBarDisplayPage(pageName, parent, yOffset)
-            elseif pageName == PAGE_MENUBAGSXP then
-                return ns.ABO_BuildMenuBagsXPPage(pageName, parent, yOffset)
+            elseif pageName == PAGE_XPBAR then
+                return ns.ABO_BuildXPBarPage(pageName, parent, yOffset)
+            elseif pageName == PAGE_MENUBAGSREP then
+                return ns.ABO_BuildMenuBagsRepPage(pageName, parent, yOffset)
             elseif pageName == PAGE_ANIMATIONS then
                 return BuildAnimationsPage(pageName, parent, yOffset)
             end

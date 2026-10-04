@@ -3,10 +3,23 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  EllesmereUI.lua  -  Custom Options Panel, shared across the whole EUI suite.
 --  Scaffold: background, sidebar, header, content area, controls.
 -------------------------------------------------------------------------------
-local EUI_HOST_ADDON = ...
+-- EUI_NS is this addon's private namespace (the TOC vararg): shared by the core
+-- files, unreachable from any other addon. Navigation state that must not be
+-- writable by third-party code (module registry, sidebar model, page cache)
+-- lives here instead of on the global EllesmereUI table.
+local EUI_HOST_ADDON, EUI_NS = ...
 -- Build renames "EllesmereUI" -> "EUICoreStandalone<Module>" but never the word
 -- "Standalone", so host name contains it iff standalone; false in the suite (branches inert).
 local IS_STANDALONE = type(EUI_HOST_ADDON) == "string" and EUI_HOST_ADDON:find("Standalone") ~= nil
+-- A standalone build is ONE addon: its module files share this vararg table
+-- and publish it through _ModuleNS. So there the core's private state lives in
+-- a table of its own, handed to the later core files through __euiCoreNS until
+-- the first module publish removes that slot (see _ModuleNS).
+if IS_STANDALONE then
+    local shared = EUI_NS
+    EUI_NS = {}
+    shared.__euiCoreNS = EUI_NS
+end
 -------------------------------------------------------------------------------
 --  Constants & Colours (BURNE STAY AWAY FROM THIS SECTION)
 -------------------------------------------------------------------------------
@@ -838,6 +851,109 @@ for _, info in ipairs(ADDON_ROSTER) do
     EllesmereUI._addonInfoByFolder[info.folder] = info
 end
 
+-------------------------------------------------------------------------------
+--  Private navigation model
+--  The sidebar is built ONLY from these copies, taken once the roster and groups
+--  above are final. ADDON_ROSTER / ADDON_GROUPS / _addonInfoByFolder stay public
+--  as read-only data for other files, but writes to them no longer reach the
+--  sidebar: third-party code cannot add rows to the suite's sections, reorder
+--  them, or relabel them. Plugin sections (see the Plugin API section) are held
+--  in separate lists and can only sit above or below the whole suite block.
+-------------------------------------------------------------------------------
+do
+    local navInfo = {}
+    for _, info in ipairs(ADDON_ROSTER) do
+        local copy = {}
+        for k, v in pairs(info) do copy[k] = v end
+        navInfo[info.folder] = copy
+    end
+    local coreGroups = {}
+    for _, group in ipairs(EllesmereUI.ADDON_GROUPS) do
+        local members = {}
+        for i, folder in ipairs(group.members) do members[i] = folder end
+        coreGroups[#coreGroups + 1] = { key = group.key, label = group.label, members = members }
+    end
+    EUI_NS.navInfo            = navInfo
+    EUI_NS.coreGroups         = coreGroups
+    EUI_NS.pluginGroupsTop    = {}
+    EUI_NS.pluginGroupsBottom = {}
+    EUI_NS.navGroups          = {}
+    -- Sidebar group header frames, keyed by group key.
+    EUI_NS.sidebarGroupButtons = {}
+
+    -- Final sidebar order: top plugin sections, the suite's own groups as one
+    -- contiguous block, then bottom plugin sections.
+    function EUI_NS.RebuildNavGroups()
+        local out = EUI_NS.navGroups
+        for i = #out, 1, -1 do out[i] = nil end
+        for _, g in ipairs(EUI_NS.pluginGroupsTop)    do out[#out + 1] = g end
+        for _, g in ipairs(coreGroups)                do out[#out + 1] = g end
+        for _, g in ipairs(EUI_NS.pluginGroupsBottom) do out[#out + 1] = g end
+    end
+    EUI_NS.RebuildNavGroups()
+
+    -- Module keys starting with this prefix belong to the plugin registry.
+    local PLUGIN_PREFIX = "plugin:"
+    EUI_NS.PLUGIN_PREFIX = PLUGIN_PREFIX
+    function EUI_NS.IsPluginKey(key)
+        return type(key) == "string" and key:sub(1, #PLUGIN_PREFIX) == PLUGIN_PREFIX
+    end
+
+    -- Suite registration window (see RegisterModule). Open while the options
+    -- addon loads (whoever loads it: its files register as they run), while the
+    -- core drains its deferred inits, and from a pre-login load of the options
+    -- addon until just after PLAYER_LOGIN (its files register from their
+    -- PLAYER_LOGIN handlers in that case).
+    local regDepth, loginWindow = 0, false
+    local IsAddOnLoaded = C_AddOns.IsAddOnLoaded
+    function EUI_NS.CoreRegistrationOpen()
+        if regDepth > 0 or loginWindow then return true end
+        local loadedOrLoading, loaded = IsAddOnLoaded("EllesmereUIOptions")
+        return loadedOrLoading and not loaded
+    end
+    -- The suite's pages always register through the real RegisterModule. An
+    -- addon that replaced or hooked the public one (to slip pages into the
+    -- suite's modules) is taken out of the path first, so it can never stop
+    -- them registering, and is named in the panel's update notice.
+    local rawget, rawset = rawget, rawset
+    local function ReclaimRegisterModule()
+        local real = EUI_NS.CoreRegisterModule
+        if not real or rawget(EllesmereUI, "RegisterModule") == real then return end
+        local by = EUI_NS.WriterOf(EllesmereUI, "RegisterModule")
+        rawset(EllesmereUI, "RegisterModule", real)
+        if by then EUI_NS.RecordLegacyOffender(by) end
+    end
+    -- Errors are reported through the error handler (keeping their traceback)
+    -- rather than rethrown, so a failing callee can never leave the window open.
+    local function ReportError(err) return geterrorhandler()(err) end
+    EUI_NS.ReportError = ReportError  -- shared with the plugin registry (EllesmereUI_Panel.lua)
+    function EUI_NS.RunCoreRegistration(fn, ...)
+        ReclaimRegisterModule()
+        regDepth = regDepth + 1
+        local ok, a, b = xpcall(fn, ReportError, ...)
+        regDepth = regDepth - 1
+        if ok then return a, b end
+    end
+    local f = CreateFrame("Frame")
+    f:RegisterEvent("ADDON_LOADED")
+    f:RegisterEvent("PLAYER_LOGIN")
+    f:SetScript("OnEvent", function(self, event, name)
+        if event == "PLAYER_LOGIN" then
+            self:UnregisterEvent("PLAYER_LOGIN")
+            -- Before the options files' own PLAYER_LOGIN registrations (a
+            -- pre-login options load, standalone builds).
+            ReclaimRegisterModule()
+            if loginWindow then
+                C_Timer.After(0, function() loginWindow = false end)
+            end
+        elseif name == "EllesmereUIOptions" then
+            self:UnregisterEvent("ADDON_LOADED")
+            -- Loaded before login: its files register from their PLAYER_LOGIN handlers.
+            if not IsLoggedIn() then loginWindow = true end
+        end
+    end)
+end
+
 local IsAddonLoaded = C_AddOns.IsAddOnLoaded
 
 -------------------------------------------------------------------------------
@@ -918,7 +1034,10 @@ function EllesmereUI.RunBudgeted(steps, msBudget, onDone)
 end
 
 local modules = {}
-EllesmereUI._modules = modules -- read-only alias so other files (e.g. global search) can iterate registered modules
+-- Private alias so other core files (the panel, global search) can reach the
+-- registered modules. Never published on EllesmereUI: a reference to a
+-- module's config table would let any addon rewrite that module's pages.
+EUI_NS.modules = modules
 
 -- Widget refresh registry: a Refresh callback per widget so RefreshPage updates values in-place without rebuilding frames.
 local _widgetRefreshList = {}
@@ -1696,77 +1815,16 @@ function EllesmereUI.UnitEffectiveRole(unit)
 end
 
 -------------------------------------------------------------------------------
---  Manual resource trackers (secret-value safe)
---  Track stacks via UNIT_SPELLCAST_SUCCEEDED instead of reading aura data, which
---  returns secret values in combat. Maelstrom Weapon (344179) and Devourer soul
+--  Resource trackers (secret-value safe)
+--  Maelstrom Weapon (344179), Tip of the Spear (260286) and Devourer soul
 --  fragment auras (1225789, 1227702) are Blizzard-whitelisted and stay readable.
 -------------------------------------------------------------------------------
 
--- Tip of the Spear tracker (Survival Hunter), talent 260285. Kill Command (259489)
--- grants 1 stack (2 with Primal Surge 1272154). Takedown (1250646) grants 3 when Twin
--- Fangs (1272139) is known and spends one on its impact (1253859), netting 2. Spender
--- abilities consume 1 each. Buff: 10s duration, max 3 stacks.
-do
-    local stacks, expiresAt = 0, nil
-    local MAX = 3
-    local DURATION = 10
-    local TALENT     = 260285
-    local KILL_CMD   = 259489
-    local PRIMAL     = 1272154
-    local TAKEDOWN     = 1250646
-    local TAKEDOWN_HIT = 1253859
-    local TWIN_FANG    = 1272139
-    local TWIN_FANG_GAIN = 3
-
-    local SPENDERS = {
-        [186270]  = true,  -- Raptor Strike
-        [265189]  = true,  -- Raptor Strike (ranged)
-        [1262293] = true,  -- Raptor Swipe
-        [1262343] = true,  -- Raptor Swipe (ranged)
-        [259495]  = true,  -- Wildfire Bomb
-        [193265]  = true,  -- Hatchet Toss
-        [1264949] = true,  -- Chakram
-        [1261193] = true,  -- Boomstick
-        [TAKEDOWN_HIT] = true,  -- Takedown's impact (only spends without Twin Fangs)
-        [1251592] = true,  -- Flamefang Pitch
-    }
-
-    function EllesmereUI.HandleTipOfTheSpear(event, unit, _, spellID)
-        if event == "PLAYER_DEAD" or event == "PLAYER_ALIVE" then
-            stacks, expiresAt = 0, nil
-            return
-        end
-        if event ~= "UNIT_SPELLCAST_SUCCEEDED" or unit ~= "player" then return end
-        if not (C_SpellBook and C_SpellBook.IsSpellKnown(TALENT)) then return end
-
-        if spellID == KILL_CMD then
-            local gain = (C_SpellBook.IsSpellKnown(PRIMAL) and 2 or 1)
-            stacks = min(MAX, stacks + gain)
-            expiresAt = GetTime() + DURATION
-        elseif spellID == TAKEDOWN and C_SpellBook.IsSpellKnown(TWIN_FANG) then
-            -- Twin Fangs grants 3 and the impact spends one: the cast nets 2 from any
-            -- starting count (the grant alone always caps). Both halves resolve here
-            -- instead of on the impact event: at melee range both arrive the same frame
-            -- and an impact handled first is swallowed by an empty tracker, leaving the
-            -- bar a stack high for the buff's full duration.
-            stacks = min(MAX, stacks + TWIN_FANG_GAIN) - 1
-            expiresAt = GetTime() + DURATION
-        elseif SPENDERS[spellID] and stacks > 0 then
-            -- With Twin Fangs the cast above already spent for this impact.
-            if spellID == TAKEDOWN_HIT and C_SpellBook.IsSpellKnown(TWIN_FANG) then
-                return
-            end
-            stacks = stacks - 1
-            if stacks == 0 then expiresAt = nil end
-        end
-    end
-
-    function EllesmereUI.GetTipOfTheSpear()
-        if expiresAt and GetTime() >= expiresAt then
-            stacks, expiresAt = 0, nil
-        end
-        return stacks, MAX
-    end
+-- Tip of the Spear stacks (Survival Hunter). Buff 260286 is WHITELISTED, safe to read
+-- in combat. Max 3 stacks.
+function EllesmereUI.GetTipOfTheSpear()
+    local aura = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID(260286)
+    return (aura and aura.applications or 0), 3
 end
 
 -- DH Soul Fragment count (current, max). Vengeance: C_Spell.GetSpellCastCount(228477)
@@ -2739,6 +2797,16 @@ EllesmereUI._deferredLoaded = false
 -- module is absent/disabled -- reproducing the old "disabled child = no options
 -- page" behavior exactly.
 EllesmereUI._ModuleNS = {}
+if IS_STANDALONE then
+    -- Every core file has loaded by the first module publish: remove the
+    -- hand-off slot before the shared table is published (see the top).
+    local shared = select(2, ...)
+    setmetatable(EllesmereUI._ModuleNS, { __newindex = function(t, k, v)
+        shared.__euiCoreNS = nil
+        setmetatable(t, nil)
+        rawset(t, k, v)
+    end })
+end
 
 -- Login-critical deferred body: UnlockMode's position/anchor engine
 -- (_applySavedPositions, width/height matches, anchor propagation). It must run
@@ -2766,7 +2834,9 @@ function EllesmereUI.EnsureOptionsLoaded()
     -- does the rest, exactly like the pre-split resident options.
     if IS_STANDALONE then return true end
     if C_AddOns.IsAddOnLoaded("EllesmereUIOptions") then return true end
-    local ok, reason = C_AddOns.LoadAddOn("EllesmereUIOptions")
+    -- Inside the suite registration window: the options files register the
+    -- suite's module pages while they load (see RegisterModule).
+    local ok, reason = EUI_NS.RunCoreRegistration(C_AddOns.LoadAddOn, "EllesmereUIOptions")
     if not ok then
         EllesmereUI.PrintError("Options could not load (" .. tostring(reason) .. "). Enable the \"EllesmereUI Options\" addon in the AddOn List.")
     end
@@ -2834,8 +2904,10 @@ function EllesmereUI:EnsureLoaded()
     -- open retries after the user re-enables the addon.
     if not EllesmereUI.EnsureOptionsLoaded() then return end
     self._deferredLoaded = true
+    -- Deferred inits run inside the suite registration window: some options
+    -- files register their module page from here (e.g. Party Mode).
     for i, fn in ipairs(self._deferredInits) do
-        fn()
+        EUI_NS.RunCoreRegistration(fn)
         self._deferredInits[i] = nil
     end
 end
@@ -3220,7 +3292,7 @@ SlashCmdList.EUIDEV = function()
     local current = GetCVar(cvars[1])
     local newVal = (current == "1") and "0" or "1"
     for _, cv in ipairs(cvars) do
-        SetCVar(cv, newVal)
+        EllesmereUI.SetCVar(cv, newVal)
     end
     local state = newVal == "1" and "ON" or "OFF"
     EllesmereUI.Print("|cff00ff00[EllesmereUI]|r Dev mode: all addon restriction CVars " .. state .. ".")
@@ -3974,7 +4046,7 @@ initFrame:SetScript("OnEvent", function(self, event)
             local db = EllesmereUIDB
             local on = db and db.showSpellID
                 and (db.spellIDModifier or "none") == "none"
-            pcall(C_CVar.SetCVar, "tooltipShowAuraSpellIDs", on and "1" or "0")
+            pcall(EllesmereUI.SetCVar, "tooltipShowAuraSpellIDs", on and "1" or "0")
         end
         do
             -- PLAYER_ENTERING_WORLD, not PLAYER_LOGIN: the engine settles its
@@ -4013,6 +4085,8 @@ initFrame:SetScript("OnEvent", function(self, event)
                     cancelText  = EllesmereUI.L("Ignore"),
                     reload      = true,
                     onConfirm   = function()
+                        -- The player's own fix, which Uninstall EUI must not
+                        -- undo: plain SetCVar, not EllesmereUI.SetCVar.
                         pcall(C_CVar.SetCVar, "taintLog", "0")
                         pcall(C_CVar.SetCVar, "scriptProfile", "0")
                     end,
@@ -4192,7 +4266,7 @@ initFrame:SetScript("OnEvent", function(self, event)
             dD[k] = { effect = "pulse", position = "center", style = "modern" }
             local dC = { showInRaid = true, showInDungeon = true, showInArena = false, showInBG = false, showInWorld = true, showWhileMounted = false }
 
-            EllesmereUI:RegisterModule(cfg.folder, {
+            EUI_NS.RegisterCoreModule(cfg.folder, {
                 title       = cfg.title,
                 description = cfg.desc,
                 pages       = cfg.pages,
@@ -4292,7 +4366,7 @@ initFrame:SetScript("OnEvent", function(self, event)
                     dD[k] = { effect = "pulse", position = "center", style = "modern" }
                     EllesmereUI:SelectPage(EllesmereUI:GetActivePage())
                 end,
-            })
+            }, false)
         end
     end
 end)

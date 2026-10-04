@@ -206,9 +206,6 @@ initFrame:SetScript("OnEvent", function(self)
         return false
     end
 
-    local BG_MODE_VALUES = { ACTIVE = "Buff Active", MISSING = "Buff Missing" }
-    local BG_MODE_ORDER  = { "ACTIVE", "MISSING" }
-
     -- Build glow style dropdown values from ns.GLOW_STYLES
     local function GetGlowStyleValues()
         local labels, order = {}, {}
@@ -636,8 +633,6 @@ initFrame:SetScript("OnEvent", function(self)
     end)
 
     local function ShowBarGlowSpellPicker(anchorFrame, barIdx, btnIdx, onChanged, overrideAssignKey)
-        if _bgSpellPickerMenu then _bgSpellPickerMenu:Hide() end
-
         local bg = ns.GetBarGlows()
         local assignKey = overrideAssignKey or (barIdx .. "_" .. btnIdx)
         local buffList = bg.assignments[assignKey] or {}
@@ -647,18 +642,14 @@ initFrame:SetScript("OnEvent", function(self)
             if entry.spellID then assignedSet[entry.spellID] = true end
         end
 
-        -- Track whether any change was made so we can fire onChanged when menu closes
-        local dirty = false
         -- Immediate update: save picker position, rebuild, re-anchor
         local function ImmediateUpdate()
-            dirty = false  -- already handled
             if not onChanged then return end
             local menuRef = _bgSpellPickerMenu
             if not menuRef then onChanged(); return end
             -- Save absolute screen position before rebuild
             local cx, cy = menuRef:GetCenter()
             local mScale = menuRef:GetEffectiveScale()
-            local mW, mH = menuRef:GetSize()
             onChanged()
             -- Re-anchor to saved absolute position so page rebuild doesn't shift us
             menuRef = _bgSpellPickerMenu
@@ -669,105 +660,11 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end
 
-        local tracked, untracked = ns.GetAllCDMBuffSpells()
-        -- Tracked Bar spells are added later but checked here too, so the menu
-        -- doesn't bail when only Tracked Bars exist.
-        local hasTrackedBars = ns.GetTrackedBarSpells and #ns.GetTrackedBarSpells() > 0 or false
-        if #tracked == 0 and #untracked == 0 and not hasTrackedBars then return end
-
-        -- Standard dropdown colors
-        local mBgR  = EllesmereUI.DD_BG_R  or 0.075
-        local mBgG  = EllesmereUI.DD_BG_G  or 0.113
-        local mBgB  = EllesmereUI.DD_BG_B  or 0.141
-        local mBgA  = EllesmereUI.DD_BG_HA or 0.98
-        local mBrdA = EllesmereUI.DD_BRD_A or 0.20
-        local hlA   = EllesmereUI.DD_ITEM_HL_A or 0.08
-        local tDimR = EllesmereUI.TEXT_DIM_R or 0.7
-        local tDimG = EllesmereUI.TEXT_DIM_G or 0.7
-        local tDimB = EllesmereUI.TEXT_DIM_B or 0.7
-        local tDimA = EllesmereUI.TEXT_DIM_A or 0.85
-        local ACCENT = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
-
-        local menuW = 240
-        local ITEM_H = 26
-        local MAX_H = 300
-
-        local menu = CreateFrame("Frame", nil, UIParent)
-        menu:SetFrameStrata("FULLSCREEN_DIALOG")
-        menu:SetFrameLevel(300)
-        menu:SetClampedToScreen(true)
-        menu:SetSize(menuW, 10)
-
-        local mbg = menu:CreateTexture(nil, "BACKGROUND")
-        mbg:SetAllPoints(); mbg:SetColorTexture(mBgR, mBgG, mBgB, mBgA)
-        EllesmereUI.MakeBorder(menu, 1, 1, 1, mBrdA, EllesmereUI.PP)
-
-        local inner = CreateFrame("Frame", nil, menu)
-        inner:SetWidth(menuW)
-        inner:SetPoint("TOPLEFT")
-
-        local mH = 4
-
-        local function MakeCheckItem(sp)
-            local item = CreateFrame("Button", nil, inner)
-            item:SetHeight(ITEM_H)
-            item:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH)
-            item:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH)
-            item:SetFrameLevel(menu:GetFrameLevel() + 2)
-
-            -- Checkbox (AuraBuff style: Frame box + MakeBorder + inner fill)
-            local cbSize = 14
-            local cb = CreateFrame("Frame", nil, item)
-            cb:SetSize(cbSize, cbSize)
-            cb:SetPoint("LEFT", item, "LEFT", 8, 0)
-            cb:SetFrameLevel(item:GetFrameLevel() + 1)
-            local cbBg = cb:CreateTexture(nil, "BACKGROUND")
-            cbBg:SetAllPoints(); cbBg:SetColorTexture(0.12, 0.12, 0.14, 1)
-            local cbBrd = EllesmereUI.MakeBorder(cb, 0.25, 0.25, 0.28, 0.6, EllesmereUI.PanelPP)
-            local cbFill = cb:CreateTexture(nil, "ARTWORK")
-            if cbFill.SetSnapToPixelGrid then cbFill:SetSnapToPixelGrid(false); cbFill:SetTexelSnappingBias(0) end
-            cbFill:SetPoint("TOPLEFT", cb, "TOPLEFT", 3, -3)
-            cbFill:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", -3, 3)
-            cbFill:SetColorTexture(ACCENT.r, ACCENT.g, ACCENT.b, 1)
-            local function UpdateCB()
-                if assignedSet[sp.spellID] then
-                    cbFill:Show()
-                    cbBrd:SetColor(ACCENT.r, ACCENT.g, ACCENT.b, 0.8)
-                else
-                    cbFill:Hide()
-                    cbBrd:SetColor(0.25, 0.25, 0.28, 0.6)
-                end
-            end
-            UpdateCB()
-
-            local ico = item:CreateTexture(nil, "ARTWORK")
-            local icoSz = ITEM_H - 4
-            ico:SetSize(icoSz, icoSz)
-            ico:SetPoint("RIGHT", item, "RIGHT", -6, 0)
-            if sp.icon then ico:SetTexture(sp.icon) end
-            ico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-
-            local lbl = item:CreateFontString(nil, "OVERLAY")
-            lbl:SetFont(FONT_PATH, 11, GetCDMOptOutline())
-            lbl:SetPoint("LEFT", cb, "RIGHT", 6, 0)
-            lbl:SetPoint("RIGHT", ico, "LEFT", -4, 0)
-            lbl:SetJustifyH("LEFT")
-            lbl:SetWordWrap(false); lbl:SetMaxLines(1)
-            lbl:SetText(EllesmereUI.L(sp.name))
-            lbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
-
-            local hl = item:CreateTexture(nil, "ARTWORK", nil, -1)
-            hl:SetAllPoints(); hl:SetColorTexture(1, 1, 1, 0)
-
-            item:SetScript("OnEnter", function()
-                lbl:SetTextColor(1, 1, 1, 1)
-                hl:SetColorTexture(1, 1, 1, hlA)
-            end)
-            item:SetScript("OnLeave", function()
-                lbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
-                hl:SetColorTexture(1, 1, 1, 0)
-            end)
-            item:SetScript("OnClick", function()
+        -- The shared Bar Glows buff menu (EUI_CooldownManager_BarGlowConditions.lua):
+        -- one reused frame, the boxes repainted after each toggle.
+        local menu = ns.ShowBarGlowBuffMenu(anchorFrame, {
+            isChecked = function(sid) return assignedSet[sid] end,
+            onClick = function(sp, refreshChecks)
                 if assignedSet[sp.spellID] then
                     assignedSet[sp.spellID] = nil
                     for idx = #buffList, 1, -1 do
@@ -776,10 +673,6 @@ initFrame:SetScript("OnEvent", function(self)
                             break
                         end
                     end
-                    UpdateCB()
-                    bg.assignments[assignKey] = buffList
-                    Refresh()
-                    ImmediateUpdate()
                 else
                     -- Add with defaults
                     assignedSet[sp.spellID] = true
@@ -798,83 +691,14 @@ initFrame:SetScript("OnEvent", function(self)
                         end
                     end
                     buffList[#buffList + 1] = newEntry
-                    UpdateCB()
-                    bg.assignments[assignKey] = buffList
-                    Refresh()
-                    ImmediateUpdate()
                 end
-            end)
-
-            mH = mH + ITEM_H
-        end
-
-        -- Tracked buffs
-        for _, sp in ipairs(tracked) do MakeCheckItem(sp) end
-
-        -- Divider
-        if #tracked > 0 and #untracked > 0 then
-            local div = inner:CreateTexture(nil, "ARTWORK")
-            div:SetHeight(1); div:SetColorTexture(1, 1, 1, 0.10)
-            div:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH - 4)
-            div:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH - 4)
-            mH = mH + 9
-        end
-
-        -- Untracked buffs
-        for _, sp in ipairs(untracked) do MakeCheckItem(sp) end
-
-        -- Blizzard CDM "Tracked Bars" (BuffBarCooldownViewer). Blizzard CDM
-        -- drag-and-drop puts a spell in either the Tracked Buffs icon strip OR
-        -- Tracked Bars, never both -- no dedup needed.
-        local trackedBars = ns.GetTrackedBarSpells and ns.GetTrackedBarSpells() or {}
-        if #trackedBars > 0 then
-            if #tracked > 0 or #untracked > 0 then
-                local div = inner:CreateTexture(nil, "ARTWORK")
-                div:SetHeight(1); div:SetColorTexture(1, 1, 1, 0.10)
-                div:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH - 4)
-                div:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH - 4)
-                mH = mH + 9
-            end
-            for _, sp in ipairs(trackedBars) do MakeCheckItem(sp) end
-        end
-
-        local totalH = mH + 4
-        inner:SetHeight(totalH)
-
-        if totalH > MAX_H then
-            menu:SetHeight(MAX_H)
-            local sf = CreateFrame("ScrollFrame", nil, menu)
-            sf:SetPoint("TOPLEFT"); sf:SetPoint("BOTTOMRIGHT")
-            sf:SetFrameLevel(menu:GetFrameLevel() + 1)
-            sf:EnableMouseWheel(true)
-            sf:SetScrollChild(inner)
-            inner:SetWidth(menuW)
-            local scrollPos = 0
-            local maxScroll = totalH - MAX_H
-            sf:SetScript("OnMouseWheel", function(_, delta)
-                scrollPos = math.max(0, math.min(maxScroll, scrollPos - delta * 30))
-                sf:SetVerticalScroll(scrollPos)
-            end)
-        else
-            menu:SetHeight(totalH)
-            inner:SetParent(menu)
-            inner:SetPoint("TOPLEFT")
-        end
-
-        menu:ClearAllPoints()
-        menu:SetPoint("TOP", anchorFrame, "BOTTOM", 0, -2)
-
-        menu:SetScript("OnUpdate", function(m)
-            if not m:IsMouseOver() and not anchorFrame:IsMouseOver() and IsMouseButtonDown("LeftButton") then
-                m:Hide()
-            end
-        end)
-        menu:HookScript("OnHide", function(m)
-            m:SetScript("OnUpdate", nil)
-            if dirty and onChanged then onChanged() end
-        end)
-
-        menu:Show()
+                refreshChecks()
+                bg.assignments[assignKey] = buffList
+                Refresh()
+                ImmediateUpdate()
+            end,
+        })
+        if not menu then return end
         menu._btnIdx = btnIdx
         _bgSpellPickerMenu = menu
     end
@@ -1043,6 +867,9 @@ initFrame:SetScript("OnEvent", function(self)
                     realBtnW = cdmBd.iconSize or 36
                     realBtnH = realBtnW
                 end
+                -- The live icon's on-screen size (width/height match, UI scale) in this panel's scale
+                local liveW = ns.BarGlowPreviewIconSize(ns.cdmBarIcons and ns.cdmBarIcons[cdmBarKey], headerFrame)
+                if liveW then realBtnW, realBtnH = liveW, liveW end
             else
                 local btn1 = _G[prefix .. "1"]
                 realBtnW = (btn1 and btn1:GetWidth() or 36)
@@ -1113,6 +940,14 @@ initFrame:SetScript("OnEvent", function(self)
             if not brdColor then brdColor = { r = 0, g = 0, b = 0, a = 1 } end
 
             local gridW = numVisible * scaledBtnW + (numVisible - 1) * scaledPad
+            -- Live-sized CDM icons can outgrow the preview width: shrink to fit
+            if isCDMBar and width and width > 0 and gridW > width then
+                local f = width / gridW
+                scaledBtnW = math.floor(scaledBtnW * f)
+                scaledBtnH = math.floor(scaledBtnH * f)
+                scaledPad = scaledPad * f
+                gridW = numVisible * scaledBtnW + (numVisible - 1) * scaledPad
+            end
             local startX = math.max(0, math.floor((width - gridW) / 2))
             local startY = gridTopY
 
@@ -1498,289 +1333,250 @@ initFrame:SetScript("OnEvent", function(self)
                 local glowLabels, glowOrder = GetGlowStyleValues()
 
                 for aIdx, entry in ipairs(buffList) do
-                    local buffName = "Unknown"
-                    if entry.spellID and entry.spellID > 0 then
-                        buffName = C_Spell.GetSpellName(entry.spellID) or ("Spell " .. entry.spellID)
-                    end
+                    -- Collapse bar across the top of the glow; collapsed shows the buff
+                    -- icon and name and skips the rows below.
+                    local expanded
+                    y, expanded = ns.BuildBarGlowHeader(parent, y, entry, aIdx)
+                    if expanded then
 
-                    -- cooldownID is a cooldown-viewer id, NOT a spell id (GetSpellName on it
-                    -- returns an unrelated spell); resolve via the same canonical resolver
-                    -- CD/utility bars use, falling back to cooldown viewer info.
-                    local btnSpellName = "Button " .. curBtn
-                    if isCurCDM then
-                        local cdmIcons = ns.cdmBarIcons and ns.cdmBarIcons[curBar]
-                        local icon = cdmIcons and cdmIcons[curBtn]
-                        if icon then
-                            local sid = ns.GetCanonicalSpellIDForFrame and ns.GetCanonicalSpellIDForFrame(icon)
-                            if (not sid) and icon.cooldownID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
-                                local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(icon.cooldownID)
-                                if info and info.spellID and info.spellID > 0 then sid = info.spellID end
+                        -- Row 1: When (icon) <buff> is [Active] | And [buff] is [Active] (toggle)
+                        -- (EUI_CooldownManager_BarGlowConditions.lua)
+                        local removeAIdx = aIdx
+                        y = ns.BuildBarGlowWhenRow(W, parent, y, entry, Refresh)
+
+                        -- Helper: resolve current glow color and restart preview if active
+                        local pvKey = assignKey .. "_" .. aIdx
+                        local function RefreshPreviewGlow()
+                            if not _bgPreviewGlowActive[pvKey] then return end
+                            local ov = _bgPreviewGlowOverlays[pvKey]
+                            if not ov then return end
+                            local style = BarHasCustomShape(curBar) and 2 or (entry.glowStyle or 1)
+                            local cr, cg, cb
+                            if entry.colorMode == "class" then
+                                local cc = EllesmereUI.GetClassColor(EllesmereUI._playerClass)
+                                cr, cg, cb = cc.r, cc.g, cc.b
+                            elseif entry.colorMode == "custom" and entry.glowColor then
+                                cr, cg, cb = entry.glowColor.r, entry.glowColor.g, entry.glowColor.b
                             end
-                            if sid then btnSpellName = C_Spell.GetSpellName(sid) or btnSpellName end
+                            ns.StopNativeGlow(ov)
+                            -- Blackout reads its fill opacity from the extras; every other
+                            -- style takes the shared panel extras.
+                            ns.StartNativeGlow(ov, style, cr, cg, cb,
+                                style == 8 and { panel = true, alpha = entry.glowAlpha } or EllesmereUI.Glows.PANEL_EXTRA)
                         end
-                    else
-                        local prefix = BAR_BUTTON_PREFIXES[curBar]
-                        local realBtn = prefix and _G[prefix .. curBtn]
-                        if realBtn and realBtn.action then
-                            local aType, aID = GetActionInfo(realBtn.action)
-                            if aType == "spell" and aID then
-                                btnSpellName = C_Spell.GetSpellName(aID) or btnSpellName
-                            elseif aType == "macro" then
-                                local mName = GetMacroInfo(aID)
-                                if mName then btnSpellName = mName end
-                            end
-                        end
-                    end
 
-                    _, h = W:SectionHeader(parent, btnSpellName .. " x " .. buffName, y);  y = y - h
-
-                    -- Row 1: Glow When | Only In Combat
-                    local modeRow
-                    local removeAIdx = aIdx
-                    modeRow, h = W:DualRow(parent, y,
-                        { type = "dropdown", text = "Glow When",
-                          values = BG_MODE_VALUES, order = BG_MODE_ORDER,
-                          getValue = function() return entry.mode or "ACTIVE" end,
-                          setValue = function(v)
-                              entry.mode = v
-                              Refresh()
-                              EllesmereUI:RefreshPage()
-                          end,
-                        },
-                        { type = "toggle", text = "Only In Combat",
-                          getValue = function() return entry.onlyInCombat == true end,
-                          setValue = function(v)
-                              entry.onlyInCombat = v or nil
-                              Refresh()
-                          end,
-                        }
-                    );  y = y - h
-
-                    -- Helper: resolve current glow color and restart preview if active
-                    local pvKey = assignKey .. "_" .. aIdx
-                    local function RefreshPreviewGlow()
-                        if not _bgPreviewGlowActive[pvKey] then return end
-                        local ov = _bgPreviewGlowOverlays[pvKey]
-                        if not ov then return end
-                        local style = BarHasCustomShape(curBar) and 2 or (entry.glowStyle or 1)
-                        local cr, cg, cb
-                        if entry.colorMode == "class" then
-                            local cc = EllesmereUI.GetClassColor(EllesmereUI._playerClass)
-                            cr, cg, cb = cc.r, cc.g, cc.b
-                        elseif entry.colorMode == "custom" and entry.glowColor then
-                            cr, cg, cb = entry.glowColor.r, entry.glowColor.g, entry.glowColor.b
-                        end
-                        ns.StopNativeGlow(ov)
-                        -- Blackout reads its fill opacity from the extras; every other
-                        -- style takes the shared panel extras.
-                        ns.StartNativeGlow(ov, style, cr, cg, cb,
-                            style == 8 and { panel = true, alpha = entry.glowAlpha } or EllesmereUI.Glows.PANEL_EXTRA)
-                    end
-
-                    -- At Stacks (toggle) + gear (Comparison / Stack Count), paired with
-                    -- Glow Type so every row stays filled. Same operator set and same
-                    -- fail-open bias as the per-icon Glow at Stacks feature (Stack Text
-                    -- and Glows cog): an unknown/secret application count never blocks
-                    -- the glow.
-                    local stackRow
-                    stackRow, h = W:DualRow(parent, y,
-                        { type = "toggle", text = "At Stacks",
-                          tooltip = "Only glow once the buff's stack count matches the comparison set via the gear.",
-                          disabled = function() return entry.mode == "MISSING" end,
-                          disabledTooltip = "Not available in Buff Missing mode",
-                          getValue = function() return entry.stackEnabled == true end,
-                          setValue = function(v)
-                              entry.stackEnabled = v or nil
-                              Refresh()
-                              EllesmereUI:RefreshPage()
-                          end,
-                        },
-                        { type = "dropdown", text = "Glow Type",
-                          values = glowLabels, order = glowOrder,
-                          disabled = function() return BarHasCustomShape(curBar) end,
-                          disabledTooltip = "This option is not available for custom shaped icons",
-                          getValue = function()
-                              if BarHasCustomShape(curBar) then return 2 end
-                              return entry.glowStyle or 1
-                          end,
-                          setValue = function(v)
-                              entry.glowStyle = tonumber(v) or 1
-                              Refresh()
-                              RefreshPreviewGlow()
-                              EllesmereUI:RefreshPage()
-                          end,
-                        }
-                    );  y = y - h
-                    do
-                        local rgn = stackRow._leftRegion
-                        EllesmereUI.BuildInlineCog(rgn, {
-                            title = "At Stacks",
-                            disabled = function() return entry.mode == "MISSING" or not entry.stackEnabled end,
-                            disabledTooltip = function()
-                                return entry.mode == "MISSING" and "This option is not available in Buff Missing mode" or "At Stacks"
-                            end,
-                            frameStrata = "FULLSCREEN_DIALOG", frameLevel = 350,
-                            rows = {
-                                { type = "dropdown", label = "Comparison",
-                                  values = { lt = "Below (<)", lte = "At Most (<=)", eq = "Exactly (=)", gte = "At Least (>=)", gt = "Above (>)" },
-                                  order = { "lt", "lte", "eq", "gte", "gt" },
-                                  get = function() return entry.stackOperator or "gte" end,
-                                  set = function(v)
-                                      entry.stackOperator = v ~= "gte" and v or nil
-                                      Refresh()
-                                  end },
-                                { type = "input", label = "Stack Count", inputWidth = 42, commitOnBlur = true,
-                                  get = function() return tostring(tonumber(entry.stackThreshold) or 2) end,
-                                  set = function(v)
-                                      local t = math.floor(tonumber(v) or 2)
-                                      if t < 1 then t = 1 end
-                                      if t > 99 then t = 99 end
-                                      entry.stackThreshold = t
-                                      Refresh()
-                                  end },
+                        -- At Stacks (toggle) + gear (Comparison / Stack Count), paired with
+                        -- Glow Type so every row stays filled. Same operator set and same
+                        -- fail-open bias as the per-icon Glow at Stacks feature (Stack Text
+                        -- and Glows cog): an unknown/secret application count never blocks
+                        -- the glow.
+                        local stackRow
+                        stackRow, h = W:DualRow(parent, y,
+                            { type = "toggle", text = "At Stacks",
+                              tooltip = "Only glow once the buff's stack count matches the comparison set via the gear.",
+                              disabled = function() return entry.mode == "MISSING" end,
+                              disabledTooltip = "Not available in Buff Missing mode",
+                              getValue = function() return entry.stackEnabled == true end,
+                              setValue = function(v)
+                                  entry.stackEnabled = v or nil
+                                  Refresh()
+                                  EllesmereUI:RefreshPage()
+                              end,
                             },
-                        })
-                    end
-
-                    -- Eyeball preview toggle (on right region of the At Stacks / Glow Type row)
-                    if not EllesmereUI._prebuilding then
-                        local EYE_VIS   = EllesmereUI.EYE_VISIBLE_ICON
-                        local EYE_INVIS = EllesmereUI.EYE_INVISIBLE_ICON
-                        local leftRgn = stackRow._rightRegion
-                        if leftRgn and leftRgn._control then
-                            local eyeBtn = CreateFrame("Button", nil, leftRgn)
-                            eyeBtn:SetSize(26, 26)
-                            eyeBtn:SetPoint("RIGHT", leftRgn._control, "LEFT", -8, 0)
-                            eyeBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-                            eyeBtn:SetAlpha(0.4)
-                            local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-                            eyeTex:SetAllPoints()
-                            local function RefreshEye()
-                                eyeTex:SetTexture(_bgPreviewGlowActive[pvKey] and EYE_INVIS or EYE_VIS)
-                            end
-                            RefreshEye()
-                            eyeBtn:SetScript("OnClick", function()
-                                local previewBtn = _glowBtnFrames[curBtn]
-                                if not previewBtn then return end
-                                if not _bgPreviewGlowOverlays[pvKey] then
-                                    local ov = CreateFrame("Frame", nil, previewBtn)
-                                    ov:SetAllPoints(previewBtn)
-                                    ov:SetFrameLevel(previewBtn:GetFrameLevel() + 10)
-                                    ov._euiGlowPreview = true  -- exempt from Show Glows Only in Combat
-                                    _bgPreviewGlowOverlays[pvKey] = ov
-                                end
-                                local ov = _bgPreviewGlowOverlays[pvKey]
-                                if _bgPreviewGlowActive[pvKey] then
-                                    ns.StopNativeGlow(ov)
-                                    _bgPreviewGlowActive[pvKey] = false
-                                    -- Restore accent border
-                                    if previewBtn._accentBrd then previewBtn._accentBrd:Show() end
-                                else
-                                    local style = BarHasCustomShape(curBar) and 2 or (entry.glowStyle or 1)
-                                    local cr, cg, cb
-                                    if entry.colorMode == "class" then
-                                        local cc = EllesmereUI.GetClassColor(EllesmereUI._playerClass)
-                                        cr, cg, cb = cc.r, cc.g, cc.b
-                                    elseif entry.colorMode == "custom" and entry.glowColor then
-                                        cr, cg, cb = entry.glowColor.r, entry.glowColor.g, entry.glowColor.b
-                                    end
-                                    ns.StartNativeGlow(ov, style, cr, cg, cb,
-                                        style == 8 and { panel = true, alpha = entry.glowAlpha } or EllesmereUI.Glows.PANEL_EXTRA)
-                                    _bgPreviewGlowActive[pvKey] = true
-                                    -- Hide accent border so glow is visible
-                                    if previewBtn._accentBrd then previewBtn._accentBrd:Hide() end
-                                end
-                                RefreshEye()
-                            end)
-                            eyeBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-                            eyeBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-
-                            -- Blackout fill opacity, in a cog chained left of the eye. Locked
-                            -- unless the entry renders Blackout (custom-shaped bars always
-                            -- draw Shape Glow); the Glow Type setter's page refresh re-checks it.
-                            leftRgn._lastInline = eyeBtn
-                            EllesmereUI.BuildInlineCog(leftRgn, {
-                                title = "Blackout",
-                                disabled = function()
-                                    return (BarHasCustomShape(curBar) and 2 or (entry.glowStyle or 1)) ~= 8
-                                end,
+                            { type = "dropdown", text = "Glow Type",
+                              values = glowLabels, order = glowOrder,
+                              disabled = function() return BarHasCustomShape(curBar) end,
+                              disabledTooltip = "This option is not available for custom shaped icons",
+                              getValue = function()
+                                  if BarHasCustomShape(curBar) then return 2 end
+                                  return entry.glowStyle or 1
+                              end,
+                              setValue = function(v)
+                                  entry.glowStyle = tonumber(v) or 1
+                                  Refresh()
+                                  RefreshPreviewGlow()
+                                  EllesmereUI:RefreshPage()
+                              end,
+                            }
+                        );  y = y - h
+                        do
+                            local rgn = stackRow._leftRegion
+                            EllesmereUI.BuildInlineCog(rgn, {
+                                title = "At Stacks",
+                                disabled = function() return entry.mode == "MISSING" or not entry.stackEnabled end,
                                 disabledTooltip = function()
-                                    return BarHasCustomShape(curBar) and "This option is not available for custom shaped icons"
-                                        or "This option requires the Blackout glow type"
+                                    return entry.mode == "MISSING" and "This option is not available in Buff Missing mode" or "At Stacks"
                                 end,
                                 frameStrata = "FULLSCREEN_DIALOG", frameLevel = 350,
                                 rows = {
-                                    { type = "slider", label = "Opacity", min = 1, max = 100, step = 1,
-                                      get = function() return math.floor((entry.glowAlpha or 1) * 100 + 0.5) end,
+                                    { type = "dropdown", label = "Comparison",
+                                      values = { lt = "Below (<)", lte = "At Most (<=)", eq = "Exactly (=)", gte = "At Least (>=)", gt = "Above (>)" },
+                                      order = { "lt", "lte", "eq", "gte", "gt" },
+                                      get = function() return entry.stackOperator or "gte" end,
                                       set = function(v)
-                                          entry.glowAlpha = v / 100
-                                          -- Restarts the lit Bar Glows with the new opacity (fires
-                                          -- per drag step, so no full CDM rebuild here).
-                                          if ns.RequestBarGlowUpdate then ns.RequestBarGlowUpdate() end
-                                          RefreshPreviewGlow()
+                                          entry.stackOperator = v ~= "gte" and v or nil
+                                          Refresh()
+                                      end },
+                                    { type = "input", label = "Stack Count", inputWidth = 42, commitOnBlur = true,
+                                      get = function() return tostring(tonumber(entry.stackThreshold) or 2) end,
+                                      set = function(v)
+                                          local t = math.floor(tonumber(v) or 2)
+                                          if t < 1 then t = 1 end
+                                          if t > 99 then t = 99 end
+                                          entry.stackThreshold = t
+                                          Refresh()
                                       end },
                                 },
                             })
                         end
-                    end
 
-                    -- Row: Glow Color (swatches) | Remove Glow
-                    local colorRow
-                    colorRow, h = W:DualRow(parent, y,
-                        { type = "label", text = "Glow Color" },
-                        { type = "labeledButton", text = "Remove Glow", buttonText = "Remove", width = 150,
-                          onClick = function()
-                              table.remove(buffList, removeAIdx)
-                              if #buffList == 0 then
-                                  bg.assignments[assignKey] = nil
-                              end
-                              Refresh()
-                              EllesmereUI:RefreshPage(true)
-                          end,
-                        }
-                    );  y = y - h
-
-                    -- Inline color swatch for glow color (on left region)
-                    if not EllesmereUI._prebuilding then
-                        local leftRgn = colorRow._leftRegion
-                        if leftRgn and EllesmereUI.BuildTrioColorSwatch then
-                            local glowSwatch, defaultSwatch, classSwatch = EllesmereUI.BuildTrioColorSwatch(
-                                leftRgn, colorRow:GetFrameLevel() + 3,
-                                {
-                                    getMode = function() return entry.colorMode or "default" end,
-                                    setMode = function(m) entry.colorMode = m end,
-                                    getCustomRGB = function()
-                                        local c = entry.glowColor or { r = 1.0, g = 0.788, b = 0.137 }
-                                        return c.r, c.g, c.b
-                                    end,
-                                    setCustomRGB = function(r, g, b)
-                                        entry.glowColor = { r = r, g = g, b = b }
-                                    end,
-                                    hasClassColor = true,
-                                    onChange = function() Refresh(); RefreshPreviewGlow(); EllesmereUI:RefreshPage() end,
-                                    overrideSize = 20,
-                                })
-                            PP.Point(classSwatch, "RIGHT", leftRgn, "RIGHT", -20, 0)
-                            PP.Point(glowSwatch, "RIGHT", classSwatch, "LEFT", -8, 0)
-                            PP.Point(defaultSwatch, "RIGHT", glowSwatch, "LEFT", -8, 0)
-                        end
-                    end
-
-                    -- Buff icon to the LEFT of the Remove button
-                    do
-                        local rightRgn = colorRow._rightRegion
-                        if rightRgn and rightRgn._control then
-                            local btn = rightRgn._control
-                            local btnH = btn:GetHeight()
-                            local ico = rightRgn:CreateTexture(nil, "ARTWORK")
-                            ico:SetSize(btnH, btnH)
-                            PP.Point(ico, "RIGHT", btn, "LEFT", -8, 0)
-                            ico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-                            if entry.spellID and entry.spellID > 0 then
-                                local info = C_Spell.GetSpellInfo(entry.spellID)
-                                if info and info.iconID then
-                                    ico:SetTexture(info.iconID)
+                        -- Eyeball preview toggle (on right region of the At Stacks / Glow Type row)
+                        if not EllesmereUI._prebuilding then
+                            local EYE_VIS   = EllesmereUI.EYE_VISIBLE_ICON
+                            local EYE_INVIS = EllesmereUI.EYE_INVISIBLE_ICON
+                            local leftRgn = stackRow._rightRegion
+                            if leftRgn and leftRgn._control then
+                                local eyeBtn = CreateFrame("Button", nil, leftRgn)
+                                eyeBtn:SetSize(26, 26)
+                                eyeBtn:SetPoint("RIGHT", leftRgn._control, "LEFT", -8, 0)
+                                eyeBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
+                                eyeBtn:SetAlpha(0.4)
+                                local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+                                eyeTex:SetAllPoints()
+                                local function RefreshEye()
+                                    eyeTex:SetTexture(_bgPreviewGlowActive[pvKey] and EYE_INVIS or EYE_VIS)
                                 end
+                                RefreshEye()
+                                eyeBtn:SetScript("OnClick", function()
+                                    local previewBtn = _glowBtnFrames[curBtn]
+                                    if not previewBtn then return end
+                                    if not _bgPreviewGlowOverlays[pvKey] then
+                                        local ov = CreateFrame("Frame", nil, previewBtn)
+                                        ov:SetAllPoints(previewBtn)
+                                        ov:SetFrameLevel(previewBtn:GetFrameLevel() + 10)
+                                        ov._euiGlowPreview = true  -- exempt from Show Glows Only in Combat
+                                        _bgPreviewGlowOverlays[pvKey] = ov
+                                    end
+                                    local ov = _bgPreviewGlowOverlays[pvKey]
+                                    if _bgPreviewGlowActive[pvKey] then
+                                        ns.StopNativeGlow(ov)
+                                        _bgPreviewGlowActive[pvKey] = false
+                                        -- Restore accent border
+                                        if previewBtn._accentBrd then previewBtn._accentBrd:Show() end
+                                    else
+                                        local style = BarHasCustomShape(curBar) and 2 or (entry.glowStyle or 1)
+                                        local cr, cg, cb
+                                        if entry.colorMode == "class" then
+                                            local cc = EllesmereUI.GetClassColor(EllesmereUI._playerClass)
+                                            cr, cg, cb = cc.r, cc.g, cc.b
+                                        elseif entry.colorMode == "custom" and entry.glowColor then
+                                            cr, cg, cb = entry.glowColor.r, entry.glowColor.g, entry.glowColor.b
+                                        end
+                                        ns.StartNativeGlow(ov, style, cr, cg, cb,
+                                            style == 8 and { panel = true, alpha = entry.glowAlpha } or EllesmereUI.Glows.PANEL_EXTRA)
+                                        _bgPreviewGlowActive[pvKey] = true
+                                        -- Hide accent border so glow is visible
+                                        if previewBtn._accentBrd then previewBtn._accentBrd:Hide() end
+                                    end
+                                    RefreshEye()
+                                end)
+                                eyeBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
+                                eyeBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
+
+                                -- Blackout fill opacity, in a cog chained left of the eye. Locked
+                                -- unless the entry renders Blackout (custom-shaped bars always
+                                -- draw Shape Glow); the Glow Type setter's page refresh re-checks it.
+                                leftRgn._lastInline = eyeBtn
+                                EllesmereUI.BuildInlineCog(leftRgn, {
+                                    title = "Blackout",
+                                    disabled = function()
+                                        return (BarHasCustomShape(curBar) and 2 or (entry.glowStyle or 1)) ~= 8
+                                    end,
+                                    disabledTooltip = function()
+                                        return BarHasCustomShape(curBar) and "This option is not available for custom shaped icons"
+                                            or "This option requires the Blackout glow type"
+                                    end,
+                                    frameStrata = "FULLSCREEN_DIALOG", frameLevel = 350,
+                                    rows = {
+                                        { type = "slider", label = "Opacity", min = 1, max = 100, step = 1,
+                                          get = function() return math.floor((entry.glowAlpha or 1) * 100 + 0.5) end,
+                                          set = function(v)
+                                              entry.glowAlpha = v / 100
+                                              -- Restarts the lit Bar Glows with the new opacity (fires
+                                              -- per drag step, so no full CDM rebuild here).
+                                              if ns.RequestBarGlowUpdate then ns.RequestBarGlowUpdate() end
+                                              RefreshPreviewGlow()
+                                          end },
+                                    },
+                                })
+                            end
+                        end
+
+                        -- Retail: Only In Combat | Hero Talent, then Glow Color (swatches) |
+                        -- (icon) [Duplicate] [Remove]. WoW Forever has no Hero Talent half,
+                        -- so the slots re-pair there: Only In Combat | Glow Color, then the
+                        -- buttons in the left half of the last row.
+                        local glowColorCfg = { type = "label", text = "Glow Color" }
+                        local removeCfg = { type = "labeledButton", text = "", buttonText = "Remove", width = 150,
+                            onClick = function()
+                                table.remove(buffList, removeAIdx)
+                                if #buffList == 0 then
+                                    bg.assignments[assignKey] = nil
+                                end
+                                Refresh()
+                                EllesmereUI:RefreshPage(true)
+                            end,
+                        }
+                        local colorRow, colorRgn, removeRgn
+                        if EllesmereUI.IS_FOREVER then
+                            colorRow, h = W:DualRow(parent, y, ns.BarGlowCombatCfg(entry, Refresh), glowColorCfg);  y = y - h
+                            colorRgn = colorRow._rightRegion
+                            local removeRow
+                            removeRow, h = W:DualRow(parent, y, removeCfg, EllesmereUI.BlankRowCfg());  y = y - h
+                            removeRgn = removeRow._leftRegion
+                        else
+                            y = ns.BuildBarGlowCombatRow(W, parent, y, entry, Refresh)
+                            colorRow, h = W:DualRow(parent, y, glowColorCfg, removeCfg);  y = y - h
+                            colorRgn, removeRgn = colorRow._leftRegion, colorRow._rightRegion
+                        end
+
+                        -- Inline color swatch for glow color
+                        if not EllesmereUI._prebuilding then
+                            local leftRgn = colorRgn
+                            if leftRgn and EllesmereUI.BuildTrioColorSwatch then
+                                local glowSwatch, defaultSwatch, classSwatch = EllesmereUI.BuildTrioColorSwatch(
+                                    leftRgn, colorRow:GetFrameLevel() + 3,
+                                    {
+                                        getMode = function() return entry.colorMode or "default" end,
+                                        setMode = function(m) entry.colorMode = m end,
+                                        getCustomRGB = function()
+                                            local c = entry.glowColor or { r = 1.0, g = 0.788, b = 0.137 }
+                                            return c.r, c.g, c.b
+                                        end,
+                                        setCustomRGB = function(r, g, b)
+                                            entry.glowColor = { r = r, g = g, b = b }
+                                        end,
+                                        hasClassColor = true,
+                                        onChange = function() Refresh(); RefreshPreviewGlow(); EllesmereUI:RefreshPage() end,
+                                        overrideSize = 20,
+                                    })
+                                PP.Point(classSwatch, "RIGHT", leftRgn, "RIGHT", -20, 0)
+                                PP.Point(glowSwatch, "RIGHT", classSwatch, "LEFT", -8, 0)
+                                PP.Point(defaultSwatch, "RIGHT", glowSwatch, "LEFT", -8, 0)
+                            end
+                        end
+
+                        -- Duplicate, then the buff icon (spell tooltip on hover), LEFT of Remove
+                        if not EllesmereUI._prebuilding then
+                            local rightRgn = removeRgn
+                            if rightRgn and rightRgn._control then
+                                local btn = rightRgn._control
+                                local dupBtn = ns.BarGlowDuplicateButton(rightRgn, btn, buffList, aIdx, function()
+                                    Refresh()
+                                    EllesmereUI:RefreshPage(true)
+                                end)
+                                local ico = ns.BarGlowSpellIcon(rightRgn, btn:GetHeight(), entry.spellID)
+                                PP.Point(ico, "RIGHT", dupBtn or btn, "LEFT", -8, 0)
                             end
                         end
                     end

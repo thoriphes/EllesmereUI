@@ -106,10 +106,8 @@ local CHAT_DEFAULTS = {
             tabBorderColorMode = "custom",
             tabBorderColor = { r=1, g=1, b=1 },
             tabBorderOpacity = 0.18,
-            alignTabsToPanel = false,
             tabHeight = 24,
             tabInnerPaddingX = 12,
-            tabOffsetX = 0,
             scrollButtonOnChat = false,
             tabBackgroundColor = { r=0.03, g=0.045, b=0.05, a=0.44 },
             tabBackgroundColorActive = { r=0.03, g=0.045, b=0.05, a=0.65 },
@@ -157,36 +155,6 @@ local CHAT_DEFAULTS = {
             -- Session chat history (EllesmereUIChat_SessionHistory.lua, SavedVariablesPerCharacter)
             persistChatHistory = true,
             persistChatHistoryMaxLines = 100,
-        },
-        -- Chat Bubbles riding on Blizzard's own (EllesmereUIChat_Bubbles.lua). Off by default:
-        -- switching it on also switches Blizzard's own bubbles ON for the channels enabled
-        -- below, so it is opt-in.
-        chatBubbles = {
-            enabled = false,
-            -- No guild key: Blizzard draws no bubble for guild chat, so there is nothing to
-            -- ride on and no position to borrow. party and raid are overwritten from
-            -- Blizzard's live switches the first time the feature is enabled (SeedChannels in
-            -- EllesmereUIChat_Bubbles.lua), so group bubbles are never put in front of a
-            -- player who had them off.
-            say = true, yell = true, party = true, raid = false, npc = true, emote = true,
-            -- Our own bubbles never draw inside an instance, so this decides whether
-            -- Blizzard's are visible there. Off, which leaves the stay exactly as it is now.
-            hideInInstances = false,
-            padding = 8,
-            maxWidth = 260,
-            -- Nudge away from where Blizzard put the bubble we ride on. Zero means exactly
-            -- their position, which the engine already places over the speaker's head.
-            offsetY = 0,
-            background = true,
-            bgColor = { r = 0, g = 0, b = 0 },
-            bgAlpha = 0.5,
-            borderSize = 1,
-            borderColor = { r = 0, g = 0, b = 0, a = 1 },
-            fontSize = 12,
-            textColor = { r = 1, g = 1, b = 1 },
-            -- Off, so the configured textColor above keeps applying. On, the bubble takes the
-            -- colour the engine already gave it, which is per channel.
-            followBlizzardColor = false,
         },
     },
 }
@@ -273,41 +241,6 @@ function ns.ChatBlizzTabs() return ns.ChatStyle() == "blizzard" and not ns.ChatF
 function ECHAT.ExtendBgBehindTabs(cfg) return cfg.extendBgBehindTabs == true and not ns.ChatStock() end
 function ECHAT.InputOnTop(cfg) return (cfg.inputOnTop and not ns.ChatStock()) and true or false end
 function ECHAT.BordersHidden(cfg) return (cfg.hideBorders or ns.ChatStock()) and true or false end
-
-local _bubbleDefaults, _bubblesFallback
-
--- Never hand back CHAT_DEFAULTS itself: callers write to what they get, and a write into the
--- defaults table would be merged into every profile created afterwards.
-local function CopyBubbleDefaults()
-    return (EUI.Lite and EUI.Lite.DeepCopy
-        and EUI.Lite.DeepCopy(CHAT_DEFAULTS.profile.chatBubbles)) or {}
-end
-
--- Reference copy, read only. The single answer to "what is this setting worth when it is
--- missing", shared by the renderer and the options page so a default cannot drift between
--- files. Deliberately NOT the same table BubblesDB falls back to, which callers do write to.
-function ECHAT.BubbleDefaults()
-    if not _bubbleDefaults then _bubbleDefaults = CopyBubbleDefaults() end
-    return _bubbleDefaults
-end
-
-function ECHAT.BubblesDB()
-    local d = EnsureDB()
-    if d and d.profile then
-        -- Created on demand rather than answered with the shared fallback: callers WRITE to
-        -- what they get, and a write into the fallback is lost without a word. NewDB's default
-        -- merge normally gets here first; this covers any path that re-points db.profile at a
-        -- profile the merge has not run over.
-        if not d.profile.chatBubbles then
-            d.profile.chatBubbles = CopyBubbleDefaults()
-        end
-        return d.profile.chatBubbles
-    end
-    -- No db at all: read-only ground so the renderer and the options page still resolve every
-    -- key. Writes here go nowhere, which is why the branch above exists.
-    if not _bubblesFallback then _bubblesFallback = CopyBubbleDefaults() end
-    return _bubblesFallback
-end
 
 local PP = EUI.PP
 local function GetFont()
@@ -753,7 +686,7 @@ end
 function ECHAT.ApplyChatFontSize(size)
     if type(size) ~= "number" or size <= 0 then return end
     for i = 1, 10 do
-        if _G["ChatFrame" .. i] then SetChatWindowSize(i, size) end
+        if _G["ChatFrame" .. i] then EllesmereUI.SetChatWindowSize(i, size) end
     end
     -- Temp whisper frames carry no numbered storage; their live font is the
     -- state FCF_GetChatWindowInfo reads back, so set it directly.
@@ -1842,32 +1775,18 @@ local function EMChatResolve()
     -- keeps its OWN session copy of layoutInfo and pushes it WHOLE on Save,
     -- so a write from here is either discarded by the next Save or discards
     -- the edit in progress.
-    local emf = _G.EditModeManagerFrame
-    if emf and (emf.editModeActive or (emf.IsShown and emf:IsShown())) then return nil end
-    local ok, blob = pcall(C_EditMode.GetLayouts)
-    if not ok or type(blob) ~= "table" or type(blob.layouts) ~= "table" then return nil end
-    local active = blob.activeLayout
-    if type(active) ~= "number" then return nil end
+    if EllesmereUI.EditModeOpen() then return nil end
     -- SaveLayouts replaces the character's ENTIRE layout set and expects the
     -- shape Blizzard always passes it: PRESET layouts first, then the saved
-    -- ones, with activeLayout indexing that merged list. GetLayouts returns
-    -- only the saved half (field-dumped: 3 saved entries riding
-    -- activeLayout 5), so the merged list is rebuilt here the way
-    -- EditModeManagerFrame:UpdateLayoutInfo builds it; when the presets
-    -- cannot be resolved this fails CLOSED rather than ever handing
-    -- SaveLayouts the short list. Preset entries are read-only and are
-    -- carried through untouched purely for index alignment.
-    if not (EditModePresetLayoutManager
-        and EditModePresetLayoutManager.GetCopyOfPresetLayouts) then return nil end
-    local presets = EditModePresetLayoutManager:GetCopyOfPresetLayouts()
-    if type(presets) ~= "table" or #presets == 0 then return nil end
-    local numPresets = #presets
-    if tAppendAll then
-        tAppendAll(presets, blob.layouts)
-    else
-        for i = 1, #blob.layouts do presets[numPresets + i] = blob.layouts[i] end
-    end
-    blob.layouts = presets
+    -- ones, with activeLayout indexing that merged list (GetLayouts returns
+    -- only the saved half). When the presets cannot be resolved this fails
+    -- CLOSED rather than ever handing SaveLayouts the short list. Preset
+    -- entries are read-only and are carried through untouched purely for
+    -- index alignment.
+    local blob, numPresets = EllesmereUI.EditModeLayoutsForSave()
+    if not blob then return nil end
+    local active = blob.activeLayout
+    if type(active) ~= "number" then return nil end
     -- A preset is active: read-only, nothing safe to write (the preset-copy
     -- flow stays the open follow-up; the legacy anchor lane serves).
     if active <= numPresets then return nil end
@@ -1928,6 +1847,13 @@ local function EMChatWriteSize(w, h)
     if not (wH and wT and hH and hT) then return false end
     w = math.max(0, math.floor(w + 0.5))
     h = math.max(0, math.floor(h + 0.5))
+    -- Noted for Uninstall EUI, which puts back the size from before (no fallback),
+    -- each dimension's two rows together.
+    local Note = EllesmereUI.NoteEditModeSetting
+    Note(entry, sys, wH.setting, wH.value, math.floor(w / 100), nil, wT.setting)
+    Note(entry, sys, wT.setting, wT.value, w % 100, nil, wH.setting)
+    Note(entry, sys, hH.setting, hH.value, math.floor(h / 100), nil, hT.setting)
+    Note(entry, sys, hT.setting, hT.value, h % 100, nil, hH.setting)
     wH.value = math.floor(w / 100)
     wT.value = w % 100
     hH.value = math.floor(h / 100)
@@ -3933,11 +3859,10 @@ end)
 -------------------------------------------------------------------------------
 local _skinned = {}
 
--- Chat events counted as real PLAYER activity (used ONLY to reset the
--- idle-fade timer). NEVER add MONSTER_SAY/MONSTER_YELL: in a party their
--- chanSender is SECRET, and registering this insecure frame for them taints
--- HistoryKeeper when it string-converts the sender -> taint spam per monster
--- line. All senders below are plain visible player names.
+-- Chat events counted as real PLAYER activity (used ONLY to wake the idle
+-- fade): a line of one of these that lands in a shown chat window resets the
+-- timer (the engine's idle observer, init section 6). Player chat only: NPC
+-- lines (MONSTER_SAY / MONSTER_YELL) never wake it.
 local CHAT_MSG_EVENTS = {
     CHAT_MSG_SAY = true, CHAT_MSG_YELL = true,
     CHAT_MSG_PARTY = true, CHAT_MSG_PARTY_LEADER = true,
@@ -3945,10 +3870,10 @@ local CHAT_MSG_EVENTS = {
     CHAT_MSG_INSTANCE_CHAT = true, CHAT_MSG_INSTANCE_CHAT_LEADER = true,
     CHAT_MSG_GUILD = true, CHAT_MSG_OFFICER = true,
     CHAT_MSG_CHANNEL = true,
-    -- WHISPER/BN_WHISPER stay off this frame: the whisper-sound event frame
-    -- (init section 7) receives them, keeping secret-sender events on ONE
-    -- frame. Outgoing _INFORM variants need no registration -- the edit-box
-    -- focus-gained callback and OnChar hook already reset the fade.
+    -- WHISPER/BN_WHISPER are not listed: the whisper-sound event frame (init
+    -- section 7) wakes the fade for every incoming whisper, wherever it shows.
+    -- Outgoing _INFORM lines need nothing -- the edit-box focus-gained
+    -- callback and OnChar hook already reset the fade.
 }
 
 -------------------------------------------------------------------------------
@@ -5497,12 +5422,16 @@ initFrame:SetScript("OnEvent", function(self)
 
 
     ---------------------------------------------------------------------------
-    --  6. Idle fade: dims chat after N seconds of inactivity. Resets on a new
-    --     message on the active tab, a whisper window, edit box focus/typing,
-    --     or the cursor entering the chat area (event-driven, no polling).
+    --  6. Idle fade: dims chat after N seconds of inactivity. Resets on player
+    --     chat in a shown window (the selected tab or an undocked window), an
+    --     incoming whisper, edit box focus/typing, or the cursor entering the
+    --     chat area (event-driven, no polling).
     ---------------------------------------------------------------------------
     do
         local idleTimer = nil
+        -- Hover state (UpdateHoverState below); read by OnActiveMessage.
+        local _idleMouseOver = false
+        local SetMessageWake  -- with OnActiveMessage below
 
         local function IsIdleApplicable()
             local cfg = ECHAT.DB()
@@ -5539,12 +5468,13 @@ initFrame:SetScript("OnEvent", function(self)
 
         function ECHAT.ResetIdleTimer()
             CancelIdleFade()
-            if not IsIdleApplicable() then return end
             local cfg = ECHAT.DB()
-            if cfg.idleFadeEnabled ~= false then
-                local delay = cfg.idleFadeDelay or 15
-                idleTimer = C_Timer.NewTimer(delay, StartIdleFade)
-            end
+            local on = IsIdleApplicable() and cfg.idleFadeEnabled ~= false
+            -- Chat lines wake the fade only while it can run: nothing per line otherwise.
+            SetMessageWake(on)
+            if not on then return end
+            local delay = cfg.idleFadeDelay or 15
+            idleTimer = C_Timer.NewTimer(delay, StartIdleFade)
         end
 
         -- Idle reset throttle: max once per second.
@@ -5565,12 +5495,28 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end
 
-        -- Idle reset via standalone event frame (no hooks on chat frames).
-        local idleEventFrame = CreateFrame("Frame")
-        for ev in pairs(CHAT_MSG_EVENTS) do
-            idleEventFrame:RegisterEvent(ev)
+        -- Chat lines: the display engine's tail sees each line in the window
+        -- Blizzard put it in, after its own channel, message-group and filter
+        -- checks, so player chat (CHAT_MSG_EVENTS) wakes the fade only when
+        -- that window is shown. Inside Blizzard's chat handler the observer
+        -- only reads and shows a frame of ours; the reset runs on its next
+        -- OnUpdate, outside that handler.
+        local wakeFrame = CreateFrame("Frame")
+        wakeFrame:Hide()
+        wakeFrame:SetScript("OnUpdate", function(self)
+            self:Hide()
+            OnActiveMessage()
+        end)
+        local function WakeOnChat(cf, event)
+            if event == nil or wakeFrame:IsShown() then return end
+            if issecretvalue and issecretvalue(event) then return end
+            if CHAT_MSG_EVENTS[event] and cf:IsShown() then wakeFrame:Show() end
         end
-        idleEventFrame:SetScript("OnEvent", OnActiveMessage)
+        SetMessageWake = function(on)
+            if ECHAT.EngineSetIdleObserver then
+                ECHAT.EngineSetIdleObserver(on and WakeOnChat or nil)
+            end
+        end
 
         -- Permanent docked frames only (1-10): hooking a temp whisper edit box
         -- (11+) taints its execution context and poisons HistoryKeeper on
@@ -5651,6 +5597,14 @@ initFrame:SetScript("OnEvent", function(self)
                 end
             end
             ECHAT.ApplyWhisperMute()
+            -- Uninstall EUI: a mute of ours would outlive the reload.
+            EllesmereUI.OnUninstall(function()
+                if _tellMuted or (EllesmereUIDB and EllesmereUIDB.chatTellMuted) then
+                    UnmuteSoundFile(TELL_SOUND_FILE)
+                    _tellMuted = false
+                    if EllesmereUIDB then EllesmereUIDB.chatTellMuted = nil end
+                end
+            end)
 
             local _whisperThrottle = 0
             local whisperFrame = CreateFrame("Frame")
@@ -5673,7 +5627,6 @@ initFrame:SetScript("OnEvent", function(self)
         -- EnableMouseMotion on our bg frames + HookScript on tabs.
         -- EnableMouseMotion captures hover without blocking clicks but does
         -- block camera turning -- accepted trade-off for zero-poll.
-        local _idleMouseOver = false
         local _hoverCount = 0
         local _editFocusCount = 0
 
@@ -5799,7 +5752,7 @@ initFrame:SetScript("OnEvent", function(self)
     EUI.RegAccent({ type = "callback", fn = UpdateTabColors })
 
     -- Enable scroll-to-scroll chat (Blizzard disables by default)
-    if SetCVar then SetCVar("chatMouseScroll", 1) end
+    EllesmereUI.SetCVar("chatMouseScroll", 1, "EllesmereUIChat")
 
     -- Seed the engine's stamp-all transform with the RESOLVED format:
     -- explicit formats pass through, "__blizzard" resolves to Blizzard's own
@@ -5822,11 +5775,10 @@ initFrame:SetScript("OnEvent", function(self)
 
     local function ApplyTimestampCVar()
         ApplyStampAll()
-        if not SetCVar then return end
         local cfg = ECHAT.DB()
         local fmt = cfg.timestampFormat or "%I:%M "
         if fmt == "__blizzard" then return end
-        SetCVar("showTimestamps", fmt)
+        EllesmereUI.SetCVar("showTimestamps", fmt, "EllesmereUIChat")
     end
     ApplyTimestampCVar()
     C_Timer.After(2, ApplyTimestampCVar)
@@ -5925,12 +5877,11 @@ initFrame:SetScript("OnEvent", function(self)
         ECHAT.ApplyBackground()
         ECHAT.ApplyFonts()
         if ECHAT.RefreshVisibility then ECHAT.RefreshVisibility() end
+        -- The new profile's idle fade settings (and whether chat lines wake it).
+        if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
         -- The passes above can build panel chrome (borders, the tab-band
         -- extension) that did not exist when the house editor opened.
         ECHAT.ApplyPanelHost()
-        -- A profile swap or import re-points db.profile, so the bubbles feature has to
-        -- re-read enabled/channels and re-assert Blizzard's CVars against the new values.
-        if ns.ChatBubbles then ns.ChatBubbles.Refresh() end
         ECHAT.ApplyWhisperMute()
     end
 
@@ -6162,10 +6113,5 @@ initFrame:SetScript("OnEvent", function(self)
         local f = _G[frameName]
         if f then f:SetAlpha(0); f:EnableMouse(false) end
     end
-
-    ---------------------------------------------------------------------------
-    --  15. Chat Bubbles (EllesmereUIChat_Bubbles.lua)
-    ---------------------------------------------------------------------------
-    if ns.ChatBubbles then ns.ChatBubbles.Refresh() end
 
 end)

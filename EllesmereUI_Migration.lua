@@ -1695,6 +1695,20 @@ EllesmereUI.RegisterMigration({
 })
 
 EllesmereUI.RegisterMigration({
+    id          = "chat_bubbles_to_blizzskin_v1",
+    scope       = "profile",
+    description = "Move Chat Bubbles settings from the Chat module profile to the profile root (Blizz UI Enhanced).",
+    body = function(ctx)
+        local chat = ctx.profile.addons and ctx.profile.addons.EllesmereUIChat
+        if not chat or type(chat.chatBubbles) ~= "table" then return end
+        if ctx.profile.chatBubbles == nil then
+            ctx.profile.chatBubbles = chat.chatBubbles
+        end
+        chat.chatBubbles = nil
+    end,
+})
+
+EllesmereUI.RegisterMigration({
     id          = "np_border_ellesmere_to_simple_v3",
     scope       = "profile",
     description = "No-op (superseded by np_border_v5).",

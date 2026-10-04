@@ -63,6 +63,10 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
             local bstore = ns.GetSpellSettingsStore and ns.GetSpellSettingsStore("buffs")
             if bstore and bstore[ckey] then return ckey end
             if ns.IsCollidedBuffSid and ns.IsCollidedBuffSid(sid) then return ckey end
+            -- A slot this bar claims by cooldownID (tracked trinket row) keys the
+            -- same way whether or not its spell resolves, as on CD/utility bars.
+            local claims = ns.CollectCdClaimSet(ns.GetBarSpellData(barKey))
+            if claims and claims[cdID] then return ckey end
         end
         return sid
     end
@@ -289,6 +293,10 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
             if isBuffBar then
                 spellID = ResolveBuffSettingsKey(anchorFrame)
                     or (sd and sd.assignedSpells and sd.assignedSpells[slotIndex])
+                -- Unresolved cd-claim slot (tracked trinket row with its buff down):
+                -- key it the way the runtime reads cd-claimed slots.
+                local cdClaimB = type(spellID) == "number" and ns.CdClaimMarkerToCdID(spellID)
+                if cdClaimB then spellID = "c" .. cdClaimB end
             else
                 spellID = sd and sd.assignedSpells and sd.assignedSpells[slotIndex]
                 if (not spellID or spellID == 0) and anchorFrame and anchorFrame._previewSpellID then
@@ -326,7 +334,14 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                 -- Effective-read view: the entry (or a not-yet-persisted fresh table)
                 -- chained to the bar tiers, so the menu shows the values the icon actually renders with; EnsureSS() persists the entry on first WRITE.
                 local ss = store and store[spellID]
-                if not ss then ss = {} end
+                if not ss then
+                    -- A cooldownID-keyed slot with no entry yet renders its spell's entry
+                    -- (the runtime falls back to it): start from a copy, so the first
+                    -- write keeps those values instead of shadowing them.
+                    local src = type(spellID) == "string" and store and anchorFrame
+                        and anchorFrame._previewSpellID and store[anchorFrame._previewSpellID]
+                    ss = type(src) == "table" and CopyTable(src) or {}
+                end
                 ns.ChainSettings(ss, (not isHostedBuff) and ns.GetBarTierSettings(sd, barKey) or nil)
                 local function EnsureSS()
                     if store and not store[spellID] then
@@ -1337,8 +1352,12 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                     -- Shift variants: same hide as the plain modes below, but the bar re-lays out so the remaining icons close the gap.
                     { val = "hiddenOnCDShift",  label = "Hidden on CD (Shift Icons)" },
                     { val = "hiddenReadyShift", label = "Hidden CD Ready (Shift Icons)" },
+                    { val = "hiddenUnusableShift", label = "Hidden Until Usable (Shift Icons)",
+                      tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
                     { val = "hiddenOnCD",      label = "Hidden (On CD)" },
                     { val = "hiddenReady",     label = "Hidden (CD Ready)" },
+                    { val = "hiddenUnusable",  label = "Hidden (Until Usable)",
+                      tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
                     -- One CD Ready glow per variant; the style is its own row below
                     -- (cdStateGlowStyle). The stored button* values still render as
                     -- Action Button Glow and read back as the matching entry here.
@@ -2735,8 +2754,12 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                         -- the bar re-lays out so remaining icons close the gap.
                         { val = "hiddenOnCDShift",  label = "Hidden on CD (Shift Icons)" },
                         { val = "hiddenReadyShift", label = "Hidden CD Ready (Shift Icons)" },
+                        { val = "hiddenUnusableShift", label = "Hidden Until Usable (Shift Icons)",
+                          tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
                         { val = "hiddenOnCD",      label = "Hidden (On CD)" },
                         { val = "hiddenReady",     label = "Hidden (CD Ready)" },
+                        { val = "hiddenUnusable",  label = "Hidden (Until Usable)",
+                          tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
                         { val = "pixelGlowReady",  label = "Glow (CD Ready)" },
                         { val = "glowOnCD",        label = "Glow (On CD)" },
                     }
@@ -4542,12 +4565,12 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                 if aPri ~= bPri then return aPri < bPri end
                 return a.name < b.name
             end)
-            _cachedBagItems = results
-            _bagScanComplete = allResolved
+            optState._cachedBagItems = results
+            optState._bagScanComplete = allResolved
             return allResolved
         end
         ResolveBagItems()
-        if not _bagScanComplete then
+        if not optState._bagScanComplete then
             local attempts = 0
             local ticker
             ticker = C_Timer.NewTicker(0.2, function()
@@ -4555,12 +4578,12 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                 local done = ResolveBagItems()
                 if done or attempts >= 25 then
                     if ticker then ticker:Cancel() end
-                    _bagScanComplete = true
-                    if _customTrackingSub and _customTrackingSub:IsShown() then
-                        _customTrackingSub._needsRebuild = true
+                    optState._bagScanComplete = true
+                    if optState._customTrackingSub and optState._customTrackingSub:IsShown() then
+                        optState._customTrackingSub._needsRebuild = true
                     end
-                elseif _customTrackingSub and _customTrackingSub:IsShown() then
-                    _customTrackingSub._needsRebuild = true
+                elseif optState._customTrackingSub and optState._customTrackingSub:IsShown() then
+                    optState._customTrackingSub._needsRebuild = true
                 end
             end)
             menu:HookScript("OnHide", function()
@@ -4587,7 +4610,7 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
         ctArrow:SetAlpha(0.7)
 
         local function ShowCustomTrackingSub()
-            local items = _cachedBagItems or {}
+            local items = optState._cachedBagItems or {}
             local alreadyTracked = {}
             local sdCT = bd and ns.GetBarSpellData(bd.key)
             if sdCT and sdCT.assignedSpells then
@@ -4599,38 +4622,38 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
             for _, it in ipairs(items) do
                 if not alreadyTracked[it.itemID] then filtered[#filtered + 1] = it end
             end
-            local prevCount = _customTrackingSub and _customTrackingSub._itemCount or -1
-            if not _customTrackingSub then
-                _customTrackingSub = CreateFrame("Frame", nil, UIParent)
-                _customTrackingSub:SetFrameStrata("FULLSCREEN_DIALOG")
-                _customTrackingSub:SetFrameLevel(menu:GetFrameLevel() + 5)
-                _customTrackingSub:SetClampedToScreen(true)
-                _customTrackingSub:EnableMouse(true)
-            elseif _customTrackingSub:IsShown() and #filtered == prevCount and not _customTrackingSub._needsRebuild then
+            local prevCount = optState._customTrackingSub and optState._customTrackingSub._itemCount or -1
+            if not optState._customTrackingSub then
+                optState._customTrackingSub = CreateFrame("Frame", nil, UIParent)
+                optState._customTrackingSub:SetFrameStrata("FULLSCREEN_DIALOG")
+                optState._customTrackingSub:SetFrameLevel(menu:GetFrameLevel() + 5)
+                optState._customTrackingSub:SetClampedToScreen(true)
+                optState._customTrackingSub:EnableMouse(true)
+            elseif optState._customTrackingSub:IsShown() and #filtered == prevCount and not optState._customTrackingSub._needsRebuild then
                 return
             else
-                for _, child in ipairs({_customTrackingSub:GetChildren()}) do child:Hide(); child:SetParent(nil) end
-                for _, rgn in ipairs({_customTrackingSub:GetRegions()}) do if rgn.Hide then rgn:Hide() end end
+                for _, child in ipairs({optState._customTrackingSub:GetChildren()}) do child:Hide(); child:SetParent(nil) end
+                for _, rgn in ipairs({optState._customTrackingSub:GetRegions()}) do if rgn.Hide then rgn:Hide() end end
             end
-            _customTrackingSub._itemCount = #filtered
-            _customTrackingSub._needsRebuild = false
+            optState._customTrackingSub._itemCount = #filtered
+            optState._customTrackingSub._needsRebuild = false
             local subW = 220
             local SUB_ITEM_H = 26
             local SUB_MAX_H = 260
             -- Item captions collected as the rows are built, so the frame can be
             -- widened to the longest bag-item name instead of ellipsising it.
             local subLabels = {}
-            _customTrackingSub:SetSize(subW, 10)
-            _customTrackingSub:ClearAllPoints()
-            _customTrackingSub:SetPoint("TOPLEFT", ctItem, "TOPRIGHT", 2, 0)
-            local subBg = _customTrackingSub:CreateTexture(nil, "BACKGROUND")
+            optState._customTrackingSub:SetSize(subW, 10)
+            optState._customTrackingSub:ClearAllPoints()
+            optState._customTrackingSub:SetPoint("TOPLEFT", ctItem, "TOPRIGHT", 2, 0)
+            local subBg = optState._customTrackingSub:CreateTexture(nil, "BACKGROUND")
             subBg:SetAllPoints(); subBg:SetColorTexture(mBgR, mBgG, mBgB, mBgA)
-            EllesmereUI.MakeBorder(_customTrackingSub, 1, 1, 1, mBrdA, EllesmereUI.PP)
-            local subInner = CreateFrame("Frame", nil, _customTrackingSub)
+            EllesmereUI.MakeBorder(optState._customTrackingSub, 1, 1, 1, mBrdA, EllesmereUI.PP)
+            local subInner = CreateFrame("Frame", nil, optState._customTrackingSub)
             subInner:SetWidth(subW); subInner:SetPoint("TOPLEFT")
             local subH = 4
             if #filtered == 0 then
-                local loadingText = (not _bagScanComplete) and "Loading items..." or "No on-use items in bags"
+                local loadingText = (not optState._bagScanComplete) and "Loading items..." or "No on-use items in bags"
                 local emptyLbl = subInner:CreateFontString(nil, "OVERLAY")
                 emptyLbl:SetFont(FONT_PATH, 10, GetCDMOptOutline())
                 emptyLbl:SetPoint("TOPLEFT", subInner, "TOPLEFT", 10, -subH - 4)
@@ -4643,7 +4666,7 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                     si:SetHeight(SUB_ITEM_H)
                     si:SetPoint("TOPLEFT", subInner, "TOPLEFT", 1, -subH)
                     si:SetPoint("TOPRIGHT", subInner, "TOPRIGHT", -1, -subH)
-                    si:SetFrameLevel(_customTrackingSub:GetFrameLevel() + 2)
+                    si:SetFrameLevel(optState._customTrackingSub:GetFrameLevel() + 2)
                     si:RegisterForClicks("AnyUp")
                     local sIco = si:CreateTexture(nil, "ARTWORK")
                     local icoSz = SUB_ITEM_H - 2
@@ -4667,7 +4690,7 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                         sLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA); sHl:SetAlpha(0)
                     end)
                     si:SetScript("OnClick", function()
-                        _customTrackingSub:Hide(); menu:Hide()
+                        optState._customTrackingSub:Hide(); menu:Hide()
                         if onSelect then onSelect(-it.itemID, true) end
                     end)
                     subH = subH + SUB_ITEM_H
@@ -4676,36 +4699,36 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
             -- Widen to the longest item name (pad leaves room for the text inset
             -- and the row's right-hand item icon).
             subW = FitMenuWidth(subLabels, subW, 48)
-            _customTrackingSub:SetWidth(subW)
+            optState._customTrackingSub:SetWidth(subW)
             subInner:SetWidth(subW)
             local totalSubH = subH + 4
             subInner:SetHeight(totalSubH)
             if totalSubH > SUB_MAX_H then
-                _customTrackingSub:SetHeight(SUB_MAX_H)
-                local sf = CreateFrame("ScrollFrame", nil, _customTrackingSub)
+                optState._customTrackingSub:SetHeight(SUB_MAX_H)
+                local sf = CreateFrame("ScrollFrame", nil, optState._customTrackingSub)
                 sf:SetPoint("TOPLEFT"); sf:SetPoint("BOTTOMRIGHT")
-                sf:SetFrameLevel(_customTrackingSub:GetFrameLevel() + 1)
+                sf:SetFrameLevel(optState._customTrackingSub:GetFrameLevel() + 1)
                 sf:EnableMouseWheel(true); sf:SetScrollChild(subInner)
                 subInner:SetWidth(subW)
                 EllesmereUI.AttachSmoothScrollbar(sf, { step = 40, thumb = false })
             else
-                _customTrackingSub:SetHeight(totalSubH)
-                subInner:SetParent(_customTrackingSub); subInner:SetPoint("TOPLEFT")
+                optState._customTrackingSub:SetHeight(totalSubH)
+                subInner:SetParent(optState._customTrackingSub); subInner:SetPoint("TOPLEFT")
             end
-            _customTrackingSub:SetScript("OnLeave", function(self)
+            optState._customTrackingSub:SetScript("OnLeave", function(self)
                 C_Timer.After(0.1, function()
                     if self:IsShown() and not self:IsMouseOver() and not ctItem:IsMouseOver() then self:Hide() end
                 end)
             end)
-            if not _bagScanComplete then
-                _customTrackingSub:SetScript("OnUpdate", function(self)
+            if not optState._bagScanComplete then
+                optState._customTrackingSub:SetScript("OnUpdate", function(self)
                     if self._needsRebuild then ShowCustomTrackingSub() end
-                    if _bagScanComplete then self:SetScript("OnUpdate", nil) end
+                    if optState._bagScanComplete then self:SetScript("OnUpdate", nil) end
                 end)
             else
-                _customTrackingSub:SetScript("OnUpdate", nil)
+                optState._customTrackingSub:SetScript("OnUpdate", nil)
             end
-            _customTrackingSub:Show()
+            optState._customTrackingSub:Show()
         end
 
         ctItem:SetScript("OnEnter", function()
@@ -4715,9 +4738,9 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
         ctItem:SetScript("OnLeave", function()
             ctLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA); ctHl:SetAlpha(0)
             C_Timer.After(0.15, function()
-                if _customTrackingSub and _customTrackingSub:IsShown()
-                   and not _customTrackingSub:IsMouseOver() and not ctItem:IsMouseOver() then
-                    _customTrackingSub:Hide()
+                if optState._customTrackingSub and optState._customTrackingSub:IsShown()
+                   and not optState._customTrackingSub:IsMouseOver() and not ctItem:IsMouseOver() then
+                    optState._customTrackingSub:Hide()
                 end
             end)
         end)
@@ -5351,7 +5374,7 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
 
     -- Close on left-click outside (non-blocking, preserves world interactions)
     menu:SetScript("OnUpdate", function(m)
-        local overSub = (_customTrackingSub and _customTrackingSub:IsShown() and _customTrackingSub:IsMouseOver())
+        local overSub = (optState._customTrackingSub and optState._customTrackingSub:IsShown() and optState._customTrackingSub:IsMouseOver())
             or (m._potionsSub and m._potionsSub:IsShown() and m._potionsSub:IsMouseOver())
         if not m:IsMouseOver() and not anchorFrame:IsMouseOver() and not overSub and IsMouseButtonDown("LeftButton") then
             m:Hide()
@@ -5359,7 +5382,7 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
     end)
     menu:HookScript("OnHide", function(m)
         m:SetScript("OnUpdate", nil)
-        if _customTrackingSub then _customTrackingSub:Hide() end
+        if optState._customTrackingSub then optState._customTrackingSub:Hide() end
         -- Per-icon cog settings for racials/pots/trinkets are edited in this
         -- menu; propagate them to synced specs when it closes.
         if ns.MaybePropagateRPT then ns.MaybePropagateRPT() end

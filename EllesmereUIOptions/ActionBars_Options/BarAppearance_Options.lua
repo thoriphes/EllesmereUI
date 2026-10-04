@@ -22,7 +22,6 @@ local function BuildBarAppearance(parent, y, ctx)
     local row
     -- Row / section references for click-navigation (returned to BuildSharedBarSettings)
     local iconsSectionHeader, textSectionHeader
-    local borderRow
     local keybindRow, chargesRow
 
     -- Called later, directly below ICON EFFECTS; defined here to share the page helpers (ctx) instead of duplicating them.
@@ -1137,7 +1136,6 @@ local function BuildBarAppearance(parent, y, ctx)
               end)
               SUpdatePreview()
           end }));  y = y - h
-    borderRow = classColorBorderRow
     do
         local rgn = classColorBorderRow._leftRegion
         EllesmereUI.BuildSyncIcon({
@@ -1283,7 +1281,7 @@ local function BuildBarAppearance(parent, y, ctx)
           getValue=function() return GetCVarBool("countdownForCooldowns") end,
           setValue=function(v)
               if InCombatLockdown() then return end
-              SetCVar("countdownForCooldowns", v and "1" or "0")
+              EllesmereUI.SetCVar("countdownForCooldowns", v and "1" or "0", "EllesmereUIActionBars")
               -- Refresh so the inline cog dims/undims with the CVar state.
               EllesmereUI:RefreshPage()
           end });  y = y - h
@@ -1651,7 +1649,9 @@ local function BuildBarAppearance(parent, y, ctx)
         block:SetShown(off0)
     end
 
-    -- Row: Hide Count at 0 (odd last slot -- blank right label)
+    -- Row: Hide Count at 0 | Show Equipped Border (Blizzard's green border on
+    -- an equipped item's button, kept in our square art; the Blizzard and
+    -- Classic styles draw their own, so it locks under them).
     _, h = W:DualRow(parent, y,
         { type="toggle", text="Hide Charge Count at 0",
           tooltip="Hide the charge number on action buttons when it reaches 0, instead of showing a 0. The number returns as soon as a charge or item comes back.",
@@ -1660,7 +1660,16 @@ local function BuildBarAppearance(parent, y, ctx)
               EAB.db.profile.hideZeroCount = v or nil
               if EAB.RefreshAllCounts then EAB:RefreshAllCounts() end
           end },
-        { type="label", text="" });  y = y - h
+        { type="toggle", text="Show Equipped Border",
+          tooltip="Shows Blizzard's green border on action buttons that hold an equipped item, such as your trinkets.",
+          disabled=function() return ns.AB_Style() ~= "eui" end,
+          disabledTooltip="The Blizzard and Classic styles show their own equipped border.",
+          rawTooltip=true,
+          getValue=function() return EAB.db.profile.showEquippedBorder or false end,
+          setValue=function(v)
+              EAB.db.profile.showEquippedBorder = v or nil
+              EAB:ApplyEquippedBorder()
+          end });  y = y - h
 
     BuildBarBackgroundSection()
 

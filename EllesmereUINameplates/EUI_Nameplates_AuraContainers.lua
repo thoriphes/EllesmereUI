@@ -1368,6 +1368,8 @@ local function NPLockoutBorder(f)
             cb:SetFrameLevel(lvl)
             EllesmereUI.ApplyBorderStyle(cb, sz, col.r, col.g, col.b, a, tex, ox, oy, sx, sy,
                 "nameplates", sz, nil, px)
+            local PP = EllesmereUI.PP
+            if PP.GetBorders(cb) then PP.CreateBorder(cb, nil, nil, nil, nil, nil, nil, nil, true) end
             cb._sTex, cb._sSz, cb._sPx = tex, sz, px
             cb._sR, cb._sG, cb._sB, cb._sA = col.r, col.g, col.b, a
             cb._sOX, cb._sOY, cb._sSX, cb._sSY = ox, oy, sx, sy

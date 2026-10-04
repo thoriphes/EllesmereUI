@@ -1404,18 +1404,16 @@ local function ShowBuffToCDPicker(anchorFrame, targetBarKey, onChanged, onPicked
             if notLearned then EllesmereUI.HideWidgetTooltip() end
             if onPicked then
                 -- Selection mode: hand back the identity the runtime routes by
-                -- (cooldownID only for a collided pair, else the spellID) and close.
-                local cdPick = sp.cdID and ns.IsCollidedBuffSid
-                    and ns.IsCollidedBuffSid(sp.spellID) and sp.cdID or nil
+                -- (cooldownID for a collided pair or tracked trinket row, else the spellID) and close.
+                local cdPick = ns.ClaimBuffByCdID(sp.spellID, sp.cdID) and sp.cdID or nil
                 menu:Hide()
                 onPicked(sp.spellID, cdPick)
                 return
             end
-            -- Collided pair (two viewer slots, one shared spellID): claim by cooldownID
-            -- so each slot is hostable on its own; non-collided buffs keep the sid path (identity survives talent swaps, cooldownIDs drift).
-            if sp.cdID and ns.IsCollidedBuffSid and ns.IsCollidedBuffSid(sp.spellID)
-               and ns.AddHostedBuffByCdID then
-                ns.AddHostedBuffByCdID(targetBarKey, sp.cdID)
+            -- Collided pair (two viewer slots, one shared spellID) or tracked trinket row: claim
+            -- by cooldownID so each slot is hostable on its own; other buffs keep the sid path (identity survives talent swaps, cooldownIDs drift).
+            if ns.ClaimBuffByCdID(sp.spellID, sp.cdID) then
+                ns.AddHostedBuffByCdID(targetBarKey, sp.cdID, sp.spellID)
             else
                 ns.AddBuffToCDUtilBar(targetBarKey, sp.spellID)
             end

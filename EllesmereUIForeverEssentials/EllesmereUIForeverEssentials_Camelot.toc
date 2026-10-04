@@ -21,3 +21,6 @@ EllesmereUIForeverEssentials_ThreatData.lua
 EllesmereUIForeverEssentials_Window.lua
 EllesmereUIForeverEssentials_ThreatMeter.lua
 EllesmereUIForeverEssentials_ThreatFeed.lua
+
+# Loot (loot feed)
+EllesmereUIForeverEssentials_LootFeed.lua

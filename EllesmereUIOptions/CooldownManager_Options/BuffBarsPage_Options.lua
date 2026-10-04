@@ -2927,7 +2927,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                                     newName = newName and strtrim(newName) or ""
                                     if newName == "" or newName == capName then return end
                                     if ns.FindTBBStylePreset and ns.FindTBBStylePreset(newName) then
-                                        print(EllesmereUI.Lf("|cffff6060[EllesmereUI]|r A preset named \"%1$s\" already exists.", newName))
+                                        EllesmereUI.PrintError(EllesmereUI.Lf("A preset named \"%1$s\" already exists.", newName))
                                         return
                                     end
                                     if ns.RenameTBBStylePreset then ns.RenameTBBStylePreset(capName, newName) end
