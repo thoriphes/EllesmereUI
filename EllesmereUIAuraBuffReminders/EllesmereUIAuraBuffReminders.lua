@@ -4235,8 +4235,9 @@ if EABR.FOREVER then
             { key="shadow", ids={19876, 19895, 19896} },
             { key="frost",  ids={19888, 19897, 19898} },
         },
-        -- Salvation and Light are never picked; they only mark a member as
-        -- already holding one of the player's blessings.
+        -- Salvation is picked only for Hunters, last; Light is never picked.
+        -- Otherwise both only mark a member as already holding one of the
+        -- player's blessings.
         blessings = {
             might     = { cast={19740, 19834, 19835, 19836, 19837, 19838, 25291},
                           ids={19740, 19834, 19835, 19836, 19837, 19838, 25291, 25782, 25916} },
@@ -4251,7 +4252,8 @@ if EABR.FOREVER then
         lists = {
             melee  = { "might", "wisdom", "kings" },   -- Ret Paladin, Enhancement Shaman, Feral Druid
             caster = { "wisdom", "kings", "might" },   -- casters, healers, Prot Paladin
-            phys   = { "might", "kings", "wisdom" },   -- Warrior, Rogue, Hunter
+            phys   = { "might", "kings", "wisdom" },   -- Warrior, Rogue
+            hunter = { "kings", "wisdom", "might", "salvation" },
         },
         cycle = { "might", "wisdom", "kings" },        -- right-click override order
         mine = {}, other = {},                         -- ScanPaladinBuffs scratch
@@ -4309,7 +4311,8 @@ end
 -- starter spec whenever a compat shim defines GetSpecialization.
 function EABR.PaladinBlessingList(u, class)
     local lists = EABR.PAL.lists
-    if class == "WARRIOR" or class == "ROGUE" or class == "HUNTER" then return lists.phys end
+    if class == "HUNTER" then return lists.hunter end
+    if class == "WARRIOR" or class == "ROGUE" then return lists.phys end
     if class == "PALADIN" or class == "SHAMAN" or class == "DRUID" then
         local role = UnitGroupRolesAssigned(u)
         if role ~= nil and not isSecret(role)
