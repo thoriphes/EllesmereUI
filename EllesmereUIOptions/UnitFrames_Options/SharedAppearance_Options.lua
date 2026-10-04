@@ -958,7 +958,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
         local function pctOff() return noFrames() or not db.profile.threatPctEnabled end
         local function pctOffTip()
             if noFrames() then return NO_FRAMES end
-            return "Show Threat % on Target & Focus"
+            return "Show Threat % on Target"
         end
         local function PctSet(key, v)
             db.profile[key] = v
@@ -971,8 +971,8 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
         end
         local pctRow
         pctRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Threat % on Target & Focus",
-              tooltip="Shows your threat percentage on the target and focus frames while you are in combat with that unit.",
+            { type="toggle", text="Show Threat % on Target",
+              tooltip="Shows your threat percentage on the target frame while you are in combat with it. The cog adds the focus frame.",
               disabled=function() return noFrames() and not db.profile.threatPctEnabled end,
               disabledTooltip=NO_FRAMES,
               getValue=function() return db.profile.threatPctEnabled end,
@@ -987,6 +987,16 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
               getValue=function() return db.profile.threatPctPosition end,
               setValue=function(v) PctSet("threatPctPosition", v) end });  y = y - h
         if not EllesmereUI._prebuilding then
+            EllesmereUI.BuildInlineCog(pctRow._leftRegion, {
+                title = "Threat % Units",
+                disabled = pctOff,
+                disabledTooltip = pctOffTip,
+                rows = {
+                    { type="toggle", label="Show on Focus",
+                      get=function() return db.profile.threatPctFocus end,
+                      set=function(v) PctSet("threatPctFocus", v) end },
+                },
+            })
             EllesmereUI.BuildInlineCog(pctRow._rightRegion, {
                 title = "Threat %",
                 disabled = pctOff,
@@ -1100,34 +1110,36 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
               return v or "2d"
           end,
           setValue=function(v)
-              if v == "3d" and SVal("portraitMode", "2d") ~= "3d" and ns.UF_Ask3DPortraits(function()
-                      UNIT_DB_MAP[optState.selectedUnit]().portraitMode = "3d"
-                      UNIT_DB_MAP[optState.selectedUnit]().showPortrait = true
-                      if UNIT_DB_MAP[optState.selectedUnit]().portraitStyle == "detached" then
-                          UNIT_DB_MAP[optState.selectedUnit]().detachedPortraitShape = "none"
+              local settings = SDB()
+              local function ApplyArt()
+                  settings.portraitMode = v
+                  settings.showPortrait = true
+                  -- Auto-set shape to "none" when entering 3D + detached
+                  if v == "3d" and settings.portraitStyle == "detached" then
+                      settings.detachedPortraitShape = "none"
+                  end
+                  -- 3D-only options: reset when leaving 3D
+                  if v ~= "3d" then
+                      if settings.detachedPortraitShape == "none" then
+                          settings.detachedPortraitShape = "portrait"
                       end
-                      ReloadAndUpdate(); UpdatePreview()
-                      EllesmereUI:RefreshPage(true)
-                  end) then
-                  return
-              end
-              UNIT_DB_MAP[optState.selectedUnit]().portraitMode = v
-              UNIT_DB_MAP[optState.selectedUnit]().showPortrait = true
-              -- Auto-set shape to "none" when entering 3D + detached
-              if v == "3d" and UNIT_DB_MAP[optState.selectedUnit]().portraitStyle == "detached" then
-                  UNIT_DB_MAP[optState.selectedUnit]().detachedPortraitShape = "none"
-              end
-              -- 3D-only options: reset when leaving 3D
-              if v ~= "3d" then
-                  if UNIT_DB_MAP[optState.selectedUnit]().detachedPortraitShape == "none" then
-                      UNIT_DB_MAP[optState.selectedUnit]().detachedPortraitShape = "portrait"
+                      local side = settings.portraitSide
+                      if side == "insideleft" or side == "insideright" or side == "insidecenter" then
+                          settings.portraitSide = "left"
+                      end
                   end
-                  local side = UNIT_DB_MAP[optState.selectedUnit]().portraitSide
-                  if side == "insideleft" or side == "insideright" or side == "insidecenter" then
-                      UNIT_DB_MAP[optState.selectedUnit]().portraitSide = "left"
-                  end
+                  ReloadAndUpdate(); UpdatePreview()
               end
-              ReloadAndUpdate(); UpdatePreview()
+              local function ConfirmArt()
+                  ApplyArt()
+                  EllesmereUI:RefreshPage(true)
+              end
+              if v == "3d" and SVal("portraitMode", "2d") ~= "3d"
+                  and ns.UF_Ask3DPortraits(ConfirmArt) then return end
+              if v == "2d" and SVal("portraitMode", "2d") ~= "2d"
+                  and settings.portraitMirror and not EllesmereUI.BlizzStyle.Get("unitframes")
+                  and ns.UF_Ask2DMirroredPortraits(ConfirmArt) then return end
+              ApplyArt()
           end });  y = y - h
     -- Sync icon: Portrait Mode (Style)
     if not EllesmereUI._prebuilding then
@@ -1376,7 +1388,8 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
             },
         })
         -- Zoom cog on Size slider
-        EllesmereUI.BuildInlineCog(rgn, {
+        local _, zoomShow
+        _, zoomShow = EllesmereUI.BuildInlineCog(rgn, {
             title = "Portrait Zoom",
             rows = {
                 { type="slider", label="2D Zoom", min=50, max=100, step=1,
@@ -1410,9 +1423,21 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
                   requireState="disabled",
                   get=function() return SVal("portraitMirror", false) end,
                   set=function(v)
-                      SDB().portraitMirror = v
-                      ns.UF_RefreshPortraitMirror(optState.selectedUnit)
-                      UpdatePreview()
+                      local unitKey, settings = optState.selectedUnit, SDB()
+                      local function ApplyMirror()
+                          settings.portraitMirror = v
+                          ns.UF_RefreshPortraitMirror(unitKey)
+                          UpdatePreview()
+                      end
+                      if v and not settings.portraitMirror and SVal("portraitMode", "2d") == "2d"
+                          and ns.UF_Ask2DMirroredPortraits(function()
+                              ApplyMirror()
+                              EllesmereUI:RefreshPage()
+                          end) then
+                          if zoomShow and zoomShow._popupFrame then zoomShow._popupFrame:Hide() end
+                          return
+                      end
+                      ApplyMirror()
                   end },
             },
         })

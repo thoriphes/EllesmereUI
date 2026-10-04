@@ -16,6 +16,7 @@ EllesmereUICdmRotationIcon.lua
 EllesmereUICdmHooks.lua
 EllesmereUICdmSpellPicker.lua
 EllesmereUICdmBarGlows.lua
+EllesmereUICdmBarGlowConditions.lua
 EllesmereUICdmBuffBars.lua
 EllesmereUICdmTbbDecimals.lua
 EllesmereUICdmFakeActive.lua

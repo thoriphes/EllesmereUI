@@ -9,6 +9,273 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUINameplates"]
 if not ns then return end  -- module disabled: no options page
 
+-- EUI_DEBUFF_COLORS: uses EUI's native spell menus, input popup and color
+-- previews. Standard widget accessors preserve search and Spec Overrides.
+function ns.NP_BuildDebuffColorsOptions(parent, y, buildPreview)
+    if not ns.DebuffColorPresets then return y end
+    local W = EllesmereUI.Widgets
+    local PP = EllesmereUI.PanelPP
+    local previews = {}
+    local function Get(key)
+        local db = ns.db and ns.db.profile
+        if db and db[key] ~= nil then return db[key] end
+        return ns.defaults[key]
+    end
+    local function RefreshPreviews()
+        for _, entry in ipairs(previews) do
+            entry.preview.SetDisabled(entry.disabled())
+            entry.preview.UpdateColor()
+        end
+    end
+    local function Set(key, value)
+        ns.db.profile[key] = value
+        ns.DebuffColors_RequestRefresh()
+        EllesmereUI:RefreshPage()
+        RefreshPreviews()
+    end
+    local function Off() return Get("debuffColorsEnabled") ~= true end
+    local function SpellID(slot)
+        local id = ns.DebuffColors_NormalizePreset(Get("debuffColorSpell" .. slot))
+        if id == "custom" then id = Get("debuffColorCustomSpell" .. slot) end
+        id = tonumber(id)
+        return id and id > 0 and id == math.floor(id) and id or nil
+    end
+    local function SpellName(id, fallback)
+        return (id and C_Spell and C_Spell.GetSpellName(id)) or fallback
+    end
+    local function SpellIcon(id)
+        if not id then return end
+        local texture = C_Spell and C_Spell.GetSpellTexture(id)
+        if texture then return texture end
+        local info = C_Spell and C_Spell.GetSpellInfo(id)
+        local preset = ns.DebuffColorPresetByID[id]
+        return (info and info.iconID) or (preset and preset[4])
+            or "Interface\\Icons\\INV_Misc_QuestionMark"
+    end
+    local function ColorControl(key, text, disabled)
+        return { type="colorpicker", text=text, hasAlpha=false,
+            getValue=function()
+                local c = Get(key)
+                return c.r, c.g, c.b
+            end,
+            setValue=function(r, g, b)
+                ns.db.profile[key] = { r=r, g=g, b=b }
+                ns.DebuffColors_RequestRefresh()
+                RefreshPreviews()
+            end,
+            disabled=disabled, disabledTooltip="Debuff Coloring",
+        }
+    end
+    local function AddPreview(row, key, disabled)
+        if EllesmereUI._prebuilding or not buildPreview then return end
+        local preview = buildPreview(row, "health", key, row._rightRegion)
+        -- Reserve the same footprint as the native bar when EUI clamps labels.
+        row._rightRegion._lastInline = preview.GetFrame()
+        previews[#previews + 1] = { preview=preview, disabled=disabled }
+    end
+    -- Keep the player's presets together at the top. The rest are alphabetic;
+    -- native menu search works on the actual spell names, without class prefixes.
+    local _, playerClass = UnitClass("player")
+    local spells = {}
+    for index, spell in ipairs(ns.DebuffColorPresets) do
+        spells[#spells + 1] = { id=spell[1], name=SpellName(spell[1], spell[2]),
+            class=spell[3], mine=spell[3]:gsub("%s", ""):upper() == playerClass, index=index }
+    end
+    table.sort(spells, function(a, b)
+        if a.mine ~= b.mine then return a.mine end
+        if a.mine then return a.index < b.index end
+        return a.name < b.name
+    end)
+
+    local _, h
+    _, h = W:SectionHeader(parent, "DEBUFF COLORS", y); y = y - h
+    _, h = W:DualRow(parent, y,
+        { type="toggle", text="Enable Debuff Coloring",
+          getValue=function() return not Off() end,
+          setValue=function(v) Set("debuffColorsEnabled", v) end,
+          tooltip="Color enemy health bars while the selected debuffs are active. Normal coloring returns when neither is present. Target and focus patterns remain visible." },
+        { type="toggle", text="Only My Debuffs",
+          getValue=function() return Get("debuffColorsPlayerOnly") ~= false end,
+          setValue=function(v) Set("debuffColorsPlayerOnly", v) end,
+          disabled=Off, disabledTooltip="Debuff Coloring",
+          tooltip="Track your debuffs. Turn off to include debuffs from other players." }); y = y - h
+
+    for slot = 1, 2 do
+        local spellKey = "debuffColorSpell" .. slot
+        local customKey = "debuffColorCustomSpell" .. slot
+        local title = slot == 1 and "First Debuff" or "Second Debuff"
+        local function SlotOff() return Off() or not SpellID(slot) end
+        local values = { none="None", _noLoc=true }
+        local order = { "none", "custom" }
+        local metadata = {}
+        for _, spell in ipairs(spells) do
+            local key = tostring(spell.id)
+            values[key], metadata[key] = spell.name, spell
+            order[#order + 1] = key
+        end
+        local savedKey
+        local function UpdateSavedSelection()
+            local key = tostring(ns.DebuffColors_NormalizePreset(Get(spellKey)))
+            local id = tonumber(key)
+            local nextSaved = id and id > 0 and not metadata[key] and key or nil
+            if nextSaved == savedKey then return false end
+            if savedKey then
+                values[savedKey] = nil
+                table.remove(order, #order)
+            end
+            savedKey = nextSaved
+            -- Keep a previously chosen removed preset visible and functional.
+            if savedKey then
+                values[savedKey] = SpellName(id, "Spell " .. id) .. " (Saved)"
+                order[#order + 1] = savedKey
+            end
+            return true
+        end
+        UpdateSavedSelection()
+        local function UpdateCustomLabel()
+            local id = tonumber(Get(customKey))
+            local label = SpellName(id and id > 0 and id, "Custom Spell...")
+            values.custom.text = label == "Custom Spell..." and label or label .. " (Custom)"
+        end
+        local function EditCustomSpell()
+            local id = Get(customKey)
+            EllesmereUI:ShowInputPopup({
+                title=title .. " - Custom Spell", confirmText="Apply", cancelText="Cancel",
+                message="Enter the debuff's spell ID.\nLeave empty to clear this selection.",
+                placeholder="Spell ID", initialText=id and id > 0 and tostring(id) or "",
+                maxLetters=10, allowEmpty=true,
+                onConfirm=function(text)
+                    if (text or ""):match("^%s*$") then
+                        ns.db.profile[customKey] = 0
+                        UpdateCustomLabel()
+                        Set(spellKey, "none")
+                        return
+                    end
+                    local value = tonumber((text or ""):match("^%s*(%d+)%s*$"))
+                    if not (value and value > 0 and C_Spell and C_Spell.GetSpellInfo(value)) then
+                        if DEFAULT_CHAT_FRAME then
+                            DEFAULT_CHAT_FRAME:AddMessage("EllesmereUI: Enter a valid debuff spell ID.")
+                        end
+                        return
+                    end
+                    ns.db.profile[customKey] = value
+                    UpdateCustomLabel()
+                    Set(spellKey, "custom")
+                end,
+            })
+        end
+        values.custom = { text="Custom Spell...", action=EditCustomSpell }
+        UpdateCustomLabel()
+        local menuCustomText = values.custom.text
+        values._menuOpts = {
+            searchable=true, itemHeight=28, maxHeight=280, iconNativeColor=true,
+            icon=function(key)
+                local id = key == "custom" and tonumber(Get(customKey)) or tonumber(key)
+                return SpellIcon(id and id > 0 and id), .08, .92, .08, .92
+            end,
+            onItemHover=function(key, item)
+                local spell = metadata[key]
+                if spell then
+                    EllesmereUI.ShowWidgetTooltip(item,
+                        spell.class .. " | Spell ID: " .. spell.id)
+                end
+            end,
+            onItemLeave=function() EllesmereUI.HideWidgetTooltip() end,
+        }
+        local row
+        row, h = W:DualRow(parent, y,
+            { type="dropdown", text=title, values=values, order=order,
+              getValue=function() return tostring(ns.DebuffColors_NormalizePreset(Get(spellKey))) end,
+              setValue=function(v) Set(spellKey, v) end,
+              disabled=Off, disabledTooltip="Debuff Coloring",
+              tooltip="Search for a spell, choose None, or select Custom Spell to enter a debuff ID. Your class's presets appear first. The same spell in both slots uses the First Debuff color." },
+            ColorControl("debuffColor" .. slot, slot == 1 and "First Color" or "Second Color", SlotOff)); y = y - h
+        AddPreview(row, "debuffColor" .. slot, SlotOff)
+        if not EllesmereUI._prebuilding then
+            local region = row._leftRegion
+            local iconFrame = CreateFrame("Frame", nil, region)
+            PP.Size(iconFrame, 20, 20)
+            PP.Point(iconFrame, "RIGHT", region._control, "LEFT", -12, 0)
+            local icon = iconFrame:CreateTexture(nil, "ARTWORK")
+            icon:SetAllPoints()
+            icon:SetTexCoord(.08, .92, .08, .92)
+            PP.CreateBorder(iconFrame, 0, 0, 0, .8, 1)
+            region._lastInline = iconFrame
+            local function UpdateSelection()
+                local savedChanged = UpdateSavedSelection()
+                local texture = SpellIcon(SpellID(slot))
+                icon:SetTexture(texture)
+                iconFrame:SetAlpha(SlotOff() and .15 or 1)
+                iconFrame:SetShown(texture ~= nil)
+                UpdateCustomLabel()
+                -- Rebuild only if a custom spell/profile changed the menu label.
+                if (savedChanged or menuCustomText ~= values.custom.text) and region._control._invalidateMenu then
+                    region._control._invalidateMenu()
+                end
+                menuCustomText = values.custom.text
+                if region._control._refreshLabel then region._control._refreshLabel() end
+            end
+            UpdateSelection()
+            EllesmereUI.RegisterWidgetRefresh(UpdateSelection)
+        end
+    end
+    local function PairOff()
+        local first, second = SpellID(1), SpellID(2)
+        return Off() or not first or not second or first == second
+    end
+    local function BothColorOff() return PairOff() or Get("debuffColorBothEnabled") == false end
+    local pairRow
+    pairRow, h = W:DualRow(parent, y,
+        { type="toggle", text="Use Both Active Color",
+          getValue=function() return Get("debuffColorBothEnabled") ~= false end,
+          setValue=function(v) Set("debuffColorBothEnabled", v) end,
+          disabled=PairOff, disabledTooltip="Two Different Debuffs",
+          tooltip="Use this color when both debuffs are active. Turn off to choose which debuff's color takes priority." },
+        ColorControl("debuffColorBoth", "Both Active", BothColorOff)); y = y - h
+    AddPreview(pairRow, "debuffColorBoth", BothColorOff)
+    local priorityRegion = pairRow._leftRegion
+    -- Native popup accessors also register this setting for Spec Overrides and
+    -- search prebuilds. Keep the extra control on the existing toggle row.
+    local _, showPriority = EllesmereUI.BuildCogPopup({
+        title="Priority Color", captureRegion=priorityRegion,
+        rows={ { type="dropdown", label="Priority Color",
+            values={ ["1"]="First Color", ["2"]="Second Color" }, order={ "1", "2" },
+            get=function() return tonumber(Get("debuffColorPriority")) == 1 and "1" or "2" end,
+            set=function(v) Set("debuffColorPriority", tonumber(v) == 1 and 1 or 2) end,
+            disabled=PairOff, disabledTooltip="Two Different Debuffs",
+            tooltip="When both debuffs are active, use the selected color regardless of which debuff was applied first." }, },
+    })
+    if not EllesmereUI._prebuilding then
+        local priorityButton
+        priorityButton = EllesmereUI.BuildInlineButton(priorityRegion, "Priority Color",
+            function()
+                if Get("debuffColorBothEnabled") == false and not PairOff() then showPriority(priorityButton) end
+            end,
+            { width=100, height=24, disabled=PairOff, disabledTooltip="Two Different Debuffs" })
+        local function RefreshPriority()
+            local visible = Get("debuffColorBothEnabled") == false
+            priorityButton:SetShown(visible)
+            priorityRegion._lastInline = visible and priorityButton or nil
+            if priorityRegion._label then
+                PP.Point(priorityRegion._label, "RIGHT", priorityRegion._lastInline or priorityRegion._control,
+                    "LEFT", -12, 0)
+            end
+            if not visible or PairOff() then
+                local popup = showPriority._popupFrame
+                if popup then popup:Hide() end
+            end
+        end
+        RefreshPriority()
+        EllesmereUI.RegisterWidgetRefresh(RefreshPriority)
+    end
+    if not EllesmereUI._prebuilding then
+        RefreshPreviews()
+        EllesmereUI.RegisterWidgetRefresh(RefreshPreviews)
+    end
+    _, h = W:Spacer(parent, y, 20); y = y - h
+    return y
+end
+
 -- Mini preview bar builder for color swatches. type: "health"/"cast"/"castLocked". colorKey: DB key for the bar color (read live). parentRow: frame to attach to. anchorFrame: optional override anchor (e.g. DualRow half-region).
 local function MakeColorPreviewBar(parentRow, colorType, colorKey, anchorFrame)
     local env = ns._NPO_OptEnv
@@ -116,10 +383,15 @@ local function MakeColorPreviewBar(parentRow, colorType, colorKey, anchorFrame)
             for _, slot in ipairs(barSlots) do
                 local element = DBVal(slot.key) or defaults[slot.key]
                 local sc = (DB() and DB()[slot.key .. "Color"]) or defaults[slot.key .. "Color"]
-                -- A slot in Class / Reaction mode: this bar stands for a hostile NPC,
-                -- so it shows the Hostile name colour, as the plate would.
-                if DBVal(slot.key .. "ClassColor") == true then
+                -- This bar stands for a hostile NPC at the player's level: Hostility /
+                -- Class shows the Hostile name colour, Level Difficulty that level's
+                -- colour, as the plate would.
+                local mode = ns.NP_SlotColorMode(slot.key, DB())
+                if mode == "class" then
                     sc = (DB() and DB().enemyNameHostileColor) or defaults.hostile
+                elseif mode == "level" then
+                    local r, g, b = ns.NP_UnitLevelColor("player")
+                    if r then sc = { r = r, g = g, b = b } end
                 end
                 if element == "healthPercent" or element == "healthPercentNoSign" then
                     pctFS:SetTextColor(sc.r, sc.g, sc.b, 1)
@@ -652,90 +924,9 @@ local function BuildColorsPage(pageName, parent, yOffset)
         })
     end
 
-    -- Enemy Name Text Reaction Color: colors the enemy nameplate NAME TEXT (not the
-    -- health bar) Hostile or Neutral to match the unit's reaction. Off by default. The
-    -- two inline swatches fall back to the Hostile/Neutral defaults until the player sets
-    -- their own, and are dimmed/mouse-disabled while the toggle is off -- same pattern as
-    -- the "Enable Quest Mob Color" inline swatch above.
-    local nameReactionRow
-    nameReactionRow, h = W:DualRow(parent, y,
-        { type="toggle", text="Color Name by Reaction",
-          getValue=function() return DBVal("enemyNameTextReactionColor") == true end,
-          setValue=function(v)
-            DB().enemyNameTextReactionColor = v
-            RefreshAllPlates()
-            EllesmereUI:RefreshPage()
-          end,
-          tooltip="Colors the enemy nameplate name text to match the unit's reaction (Hostile or Neutral) instead of the Enemy Name Text color." },
-        { type="label", text="" });  y = y - h
-
-    -- Inline Neutral/Hostile swatches next to the toggle, dimmed and mouse-disabled while off.
-    if not EllesmereUI._prebuilding then
-        local leftRgn = nameReactionRow._leftRegion
-        -- Also editable while any Core Text slot is in Class / Reaction mode: these are
-        -- the NPC colours that mode paints.
-        local isReactionOff = function()
-            if DBVal("enemyNameTextReactionColor") == true then return false end
-            for _, k in ipairs(ns.textSlotKeys) do
-                if DBVal(k .. "ClassColor") == true and DBVal(k) ~= "none" then return false end
-            end
-            return true
-        end
-
-        local hostileGet = function()
-            local c = (DB() and DB().enemyNameHostileColor) or defaults.hostile
-            return c.r, c.g, c.b
-        end
-        local hostileSet = function(r, g, b)
-            DB().enemyNameHostileColor = { r = r, g = g, b = b }
-            RefreshAllPlates()
-        end
-        local hostileSwatch, updateHostileSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, hostileGet, hostileSet, nil, 20)
-        PP.Point(hostileSwatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-
-        local neutralGet = function()
-            local c = (DB() and DB().enemyNameNeutralColor) or defaults.neutral
-            return c.r, c.g, c.b
-        end
-        local neutralSet = function(r, g, b)
-            DB().enemyNameNeutralColor = { r = r, g = g, b = b }
-            RefreshAllPlates()
-        end
-        local neutralSwatch, updateNeutralSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, neutralGet, neutralSet, nil, 20)
-        PP.Point(neutralSwatch, "RIGHT", hostileSwatch, "LEFT", -8, 0)
-
-        -- Two side-by-side unlabeled chips: hover tooltips say which is
-        -- which (the sibling single-swatch rows never needed one).
-        hostileSwatch:HookScript("OnEnter", function(s)
-            EllesmereUI.ShowWidgetTooltip(s, EllesmereUI.L("Hostile Color"))
-        end)
-        hostileSwatch:HookScript("OnLeave", function()
-            EllesmereUI.HideWidgetTooltip()
-        end)
-        neutralSwatch:HookScript("OnEnter", function(s)
-            EllesmereUI.ShowWidgetTooltip(s, EllesmereUI.L("Neutral Color"))
-        end)
-        neutralSwatch:HookScript("OnLeave", function()
-            EllesmereUI.HideWidgetTooltip()
-        end)
-
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = isReactionOff()
-            hostileSwatch:SetAlpha(off and 0.15 or 1)
-            hostileSwatch:EnableMouse(not off)
-            updateHostileSwatch()
-            neutralSwatch:SetAlpha(off and 0.15 or 1)
-            neutralSwatch:EnableMouse(not off)
-            updateNeutralSwatch()
-        end)
-        local off = isReactionOff()
-        hostileSwatch:SetAlpha(off and 0.15 or 1)
-        hostileSwatch:EnableMouse(not off)
-        neutralSwatch:SetAlpha(off and 0.15 or 1)
-        neutralSwatch:EnableMouse(not off)
-    end
-
     _, h = W:Spacer(parent, y, 20);  y = y - h
+
+    y = ns.NP_BuildDebuffColorsOptions(parent, y, env.LazyColorPreviewBar)
 
     -----------------------------------------------------------------------
     --  THREAT COLORS

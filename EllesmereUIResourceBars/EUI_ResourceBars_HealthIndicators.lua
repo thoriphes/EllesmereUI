@@ -1,13 +1,14 @@
 if EUI_CLIENT_BLOCKED then return end
 -------------------------------------------------------------------------------
 --  EUI_ResourceBars_HealthIndicators.lua
---  Health bar overlays, each off until switched on in the Show Health Bar cog:
---  damage absorbs and heal absorbs (drawn back from the end of the health
---  fill) and the max health reduction (the end of the bar a reduced maximum
---  cuts off). The main file calls ns.HealthIndicatorsApply from the health
---  bar's settings pass only. Until an overlay is on nothing is built and no
---  event is registered; events repaint values only, and the layout moves only
---  on a settings pass, a resize or a change of the reduction.
+--  Health bar overlays, each off by default: damage absorbs and heal absorbs
+--  (Absorb Style / Heal Absorb Style rows; drawn back from the end of the
+--  health fill) and the max health reduction (Show Health Bar cog; the end of
+--  the bar a reduced maximum cuts off). The main file calls
+--  ns.HealthIndicatorsApply from the health bar's settings pass only. Until an
+--  overlay is on nothing is built and no event is registered; events repaint
+--  values only, and the layout moves only on a settings pass, a resize or a
+--  change of the reduction.
 -------------------------------------------------------------------------------
 local _, ns = ...
 
@@ -16,16 +17,27 @@ local STYLE_TEX = EllesmereUI.ABSORB_STYLE_TEX
 local TILED = EllesmereUI.ABSORB_TILED_STYLES
 
 -- The overlays in paint order (heal absorbs over damage absorbs): settings
--- keys and default colour. The options cog builds its rows from this list.
+-- keys and defaults, read by the options rows too. An absorb is off at style
+-- None and takes its alpha from its opacity setting; the reduction has its own
+-- toggle and an alpha colour.
 ns.HEALTH_INDICATORS = {
-    { key = "absorb", show = "showAbsorbs", style = "absorbStyle", color = "absorbColor",
-      r = 0.3, g = 0.75, b = 1, a = 0.65 },
-    { key = "healAbsorb", show = "showHealAbsorbs", style = "healAbsorbStyle", color = "healAbsorbColor",
-      r = 0.85, g = 0.15, b = 0.2, a = 0.75 },
+    { key = "absorb", style = "absorbStyle", color = "absorbColor",
+      opacity = "absorbOpacity", opacityDef = 65, r = 0.3, g = 0.75, b = 1 },
+    { key = "healAbsorb", style = "healAbsorbStyle", color = "healAbsorbColor",
+      opacity = "healAbsorbOpacity", opacityDef = 75, r = 0.85, g = 0.15, b = 0.2 },
     { key = "maxHealthLoss", show = "showMaxHealthLoss", style = "maxHealthLossStyle", color = "maxHealthLossColor",
       r = 0.35, g = 0.25, b = 0.4, a = 0.9 },
 }
 local KINDS = ns.HEALTH_INDICATORS
+
+-- The overlay's style while it is on, nil while it is off.
+local function StyleOf(cfg, k)
+    local style = cfg[k.style]
+    if k.show then
+        return cfg[k.show] == true and (style or "striped") or nil
+    end
+    return (style and style ~= "none") and style or nil
+end
 
 -- Style key -> texture: the shared absorb styles, else the Resource Bars bar
 -- textures ("sm:" SharedMedia keys land there). The live overlays and the
@@ -179,9 +191,9 @@ end
 -- Settings pass, from the health bar build: cfg is the health settings (nil
 -- while the bar is off or disabled for this spec), orientation the bar's own.
 function ns.HealthIndicatorsApply(bar, cfg, orientation)
-    local showA = cfg and cfg.showAbsorbs == true
-    local showH = cfg and cfg.showHealAbsorbs == true
-    local showL = cfg and cfg.showMaxHealthLoss == true
+    local showA = cfg and StyleOf(cfg, KINDS[1]) ~= nil
+    local showH = cfg and StyleOf(cfg, KINDS[2]) ~= nil
+    local showL = cfg and StyleOf(cfg, KINDS[3]) ~= nil
     if not (showA or showH or showL) then
         if active then Deactivate() end
         return
@@ -202,7 +214,7 @@ function ns.HealthIndicatorsApply(bar, cfg, orientation)
             local ov = Overlay(k.key)
             ov:SetFrameLevel(level + (k.key == "healAbsorb" and 2 or 1))
             -- A retexture resets the colour, so the colour goes on after it.
-            local style = cfg[k.style] or "striped"
+            local style = StyleOf(cfg, k)
             local tiled = TILED[style] == true
             if styled[k.key] ~= style then
                 styled[k.key] = style
@@ -215,6 +227,7 @@ function ns.HealthIndicatorsApply(bar, cfg, orientation)
             local c = cfg[k.color]
             local r, g, b, a = k.r, k.g, k.b, k.a
             if c then r, g, b, a = c.r or r, c.g or g, c.b or b, c.a or a end
+            if k.opacity then a = (cfg[k.opacity] or k.opacityDef) / 100 end
             -- The outlined stripes carry their own colours: only the alpha tints them.
             if style == "largeOutlinedStripes" or style == "largeOutlinedStripesR" then r, g, b = 1, 1, 1 end
             ov:SetStatusBarColor(r, g, b, a)

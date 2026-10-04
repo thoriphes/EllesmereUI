@@ -12,6 +12,7 @@
 # Main Luas
 EllesmereUINameplates.lua
 EUI_Nameplates_AuraContainers.lua
+EllesmereUINameplates_DebuffColors.lua
 EllesmereUINameplatesFriendly.lua
 EllesmereUINameplates_Faction.lua
 EllesmereUINameplates_CastOverlay.lua
