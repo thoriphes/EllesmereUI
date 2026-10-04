@@ -185,7 +185,8 @@ end
 -- Debuff Manager tile sizes live inside dmDebuff rather than as top-level
 -- profile keys, so the raid-frame proxy cannot scale them through
 -- INDICATOR_SCALE_KEYS. Keep their physical size on the same class-specific
--- scale as the base debuff grid.
+-- scale as the base debuff grid. Snapped to whole physical pixels: styles,
+-- flow layouts and row widths all take this one value.
 local function EffectiveIconSizeForClass(rawSize, classToken)
     local scale
     if classToken == "party" then
@@ -196,7 +197,7 @@ local function EffectiveIconSizeForClass(rawSize, classToken)
             scale = scale * (ns._xfExtraRatio or 1)
         end
     end
-    return (tonumber(rawSize) or 18) * scale
+    return ns.RFC_SnapSize((tonumber(rawSize) or 18) * scale)
 end
 
 local function EffectiveIconSize(d, rawSize)
@@ -2766,7 +2767,7 @@ function ns.DM_ApplyDebuffConfig(container, d, s, styleKey)
     if not (AK and declared) then return end
 
     local cap = s.debuffCap or 3
-    local size = s.debuffSize or 18
+    local size = ns.RFC_DebuffSize(s)
     local layout = {
         elementWidth = size, elementHeight = size,
         elementSpacing = s.debuffSpacing or 1, lineSpacing = s.debuffSpacing or 1,
@@ -2943,7 +2944,7 @@ function ns.DM_ApplyDebuffConfig(container, d, s, styleKey)
                             or (r.ccLead and ("rf:debuffcc:" .. ClassToken(d)))
                             or StyleKeyFor(d)
                         local groupSize = r.fxSize
-                            and EffectiveIconSize(d, r.fxSize) or s2.debuffSize or 18
+                            and EffectiveIconSize(d, r.fxSize) or ns.RFC_DebuffSize(s2)
                         local groupSpacing = s2.debuffSpacing or 1
                         AK.AddGroupToContainer(c2, {
                             key = gkey,

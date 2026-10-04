@@ -28,10 +28,6 @@ EllesmereUIChat_SidebarStock.lua
 # panel frames, tabs and sidebar kit on our own frames
 EllesmereUIChat_Forever.lua
 
-# Chat bubbles: Blizzard's own bubbles stay on, we blank their chrome and draw a styled
-# frame on the frame that carries their position.
-EllesmereUIChat_Bubbles.lua
-
 # Options
 
 # Session scrollback: bridge-tail capture (formatted lines), replay into our

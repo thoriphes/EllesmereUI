@@ -1105,6 +1105,7 @@ initFrame:SetScript("OnEvent", function(self)
             if _disabled and real._health then real._health:SetAlpha(0.3) end
             return real
         end
+        proxy.GetFrame = function() return EnsureBuilt() end
         proxy.UpdateColor = function()
             local r = EnsureBuilt()
             if r and r.UpdateColor then

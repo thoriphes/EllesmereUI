@@ -2274,6 +2274,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
                 local DD_GAP = 11   -- dropdown to next label/button
 
                 popup = CreateFrame("Frame", nil, UIParent)
+                popup:Hide()  -- start hidden so Show() triggers OnShow
                 popup:SetFrameStrata("DIALOG")
                 popup:SetFrameLevel(200)
                 popup:SetSize(POPUP_W, POPUP_PAD
@@ -3615,8 +3616,7 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
             local rgn = orow._rightRegion
             -- Effective arrangement: stored order first (stale ids skipped),
             -- then any newly-resolved spells appended in prioritized order.
-            -- Items snapshot at popup build like the Class Sorting cog; a
-            -- page rebuild re-snapshots.
+            -- The cog reads the items again each time its list opens.
             local function OrderItems()
                 local resolved = (ns.BM2_ResolveSpells and ns.BM2_ResolveSpells(ind)) or ind.spells or {}
                 local present, seen, out = {}, {}, {}

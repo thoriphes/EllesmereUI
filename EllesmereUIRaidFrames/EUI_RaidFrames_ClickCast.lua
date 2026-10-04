@@ -126,11 +126,16 @@ local REZ_BY_CLASS = {
     WARLOCK     = { battle = 20707 },
 }
 
+-- Combat rez items, best first: a class with no battle rez falls back to the
+-- first one carried (Dynamic Rez and Smart Rez). Emergency Soul Link, both
+-- crafted ranks (the higher one casts faster).
+local REZ_ITEMS = { 269586, 248486 }
+
 -- WoW Forever: the vanilla spells. An entry's alts are its higher ranks and a
 -- rez slot lists every rank ID, rank 1 first; /cast by name casts the highest
 -- rank the character knows. Each class's dispels run in priority order (the
 -- first known line fires), Paladin is the only class with an external, and
--- there is no group rez and no Warlock entry.
+-- there is no group rez, no Warlock entry and no combat rez item.
 if EllesmereUI.IS_FOREVER then
     DISPEL_SPELLS = {
         { id = 527,   name = "Dispel Magic",        class = "PRIEST", alts = { 988 } },
@@ -156,6 +161,7 @@ if EllesmereUI.IS_FOREVER then
         SHAMAN  = { single = { 2008, 20609, 20610, 20776, 20777 } },
         DRUID   = { battle = { 20484, 20739, 20742, 20747, 20748 } },
     }
+    REZ_ITEMS = {}
 end
 
 -- Every rez spell ID across all classes; exempt from the exists/nodead corpse
@@ -607,10 +613,12 @@ local function GetModifierPrefix()
     if IsAltKeyDown() then p = p .. "ALT-" end
     if IsControlKeyDown() then p = p .. "CTRL-" end
     if IsShiftKeyDown() then p = p .. "SHIFT-" end
+    -- Command uses META; the Mac-only API is optional on other platforms.
+    if IsMetaKeyDown and IsMetaKeyDown() then p = p .. "META-" end
     return p
 end
 -- Exposed so the keybind-capture button uses this SAME canonical order (WoW matches
--- bindings/clicks in ALT-CTRL-SHIFT order). A non-canonical order silently fails to
+-- bindings/clicks in ALT-CTRL-SHIFT-META order). A non-canonical order silently fails to
 -- match on double-modifier binds (single-modifier binds are order-independent).
 ns.CC_GetModifierPrefix = GetModifierPrefix
 
@@ -654,12 +662,18 @@ function ns.CC_FormatKey(keyStr)
     local parsed = ParseKeyString(keyStr)
     local display = {}
     for m in parsed.modifiers:gmatch("([^-]+)") do
-        display[#display + 1] = m == "SHIFT" and "Shift" or m == "CTRL" and "Ctrl" or m == "ALT" and "Alt" or m
+        display[#display + 1] = m == "SHIFT" and "Shift" or m == "CTRL" and "Ctrl" or m == "ALT" and "Alt" or m == "META" and "Cmd" or m
     end
     display[#display + 1] = KEY_DISPLAY[parsed.key] or parsed.key
     return table.concat(display, " + ")
 end
 ns.CC_ParseKeyString = ParseKeyString
+
+-- Native click prefixes omit META, so Command-clicks need virtual buttons.
+local function UsesDirectClickAttributes(parsed)
+    return parsed.isMouseButton and parsed.buttonNum and parsed.buttonNum <= 5
+        and not parsed.modifiers:find("META-", 1, true)
+end
 
 -- Heals saved keys with non-canonical modifier order (WoW matches ALT-CTRL-SHIFT; other
 -- orders silently fail double-modifier binds). Rewrites DB tables in place. Called once
@@ -849,15 +863,32 @@ local function BuildReactionMacroText(binding, guard)
     return table.concat(lines, "\n")
 end
 
+-- The combat rez item a class with no battle rez falls back to: the first one
+-- carried, or nil.
+local function CarriedRezItem()
+    local _, pClass = UnitClass("player")
+    local kit = REZ_BY_CLASS[pClass]
+    if kit and kit.battle then return nil end
+    for i = 1, #REZ_ITEMS do
+        if C_Item.GetItemCount(REZ_ITEMS[i]) > 0 then return REZ_ITEMS[i] end
+    end
+    return nil
+end
+
+-- The item the rez lines use, read once per CC_ApplyBindings (only while a
+-- rez binding could use it); the bag listener re-applies when it changes.
+local rezItemID = nil
+
 -- Builds dynamic-rez /cast lines (used by the dynamicrez binding type + Smart
--- Rez). Returns a list of macro lines (possibly empty) or nil if the class has
--- no rez kit. Never includes /stopmacro -- caller adds that for oocOnly.
+-- Rez). Returns a list of macro lines (possibly empty) or nil when the class
+-- has no rez kit and carries no combat rez item. Never includes /stopmacro --
+-- caller adds that for oocOnly.
 -- standalone marks the dedicated rez binding, where these lines are the whole
 -- macro rather than a [dead] prefix in front of somebody else's action.
 local function BuildRezLines(binding, guard, standalone)
     local _, pClass = UnitClass("player")
     local kit = REZ_BY_CLASS[pClass]
-    if not kit then return nil end
+    if not kit and not rezItemID then return nil end
     local bank = Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player
     -- A slot is one spell ID or a list of rank IDs. The first rank found in the
     -- book answers: every rank shares the name, and /cast by name casts the
@@ -876,9 +907,9 @@ local function BuildRezLines(binding, guard, standalone)
         end
         return C_Spell.GetSpellName and C_Spell.GetSpellName(sid)
     end
-    local battleName = Known(kit.battle)
-    local groupName  = Known(kit.group)
-    local singleName = Known(kit.single)
+    local battleName = kit and Known(kit.battle)
+    local groupName  = kit and Known(kit.group)
+    local singleName = kit and Known(kit.single)
     local lines = {}
     -- [combat] only when there is an out-of-combat rez after it to be the answer
     -- instead. A death knight or a warlock, whose only rez IS the battle one,
@@ -895,6 +926,9 @@ local function BuildRezLines(binding, guard, standalone)
             combatCond = ",nocombat"
         end
         lines[#lines + 1] = "/cast [@mouseover,help,dead" .. combatCond .. guard .. "] " .. battleName
+    elseif rezItemID and not binding.oocOnly then
+        -- No battle rez in the class: the carried combat rez item instead.
+        lines[#lines + 1] = "/use [@mouseover,help,dead,combat" .. guard .. "] item:" .. rezItemID
     end
     if groupName then
         lines[#lines + 1] = "/cast [@mouseover,help,dead,nocombat" .. guard .. "] " .. groupName
@@ -1516,6 +1550,92 @@ local function ResolveBinding(b)
     return nil, nil, nil
 end
 
+-- Route physical Command-clicks through the original secure action handler.
+local function IsCommandClick(parsed)
+    return parsed.buttonNum and parsed.modifiers:find("META-", 1, true)
+end
+
+local COMMAND_CLICK_BODY = [[
+    -- Restricted snippets expose the macro parser, but not IsMetaKeyDown.
+    if not SecureCmdOptionParse("[mod:meta] yes") then return end
+    local p = ""
+    if IsAltKeyDown() then p = p .. "ALT-" end
+    if IsControlKeyDown() then p = p .. "CTRL-" end
+    if IsShiftKeyDown() then p = p .. "SHIFT-" end
+    local n = button == "LeftButton" and "1"
+        or button == "RightButton" and "2"
+        or button == "MiddleButton" and "3"
+        or button:match("^Button(%d+)$")
+    if n then
+        local route = self:GetAttribute("eui_cmdclick_" .. p .. "META-BUTTON" .. n)
+        if route then return route end
+    end
+]]
+
+-- Takes this header's wrapper off frame's script wherever it sits. UnwrapScript
+-- only ever pops the TOP wrapper, whoever made it, so another addon's wrappers
+-- above ours come off first and go back on, in their order, once ours is gone.
+-- Out of combat only, like every caller.
+local function UnwrapOwn(frame, script)
+    local above
+    while true do
+        local h, pre, post = header:UnwrapScript(frame, script)
+        if not h or h == header then break end
+        above = above or {}
+        above[#above + 1] = { h, pre, post }
+    end
+    if above then
+        for i = #above, 1, -1 do
+            local w = above[i]
+            SecureHandlerWrapScript(frame, script, w[1], w[2], w[3])
+        end
+    end
+end
+
+local commandClickAttrs
+
+local function ConfigureCommandClicks(frame, bindings)
+    local previous = commandClickAttrs and commandClickAttrs[frame]
+    if previous then
+        for _, attr in ipairs(previous) do
+            frame:SetAttribute(attr, nil)
+        end
+    end
+    local attrs
+    -- Match override precedence: hover bindings win over frame bindings.
+    for pass = 1, 2 do
+        for i, b in ipairs(bindings) do
+            if b.key and b.key:find("META-", 1, true) then
+                local parsed = ParseKeyString(b.key)
+                if IsCommandClick(parsed) and (pass == 1 and IsFrameBinding(b)
+                    or pass == 2 and IsHoverBinding(b)) then
+                    local aType, spellName, macrotext = ResolveBinding(b)
+                    if aType then
+                        SetKeyAttr(frame, i, aType, spellName, macrotext, b.oocOnly)
+                        local attr = "eui_cmdclick_" .. b.key
+                        frame:SetAttribute(attr, "eui_" .. i)
+                        if not attrs then attrs = {} end
+                        attrs[#attrs + 1] = attr
+                    end
+                end
+            end
+        end
+    end
+    if attrs then
+        if not previous then
+            header:WrapScript(frame, "OnClick", COMMAND_CLICK_BODY)
+        end
+        if not commandClickAttrs then
+            commandClickAttrs = setmetatable({}, { __mode = "k" })
+        end
+        commandClickAttrs[frame] = attrs
+    elseif previous then
+        UnwrapOwn(frame, "OnClick")
+        commandClickAttrs[frame] = nil
+        if not next(commandClickAttrs) then commandClickAttrs = nil end
+    end
+end
+
 -- OnEnter/OnLeave secure script generation (frame-based keyboard bindings).
 -- Returns enterScript, leaveScript, kbClearLines. kbClearLines uses
 -- self:ClearBinding (state-driver context, self=header); leaveScript uses
@@ -1526,7 +1646,7 @@ local function GenerateKeyBindSnippets(bindings)
     for i, b in ipairs(bindings) do
         if IsFrameBinding(b) then
             local parsed = ParseKeyString(b.key)
-            if not parsed.isMouseButton or not parsed.buttonNum or parsed.buttonNum > 5 then
+            if not UsesDirectClickAttributes(parsed) then
                 kbBindings[#kbBindings + 1] = { binding = b, index = i, parsed = parsed }
             end
         end
@@ -1678,7 +1798,7 @@ local function DoRegisterFrame(frame)
             local parsed = ParseKeyString(b.key)
             local aType, spellName, macrotext = ResolveBinding(b)
             if aType then
-                if parsed.isMouseButton and parsed.buttonNum and parsed.buttonNum <= 5 then
+                if UsesDirectClickAttributes(parsed) then
                     SetClickAttr(frame, parsed, aType, spellName, macrotext, b.oocOnly)
                 else
                     SetKeyAttr(frame, i, aType, spellName, macrotext, b.oocOnly)
@@ -1686,6 +1806,8 @@ local function DoRegisterFrame(frame)
             end
         end
     end
+
+    ConfigureCommandClicks(frame, bindings)
 
     -- Neutralize unbound left-click target / right-click menu defaults (see
     -- NeutralizeDefaultClicks); restored in DoUnregisterFrame on disable.
@@ -1701,11 +1823,12 @@ local function DoUnregisterFrame(frame)
     for i, b in ipairs(bindings) do
         if IsFrameBinding(b) and b.key then
             local parsed = ParseKeyString(b.key)
-            if parsed.isMouseButton and parsed.buttonNum and parsed.buttonNum <= 5 then
+            if UsesDirectClickAttributes(parsed) then
                 ClearClickAttr(frame, parsed)
             end
         end
     end
+    ConfigureCommandClicks(frame, {})
     ClearKeyAttrs(frame, lastBindingCount)
 
     -- Restores the frame's NATIVE left-click target attrs captured at register
@@ -1733,8 +1856,8 @@ local function DoUnregisterFrame(frame)
     if wrappedFrames[frame] then
         wrappedFrames[frame] = nil
         if header and header.UnwrapScript then
-            pcall(header.UnwrapScript, header, frame, "OnEnter")
-            pcall(header.UnwrapScript, header, frame, "OnLeave")
+            pcall(UnwrapOwn, frame, "OnEnter")
+            pcall(UnwrapOwn, frame, "OnLeave")
         end
     end
 end
@@ -1970,6 +2093,25 @@ function ns.CC_ApplyBindings()
         ccEventFrame:UnregisterEvent("SPELLS_CHANGED")
     end
 
+    -- Combat rez item: bags are watched only for a class with no battle rez
+    -- that has a Dynamic Rez or Smart Rez binding.
+    local wantRezItem = false
+    if REZ_ITEMS[1] then
+        local _, pClass = UnitClass("player")
+        local kit = REZ_BY_CLASS[pClass]
+        if not (kit and kit.battle) then
+            for _, b in ipairs(bindings) do
+                if b.type == "dynamicrez" or b.smartRez then wantRezItem = true; break end
+            end
+        end
+    end
+    rezItemID = wantRezItem and CarriedRezItem() or nil
+    if wantRezItem then
+        ccEventFrame:RegisterEvent("BAG_UPDATE_DELAYED")
+    else
+        ccEventFrame:UnregisterEvent("BAG_UPDATE_DELAYED")
+    end
+
     local frameBindings = {}
     local hoverBindings = {}
     -- A "both" binding lands in BOTH lists: frame attributes for clicks on the
@@ -1990,7 +2132,7 @@ function ns.CC_ApplyBindings()
         for _, pb in ipairs(prevBindings) do
             if IsFrameBinding(pb.b) then
                 local parsed = ParseKeyString(pb.b.key)
-                if parsed.isMouseButton and parsed.buttonNum and parsed.buttonNum <= 5 then
+                if UsesDirectClickAttributes(parsed) then
                     ClearClickAttr(frame, parsed)
                 end
             end
@@ -2004,7 +2146,7 @@ function ns.CC_ApplyBindings()
             local parsed = ParseKeyString(fb.b.key)
             local aType, spellName, macrotext = ResolveBinding(fb.b)
             if aType then
-                if parsed.isMouseButton and parsed.buttonNum and parsed.buttonNum <= 5 then
+                if UsesDirectClickAttributes(parsed) then
                     SetClickAttr(frame, parsed, aType, spellName, macrotext, fb.b.oocOnly)
                 else
                     SetKeyAttr(frame, fb.idx, aType, spellName, macrotext, fb.b.oocOnly)
@@ -2012,6 +2154,7 @@ function ns.CC_ApplyBindings()
             else
             end
         end
+        ConfigureCommandClicks(frame, bindings)
         -- Re-neutralize unbound left/right defaults (the clear pass above may
         -- have stripped a previous binding's type<N>).
         NeutralizeDefaultClicks(frame, bindings)
@@ -2020,7 +2163,7 @@ function ns.CC_ApplyBindings()
     for _, fb in ipairs(frameBindings) do
         local parsed = ParseKeyString(fb.b.key)
         local aType, spellName, macrotext = ResolveBinding(fb.b)
-        if aType and (not parsed.isMouseButton or not parsed.buttonNum or parsed.buttonNum > 5) then
+        if aType and (not UsesDirectClickAttributes(parsed)) then
             SetKeyAttr(bindProxy, fb.idx, aType, spellName, macrotext, fb.b.oocOnly)
         end
     end
@@ -2408,6 +2551,11 @@ local function OnCCEvent(self, event)
         if ComputeKnownSignature() ~= knownSig then
             if not InCombatLockdown() then ns.CC_ApplyBindings() else pendingApply = true end
         end
+    elseif event == "BAG_UPDATE_DELAYED" then
+        -- Re-applies only when the carried combat rez item changed.
+        if CarriedRezItem() ~= rezItemID then
+            if not InCombatLockdown() then ns.CC_ApplyBindings() else pendingApply = true end
+        end
     elseif event == "GROUP_ROSTER_UPDATE" then
         -- Solo <-> party <-> raid transitions change which bindings are active.
         -- GROUP_ROSTER_UPDATE fires every join, leave, promote and zone-in, so
@@ -2665,16 +2813,16 @@ function ns.CC_BuildPage(pageName, parent, yOffset)
 
         kbBtn:SetScript("OnKeyDown", function(self, key)
             if not listening then self:SetPropagateKeyboardInput(true); return end
-            if key == "LSHIFT" or key == "RSHIFT" or key == "LCTRL" or key == "RCTRL"
-               or key == "LALT" or key == "RALT" then
+            if MODIFIER_KEYS[key] then
                 self:SetPropagateKeyboardInput(true); return
             end
             self:SetPropagateKeyboardInput(false)
             if key == "ESCAPE" then
                 StopListening(); return
             end
-            local mods = ns.CC_GetModifierPrefix()
-            if onKeySet then onKeySet(mods .. key) end
+            local captured = ns.CC_CaptureKey(key)
+            if not captured then return end
+            if onKeySet then onKeySet(captured) end
             StopListening()
         end)
 
