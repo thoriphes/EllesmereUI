@@ -3896,6 +3896,18 @@ function ns.UF_BossBorderSettings()
     return GetMiniDonorSettings()
 end
 
+-- Effective border value for a mini frame (pet/tot/focustarget). The donor's
+-- value, unless the mini frame's Advanced borders toggle is on AND it carries
+-- its own value for that key (settings.borderOverride[key]). Both nil by
+-- default, so with the toggle off this is one field read + the donor lookup
+-- the callers did before. Shared by the live frames and the options preview.
+-- On ns for the 200-locals cap.
+ns.ResolveMiniBorderValue = function(ownSettings, key, donorSettings)
+    local ov = ownSettings.borderAdvanced and ownSettings.borderOverride
+    if ov and ov[key] ~= nil then return ov[key] end
+    return donorSettings[key]
+end
+
 function ns.UF_BossAuraBorderAboveEffects(s)
     return s.auraBorderAboveEffects == true and not ns.UF_Blizz()
         and not s.auraBorderBehind and not s.auraBorderBehindUnitFrame
@@ -9264,9 +9276,16 @@ local function FrameBorderEnter(self)
     -- Per-mini-frame opt-out: with "Show Highlight Border" off, a mini frame never
     -- recolors on hover even when the donor (main frame) highlight is enabled. (When the
     -- donor highlight is off we already returned above, so this has no effect then.)
-    if isMini and GetSettingsForUnit(unit).showHighlightBorder == false then return end
-    local hc = settings.highlightColor or { r = 1, g = 1, b = 1 }
-    local ha = settings.highlightAlpha or 1
+    local hc, ha = settings.highlightColor, settings.highlightAlpha
+    if isMini then
+        local own = GetSettingsForUnit(unit)
+        if own.showHighlightBorder == false then return end
+        -- Advanced borders: the mini frame may carry its own highlight color.
+        hc = ns.ResolveMiniBorderValue(own, "highlightColor", settings)
+        ha = ns.ResolveMiniBorderValue(own, "highlightAlpha", settings)
+    end
+    hc = hc or { r = 1, g = 1, b = 1 }
+    ha = ha or 1
     EllesmereUI.SetBorderStyleColor(self.unifiedBorder, hc.r, hc.g, hc.b, ha)
     -- The portrait's Outer Ring wears the frame border tint (only once built).
     local pt = self.Portrait
@@ -9289,8 +9308,14 @@ local function FrameBorderLeave(self)
     end
     local isMini = (unit == "pet" or unit == "targettarget" or unit == "focustarget")
     local settings = isMini and GetMiniDonorSettings(unit) or GetSettingsForUnit(unit)
-    local bc = settings.borderColor or { r = 0, g = 0, b = 0 }
-    local ba = settings.borderAlpha or 1
+    local bc, ba = settings.borderColor, settings.borderAlpha
+    if isMini then
+        local own = GetSettingsForUnit(unit)
+        bc = ns.ResolveMiniBorderValue(own, "borderColor", settings)
+        ba = ns.ResolveMiniBorderValue(own, "borderAlpha", settings)
+    end
+    bc = bc or { r = 0, g = 0, b = 0 }
+    ba = ba or 1
     EllesmereUI.SetBorderStyleColor(self.unifiedBorder, bc.r, bc.g, bc.b, ba)
     local pt = self.Portrait
     local ring = pt and pt.backdrop and pt.backdrop._outerRing
