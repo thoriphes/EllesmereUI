@@ -92,6 +92,25 @@ if EllesmereUI._unlockModeLoaded then return end
 EllesmereUI._unlockModeLoaded = true
 
 -------------------------------------------------------------------------------
+--  Frame-point helpers for explicit anchors (ai.point / ai.relPoint on an anchor
+--  record). Pure arithmetic, defined ahead of the reapply stub below because it
+--  must place a pointed record the same way the full body does. On EllesmereUI:
+--  the deferred body is at the Lua 5.1 200-local cap.
+--  _AnchorPointHalf: the point's offset from the rect centre in half-widths /
+--  half-heights (-1 left/bottom, 0 centre, +1 right/top).
+--  _AnchorPointXY: the point's screen position from a rect.
+-------------------------------------------------------------------------------
+function EllesmereUI._AnchorPointHalf(point)
+    local hx = (point:find("LEFT", 1, true) and -1) or (point:find("RIGHT", 1, true) and 1) or 0
+    local hy = (point:find("TOP", 1, true) and 1) or (point:find("BOTTOM", 1, true) and -1) or 0
+    return hx, hy
+end
+function EllesmereUI._AnchorPointXY(point, l, r, t, b)
+    local hx, hy = EllesmereUI._AnchorPointHalf(point)
+    return (l + r) / 2 + hx * (r - l) / 2, (t + b) / 2 + hy * (t - b) / 2
+end
+
+-------------------------------------------------------------------------------
 --  Anchor reapply stub (pre-EnsureLoaded): lets child addons (CDM) reposition
 --  anchored elements at login before the full body loads; deferred block replaces it.
 -------------------------------------------------------------------------------
@@ -125,7 +144,14 @@ if not EllesmereUI.ReapplyOwnAnchor then
         local cH = (childBar:GetHeight() or 50) * cS / uiS
 
         local cx, cy
-        if info.offsetX and info.offsetY then
+        if info.point and info.relPoint and info.offsetX and info.offsetY then
+            -- Explicit points: same placement as ApplyAnchorPosition, or the
+            -- element sits at the side geometry until the full body reapplies.
+            local px, py = EllesmereUI._AnchorPointXY(info.relPoint, tL, tR, tT, tB)
+            local hx, hy = EllesmereUI._AnchorPointHalf(info.point)
+            cx = px + info.offsetX - hx * cW / 2
+            cy = py + info.offsetY - hy * cH / 2
+        elseif info.offsetX and info.offsetY then
             if side == "LEFT" then
                 cx = tL + info.offsetX - cW / 2
                 cy = tCY + info.offsetY
