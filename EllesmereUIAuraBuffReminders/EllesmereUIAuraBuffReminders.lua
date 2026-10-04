@@ -2271,7 +2271,7 @@ if EABR.FOREVER then
         palAura = false,        -- paladin: aura reminder
         palBlessings = false,   -- paladin: one blessing button per party member
         palRF = false,          -- paladin: Righteous Fury while grouped as Tank
-        blessingOverride = {},  -- [character name] = "might" / "wisdom" / "kings" (right-click)
+        blessingOverride = {},  -- [character name] = blessing key from the member's list (right-click)
     }
 end
 
@@ -4235,9 +4235,9 @@ if EABR.FOREVER then
             { key="shadow", ids={19876, 19895, 19896} },
             { key="frost",  ids={19888, 19897, 19898} },
         },
-        -- Salvation is picked only for Hunters, last; Light is never picked.
-        -- Otherwise both only mark a member as already holding one of the
-        -- player's blessings.
+        -- Salvation is picked only for Warriors, Rogues and Hunters; Light is
+        -- never picked. Otherwise both only mark a member as already holding
+        -- one of the player's blessings.
         blessings = {
             might     = { cast={19740, 19834, 19835, 19836, 19837, 19838, 25291},
                           ids={19740, 19834, 19835, 19836, 19837, 19838, 25291, 25782, 25916} },
@@ -4252,10 +4252,9 @@ if EABR.FOREVER then
         lists = {
             melee  = { "might", "wisdom", "kings" },   -- Ret Paladin, Enhancement Shaman, Feral Druid
             caster = { "wisdom", "kings", "might" },   -- casters, healers, Prot Paladin
-            phys   = { "might", "kings", "wisdom" },   -- Warrior, Rogue
+            phys   = { "might", "kings", "salvation" }, -- Warrior, Rogue (no mana: no Wisdom)
             hunter = { "kings", "wisdom", "might", "salvation" },
         },
-        cycle = { "might", "wisdom", "kings" },        -- right-click override order
         mine = {}, other = {},                         -- ScanPaladinBuffs scratch
         keys = {},                                     -- dismiss-key memo by member name
     }
@@ -4323,12 +4322,16 @@ function EABR.PaladinBlessingList(u, class)
     return lists.caster
 end
 
--- First blessing (the manual override ahead of the list) the player has
--- learned and no other paladin already holds on the member. Returns the
--- family key and the rank to cast, or nil.
+-- First blessing (the manual override ahead of the list, when it is still in
+-- the list) the player has learned and no other paladin already holds on the
+-- member. Returns the family key and the rank to cast, or nil.
 function EABR.PaladinPickBlessing(list, override, other)
     local B = EABR.PAL.blessings
-    if override and B[override] and not other[override] then
+    local inList = false
+    for i = 1, #list do
+        if list[i] == override then inList = true end
+    end
+    if inList and not other[override] then
         local id = EABR.PaladinBestRank(B[override].cast)
         if id then return override, id end
     end
@@ -4342,10 +4345,10 @@ function EABR.PaladinPickBlessing(list, override, other)
     return nil
 end
 
--- The blessing a right-click switches to: the next one in cycle order after
--- `key` that is castable on the member, or nil when there is no alternative.
-function EABR.PaladinNextBlessing(key, other)
-    local cycle, B = EABR.PAL.cycle, EABR.PAL.blessings
+-- The blessing a right-click switches to: the next one in the member's list
+-- after `key` that is castable on the member, or nil when there is no alternative.
+function EABR.PaladinNextBlessing(key, other, cycle)
+    local B = EABR.PAL.blessings
     local n, start = #cycle, 1
     for i = 1, n do
         if cycle[i] == key then start = i end
@@ -4380,7 +4383,8 @@ function EABR.AddPaladinBlessing(missing, u, fo)
     local _, class = UnitClass(u)
     if class == nil or isSecret(class) then return end
     local override = fo.blessingOverride and fo.blessingOverride[name]
-    local key, id = EABR.PaladinPickBlessing(EABR.PaladinBlessingList(u, class), override, other)
+    local list = EABR.PaladinBlessingList(u, class)
+    local key, id = EABR.PaladinPickBlessing(list, override, other)
     if not key then return end
     local dk = PAL.keys[name]
     if not dk then dk = "forever:bless:" .. name; PAL.keys[name] = dk end
@@ -4389,7 +4393,7 @@ function EABR.AddPaladinBlessing(missing, u, fo)
     e.label = name
     e.cat = "forever"; e.dismissKey = dk
     e.blessName = name
-    e.blessNext = EABR.PaladinNextBlessing(key, other)
+    e.blessNext = EABR.PaladinNextBlessing(key, other, list)
     missing[#missing+1] = e
 end
 
