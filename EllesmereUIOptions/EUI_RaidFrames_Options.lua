@@ -1004,6 +1004,18 @@ initFrame:SetScript("OnEvent", function(self)
         ns._eye = ns._eye or {}
         ns._eye[_eyeCtx] = ns._eye[_eyeCtx] or {}
         local EYE = ns._eye[_eyeCtx]
+        -------------------------------------------------------------------
+        --  BORDER (party tab only: on the raid Frames page these rows sit in
+        --  FRAME DISPLAY). Its own sync section so a party layout can carry a
+        --  different border without unsyncing Indicators. The rows live in
+        --  RaidFrames_Options\FramesPages_Options.lua (BuildBorderRows).
+        -------------------------------------------------------------------
+        if optState._partyCtx then
+            local secY, _, h = y
+            _, h = W:SectionHeader(parent, "BORDER", y); y = y - h
+            y = ns.RFO_BuildBorderRows(parent, y, W)
+            if onSection then onSection("border", secY, y) end
+        end
         -- The sections live in RaidFrames_Options\VisualBars_Options.lua (HEALTH BAR ..
         -- TEXT DISPLAY) and VisualIndicators_Options.lua (INDICATORS .. RANGE & TOOLTIP);
         -- Dispels reuses the Health Bar custom-border gates.
@@ -1753,6 +1765,7 @@ initFrame:SetScript("OnEvent", function(self)
     -- Party Frames search excludes raid-synced sections (their controls live on the Raid tabs). Maps section HEADER TEXT to sync key:
     -- KEEP IN SYNC with the SectionHeader names in the builders and ns._PARTY_SECTION_ORDER.
     ns._PARTY_SEARCH_SECTION_KEY = {
+        ["BORDER"]                 = "border",
         ["HEALTH BAR"]             = "healthBar",
         ["ABSORBS"]                = "absorbs",
         ["POWER BAR"]              = "powerBar",
