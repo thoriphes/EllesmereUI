@@ -1423,8 +1423,8 @@ function ns.NPC_UpdateLockout(plate)
             local kit = AK or EllesmereUI.AuraKit
             local swipe = px == 0 and not ns.NP_Classic() and kit and kit.BLIZZ_ROUND_SWIPE
             if swipe and f.cd.SetSwipeTexture then f.cd:SetSwipeTexture(swipe) end
-            local PP = EllesmereUI.PP
-            if PP and PP.CreateBorder then PP.CreateBorder(f, 0, 0, 0, 1, 1) end
+            -- scaleGuard: a plate child, as every Basic nameplate border
+            EllesmereUI.PP.CreateBorder(f, 0, 0, 0, 1, 1, nil, nil, true)
             NPLockoutBorder(f)
             plate.npcLockout = f
         end

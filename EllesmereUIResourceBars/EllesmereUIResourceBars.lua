@@ -3361,7 +3361,7 @@ local function BuildBars()
         if not healthBar then
             healthBar = CreateStatusBar(mainFrame, "ERB_HealthBar", hpWidth, hpHeight,
                 hp.borderSize, hp.borderR, hp.borderG, hp.borderB, hp.borderA)
-            healthBar:SetFrameStrata(g.frameStrata or "MEDIUM")
+            healthBar:SetFrameStrata(hp.frameStrata or g.frameStrata or "MEDIUM")
             healthBar:SetFrameLevel(10)
         end
         if not hp.enabled then
@@ -3439,7 +3439,8 @@ local function BuildBars()
         end
 
         -- Bar texture (must be applied before colors since SetStatusBarTexture resets vertex color).
-        -- "Choose texture per bar" (splitTex) gives health its own key; nil follows the main row.
+        -- Health's own texture (the Texture cog) counts only while splitTex is on; nil or false
+        -- matches the main row.
         ApplyBarTexture(healthBar, (p.splitTex == true and hp.barTexture) or g.barTexture or "none")
 
         -- Colors: custom colored > class color. Gradient is additive: when enabled
@@ -3536,7 +3537,7 @@ local function BuildBars()
     if not primaryBar then
         primaryBar = CreateStatusBar(mainFrame, "ERB_PrimaryBar", ppWidth, ppHeight,
             pp.borderSize, pp.borderR, pp.borderG, pp.borderB, pp.borderA)
-        primaryBar:SetFrameStrata(g.frameStrata or "MEDIUM")
+        primaryBar:SetFrameStrata(pp.frameStrata or g.frameStrata or "MEDIUM")
         primaryBar:SetFrameLevel(10)
     end
     if pp.enabled ~= false and cachedPrimary then
@@ -5033,13 +5034,15 @@ function ns.SecTracks()
     return t.buff, t.spend
 end
 
--- The Power Bar's counterpart of ns.SecTracks. Returns spend.
+-- The Power Bar's counterpart of ns.SecTracks. Returns spend. A Power Bar that
+-- cannot show (IsPowerBarHidden: off, hidden in this form or by Hide Power Bar if
+-- Resource, no primary power) tracks nothing, so no spender events stay armed.
 function ns.PowTracks()
     local t = ns.PTK
     if t.gen ~= ns.CfgGen then
         t.gen = ns.CfgGen
         local pp = _G._ERB_ResolvePowerCfg()
-        local e = pp and pp.enabled ~= false and ResolveThresholdSpecEntry(pp) or nil
+        local e = pp and not IsPowerBarHidden() and ResolveThresholdSpecEntry(pp) or nil
         t.entry = e
         t.spend = ns.SecondaryTracksSpender(e, t.ids)
         t.w = nil
@@ -7482,11 +7485,29 @@ function ns.ERB_SeedStockCast(cb)
     cb.stockTextureSeeded = true
     cb.texture = "blizzard"
 end
+-- Health and power each match the main texture (general.barTexture) or take
+-- their own (the Texture cog's Health / Power Texture). An own key counts only
+-- while splitTex is on, so a key left from an older split never comes back by
+-- itself; the setter keeps splitTex on exactly while one bar has its own.
+-- barKey = "health" or "primary"; tex = a texture key, or false to match the
+-- main texture. Keys are stored false, not nil: profile sync copies only keys
+-- that exist.
+function ns.ERB_BarTexture(p, barKey)
+    return p.splitTex == true and p[barKey].barTexture or nil
+end
+function ns.ERB_SetBarTexture(p, barKey, tex)
+    if tex and p.splitTex ~= true then
+        p.health.barTexture, p.primary.barTexture = false, false
+        p.splitTex = true
+    end
+    p[barKey].barTexture = tex or false
+    if not (p.health.barTexture or p.primary.barTexture) then p.splitTex = false end
+end
 -- Classic WoW UI on the health, power and class resource bars, once per
 -- profile (the controls stay the user's afterwards): Border Around All on
 -- when the shown bars already sit as one anchored stack, and "Plating" as
--- the bar texture (on the health and power keys too while "Choose texture per
--- bar" is on). Run by the Style page on the switch and at enable for a
+-- the bar texture (on the health and power keys too where a bar has its own
+-- texture). Run by the Style page on the switch and at enable for a
 -- profile that arrives already switched.
 function ns.ERB_SeedStockBars(p, styleKey)
     local g = p and p.general
@@ -7504,9 +7525,8 @@ function ns.ERB_SeedStockBars(p, styleKey)
     if g.classicTextureSeeded then return end
     g.classicTextureSeeded = true
     g.barTexture = "plating"
-    if p.splitTex == true then
-        p.health.barTexture, p.primary.barTexture = "plating", "plating"
-    end
+    if ns.ERB_BarTexture(p, "health") then p.health.barTexture = "plating" end
+    if ns.ERB_BarTexture(p, "primary") then p.primary.barTexture = "plating" end
 end
 -- The style the health, power and class resource bars render this session,
 -- latched like the cast bar's. Blizzard Style: the personal resource
@@ -11639,12 +11659,13 @@ function ERB:ApplyAll()
     -- scheduled to finish it. Arm unconditionally; the tick disarms itself.
     if ns.ArmTick then ns.ArmTick() end
 
-    -- Apply frame strata to all existing bar frames (covers live changes)
+    -- Apply frame strata to all existing bar frames (covers live changes). Health and
+    -- power may take their own from the Frame Strata cog (false matches the main row).
     local g = ERB.db.profile.general or DEFAULTS.profile.general
     local barStrata = g.frameStrata or "MEDIUM"
     if mainFrame then mainFrame:SetFrameStrata(barStrata) end
-    if healthBar then healthBar:SetFrameStrata(barStrata) end
-    if primaryBar then primaryBar:SetFrameStrata(barStrata) end
+    if healthBar then healthBar:SetFrameStrata(ERB.db.profile.health.frameStrata or barStrata) end
+    if primaryBar then primaryBar:SetFrameStrata(ERB.db.profile.primary.frameStrata or barStrata) end
     if secondaryFrame then secondaryFrame:SetFrameStrata(barStrata) end
     local tb = ERB.db.profile.totemBar
     if totemBarFrame then totemBarFrame:SetFrameStrata(tb and tb.frameStrata or "MEDIUM") end
@@ -11817,6 +11838,9 @@ local function OnEvent(self, event, ...)
                     -- buff -- leaves bars that a visibility condition had hidden
                     -- parked visible until the next visibility event.
                     UpdateVisibility()
+                    -- BuildBars repainted the Power Bar's base fill; repaint its
+                    -- live colors now rather than at the next power change.
+                    UpdatePrimaryBar()
                 end
             end
             UpdateSecondaryResource()
@@ -11875,6 +11899,9 @@ local function OnEvent(self, event, ...)
         if oldMax ~= newMax then
             cachedSecondary = newSec
             BuildBars()
+            -- Repaint both bars on the rebuilt frames, as UNIT_MAXPOWER does.
+            UpdatePrimaryBar()
+            UpdateSecondaryResource()
         end
         UpdateVisibility()
     elseif event == "GROUP_ROSTER_UPDATE" then

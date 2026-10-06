@@ -702,6 +702,8 @@ end
 -- Blizzard data bar override (let Blizzard control XP + Rep via Edit Mode). WoW
 -- Forever keeps Blizzard's own bars by default (the per-client default rule).
 defaults.profile.useBlizzardDataBars = (EllesmereUI.IS_FOREVER == true)
+-- Show Equipped Item Color (Icon Effects): on by default on WoW Forever only.
+defaults.profile.showEquippedBorder = (EllesmereUI.IS_FOREVER == true)
 -- Stock vehicle / override bar suppression. Opt-in, and inert until switched
 -- on: no frame, no events and no hook exist while it is false.
 defaults.profile.hideBlizzardVehicleBar = false
@@ -1111,11 +1113,18 @@ do
         local ok, secret = pcall(C_Secrets.ShouldCooldownsBeSecret)
         return (ok and secret) and true or false
     end
-    local function ApplyBroadcaster()
+    -- WoW Forever: cooldowns read secret in combat there too, and the check
+    -- above cannot see it coming at PLAYER_REGEN_DISABLED, so the tick set
+    -- stands down for every fight: dropped at that edge (combatEdge), back at
+    -- PLAYER_REGEN_ENABLED. Our dispatcher still paints ExtraActionButton1.
+    local function ApplyBroadcaster(combatEdge)
         local want = (_vehNeed or _extraNeed) and "full" or "off"
         -- Folded into `want` so the mode comparison below sees the change and
         -- re-applies; PLAYER_ENTERING_WORLD and the REGEN edges re-run this.
-        if want == "full" and CooldownsSecret() then want = "off" end
+        if want == "full" and (CooldownsSecret()
+            or (EllesmereUI.IS_FOREVER and (combatEdge or InCombatLockdown()))) then
+            want = "off"
+        end
         if want == _broadcasterMode then return end
         _broadcasterMode = want
         -- Drop to the quiet state first (the two seeding registrations survive
@@ -1166,8 +1175,9 @@ do
     barFrame:SetScript("OnEvent", function(_, event, unit)
         if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
             -- Undeferred, and a secrecy re-check only: the needs are unchanged
-            -- at a combat edge, so this early-outs unless the secret state moved.
-            ApplyBroadcaster()
+            -- at a combat edge, so this early-outs unless the secret state moved
+            -- (or, on WoW Forever, the fight began or ended).
+            ApplyBroadcaster(event == "PLAYER_REGEN_DISABLED")
             return
         end
         C_Timer.After(0, RefreshBroadcasterNeeds) -- deferred so IsShown reflects post-event state
@@ -2339,6 +2349,24 @@ EAB_VTABLE.PAGING_STATES = {
     },
 }
 
+-- Modifier/Target Paging (the bar's modTargetPaging): false switches the five
+-- modifier and target states off without clearing them; never set, they apply
+-- whenever one holds a page, as they always did.
+EAB_VTABLE.MOD_TARGET_PAGING = { shift = true, ctrl = true, alt = true, help = true, harm = true }
+
+-- True when the bar has paging of the player's own that applies: a state
+-- outside the five, or one of the five while Modifier/Target Paging is not off.
+function EAB_VTABLE.HasCustomPaging(bs)
+    local p = bs and bs.paging
+    if not p or next(p) == nil then return false end
+    if bs.modTargetPaging ~= false then return true end
+    local mt = EAB_VTABLE.MOD_TARGET_PAGING
+    for id in pairs(p) do
+        if not mt[id] then return true end
+    end
+    return false
+end
+
 -- Auto-paging opt-outs for MainBar. Returns noForm, noSky: suppress implicit bonusbar
 -- swaps for forms/stealth/stance (bonusbar 1-4) and skyriding (bonusbar 5). Does NOT
 -- cover vehicle/override/possess -- those replace abilities outright, so suppressing
@@ -2356,6 +2384,8 @@ function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
     local PG = EAB_VTABLE.PAGING_STATES
     local _, class = UnitClass("player")
     local noForm, noSky = EAB_VTABLE.GetAutoPagingOptOuts(barKey)
+    local bs = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars[barKey]
+    local noModTarget = bs and bs.modTargetPaging == false
     local parts = {}
     if barKey == "MainBar" then
         if EAB_VTABLE.GetOverrideBarIndex then
@@ -2365,10 +2395,12 @@ function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
             parts[#parts + 1] = "[vehicleui][possessbar] " .. EAB_VTABLE.GetVehicleBarIndex()
         end
     end
-    for _, state in ipairs(PG.modifier) do
-        local page = pagingConfig[state.id]
-        if page then
-            parts[#parts + 1] = state.macro .. " " .. page
+    if not noModTarget then
+        for _, state in ipairs(PG.modifier) do
+            local page = pagingConfig[state.id]
+            if page then
+                parts[#parts + 1] = state.macro .. " " .. page
+            end
         end
     end
     -- MainBar falls back to hardcoded form pages for unconfigured (nil)
@@ -2416,7 +2448,7 @@ function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
     end
     -- Target conditions come after bonusbar/bar so dragonriding and manual
     -- page switches take priority over target-based switching.
-    if PG.target then
+    if PG.target and not noModTarget then
         for _, state in ipairs(PG.target) do
             local page = pagingConfig[state.id]
             if page then
@@ -2623,6 +2655,14 @@ local function SetupPagingFrame()
     return f
 end
 
+-- The paging arrows' sizes for a button height, shared with the options
+-- preview's stand-in: arrow, page number text, the gap between them, and the
+-- gap to the bar.
+function ns.AB_PagingArrowMetrics(btnH)
+    local arrow = math.max(14, math.floor(btnH * 0.4))
+    return arrow, math.max(10, math.floor(arrow * 0.7)), 2, 4
+end
+
 LayoutPagingFrame = function()
     local f = _pagingFrame
     if not f then return end
@@ -2662,9 +2702,7 @@ LayoutPagingFrame = function()
     local isVertical = (s.orientation == "vertical")
     local base = barBaseSize and barBaseSize["MainBar"]
     local btnH = (s.buttonHeight and s.buttonHeight > 0) and s.buttonHeight or (base and base.h or 45)
-    local arrowSize = math.max(14, math.floor(btnH * 0.4))
-    local textSize = math.max(10, math.floor(arrowSize * 0.7))
-    local gap = 2
+    local arrowSize, textSize, gap, barGap = ns.AB_PagingArrowMetrics(btnH)
 
     f._upBtn:SetSize(arrowSize, arrowSize)
     f._downBtn:SetSize(arrowSize, arrowSize)
@@ -2681,9 +2719,9 @@ LayoutPagingFrame = function()
         f:SetSize(totalW, arrowSize)
         f:ClearAllPoints()
         if onRight then
-            f:SetPoint("TOP", mainFrame, "BOTTOM", 0, -4)
+            f:SetPoint("TOP", mainFrame, "BOTTOM", 0, -barGap)
         else
-            f:SetPoint("BOTTOM", mainFrame, "TOP", 0, 4)
+            f:SetPoint("BOTTOM", mainFrame, "TOP", 0, barGap)
         end
         f._downBtn:SetPoint("LEFT", f, "LEFT", 0, 0)
         f._pageText:SetPoint("CENTER", f, "CENTER", 0, 0)
@@ -2693,9 +2731,9 @@ LayoutPagingFrame = function()
         f:SetSize(arrowSize, totalH)
         f:ClearAllPoints()
         if onRight then
-            f:SetPoint("LEFT", mainFrame, "RIGHT", 4, 0)
+            f:SetPoint("LEFT", mainFrame, "RIGHT", barGap, 0)
         else
-            f:SetPoint("RIGHT", mainFrame, "LEFT", -4, 0)
+            f:SetPoint("RIGHT", mainFrame, "LEFT", -barGap, 0)
         end
         f._upBtn:SetPoint("TOP", f, "TOP", 0, 0)
         f._pageText:SetPoint("CENTER", f, "CENTER", 0, 0)
@@ -2864,7 +2902,7 @@ local function CreateBarFrame(info)
         local barSettings = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars[key]
         local customPaging = barSettings and barSettings.paging
         local pagingConditions
-        if customPaging and next(customPaging) then
+        if EAB_VTABLE.HasCustomPaging(barSettings) then
             pagingConditions = EAB_VTABLE.BuildPagingConditions("MainBar", customPaging, 1)
         else
             -- No custom paging: use hardcoded class defaults (zero impact)
@@ -2913,7 +2951,7 @@ local function CreateBarFrame(info)
         -- page; when no conditions match, fall back to the bar's default.
         local barSettings = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars[key]
         local customPaging = barSettings and barSettings.paging
-        if customPaging and next(customPaging) then
+        if EAB_VTABLE.HasCustomPaging(barSettings) then
             frame:SetAttributeNoHandler("_onstate-page", [[
                 local page = tonumber(newstate) or 1
                 self:SetAttribute("actionpage", page)
@@ -3002,7 +3040,7 @@ function ns.RebuildBarPaging(barKey)
 
     if barKey == "MainBar" then
         local pagingConditions
-        if customPaging and next(customPaging) then
+        if EAB_VTABLE.HasCustomPaging(barSettings) then
             pagingConditions = EAB_VTABLE.BuildPagingConditions("MainBar", customPaging, 1)
         else
             pagingConditions = GetClassPagingConditions()
@@ -3012,7 +3050,7 @@ function ns.RebuildBarPaging(barKey)
         RegisterStateDriver(frame, "page", pagingConditions)
     elseif info.nativeActionPage or info.customPage then
         local defaultPage = info.nativeActionPage or info.customPage
-        if customPaging and next(customPaging) then
+        if EAB_VTABLE.HasCustomPaging(barSettings) then
             -- Install handler if not already present
             if not frame._eabPagingInstalled then
                 frame:SetAttributeNoHandler("_onstate-page", [[
@@ -3159,9 +3197,7 @@ ns.BuildBarButtons = function(info, frame, skipProtected)
                     -- Two channels ForceButtonRefresh doesn't own (same pairing
                     -- as the bar-reveal path): checked state + equipped border.
                     btn:SetChecked((IsCurrentAction(slot) or IsAutoRepeatAction(slot)) and true or false)
-                    if btn.Border then
-                        btn.Border:SetShown(IsEquippedAction(slot) and true or false)
-                    end
+                    ns.AB_SyncEquippedBorder(btn, slot)
                 end
                 if bindPrefix then
                     btn.commandName = bindPrefix .. i
@@ -4390,7 +4426,7 @@ end
 
 function EAB_VTABLE.Hover.FadeIn(barKey, state)
     EAB_VTABLE.Hover.FadeInOne(barKey, state)
-    -- "Show All on Mouseover": bring other bars along, all starting THIS
+    -- "Show All Bars on Mouseover": bring other bars along, all starting THIS
     -- frame in lockstep. Cheap because every fade rides the shared fader (a
     -- table write per bar). Iterative, not recursive: no reentrancy latch to get stuck.
     -- Gated on THIS bar being Mouseover itself -- AttachHoverHooks wires the
@@ -5167,7 +5203,7 @@ local function UpdateKeybinds()
             -- UseAction with isKeyPress=true), so they must stay on the
             -- native command -- only genuine user-configured paging (bs.paging) needs the click route.
             local bs = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars[info.key]
-            local barHasCustomPaging = (bs and bs.paging and next(bs.paging) ~= nil) and true or false
+            local barHasCustomPaging = EAB_VTABLE.HasCustomPaging(bs)
             -- Auto-paging opt-outs need the click route for the mirror-image
             -- reason: bonusbar stays a native engine concept whether or not
             -- we page off it, so ACTIONBUTTONn still resolves to the
@@ -5956,6 +5992,7 @@ local function ApplyAll()
     EAB:ApplyCooldownEdge()
     EAB:ApplyMiscTextures()
     EAB:ApplyCheckedTextures()
+    EAB:ApplyEquippedBorder(true)
     if not inCombat then EAB:ApplyCombatVisibility() end
     if not inCombat then EAB:RefreshRuntimeVisibility() end
     EAB:RefreshMouseover()

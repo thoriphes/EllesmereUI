@@ -326,12 +326,12 @@ end
 -- Nearest physical pixel at UIParent scale, for every PAB grid number (icon size,
 -- padding, row gap). Not PP.Scale: it truncates, and the per-icon loss adds up
 -- along a row, so a bar measured a different number of UI units per resolution.
--- Rounds like EllesmereUIActionBars.lua's ComputeBarLayout, plus the 0.001 tie
--- guard PP.SnapForES uses, so an exact half pixel cannot flip between sessions.
+-- PP.ToPixels rounds with the 0.001 tie guard, so an exact half pixel cannot flip
+-- between sessions.
 local function PabSnap(x)
-    local m = EllesmereUI.PP.mult
-    if x == 0 or m == 1 then return x end
-    return math.floor(x / m + 0.5 + 0.001) * m
+    local PP = EllesmereUI.PP
+    if x == 0 or PP.mult == 1 then return x end
+    return PP.FromPixels(PP.ToPixels(x))
 end
 
 -- On ns, not file locals: this chunk sits near Lua's 200-local cap. The need
