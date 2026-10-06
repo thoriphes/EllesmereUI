@@ -3328,8 +3328,14 @@ bmRegen:RegisterEvent("PLAYER_REGEN_ENABLED")
 bmRegen:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 bmRegen:RegisterEvent("PLAYER_ENTERING_WORLD")
 -- A new pixel grid invalidates every snapped aura size (see ns.RFC_SnapSize).
+-- EUI's own UI Scale (PP.SetUIScale) sets UIParent's scale directly, which fires
+-- no UI_SCALE_CHANGED, so it calls this through the global as well.
 bmRegen:RegisterEvent("UI_SCALE_CHANGED")
 bmRegen:RegisterEvent("DISPLAY_SIZE_CHANGED")
+function ns.RFC_PixelGridChanged()
+    if InCombatLockdown() then ns._rfcScaleDirty = true else ns.RFC_ReloadAll() end
+end
+_G._ERF_PixelGridChanged = ns.RFC_PixelGridChanged
 -- The poison dispel-slot filter depends on Poison Cleansing Totem being talented
 -- (see DispelSlotFilter). Talent edits fire no spec event, and IsPlayerSpell can
 -- lag the trait event itself (the spellbook grant lands with SPELLS_CHANGED), so
@@ -3362,7 +3368,7 @@ bmRegen:SetScript("OnEvent", function(_, event, arg1)
         return
     end
     if event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
-        if InCombatLockdown() then ns._rfcScaleDirty = true else ns.RFC_ReloadAll() end
+        ns.RFC_PixelGridChanged()
         return
     end
     if event == "PLAYER_ENTERING_WORLD" then
