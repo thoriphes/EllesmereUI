@@ -6,6 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  register via EllesmereUI:RegisterUnlockElements().
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
+ns = ns.__euiCoreNS or ns  -- standalone builds: the core's own table (EllesmereUI.lua)
 local EAB = ns.EAB  -- may be nil if loaded by a non-ActionBars addon
 
 -------------------------------------------------------------------------------
@@ -102,6 +103,7 @@ if not EllesmereUI.ReapplyOwnAnchor then
 
         local elems = EllesmereUI._unlockRegisteredElements
         local childElem = elems and elems[key]
+        if childElem and childElem.ownsPosition then return end
         local targetElem = elems and elems[info.target]
         local childBar = childElem and childElem.getFrame and childElem.getFrame(key)
         local targetBar = targetElem and targetElem.getFrame and targetElem.getFrame(info.target)
@@ -161,8 +163,8 @@ if not EllesmereUI.ReapplyOwnAnchor then
 
         -- No explicit snap: center came from pixel-aligned target edges/dims; snapping here adds 1px drift from float dust.
         pcall(function()
-            childBar:ClearAllPoints()
-            childBar:SetPoint("CENTER", UIParent, "CENTER", centerX, centerY)
+            EllesmereUI.ClearFramePoints(childBar)
+            EllesmereUI.SetFramePoint(childBar, "CENTER", UIParent, "CENTER", centerX, centerY)
         end)
     end
 end
@@ -238,8 +240,8 @@ if not EllesmereUI.NotifyElementResized then
 
         -- No explicit snap: cx +/- dim/2 reproduces the pixel-aligned edge within float epsilon; snapping can round the wrong way (1px drift/reload).
         pcall(function()
-            frame:ClearAllPoints()
-            frame:SetPoint(anchor, UIParent, "CENTER", adjX, adjY)
+            EllesmereUI.ClearFramePoints(frame)
+            EllesmereUI.SetFramePoint(frame, anchor, UIParent, "CENTER", adjX, adjY)
         end)
     end
 end
@@ -422,8 +424,8 @@ function EllesmereUI.RepositionBarToMover(barKey)
     -- converted into the bar's own scale (SetPoint offsets use the bar's scale).
     local ratio = m:GetEffectiveScale() / barScale
     pcall(function()
-        bar:ClearAllPoints()
-        bar:SetPoint("CENTER", UIParent, "BOTTOMLEFT", mX * ratio, mY * ratio)
+        EllesmereUI.ClearFramePoints(bar)
+        EllesmereUI.SetFramePoint(bar, "CENTER", UIParent, "BOTTOMLEFT", mX * ratio, mY * ratio)
     end)
 end
 
@@ -642,7 +644,7 @@ EllesmereUI._ELEMENT_SETTINGS_MAP = {
     ["EMT_FocusCastBar"]   = { module = "EllesmereUIMythicTimer",     page = "Target/Focus Bars", sectionName = "FOCUS CAST BAR",    highlightText = "Enable Focus Cast Bar" },
 
     -- Dragon Riding HUD (Blizz UI Enhanced > Dragon Riding page)
-    ["EDR_Cluster"]        = { module = "EllesmereUIBlizzardSkin",    page = "Dragon Riding",     sectionName = "GENERAL",           highlightText = "Enable Dragon Riding Bar" },
+    ["EDR_Cluster"]        = { module = "EllesmereUIBlizzardSkin",    page = "Dragon Riding",     sectionName = "GENERAL",           highlightText = "Enable Skyriding Bar" },
 
     -- Fixed-position tooltip anchor (Blizz UI Enhanced > Tooltips, Menus & Popups)
     ["EUI_TooltipAnchor"]  = { module = "EllesmereUIBlizzardSkin",    page = "Tooltips, Menus & Popups", sectionName = "BLIZZARD TOOLTIP", highlightText = "Anchor to Cursor" },
@@ -693,9 +695,11 @@ EllesmereUI._unlockHoverIntentDelay = 0.12 -- seconds to wait after settling bef
 
 -------------------------------------------------------------------------------
 --  Split parts (EUI_UnlockMode_*.lua): share the stable names above through
---  UM, then run the parts here, in their original order.
+--  UM, then run the parts here, in their original order. The parts sit in
+--  the addon's private namespace and take it from their own file, never
+--  through UM: a public slot would let another addon wrap a part and reach it.
 -------------------------------------------------------------------------------
-UM.ns, UM.EAB, UM.floor, UM.abs = ns, EAB, floor, abs
+UM.EAB, UM.floor, UM.abs = EAB, floor, abs
 UM.min, UM.max, UM.sqrt, UM.sin = min, max, sqrt, sin
 UM.round, UM.PP, UM.DeferMoverSync, UM.FONT_PATH = round, PP, DeferMoverSync, FONT_PATH
 UM.LOCK_INNER, UM.LOCK_OUTER, UM.LOCK_TOP, UM.GRID_SPACING = LOCK_INNER, LOCK_OUTER, LOCK_TOP, GRID_SPACING
@@ -707,16 +711,16 @@ UM.snapshotAnchors, UM.snapshotSizes, UM.snapshotWidthMatch, UM.snapshotHeightMa
 UM.snapshotGrowDirs, UM.GridBaseAlpha, UM.GridCenterAlpha, UM.GridHudAlpha = snapshotGrowDirs, GridBaseAlpha, GridCenterAlpha, GridHudAlpha
 UM.GridLabelText, UM.CycleGridMode, UM._blizzOwnedOverlays, UM.SELECT_ELEMENT_ALPHA = GridLabelText, CycleGridMode, _blizzOwnedOverlays, SELECT_ELEMENT_ALPHA
 UM.SELECT_ELEMENT_FADE = SELECT_ELEMENT_FADE
-EllesmereUI._unlockParts.Anchors(UM)
-EllesmereUI._unlockParts.Positions(UM)
-EllesmereUI._unlockParts.Tools(UM)
-EllesmereUI._unlockParts.Movers(UM)
-EllesmereUI._unlockParts.Session(UM)
+ns.unlockParts.Anchors(UM)
+ns.unlockParts.Positions(UM)
+ns.unlockParts.Tools(UM)
+ns.unlockParts.Movers(UM)
+ns.unlockParts.Session(UM)
 local HideAllGuidesAndHighlight, DeselectMover = UM.HideAllGuidesAndHighlight, UM.DeselectMover
 local SortMoverFrameLevels, HideBlizzOwnedOverlays = UM.SortMoverFrameLevels, UM.HideBlizzOwnedOverlays
 
 -------------------------------------------------------------------------------
---  Close Unlock Mode — routes through save/discard logic
+--  Close Unlock Mode -- routes through save/discard logic
 -------------------------------------------------------------------------------
 function ns.CloseUnlockMode(afterFn)
     if not UM.isUnlocked then
@@ -756,7 +760,7 @@ end
 if EllesmereUI and EllesmereUI.RegisterOnShow then
     EllesmereUI:RegisterOnShow(function()
         if UM.isUnlocked then
-            -- Hide the panel immediately — it shouldn't show during unlock mode
+            -- Hide the panel immediately -- it shouldn't show during unlock mode
             local panel = EllesmereUI._mainFrame
             if panel then panel:Hide() end
             -- Close unlock mode, then re-open the panel after

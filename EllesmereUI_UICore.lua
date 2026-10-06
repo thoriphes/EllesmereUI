@@ -989,6 +989,23 @@ do
             count[mode] = count[mode] + 1
             return s
         end
+
+        -- The Name Format choices of every options row that sets one:
+        --     EllesmereUI.NAME_FORMAT_VALUES / EllesmereUI.NAME_FORMAT_ORDER
+        -- "full" (First and Last) is the unset default, saved as nil (Raid
+        -- Frames saves "full"). "mixed" is display-only, for a row over several
+        -- settings that differ: the order leaves it out, so it is never offered.
+        --     EllesmereUI.NameFormatCogRow(get, set)
+        -- A settings-cog dropdown row for one Name Format: get() returns the
+        -- saved value ("first", "last" or nil) and set(v) receives the same.
+        local VALUES = { first = "First Name", last = "Last Name", full = "First and Last", mixed = "Mixed" }
+        local ORDER = { "first", "last", "full" }
+        EllesmereUI.NAME_FORMAT_VALUES, EllesmereUI.NAME_FORMAT_ORDER = VALUES, ORDER
+        function EllesmereUI.NameFormatCogRow(get, set)
+            return { type = "dropdown", label = "Name Format", values = VALUES, order = ORDER,
+                get = function() return get() or "full" end,
+                set = function(v) set((v ~= "full") and v or nil) end }
+        end
     end
 end
 
@@ -1000,6 +1017,9 @@ end
 --  colorByThreat is off; the status colour while status is readable; else the
 --  isTanking fold between the has-aggro and low-threat colours; else white.
 --  Only the plain white mode is remembered per font string (never a value).
+--      EllesmereUI.PaintThreatGap(fs, text, ahead, colorOn, aheadC, behindC)
+--  The Threat Gap text: the formatted gap in aheadC or behindC by who leads,
+--  or white while colorOn is off (the same white memory).
 -------------------------------------------------------------------------------
 if EllesmereUI.IS_FOREVER then
     local aggR, aggG, aggB, lowR, lowG, lowB, fold
@@ -1027,6 +1047,14 @@ if EllesmereUI.IS_FOREVER then
         else
             return PaintWhite(fs)
         end
+        if white and white[fs] then white[fs] = nil end
+    end
+
+    function EllesmereUI.PaintThreatGap(fs, text, ahead, colorOn, aheadC, behindC)
+        fs:SetText(text)
+        if not colorOn then return PaintWhite(fs) end
+        local c = ahead and aheadC or behindC
+        fs:SetTextColor(c.r, c.g, c.b)
         if white and white[fs] then white[fs] = nil end
     end
 end -- IS_FOREVER

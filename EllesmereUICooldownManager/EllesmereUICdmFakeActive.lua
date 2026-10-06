@@ -1271,7 +1271,7 @@ ApplyCdState = function(frame, fc, cas, eff, onCD, ready)
     if ns.SetCdStateShiftHidden then ns.SetCdStateShiftHidden(fc, false) end
     if not fd then return end
     -- Glow (On CD) wants the OPPOSITE cooldown state from the Ready variants
-    -- (as the glowOnCD branch of the SetDesaturated hook in CdmHooks.lua).
+    -- (as the glowOnCD branch of the SetDesaturated hook in EUI_CDM_HookDecorate.lua).
     local isOnCdGlow = (eff == "glowOnCD")
     local wantsGlow = isOnCdGlow and onCD or (not isOnCdGlow and not onCD)
     if wantsGlow then
@@ -1340,7 +1340,7 @@ QueueCdStateEval = function()
         EvalCdStateNow()
     end)
 end
--- The hooks file's CD-state glow kick (ns.CdGlowKick) relights an owed preset
+-- The CD-state glow kick in EUI_CDM_HookTrinkets.lua (ns.CdGlowKick) relights an owed preset
 -- glow through this pass.
 ns.FakeActive_QueueCdStateEval = QueueCdStateEval
 

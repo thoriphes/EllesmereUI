@@ -5,9 +5,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  open / close with their animations, the one-time how-to-use tip.
 --  Loaded after EUI_UnlockMode.lua; _unlockCoreInit runs it once with UM.
 -------------------------------------------------------------------------------
-EllesmereUI._unlockParts = EllesmereUI._unlockParts or {}
-EllesmereUI._unlockParts.Session = function(UM)
-local ns, EAB, min, max = UM.ns, UM.EAB, UM.min, UM.max
+local _, EUI_NS = ...
+EUI_NS = EUI_NS.__euiCoreNS or EUI_NS  -- standalone builds: the core's own table (EllesmereUI.lua)
+EUI_NS.unlockParts = EUI_NS.unlockParts or {}
+EUI_NS.unlockParts.Session = function(UM)
+local ns, EAB, min, max = EUI_NS, UM.EAB, UM.min, UM.max
 local sin, FONT_PATH, LOCK_INNER, LOCK_OUTER = UM.sin, UM.FONT_PATH, UM.LOCK_INNER, UM.LOCK_OUTER
 local LOCK_TOP, MOVER_ALPHA, GEAR_ROTATION, ALL_BAR_ORDER = UM.LOCK_TOP, UM.MOVER_ALPHA, UM.GEAR_ROTATION, UM.ALL_BAR_ORDER
 local registeredElements, registeredOrder, RebuildRegisteredOrder, movers = UM.registeredElements, UM.registeredOrder, UM.RebuildRegisteredOrder, UM.movers
@@ -393,7 +395,7 @@ local function CreateHUD(parent)
         EllesmereUI.MakeBorder(btn, eg.r, eg.g, eg.b, 0.7)
         local bg = btn:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetColorTexture(0.06, 0.08, 0.10, 0.92)
+        bg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
 
         local lbl = btn:CreateFontString(nil, "OVERLAY")
         lbl:SetFont(FONT_PATH, BTN_FONT, "OUTLINE, SLUG")
@@ -1162,8 +1164,8 @@ local function RevertPositions()
                 if snap and not snap._fromLiveFrame then
                     if not UM.ApplyCenterPosition(barKey, snap) then
                         pcall(function()
-                            bar:ClearAllPoints()
-                            bar:SetPoint(snap.point, UIParent, snap.relPoint, snap.x, snap.y)
+                            EllesmereUI.ClearFramePoints(bar)
+                            EllesmereUI.SetFramePoint(bar, snap.point, UIParent, snap.relPoint, snap.x, snap.y)
                         end)
                     end
                 elseif bar.UpdateGridLayout then
@@ -1470,7 +1472,7 @@ local function CreateUnlockFrame()
     overlayFrame:SetAllPoints(UIParent)
     local overlay = overlayFrame:CreateTexture(nil, "BACKGROUND")
     overlay:SetAllPoints()
-    overlay:SetColorTexture(0.02, 0.03, 0.04, 0.20)
+    overlay:SetColorTexture(0.030, 0.023, 0.018, 0.20)
     UM.unlockFrame._overlay = overlay
     UM.unlockFrame._overlayMaxAlpha = 0.20
 
@@ -1810,7 +1812,7 @@ function ns.ShowUnlockTip()
 
         local bg = tip:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetColorTexture(0.06, 0.08, 0.10, 0.95)
+        bg:SetColorTexture(0.077, 0.068, 0.058, 0.95)
 
         EllesmereUI.MakeBorder(tip, ar, ag, ab, 0.25)
 
@@ -1845,11 +1847,11 @@ function ns.ShowUnlockTip()
         arrowBorder:SetRotation(math.rad(45))
         if arrowBorder.SetSnapToPixelGrid then arrowBorder:SetSnapToPixelGrid(false); arrowBorder:SetTexelSnappingBias(0) end
 
-        -- Fill diamond (same bg as popup: 0.06, 0.08, 0.10, 0.95)
+        -- Fill diamond (same bg as popup: 0.077, 0.068, 0.058, 0.95)
         local arrowFill = arrowFrame:CreateTexture(nil, "OVERLAY", nil, 6)
         arrowFill:SetSize(ARROW_SZ, ARROW_SZ)
         arrowFill:SetPoint("CENTER")
-        arrowFill:SetColorTexture(0.06, 0.08, 0.10, 0.95)
+        arrowFill:SetColorTexture(0.077, 0.068, 0.058, 0.95)
         arrowFill:SetRotation(math.rad(45))
         if arrowFill.SetSnapToPixelGrid then arrowFill:SetSnapToPixelGrid(false); arrowFill:SetTexelSnappingBias(0) end
 
@@ -2163,7 +2165,7 @@ function ns.OpenUnlockMode()
 
     -- Start overlay at 0 alpha, will fade in during animation
     if UM.unlockFrame._overlay then
-        UM.unlockFrame._overlay:SetColorTexture(0.02, 0.03, 0.04, 0)
+        UM.unlockFrame._overlay:SetColorTexture(0.030, 0.023, 0.018, 0)
     end
 
     -- Phase timings
@@ -2234,7 +2236,7 @@ function ns.OpenUnlockMode()
         local OVERLAY_FADE_DUR = 0.75
         if UM.unlockFrame._overlay then
             local oa = min(1, elapsed / OVERLAY_FADE_DUR) * (UM.unlockFrame._overlayMaxAlpha or 0.20)
-            UM.unlockFrame._overlay:SetColorTexture(0.02, 0.03, 0.04, oa)
+            UM.unlockFrame._overlay:SetColorTexture(0.030, 0.023, 0.018, oa)
         end
 
         ---------------------------------------------------------------

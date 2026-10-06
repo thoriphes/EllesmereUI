@@ -12028,9 +12028,9 @@ function LP.ApplyLootRoll()
     if type(_G.GroupLootContainer_Update) == "function" then
         hooksecurefunc("GroupLootContainer_Update", resweep)
     end
-
-    local c = _G.GroupLootContainer
-    if c then WSkin.HookShow(c, resweep) end
+    -- No script hook on the container itself: it only shows inside
+    -- GroupLootContainer_Update (hooked above), and code run from its OnShow
+    -- would leave the rest of that update, the managed-layout pass, under our taint.
 
     -- Fallback for clients where those two globals have gone: the roll event itself is what puts a frame on screen.
     local ev = CreateFrame("Frame")

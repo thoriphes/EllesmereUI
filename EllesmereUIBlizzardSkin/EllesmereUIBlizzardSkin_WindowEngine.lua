@@ -539,7 +539,8 @@ function WSkin.StateButtonLabel(btn)
 end
 
 -- Search / input box -> near-black block, border, art gone.
-function WSkin.EditBox(eb)
+-- opts.padInput = widen left + inset the text; opts.noBorder = skip border.
+function WSkin.EditBox(eb, opts)
     if not eb or eb:IsForbidden() then return end
     local d = GetFFD(eb)
     if d.bg then return end
@@ -547,11 +548,12 @@ function WSkin.EditBox(eb)
     for _, k in ipairs({ "Left", "Right", "Middle", "Mid" }) do
         local r = eb[k]; if r and r.SetAlpha then r:SetAlpha(0) end
     end
+    if opts and opts.padInput and EllesmereUI._WSkinPadInput then EllesmereUI._WSkinPadInput(eb) end
     local fill = SolidTex(eb, "BACKGROUND", 0.02, 0.02, 0.02, 1)
     fill:SetAllPoints(eb)
     d.bg = fill
     -- Same border as WSkin.Button (theme defaults).
-    AddBorder(eb)
+    if not (opts and opts.noBorder) then AddBorder(eb) end
 end
 
 -- Checkbox -> dark block + accent tick. opts.stockCheck leaves the checkmark

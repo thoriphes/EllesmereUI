@@ -6,9 +6,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  hooks, combat-parked positioning, fallback anchors.
 --  Loaded after EUI_UnlockMode.lua; _unlockCoreInit runs it once with UM.
 -------------------------------------------------------------------------------
-EllesmereUI._unlockParts = EllesmereUI._unlockParts or {}
-EllesmereUI._unlockParts.Anchors = function(UM)
-local ns, floor, PP, registeredElements = UM.ns, UM.floor, UM.PP, UM.registeredElements
+local _, EUI_NS = ...
+EUI_NS = EUI_NS.__euiCoreNS or EUI_NS  -- standalone builds: the core's own table (EllesmereUI.lua)
+EUI_NS.unlockParts = EUI_NS.unlockParts or {}
+EUI_NS.unlockParts.Anchors = function(UM)
+local ns, floor, PP, registeredElements = EUI_NS, UM.floor, UM.PP, UM.registeredElements
 local movers, pendingPositions, SELECT_ELEMENT_ALPHA, SELECT_ELEMENT_FADE = UM.movers, UM.pendingPositions, UM.SELECT_ELEMENT_ALPHA, UM.SELECT_ELEMENT_FADE
 
 -------------------------------------------------------------------------------
@@ -194,8 +196,8 @@ function EllesmereUI.RecenterBarAnchor(barKey)
     end
 
     pcall(function()
-        b:ClearAllPoints()
-        b:SetPoint(anchor, UIParent, "CENTER", setX, setY)
+        EllesmereUI.ClearFramePoints(b)
+        EllesmereUI.SetFramePoint(b, anchor, UIParent, "CENTER", setX, setY)
     end)
 
     -- Keep mover's stored center in sync so drag/snap logic stays consistent
@@ -450,7 +452,9 @@ function EllesmereUI.MatchGuard(barKey, axis, existingDisabled, existingTooltip)
         local target = getFn(barKey)
         if target then
             local name = (EllesmereUI.GetBarLabel and EllesmereUI.GetBarLabel(target)) or target
-            return axis .. " matched to " .. name .. ". Unmatch in Unlock Mode to edit."
+            return isWidth
+                and EllesmereUI.Lf("Width matched to %1$s. Unmatch in Unlock Mode to edit.", EllesmereUI.L(name))
+                or EllesmereUI.Lf("Height matched to %1$s. Unmatch in Unlock Mode to edit.", EllesmereUI.L(name))
         end
         if existingTooltip then
             return type(existingTooltip) == "function" and existingTooltip() or existingTooltip
@@ -1608,7 +1612,7 @@ local function FadeOverlayForSelectElement(entering)
         elapsed = elapsed + dt
         local t = math.min(elapsed / SELECT_ELEMENT_FADE, 1)
         local a = startA + (endA - startA) * t
-        UM.unlockFrame._overlay:SetColorTexture(0.02, 0.03, 0.04, a)
+        UM.unlockFrame._overlay:SetColorTexture(0.030, 0.023, 0.018, a)
         if t >= 1 then self:SetScript("OnUpdate", nil) end
     end)
 end
@@ -1754,8 +1758,8 @@ do
                         local bar = UM.GetBarFrame(key)
                         if bar then
                             pcall(function()
-                                bar:ClearAllPoints()
-                                bar:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x, pos.y)
+                                EllesmereUI.ClearFramePoints(bar)
+                                EllesmereUI.SetFramePoint(bar, pos.point, UIParent, pos.relPoint or pos.point, pos.x, pos.y)
                             end)
                         end
                     end
@@ -1941,8 +1945,8 @@ do
             end
         end
         pcall(function()
-            childBar:ClearAllPoints()
-            childBar:SetPoint("CENTER", UIParent, "CENTER", bCenterX, bCenterY)
+            EllesmereUI.ClearFramePoints(childBar)
+            EllesmereUI.SetFramePoint(childBar, "CENTER", UIParent, "CENTER", bCenterX, bCenterY)
         end)
         -- Children anchored to THIS child must follow it to the fallback spot.
         UM._pendingAnchorKeys[childKey] = "all"
