@@ -109,15 +109,21 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
 
         do
             local rgn = visRow1._leftRegion
+            -- Click Through sits in this row's cog, so it travels with the copy
+            -- (a visibility-only bar has none).
+            local function CopyTo(key, src)
+                CopyVisibilitySettings(EAB.db.profile.bars[key], src, key)
+                if not visOnly then
+                    EAB.db.profile.bars[key].clickThrough = src.clickThrough or false
+                    EAB:ApplyClickThroughForBar(key)
+                end
+            end
             EllesmereUI.BuildSyncIcon({
                 region  = rgn,
                 tooltip = "Apply Visibility to all Bars",
                 onClick = function()
                     local src = SB()
-                    for _, key in ipairs(GROUP_BAR_ORDER) do
-                        local dst = EAB.db.profile.bars[key]
-                        CopyVisibilitySettings(dst, src, key)
-                    end
+                    for _, key in ipairs(GROUP_BAR_ORDER) do CopyTo(key, src) end
                     EAB:RefreshRuntimeVisibility()
                     EAB:RefreshMouseover()
                     EAB:ApplyCombatVisibility()
@@ -129,6 +135,7 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                         local dst = EAB.db.profile.bars[key]
                         if not EllesmereUI.VisFullEquals(src, "barVisibility", dst, "barVisibility") then return false end
                         if (src.dragShow or false) ~= (dst.dragShow or false) then return false end
+                        if not visOnly and (src.clickThrough or false) ~= (dst.clickThrough or false) then return false end
                     end
                     return true
                 end,
@@ -139,10 +146,7 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                     getCurrentKey = function() return SelectedKey() end,
                     onApply       = function(checkedKeys)
                         local src = SB()
-                        for _, key in ipairs(checkedKeys) do
-                            local dst = EAB.db.profile.bars[key]
-                            CopyVisibilitySettings(dst, src, key)
-                        end
+                        for _, key in ipairs(checkedKeys) do CopyTo(key, src) end
                         EAB:RefreshRuntimeVisibility()
                         EAB:RefreshMouseover()
                         EAB:ApplyCombatVisibility()
@@ -153,14 +157,6 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
         end
         do
             local rgn = visRow1._leftRegion
-            local function MORow()
-                return { type="toggle", label="Show All on Mouseover",
-                  tooltip="When hovering any action bar set to Mouseover, all Mouseover bars will appear.",
-                  get=function() return EAB.db.profile.mouseoverShowAll or false end,
-                  set=function(v)
-                      EAB.db.profile.mouseoverShowAll = v
-                  end }
-            end
             -- Show During Drag applies only while THIS bar's visibility is Never
             -- (other modes already surface during a drag); the row is always
             -- present, disabled with a requirement tooltip in the other modes.
@@ -195,12 +191,42 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                       EllesmereUI:RefreshPage()
                   end }
             end
+            local rows = { SpellbookRow(), DragRow() }
+            if not visOnly then
+                rows[#rows + 1] = { type="toggle", label="Click Through",
+                  get=function() return SGet("clickThrough") end,
+                  set=function(v)
+                      SSet("clickThrough", v, function(k) EAB:ApplyClickThroughForBar(k) end)
+                      -- The Apply Visibility link compares this toggle.
+                      EllesmereUI:RefreshPage()
+                  end }
+            end
             EllesmereUI.BuildInlineCog(rgn, {
                 title = "Visibility",
-                rows = { MORow(), SpellbookRow(), DragRow() },
+                rows = rows,
                 anchorTo = rgn._control,
             })
         end
+    end
+
+    -- Show All Bars on Mouseover: one setting for every bar (the profile's). It links
+    -- every bar set to Mouseover, action bars, the micro menu, the bag bar and
+    -- the data bars alike (the runtime's mouseoverEnabled), so it is offered
+    -- while any of them is. Beside End Caps, or on a row of its own where the
+    -- section has no End Caps (a visibility-only bar, the WoW Forever look).
+    local function AnyMouseoverBar()
+        for _, s in pairs(EAB.db.profile.bars) do
+            if type(s) == "table" and s.mouseoverEnabled then return true end
+        end
+        return false
+    end
+    local function ShowAllCfg()
+        return { type="toggle", text="Show All Bars on Mouseover",
+          tooltip="Hovering one Mouseover bar shows them all.",
+          disabled=function() return not AnyMouseoverBar() end,
+          disabledTooltip="This option requires a bar set to Mouseover",
+          getValue=function() return EAB.db.profile.mouseoverShowAll or false end,
+          setValue=function(v) EAB.db.profile.mouseoverShowAll = v end }
     end
 
     -- Bar Opacity keeps this row (and its sync icon, now on the left region) with
@@ -279,9 +305,9 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
     end
 
     -- The bar's end caps (EndCapsCtl). Under WoW Forever it opens LAYOUT
-    -- beside Show Bar Background; every other look puts it in the Click
-    -- Through row's free slot. A change to Action Bar 1's caps also
-    -- repaints a bar carrying one of them (the first-install span).
+    -- beside Show Bar Background; every other look puts it beside Show All
+    -- Bars on Mouseover. A change to Action Bar 1's caps also repaints a bar
+    -- carrying one of them (the first-install span).
     local CAPS = (not visOnly) and EndCapsCtl({
         key = SelectedKey, store = SB, label = "End Caps",
         vertical = function() return not EAB:GetOrientationForBar(SelectedKey()) end,
@@ -303,19 +329,15 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
         syncKeys = GROUP_BAR_ORDER, syncLabels = SHORT_LABELS,
     }) or nil
 
+    if CAPS and not CAPS.forever then
+        local capsRow
+        capsRow, h = W:DualRow(parent, y, CAPS.Cfg(), ShowAllCfg());  y = y - h
+        CAPS.Build(capsRow._leftRegion)
+    else
+        _, h = W:DualRow(parent, y, ShowAllCfg(), EllesmereUI.BlankRowCfg());  y = y - h
+    end
+
     if not visOnly then
-        local ctRow
-        local capsInCt = CAPS and not CAPS.forever
-        ctRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Click Through",
-              getValue=function()
-                  return SGet("clickThrough")
-              end,
-              setValue=function(v)
-                  SSet("clickThrough", v, function(k) EAB:ApplyClickThroughForBar(k) end)
-              end },
-            capsInCt and CAPS.Cfg() or EllesmereUI.BlankRowCfg());  y = y - h
-        if capsInCt then CAPS.Build(ctRow._rightRegion) end
         -- "Toggle Action Bar" keybind: bound key flips the bar shown/hidden at runtime
         -- without writing saved visibility. Enabled only for Always/Never; out of combat
         -- only. Its label sits in the Visibility row, so the button goes there too.
@@ -348,42 +370,6 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                     EAB:RebuildVisToggleBindings()
                     refresh()
                 end,
-            })
-        end
-        do
-            local rgn = ctRow._leftRegion
-            EllesmereUI.BuildSyncIcon({
-                region  = rgn,
-                tooltip = "Apply Click Through to all Bars",
-                onClick = function()
-                    local v = SB().clickThrough or false
-                    for _, key in ipairs(GROUP_BAR_ORDER) do
-                        EAB.db.profile.bars[key].clickThrough = v
-                        EAB:ApplyClickThroughForBar(key)
-                    end
-                    EllesmereUI:RefreshPage()
-                end,
-                isSynced = function()
-                    local v = SB().clickThrough or false
-                    for _, key in ipairs(GROUP_BAR_ORDER) do
-                        if (EAB.db.profile.bars[key].clickThrough or false) ~= v then return false end
-                    end
-                    return true
-                end,
-                flashTargets = function() return { rgn } end,
-                multiApply = {
-                    elementKeys   = GROUP_BAR_ORDER,
-                    elementLabels = SHORT_LABELS,
-                    getCurrentKey = function() return SelectedKey() end,
-                    onApply       = function(checkedKeys)
-                        local v = SB().clickThrough or false
-                        for _, key in ipairs(checkedKeys) do
-                            EAB.db.profile.bars[key].clickThrough = v
-                            EAB:ApplyClickThroughForBar(key)
-                        end
-                        EllesmereUI:RefreshPage()
-                    end,
-                },
             })
         end
     end
@@ -728,7 +714,6 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                   end,
                   disabledTooltip="This option is not supported for this bar type",
                   rawTooltip=true,
-                  labelOnlyTooltip=true,
                   getValue=function()
                       return not EAB:GetOrientationForBar(SelectedKey())
                   end,
@@ -736,10 +721,8 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                       EAB:SetOrientationForBar(SelectedKey(), not v)
                       SUpdatePreviewAndResize()
                       EllesmereUI:RefreshPage()
-                  end,
-                  tooltip="Toggle between horizontal and vertical bar layout." },
+                  end },
                 { type="dropdown", text="Icon Order",
-                  tooltip="Order of the buttons on this bar; corner options place the first button in that corner.",
                   values={ default="Default", reversed="Reversed", TOPLEFT="Top Left", TOPRIGHT="Top Right", BOTTOMLEFT="Bottom Left", BOTTOMRIGHT="Bottom Right" },
                   order={ "default", "reversed", "TOPLEFT", "TOPRIGHT", "BOTTOMLEFT", "BOTTOMRIGHT" },
                   getValue=function()
