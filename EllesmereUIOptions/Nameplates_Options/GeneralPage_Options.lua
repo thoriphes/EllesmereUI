@@ -297,9 +297,19 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           rawTooltip=function() return not friendlyPlayersOff() end,
           swatches = MakeGuildColorSwatches() });  y = y - h
 
-    -- Subtitle Text inline cog (guild bracket toggle)
+    -- Subtitle Text inline cog (guild bracket toggle). WoW Forever retitles it
+    -- Name Text Settings and heads it with the friendly Name Format (a friendly
+    -- player's first or last name, in both modes), so there the cog opens
+    -- whenever friendly players show and the guild row carries the guild
+    -- requirement itself.
     if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineCog(subtitleRow._leftRegion, {
+        local guildRow = { type = "toggle", label = "Show <> Around Guild",
+            get = function() return DBVal("friendlyBelowNameGuildBrackets") ~= false end,
+            set = function(v)
+              DB().friendlyBelowNameGuildBrackets = v and true or false
+              if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
+            end }
+        local cog = {
             chain = false,
             disabled = subtitleGuildOff,
             -- Same requirement as the Guild Text Color swatch beside it; the
@@ -310,15 +320,23 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             end,
             rawTooltip = function() return not friendlyPlayersOff() end,
             title = "Subtitle Text Settings",
-            rows = {
-                { type = "toggle", label = "Show <> Around Guild",
-                  get = function() return DBVal("friendlyBelowNameGuildBrackets") ~= false end,
-                  set = function(v)
-                    DB().friendlyBelowNameGuildBrackets = v and true or false
-                    if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
-                  end },
-            },
-        })
+            rows = { guildRow },
+        }
+        if EllesmereUI.IS_FOREVER then
+            cog.title = "Name Text Settings"
+            cog.disabled, cog.disabledTooltip, cog.rawTooltip =
+                friendlyPlayersOff, "Show EUI Friendly Player Nameplates", nil
+            guildRow.disabled = subtitleGuildOff
+            guildRow.disabledTooltip = "This option requires Subtitle Text to include the Guild Name"
+            guildRow.rawTooltip = true
+            table.insert(cog.rows, 1, EllesmereUI.NameFormatCogRow(
+                function() return DBVal("friendlyNameFormat") end,
+                function(v)
+                    DB().friendlyNameFormat = v
+                    ns.NP_SyncFriendlyNameFormat()
+                end))
+        end
+        EllesmereUI.BuildInlineCog(subtitleRow._leftRegion, cog)
     end
 
     local npcRow
@@ -911,7 +929,30 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end },
         { type="label", text="" }
     );  y = y - h
-    -- RESIZE cog: text size + X/Y offsets (mirrors the raid-marker cog)
+    -- Inline color swatch (default light orange), beside the toggle
+    if not EllesmereUI._prebuilding then
+        local rgn = tfRangeRow._leftRegion
+        local rangeColorGet = function()
+            local c = (DB() and DB().rangeTextColor) or defaults.rangeTextColor
+            return c.r, c.g, c.b
+        end
+        local rangeColorSet = function(r, g, b)
+            DB().rangeTextColor = { r = r, g = g, b = b }
+            if ns.RangeText_Refresh then ns.RangeText_Refresh() end
+        end
+        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, rangeColorGet, rangeColorSet, nil, 20)
+        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        EllesmereUI.RegisterWidgetRefresh(function()
+            local off = tfRangeOff()
+            swatch:SetAlpha(off and 0.15 or 1)
+            swatch:EnableMouse(not off)
+            updateSwatch()
+        end)
+        swatch:SetAlpha(tfRangeOff() and 0.15 or 1)
+        swatch:EnableMouse(not tfRangeOff())
+    end
+    -- RESIZE cog: text size + X/Y offsets (mirrors the raid-marker cog), left of the swatch
     if not EllesmereUI._prebuilding then
         local rgn = tfRangeRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
@@ -940,29 +981,6 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                   end },
             },
         })
-    end
-    -- Inline color swatch (default light orange), left of the cog
-    if not EllesmereUI._prebuilding then
-        local rgn = tfRangeRow._leftRegion
-        local rangeColorGet = function()
-            local c = (DB() and DB().rangeTextColor) or defaults.rangeTextColor
-            return c.r, c.g, c.b
-        end
-        local rangeColorSet = function(r, g, b)
-            DB().rangeTextColor = { r = r, g = g, b = b }
-            if ns.RangeText_Refresh then ns.RangeText_Refresh() end
-        end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, rangeColorGet, rangeColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = tfRangeOff()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end)
-        swatch:SetAlpha(tfRangeOff() and 0.15 or 1)
-        swatch:EnableMouse(not tfRangeOff())
     end
 
     _, h = W:Spacer(parent, y, 20);  y = y - h

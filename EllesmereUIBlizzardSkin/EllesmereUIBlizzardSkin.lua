@@ -1029,6 +1029,73 @@ end
         end
     end
 
+    -- Hovered player's buffs as icons on the tooltip (opt-in, tooltipShowBuffs).
+    -- One engine aura container on GameTooltip, built on first use; the unit is
+    -- re-bound only when the hovered GUID changes.
+    local _ttBuffs, _ttBuffsGUID, _ttBuffsUnit
+    -- position = { container point, tooltip point, growthH, growthV, x, y }
+    local _TT_BUFF_POS = {
+        bottom = { "TOPLEFT", "BOTTOMLEFT", "Right", "Down", 0, -2 },
+        top    = { "BOTTOMLEFT", "TOPLEFT", "Right", "Up", 0, 2 },
+        left   = { "TOPRIGHT", "TOPLEFT", "Left", "Down", -2, 0 },
+        right  = { "TOPLEFT", "TOPRIGHT", "Right", "Down", 2, 0 },
+    }
+    local function _ttBuffsLayout()
+        local c = _ttBuffs
+        if not c then return end
+        local AK = EllesmereUI.AuraKit
+        local db = EllesmereUIDB or {}
+        if not db.tooltipShowBuffs then
+            c:Hide()
+            return
+        end
+        local size = db.tooltipBuffSize or 20
+        local perRow = db.tooltipBuffsPerRow or 8
+        local p = _TT_BUFF_POS[db.tooltipBuffPosition or "bottom"] or _TT_BUFF_POS.bottom
+        local style = AK.styles.ttBuffs
+        style.width, style.height = size, size
+        AK.Restyle("ttBuffs")
+        c:SetAuraGroupLayout("buffs", { elementWidth = size, elementHeight = size, elementSpacing = 2, lineSpacing = 2 })
+        AK.SetContainerRowWidth(c, perRow * size + (perRow - 1) * 2 + 0.4)
+        c:ClearAllPoints()
+        c:SetPoint(p[1], _GameTooltip, p[2], p[5] + (db.tooltipBuffOffsetX or 0), p[6] + (db.tooltipBuffOffsetY or 0))
+        AK.SetContainerAnchor(c, p[1])
+        local FD = AnchorUtil.FlowDirection
+        AK.SetContainerGrowth(c, FD[p[3]], FD[p[4]])
+    end
+    EllesmereUI._applyTooltipBuffs = _ttBuffsLayout
+
+    local function _ttShowBuffs(guid, unit)
+        local db = EllesmereUIDB
+        if not (unit and db and db.tooltipShowBuffs) then return end
+        -- Its GameTooltip hooks stand down with the others under the gamepad
+        -- interface style.
+        if EllesmereUI.BlizzSkinPadStandDown() then return end
+        local AK = EllesmereUI.AuraKit
+        if not _ttBuffs then
+            -- noTooltips: no hover tooltips (they would take over GameTooltip);
+            -- AuraKit keeps the buttons mouse-free through every restyle.
+            AK.styles.ttBuffs = { width = 20, height = 20, iconCrop = true, hideDurationText = true,
+                noTooltips = true, border = { 0, 0, 0, 1, size = 1 } }
+            local c = AK.CreateContainerShell(_GameTooltip, { point = { "TOPLEFT", _GameTooltip, "BOTTOMLEFT" } })
+            -- Capped at 16 icons.
+            AK.AddGroupToContainer(c, { key = "buffs", filter = { "HELPFUL" }, maxFrameCount = 16,
+                style = "ttBuffs",
+                layout = { elementWidth = 20, elementHeight = 20, elementSpacing = 2, lineSpacing = 2 } })
+            _ttBuffs = c
+            _ttBuffsLayout()
+            -- Cleared on every tooltip rebuild; the unit post-call re-shows it for players.
+            _GameTooltip:HookScript("OnTooltipCleared", function() c:Hide() end)
+            _GameTooltip:HookScript("OnHide", function() _ttBuffsGUID = nil end)
+        end
+        if guid ~= _ttBuffsGUID or unit ~= _ttBuffsUnit then
+            _ttBuffsGUID, _ttBuffsUnit = guid, unit
+            _ttBuffs:SetUnit(unit)
+            _ttBuffs:UpdateAllAuras()
+        end
+        _ttBuffs:Show()
+    end
+
     local function _ttUnitColor(tt, data)
         if tt ~= _GameTooltip or tt:IsForbidden() then return end
         local nLinesBefore = tt.NumLines and tt:NumLines() or 0
@@ -1148,6 +1215,7 @@ end
                 tt:AddDoubleLine("Mount:", valText, 1, 1, 1, 1, 1, 1)
             end
         end
+        _ttShowBuffs(guid, unit)
         -- Who the hovered player currently targets (opt-in, default off).
         _ttTargetLine(tt, unit)
         -- Item Level. Cache keyed strictly by the authoritative GUID so reads/writes can never land under a different person.

@@ -1888,7 +1888,7 @@ local function WrapCompensatedBody(parentFrame, topOffset)
     body:SetSize(visibleW + padDiff * 2, 10) -- finalized by FinalizeCompensatedBody
     body._showRowDivider = true
     scroll:SetScrollChild(body)
-    body._pabUpdateThumb = AttachEditorScroll(scroll, body, nil, padDiff + 2)
+    body._pabUpdateThumb = AttachEditorScroll(scroll, body, nil, padDiff + 2, true)
 
     -- Every WrapCompensatedBody call in this file immediately follows a
     -- PAB_BuildPreviewBox call on the same `parentFrame` (see the four BuildXDetail
@@ -2128,11 +2128,13 @@ local CLASS_ORDER = { "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST",
 
 -- Editor scroll (manager-page style bar). Returns UpdateThumb and SetScrollTo(v).
 -- rightInset (default 2): only WrapCompensatedBody passes more, since its scroll
--- extends padDiff (~25px) past the pane's visible right edge.
-AttachEditorScroll = function(scroll, child, onScroll, rightInset)
+-- extends padDiff (~25px) past the pane's visible right edge. panelWheel: a pane
+-- inside the options panel (Shift + wheel scales the panel), not a popup editor.
+AttachEditorScroll = function(scroll, child, onScroll, rightInset, panelWheel)
     return EllesmereUI.AttachSmoothScrollbar(scroll, {
         step = 60, thumbMin = 20, rightInset = rightInset, topInset = 2, level = 5,
-        trackAlpha = 0.05, thumbAlpha = 0.22, child = child, onScroll = onScroll })
+        trackAlpha = 0.05, thumbAlpha = 0.22, child = child, onScroll = onScroll,
+        panelWheel = panelWheel })
 end
 
 function ns.PABMP_ShowFilterEditor()
@@ -2162,7 +2164,7 @@ function ns.PABMP_ShowFilterEditor()
     popup:SetFrameStrata("FULLSCREEN_DIALOG")
     popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
     popup:EnableMouse(true)
-    local popBg = EllesmereUI.SolidTex(popup, "BACKGROUND", 0.06, 0.08, 0.10, 1); popBg:SetAllPoints()
+    local popBg = EllesmereUI.SolidTex(popup, "BACKGROUND", 0.077, 0.068, 0.058, 1); popBg:SetAllPoints()
     EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15)
     if EllesmereUI.GetPopupScale then popup:SetScale(EllesmereUI.GetPopupScale()) end
 
@@ -2505,7 +2507,7 @@ function ns.PABMP_ShowFilterEditor()
         box:SetSize(16, 16)
         box:SetPoint("LEFT", srow, "LEFT", 6, 0)
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
-        boxBg:SetAllPoints(); boxBg:SetColorTexture(0.12, 0.12, 0.14, 1)
+        boxBg:SetAllPoints(); boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
         local boxBrd = EllesmereUI.MakeBorder(box, 0.4, 0.4, 0.4, 0.6)
         local chk = box:CreateTexture(nil, "ARTWORK")
         chk:SetPoint("TOPLEFT", box, "TOPLEFT", 2, -2)

@@ -86,6 +86,8 @@ local DEFAULTS = {
     -- Key into the shared font registry; "__global" follows the EUI global font.
     font = "__global",
     fontSize = 12,
+    -- "__global" follows the EUI global outline mode; "none" is the drop shadow.
+    outline = "__global",
     -- Channel -> true: speaker name in the bubble's top right corner for that channel.
     showName = {},
     nameAnchor = "TOPRIGHT",
@@ -494,8 +496,16 @@ local function Layout(f, cfg)
     local fontKey = cfg.font or d.font
     local path = fontKey ~= "__global" and EUI.ResolveFontName(fontKey)
     path = path or EUI.GetFontPath() or "Fonts\\FRIZQT__.TTF"
-    local flag = EUI.GetFontOutlineFlag() or ""
+    local outline = cfg.outline or d.outline
+    local flag
+    if outline == "__global" then
+        flag = EUI.GetFontOutlineFlag() or ""
+    else
+        flag = EUI.OutlineFlagForMode(outline)
+    end
     local fontSize = cfg.fontSize or d.fontSize or 12
+    -- No outline means the drop shadow, which only renders when primed before SetFont.
+    EUI.PrimeFontShadow(f.text, flag == "")
     -- SetFont answers false for a path that no longer resolves (a media addon uninstalled
     -- since the setting was made) and leaves the FontString with NO font at all, which makes
     -- the NEXT SetText raise "Font not set" in Claim, unguarded, from an event handler. Same
@@ -518,6 +528,7 @@ local function Layout(f, cfg)
     local names = cfg.showName
     if f.speaker and type(names) == "table" and names[f.channel] == true then
         local nameSize = cfg.nameFontSize or d.nameFontSize
+        EUI.PrimeFontShadow(f.name, flag == "")
         if not f.name:SetFont(path, nameSize, flag) then
             f.name:SetFont("Fonts\\FRIZQT__.TTF", nameSize, flag)
         end

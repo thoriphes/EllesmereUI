@@ -970,7 +970,7 @@ initFrame:SetScript("OnEvent", function(self)
 
                 local bgTex = bf:CreateTexture(nil, "BACKGROUND")
                 bgTex:SetAllPoints()
-                bgTex:SetColorTexture(0.06, 0.08, 0.10, 0.5)
+                bgTex:SetColorTexture(0.077, 0.068, 0.058, 0.5)
 
                 -- Icon from real action button or CDM bar icon
                 local realBtn
@@ -2087,7 +2087,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- Background
             local bg = tip:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints()
-            bg:SetColorTexture(0.06, 0.08, 0.10, 1)
+            bg:SetColorTexture(0.077, 0.068, 0.058, 1)
 
             -- Border
             EllesmereUI.MakeBorder(tip, ar, ag, ab, 0.25, PP)
@@ -2116,7 +2116,7 @@ initFrame:SetScript("OnEvent", function(self)
             local arrowFill = arrowFrame:CreateTexture(nil, "OVERLAY", nil, 6)
             arrowFill:SetSize(ARROW_SZ, ARROW_SZ)
             arrowFill:SetPoint("CENTER")
-            arrowFill:SetColorTexture(0.06, 0.08, 0.10, 1)
+            arrowFill:SetColorTexture(0.077, 0.068, 0.058, 1)
             arrowFill:SetRotation(math.rad(45))
             if arrowFill.SetSnapToPixelGrid then arrowFill:SetSnapToPixelGrid(false); arrowFill:SetTexelSnappingBias(0) end
 

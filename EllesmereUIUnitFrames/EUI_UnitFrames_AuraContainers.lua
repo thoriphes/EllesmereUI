@@ -1485,7 +1485,7 @@ local function ElementSize(unit, base, s)
         -- strips skip pixel snapping while the icon texture snaps, so a
         -- fractional far edge leaves the border off the icon at a
         -- non-pixel-perfect scale.
-        size = math.floor(size / m + 0.5 + 0.001) * m
+        size = PP.FromPixels(PP.ToPixels(size))
     end
     local cropped = Pick(isBuff, s.buffCropIcons, s.debuffCropIcons)
     local h = size
@@ -1718,7 +1718,7 @@ local function CastbarBelowFrame(unit, frame)
         vb = b or 0
     end
     -- frame.Castbar is the status bar; its PARENT is the holder the unlock
-    -- system moves (see CreateCastBar in EllesmereUIUnitFrames.lua).
+    -- system moves (see CreateCastBar in EUI_UnitFrames_Castbar.lua).
     local cb = frame and frame.Castbar and frame.Castbar:GetParent()
     if not cb then return true end
     local fl, fr, fb = frame:GetLeft(), frame:GetRight(), frame:GetBottom()

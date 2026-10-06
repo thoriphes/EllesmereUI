@@ -4,7 +4,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --
 --  Stock styles (Global Settings > Style): the Blizzard, Classic and WoW
 --  Forever art kits and the post-pass that lays them over the built frames.
---  Loads right after the main file and reads it through ns and ns._internals;
+--  Loads after the main file and reads it through ns and ns._internals;
 --  db is set through I.dbSetters when EllesmereUF:OnInitialize creates the DB.
 -------------------------------------------------------------------------------
 local _, ns = ...

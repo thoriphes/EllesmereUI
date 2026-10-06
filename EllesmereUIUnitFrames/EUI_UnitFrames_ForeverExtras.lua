@@ -3,9 +3,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  EUI_UnitFrames_ForeverExtras.lua
 --
 --  WoW Forever extras on the unit frames: the pet happiness icon beside the
---  pet frame and the combo point arc round the target portrait. Both apply
---  functions return at once off WoW Forever. Reads the main file through ns
---  and ns._internals; db is set through I.dbSetters.
+--  pet frame and the combo point arc round the target or player portrait.
+--  Both apply functions return at once off WoW Forever. Reads the main file
+--  through ns and ns._internals; db is set through I.dbSetters.
 -------------------------------------------------------------------------------
 local _, ns = ...
 
@@ -120,16 +120,19 @@ function ns.UF_ApplyPetHappiness()
 end
 
 -- Combo point arc (WoW Forever style): the stock target frame's combo points,
--- the vanilla pip file plotted in an arc round the portrait, drawn as the
+-- the vanilla pip file plotted in an arc round a portrait, drawn as the
 -- "Blizzard" class resource under that look (Forever has no other class
--- resource display). Built on our target frame for a rogue or druid; its
--- events arrive through one receiver born in this main chunk (so they bill
--- to this module), which drops every event while the arc is off, so it costs
--- nothing otherwise. The count can read secret, so visibility never compares
--- it in Lua: each pip rides a one-point StatusBar gate (SetMinMaxValues(i-1,
--- i) + SetValue does the compare C-side) whose mask, pinned to the fill's
--- right edge, bounds the pip's textures, and a one-point gate over the whole
--- arc hides it while empty. A plain count also plays the stock fill flash.
+-- resource display). Combo Points (player.foreverComboLocation) puts it
+-- round the target portrait (the stock spot), round the player portrait, or
+-- nowhere. Built once for a rogue or druid and moved to whichever of our two
+-- frames hosts it; its events arrive through one receiver born in this main
+-- chunk (so they bill to this module), which drops every event while the arc
+-- is off, so it costs nothing otherwise. The count can read secret, so
+-- visibility never compares it in Lua: each pip rides a one-point StatusBar
+-- gate (SetMinMaxValues(i-1, i) + SetValue does the compare C-side) whose
+-- mask, pinned to the fill's right edge, bounds the pip's textures, and a
+-- one-point gate over the whole arc hides it while empty. A plain count also
+-- plays the stock fill flash.
 ns.UF_COMBO_FILE = "Interface\\ComboFrame\\ComboPoint"
 -- Each slot's TOPRIGHT from the target box's TOPRIGHT (the stock container
 -- offset folded in); slots 7-9 are the extra points, at 0.6 alpha.
@@ -153,8 +156,8 @@ function ns.UF_ComboGate(parent, w, h)
     m:SetPoint("RIGHT", fill, "RIGHT", 0, 0)
     return g, m
 end
-function ns.UF_BuildComboArc(tf)
-    local arc = CreateFrame("Frame", nil, tf)
+function ns.UF_BuildComboArc(host)
+    local arc = CreateFrame("Frame", nil, host)
     -- Spans every slot's textures (the arc gate's payload).
     arc:SetSize(82, 72)
     arc._gate, arc._mask = ns.UF_ComboGate(arc, 82, 72)
@@ -207,7 +210,7 @@ function ns.UF_BuildComboArc(tf)
     local fa = fade:CreateAnimation("Alpha")
     fa:SetFromAlpha(0); fa:SetToAlpha(1); fa:SetDuration(0.3)
     arc._fade = fade
-    tf._foreverCombo = arc
+    ns._ufComboArc = arc
     return arc
 end
 -- The arc's event receiver (the Forever client only; armed by
@@ -215,10 +218,33 @@ end
 if EllesmereUI.IS_FOREVER == true then
     ns._ufComboEv = CreateFrame("Frame")
     ns._ufComboEv:SetScript("OnEvent", function(_, ...)
-        local tf = frames.target
-        local arc = tf and tf._foreverCombo
+        local arc = ns._ufComboArc
         if arc then ns.UF_ComboArcRefresh(arc, ...) end
     end)
+end
+-- The classes the arc draws for (combo points on WoW Forever).
+function ns.UF_ComboClass()
+    local _, cls = UnitClass("player")
+    return cls == "ROGUE" or cls == "DRUID"
+end
+-- Combo Points: "target" (the stock spot; anything unknown reads as it),
+-- "player" or "never".
+function ns.UF_ComboLocation()
+    local s = db and db.profile and db.profile.player
+    local v = s and s.foreverComboLocation
+    if v == "player" or v == "never" then return v end
+    return "target"
+end
+-- The slots ring the stock target portrait (58 wide at TOPRIGHT -26,-19, its
+-- centre -55,-48 off the box's top right). A host on another kit's ring (the
+-- player's 60 at TOPLEFT 24,-19) moves every slot by the gap between the two
+-- centres, in the slots' own frame before the mirror; 0,0 on the target kit.
+function ns.UF_ComboRingShift(G)
+    local P = G and G.portrait
+    if not (P and P.size) then return 0, 0 end
+    local r = P.size / 2
+    local cx = (P.point == "TOPLEFT") and -(P.x + r) or (P.x - r)
+    return cx + 55, P.y - r + 48
 end
 -- Which slots the arc uses (from the point cap, as the stock frame lays it
 -- out) and which empty pips show with the arc; re-run only on a cap or
@@ -309,46 +335,74 @@ function ns.UF_ComboArcRefresh(arc, event, _, powerType)
     end
 end
 -- Settings apply: on only under the WoW Forever style with the "Blizzard"
--- class resource, for a rogue or druid with our target frame; builds the arc
--- on first use, places it round the portrait (mirrored onto a portrait on the
--- left) and arms its events, else drops them. Every reload pass and the class
--- resource toggle run it; it returns at once off that style.
+-- class resource, for a rogue or druid; hosts the arc on the frame Combo
+-- Points names (our target or player frame), builds it on first use, places
+-- it round that frame's portrait (mirrored onto a portrait on the left) and
+-- arms its events, else drops them. Blizzard's own combo points, kept beside
+-- Blizzard's own target frame, stand down for any other spot. Every reload
+-- pass, the class resource toggle and the Combo Points setter run it; it
+-- returns at once off WoW Forever.
 function ns.UF_ApplyForeverComboArc()
     if EllesmereUI.IS_FOREVER ~= true then return end
-    local tf = frames.target
-    local arc = tf and tf._foreverCombo
-    local ev = ns._ufComboEv
-    local on = tf and ns.UF_Forever()
-        and db.profile.player.classPowerStyle == "blizzard"
-    if on then
-        local _, cls = UnitClass("player")
-        on = cls == "ROGUE" or cls == "DRUID"
+    local arc, ev = ns._ufComboArc, ns._ufComboEv
+    local host
+    if ns.UF_Forever() and db.profile.player.classPowerStyle == "blizzard" and ns.UF_ComboClass() then
+        -- Combo Points belongs to our player frame: without one (its Frame
+        -- Source Blizzard or Hidden) it reads as the stock spot, so nothing
+        -- is taken down and no choice is stranded.
+        local loc = frames.player and ns.UF_ComboLocation() or "target"
+        if loc == "target" then
+            host = frames.target
+        else
+            if loc == "player" then host = frames.player end
+            -- Blizzard's own goes to the hidden parent out of combat and
+            -- outside Edit Mode (a skipped pass retries on the next one). The
+            -- hidden parent is pinned for the session: only a reload brings
+            -- it back (the options setters offer one).
+            if ns._ufComboFrameKept then
+                if InCombatLockdown() then
+                    ns.CombatQueue.Defer("UF_ComboArc", ns.UF_ApplyForeverComboArc)
+                elseif not (EditModeManagerFrame and EditModeManagerFrame:IsShown()) then
+                    ns._ufComboFrameKept, ns._ufComboFrameByLoc = nil, true
+                    ns.UF_HideBlizzardFrame(_G.ComboFrame)
+                end
+            end
+        end
     end
-    if not on then
+    if not host then
         ev:UnregisterAllEvents()
         if arc then arc:Hide() end
         return
     end
-    arc = arc or ns.UF_BuildComboArc(tf)
-    local G = ns.UF_BlizzGeom(tf)
+    arc = arc or ns.UF_BuildComboArc(host)
+    -- Re-seated only when the host, its kit or its side changed (Portrait
+    -- Side swaps the kit).
+    local G = ns.UF_BlizzGeom(host)
     local mirror = (G and G.side == "left") or nil
-    arc:ClearAllPoints()
-    ns.UF_BlizzPoint(arc, "TOPRIGHT", tf, "TOPRIGHT", 2, 0, mirror)
-    local slots, pips = ns.UF_COMBO_SLOTS, arc._pips
-    for k = 1, 9 do
-        pips[k]:ClearAllPoints()
-        ns.UF_BlizzPoint(pips[k], "TOPRIGHT", tf, "TOPRIGHT", slots[k][1], slots[k][2], mirror)
+    if arc._host ~= host or arc._kit ~= G or arc._mirror ~= mirror then
+        arc._host, arc._kit, arc._mirror = host, G, mirror
+        if arc:GetParent() ~= host then arc:SetParent(host) end
+        local dx, dy = ns.UF_ComboRingShift(G)
+        arc:ClearAllPoints()
+        ns.UF_BlizzPoint(arc, "TOPRIGHT", host, "TOPRIGHT", 2 + dx, dy, mirror)
+        local slots, pips = ns.UF_COMBO_SLOTS, arc._pips
+        for k = 1, 9 do
+            pips[k]:ClearAllPoints()
+            ns.UF_BlizzPoint(pips[k], "TOPRIGHT", host, "TOPRIGHT", slots[k][1] + dx, slots[k][2] + dy, mirror)
+        end
     end
-    -- Over the art, portrait and bars, beside the level badge.
-    local clip = tf._barClip
-    arc:SetFrameStrata((clip and clip:GetFrameStrata()) or tf:GetFrameStrata())
-    arc:SetFrameLevel(((clip and clip:GetFrameLevel()) or tf:GetFrameLevel()) + 12)
+    -- Over the art, portrait and bars, one level above the level host (its
+    -- level and PvP badges), as Blizzard's own draws over its frame's badges.
+    local clip = host._barClip
+    arc:SetFrameStrata((clip and clip:GetFrameStrata()) or host:GetFrameStrata())
+    arc:SetFrameLevel(((clip and clip:GetFrameLevel()) or host:GetFrameLevel()) + 13)
     ev:RegisterEvent("PLAYER_TARGET_CHANGED")
     ev:RegisterEvent("PLAYER_ENTERING_WORLD")
     ev:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
     ev:RegisterUnitEvent("UNIT_MAXPOWER", "player")
-    -- Re-lay the slots (a colourblind change has no event of its own).
-    arc._cb = nil
+    -- Re-lays only on a cap or colourblind change (a colourblind change has
+    -- no event of its own, so every apply asks).
+    ns.UF_ComboArcLayout(arc)
     arc:Show()
     ns.UF_ComboArcRefresh(arc)
 end

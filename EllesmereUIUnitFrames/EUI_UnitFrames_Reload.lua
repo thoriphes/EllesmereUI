@@ -1896,8 +1896,8 @@ ReloadFramesBody = function()
             end
         end
     end
-    -- WoW Forever: the combo point arc round the target portrait, placed on
-    -- the geometry the sweep just settled (returns at once everywhere else).
+    -- WoW Forever: the combo point arc round its host frame's portrait, placed
+    -- on the geometry the sweep just settled (returns at once everywhere else).
     ns.UF_ApplyForeverComboArc()
 
     -- Player Aura Bars resolve font path and outline flag at style-build time; every
