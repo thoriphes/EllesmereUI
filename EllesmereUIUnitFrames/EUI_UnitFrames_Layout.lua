@@ -55,6 +55,18 @@ function ns.UF_BossBorderSettings()
     return GetMiniDonorSettings()
 end
 
+-- Effective border value for a mini frame (pet/tot/focustarget). The donor's
+-- value, unless the mini frame's Advanced borders toggle is on AND it carries
+-- its own value for that key (settings.borderOverride[key]). Both nil by
+-- default, so with the toggle off this is one field read + the donor lookup
+-- the callers did before. Shared by the live frames and the options preview.
+-- On ns for the 200-locals cap.
+ns.ResolveMiniBorderValue = function(ownSettings, key, donorSettings)
+    local ov = ownSettings.borderAdvanced and ownSettings.borderOverride
+    if ov and ov[key] ~= nil then return ov[key] end
+    return donorSettings[key]
+end
+
 function ns.UF_BossAuraBorderAboveEffects(s)
     return s.auraBorderAboveEffects == true and not ns.UF_Blizz()
         and not s.auraBorderBehind and not s.auraBorderBehindUnitFrame

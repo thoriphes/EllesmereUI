@@ -2102,7 +2102,11 @@ initFrame:SetScript("OnEvent", function(self)
     --
     -- withLook (the mini frames) puts the frame's Copy Look From pair beside it,
     -- the two pairs centred as one line.
-    local function BuildApplyAllRow(parent, y, groupUnits, curUnit, withLook)
+    --
+    -- advanced (optional): { get, set, tooltip } builds an "Advanced" toggle to
+    -- the right of the dropdown(s) (Mini Frames: per-frame border block, see
+    -- BuildMiniTextAndSize). Everything stays centered as one line.
+    local function BuildApplyAllRow(parent, y, groupUnits, curUnit, withLook, advanced)
         local ddValues = { [""] = "Choose Frame..." }
         local ddOrder = {}
         for _, key in ipairs(groupUnits) do
@@ -2152,8 +2156,26 @@ initFrame:SetScript("OnEvent", function(self)
         ddBtn._ttText = "Copy every shared setting from another frame in this group to this frame."
         EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
 
-        -- Center the label + dropdown pair (both pairs with withLook) as one line
-        local totalW = label:GetStringWidth() + GAP + DD_W
+        local advLabel, advToggle, advW
+        if advanced then
+            advLabel = EllesmereUI.MakeFont(row, 14, nil, 1, 1, 1)
+            advLabel:SetText(EllesmereUI.L("Advanced"))
+            advLabel:SetTextColor(1, 1, 1, 0.6)
+            local _, advSnap
+            advToggle, _, advSnap = EllesmereUI.BuildToggleControl(
+                row, row:GetFrameLevel() + 2, advanced.get, advanced.set)
+            if advanced.tooltip then
+                advToggle:SetScript("OnEnter", function(self)
+                    EllesmereUI.ShowWidgetTooltip(self, advanced.tooltip, { width = 260 })
+                end)
+                advToggle:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            end
+            EllesmereUI.RegisterWidgetRefresh(advSnap)
+            advW = GAP * 2 + advLabel:GetStringWidth() + GAP + advToggle:GetWidth()
+        end
+
+        -- Center the label + dropdown pair (both pairs with withLook, + Advanced) as one line
+        local totalW = label:GetStringWidth() + GAP + DD_W + (advW or 0)
         local lookLabel, lookDD
         if withLook then
             lookLabel, lookDD = BuildLookSourcePair(row, curUnit, DD_W)
@@ -2164,6 +2186,10 @@ initFrame:SetScript("OnEvent", function(self)
         if lookLabel then
             lookLabel:SetPoint("LEFT", ddBtn, "RIGHT", PAIR_GAP, 0)
             lookDD:SetPoint("LEFT", lookLabel, "RIGHT", GAP, 0)
+        end
+        if advanced then
+            advLabel:SetPoint("LEFT", lookDD or ddBtn, "RIGHT", GAP * 2, 0)
+            advToggle:SetPoint("LEFT", advLabel, "RIGHT", GAP, 0)
         end
 
         return row, ROW_H
