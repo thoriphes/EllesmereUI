@@ -44,7 +44,6 @@ initFrame:SetScript("OnEvent", function(self)
         local isChat = pageName == "Chat"
         local isTabs = pageName == "Tabs"
         local isSidebar = pageName == "Sidebar"
-        local isBubbles = pageName == "Chat Bubbles"
 
         -- Stock styles (Blizzard Style / Classic WoW UI) reveal Blizzard's own
         -- chat frame art and input box: the panel background, panel border and
@@ -1558,12 +1557,6 @@ initFrame:SetScript("OnEvent", function(self)
 
         end -- isChat
 
-        -- Moved to Blizz UI Enhanced; this page only points there.
-        if isBubbles then
-            y = EllesmereUI.BuildLinkRow(parent, y, "Chat Bubbles moved to Blizz UI Enhanced",
-                "EllesmereUIBlizzardSkin", "Chat Bubbles", "DISPLAY")
-        end
-
         return math.abs(y)
     end
 
@@ -1575,12 +1568,15 @@ initFrame:SetScript("OnEvent", function(self)
     local blizzTabsStyle = EllesmereUI.BlizzStyle and EllesmereUI.BlizzStyle.Active("chat") == "blizzard"
         and not EllesmereUI.BlizzStyle.Forever("chat")
     local chatPages = blizzTabsStyle and { "Chat", "Sidebar" } or { "Chat", "Tabs", "Sidebar" }
-    if EllesmereUI.ChatBubbles then chatPages[#chatPages + 1] = "Chat Bubbles" end
+    -- Chat Bubbles live in Blizzard Skins+: this tab links straight there, so it
+    -- is offered only while that module is loaded.
+    if EllesmereUI._ModuleNS["EllesmereUIBlizzardSkin"] then chatPages[#chatPages + 1] = "Chat Bubbles" end
 
     EllesmereUI:RegisterModule("EllesmereUIChat", {
         title       = "Chat",
         description = "Chat frame reskin, clickable URLs, copy chat, sidebar icons.",
         pages       = chatPages,
+        pageLinks   = { ["Chat Bubbles"] = { module = "EllesmereUIBlizzardSkin", page = "Chat Bubbles" } },
         buildPage   = function(pageName, p, yOffset) return BuildPage(pageName, p, yOffset) end,
         searchTerms = "chat tabs border spacing background sidebar friends voice url copy whisper channel abbreviate shortened class color names timestamps timestamp all messages font size",
         onReset = function()
