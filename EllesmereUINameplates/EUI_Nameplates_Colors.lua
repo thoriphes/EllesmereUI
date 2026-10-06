@@ -251,6 +251,7 @@ questCacheWatcher:SetScript("OnEvent", function()
             for _, plate in pairs(ns.plates) do
                 plate:UpdateHealthColor()
                 plate:UpdateClassification()
+                if ns._trivOn then ns.TRIV_Eval(plate) end
             end
         end)
     end
