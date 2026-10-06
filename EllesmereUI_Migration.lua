@@ -3883,11 +3883,11 @@ EllesmereUI.RegisterMigration({
         if not db then return end
         local _, physH = GetPhysicalScreenSize()
         if type(physH) ~= "number" or physH <= 0 then return end
-        -- Snap BEFORE the reset test: the dropdown offers only fixed steps, so an
-        -- off-menu seed (1600p lands on 1.111) would leave the control reading
-        -- "Normal (100%)" while the panel renders larger. Testing the SNAPPED
-        -- value keeps the reset honest: a display rounding back to 1.00 has
-        -- nothing to correct and must not fire the overwrite branch.
+        -- Snap BEFORE the reset test: the Window Scale slider moves in 5% steps,
+        -- so an off-step seed (1600p lands on 1.111) would read differently from
+        -- what the panel renders at. Testing the SNAPPED value keeps the reset
+        -- honest: a display rounding back to 1.00 has nothing to correct and must
+        -- not fire the overwrite branch.
         local seeded = math.max(1, math.min(physH / 1440, 2))
         if EllesmereUI.SnapPanelScale then seeded = EllesmereUI.SnapPanelScale(seeded) end
 
