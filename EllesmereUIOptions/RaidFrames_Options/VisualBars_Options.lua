@@ -228,7 +228,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
 
             local tipBg = tip:CreateTexture(nil, "BACKGROUND")
             tipBg:SetAllPoints()
-            tipBg:SetColorTexture(0.06, 0.08, 0.10, 0.95)
+            tipBg:SetColorTexture(0.077, 0.068, 0.058, 0.95)
 
             EllesmereUI.MakeBorder(tip, ar, ag, ab, 0.25, PP)
 
@@ -256,7 +256,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
             local arrowFill = arrowFrame:CreateTexture(nil, "OVERLAY", nil, 6)
             arrowFill:SetSize(ARROW_SZ, ARROW_SZ)
             arrowFill:SetPoint("CENTER")
-            arrowFill:SetColorTexture(0.06, 0.08, 0.10, 0.95)
+            arrowFill:SetColorTexture(0.077, 0.068, 0.058, 0.95)
             arrowFill:SetRotation(math.rad(45))
             if arrowFill.SetSnapToPixelGrid then arrowFill:SetSnapToPixelGrid(false); arrowFill:SetTexelSnappingBias(0) end
 
@@ -337,7 +337,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
           end },
         { type="slider", text="Background", min=0, max=100, step=1,
           disabled=function() return SVal("healthColorMode", "class") == "dark" end,
-          disabledTooltip="Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Fonts & Colors.", rawTooltip=true,
+          disabledTooltip="Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Colors.", rawTooltip=true,
           getValue=function() return SVal("bgDarkness", 50) end,
           setValue=function(v) SSet("bgDarkness", v) end });  y = y - h
     -- Fill Color's "dark" choice IS the Dark Mode condition's input, so lock the dropdown while a Dark Mode conditional is being edited -- else the override could capture a mode change that flips its own condition.
@@ -472,7 +472,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         bgBlock:SetPoint("BOTTOMRIGHT", bgClassSwatch, "BOTTOMRIGHT", 0, 0)
         bgBlock:SetFrameLevel(bgClassSwatch:GetFrameLevel() + 10)
         bgBlock:EnableMouse(true)
-        bgBlock:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(bgSwatch, "Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Fonts & Colors.") end)
+        bgBlock:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(bgSwatch, "Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Colors.") end)
         bgBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         local function UpdateBgSwatchVis()
             if SVal("healthColorMode", "class") == "dark" then
@@ -1389,7 +1389,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
             SSet("powerBgPowerColored", true)
             EllesmereUI:RefreshPage()
         end)
-        bgPwrSwatch:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(bgPwrSwatch, "Power Colored Background. Power colors can be adjusted in Global Settings -> Fonts & Colors.") end)
+        bgPwrSwatch:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(bgPwrSwatch, "Power Colored Background. Power colors can be adjusted in Global Settings -> Colors.") end)
         bgPwrSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         bgPwrSwatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
         rgn._lastInline = bgPwrSwatch
@@ -1511,8 +1511,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         }
         if EllesmereUI.IS_FOREVER then
             table.insert(nameRows, 1, { type="dropdown", label="Name Format",
-                values={ first = "First Name", last = "Last Name", full = "First and Last" },
-                order={ "first", "last", "full" },
+                values=EllesmereUI.NAME_FORMAT_VALUES, order=EllesmereUI.NAME_FORMAT_ORDER,
                 get=function() return SVal("nameFormat", "full") end,
                 set=function(v) SSet("nameFormat", v) end })
         end

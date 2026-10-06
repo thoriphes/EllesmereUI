@@ -342,7 +342,7 @@ local function BuildVisualIndicators(parent, y, W, onSection, EYE, CustomBorderO
         })
     end
 
-    -- Rows below Marker Position are the less-common indicators. The RAID tab collapses them behind the shared session expander (BuildLessCommonExpander in EllesmereUI_Widgets.lua, honors the global Auto Expand Less Common Settings toggle); the party tab always shows them.
+    -- Rows below Marker Position are the less-common indicators. The RAID tab collapses them behind the shared session expander (BuildLessCommonExpander in EllesmereUI_Widgets_RowAddons.lua); the party tab always shows them.
     local lessCommonOpen = true
     if not optState._partyCtx then
         lessCommonOpen, y = EllesmereUI.BuildLessCommonExpander(parent, y,

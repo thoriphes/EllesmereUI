@@ -1160,7 +1160,7 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
                 settingsTable.powerBgPowerColored = true
                 ReloadAndUpdate(); EllesmereUI:RefreshPage()
             end)
-            bgPwrSw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(bgPwrSw, "Power Colored Background. Power colors can be adjusted in Global Settings -> Fonts & Colors.") end)
+            bgPwrSw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(bgPwrSw, "Power Colored Background. Power colors can be adjusted in Global Settings -> Colors.") end)
             bgPwrSw:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
             PP.Point(bgPwrSw, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
             rgn._lastInline = bgPwrSw
@@ -1215,7 +1215,7 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
                 settingsTable.powerPercentPowerColor = true
                 ReloadAndUpdate(); EllesmereUI:RefreshPage()
             end)
-            fPwrSw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(fPwrSw, "Power Colored Fill. Power colors can be adjusted in Global Settings -> Fonts & Colors.") end)
+            fPwrSw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(fPwrSw, "Power Colored Fill. Power colors can be adjusted in Global Settings -> Colors.") end)
             fPwrSw:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
             PP.Point(fPwrSw, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
             rgn._lastInline = fPwrSw
@@ -1547,9 +1547,7 @@ function ns.UFO_BuildFoTToTOptions(W, parent, y, settingsTable, unitKey)
     local enableText = (unitKey == "focustarget") and "Enable Focus Target" or "Enable Target of Target"
     local _, h
 
-    local applyDD
-    _, h, applyDD = BuildApplyAllRow(parent, y, MINI_GROUP_ORDER, unitKey); y = y - h
-    _, h = env.BuildLookSourceRow(parent, y, settingsTable, applyDD); y = y - h
+    _, h = BuildApplyAllRow(parent, y, MINI_GROUP_ORDER, unitKey, true); y = y - h
 
     local portraitRow
     local function enableRow(Ww, pp, yy)
@@ -1612,9 +1610,7 @@ function ns.UFO_BuildPetOptions(W, parent, y)
     local ReloadAndUpdate, UpdatePreview, abs, db = env.ReloadAndUpdate, env.UpdatePreview, env.abs, env.db
     local _, h
 
-    local applyDD
-    _, h, applyDD = BuildApplyAllRow(parent, y, MINI_GROUP_ORDER, "pet"); y = y - h
-    _, h = env.BuildLookSourceRow(parent, y, db.profile.pet, applyDD); y = y - h
+    _, h = BuildApplyAllRow(parent, y, MINI_GROUP_ORDER, "pet", true); y = y - h
 
     local portraitRow
     local function enableRow(Ww, pp, yy)

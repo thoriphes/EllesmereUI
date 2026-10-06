@@ -32,8 +32,7 @@ end
 -- accessors. On ns for the same upvalue cap.
 if EllesmereUI.IS_FOREVER then
     local HAS_NAME = { name = true, levelname = true, namelevel = true, nametotarget = true, targetname = true }
-    local FORMATS = { first = "First Name", last = "Last Name", full = "First and Last" }
-    local FORMAT_ORDER = { "first", "last", "full" }
+    local FORMATS, FORMAT_ORDER = EllesmereUI.NAME_FORMAT_VALUES, EllesmereUI.NAME_FORMAT_ORDER
     function ns.UF_NameFormatRows(prefix, contentDefault, get, set, rows)
         local contentKey, formatKey = prefix .. "Content", prefix .. "NameFormat"
         table.insert(rows, 1, { type="dropdown", label="Name Format", values=FORMATS, order=FORMAT_ORDER,
@@ -43,6 +42,24 @@ if EllesmereUI.IS_FOREVER then
             disabled=function() return not HAS_NAME[get(contentKey, contentDefault)] end,
             disabledTooltip="This option only applies when the text shows a name." })
         return rows
+    end
+    -- The same slots for the Forever Essentials NAME FORMAT section, which
+    -- reads and sets every name text at once: { unit settings key, content key,
+    -- format key, text bar slot }, keys prebuilt so its reads build no strings.
+    -- Boss frames have no text bar; the other mini frames no extra text either.
+    do
+        local MAIN = { "leftText", "rightText", "centerText", "extraText", "btbLeft", "btbRight", "btbCenter" }
+        local BOSS = { "leftText", "rightText", "centerText", "extraText" }
+        local MINI = { "leftText", "rightText", "centerText" }
+        local slots = {}
+        for _, set in ipairs({ { "player", MAIN }, { "target", MAIN }, { "focus", MAIN }, { "boss", BOSS },
+                { "targettarget", MINI }, { "focustarget", MINI }, { "pet", MINI } }) do
+            for _, pre in ipairs(set[2]) do
+                slots[#slots + 1] = { unit = set[1], content = pre .. "Content", format = pre .. "NameFormat",
+                    btb = pre:sub(1, 3) == "btb" }
+            end
+        end
+        ns.UF_NAME_FORMAT_SLOTS, ns.UF_HAS_NAME = slots, HAS_NAME
     end
 else
     function ns.UF_NameFormatRows(_, _, _, _, rows) return rows end
@@ -1755,7 +1772,7 @@ initFrame:SetScript("OnEvent", function(self)
         block:SetAllPoints()
         block:SetFrameLevel(rgn:GetFrameLevel() + 50)
         block:EnableMouse(true)
-        block:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(block, "Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Fonts & Colors.") end)
+        block:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(block, "Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Colors.") end)
         block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         local function Update()
             if db and db.profile and db.profile.darkTheme then
@@ -1866,6 +1883,7 @@ initFrame:SetScript("OnEvent", function(self)
         classPowerCustomColor= { player=true },
         classPowerBgColor    = { player=true },
         classPowerEmptyColor = { player=true },
+        foreverComboLocation = { player=true },
         showInRaid           = { player=true, target=true, focus=true },
         showInParty          = { player=true, target=true, focus=true },
         showSolo             = { player=true, target=true, focus=true },
@@ -2034,6 +2052,41 @@ initFrame:SetScript("OnEvent", function(self)
         ReloadAndUpdate()
         EllesmereUI:RefreshPage(true)
     end
+    -- "Copy Look From" (a mini frame's, beside its Apply All Settings From): the
+    -- main frame it copies its border, bar texture and hover highlight from.
+    -- The dropdown shows the frame in use, from the runtime's own pick (the
+    -- chosen frame while it can lend its look, else focus, then target, then
+    -- player). No choice (lookSource nil) keeps following that order:
+    -- re-picking the frame shown stores nothing, and Focus, which behaves
+    -- exactly as no choice, is stored as none.
+    local function BuildLookSourcePair(row, unitKey, ddW)
+        local function Shown()
+            local p = db.profile
+            local s = ns.GetMiniDonorSettings(unitKey)
+            if s == p.focus then return "focus" end
+            if s == p.target then return "target" end
+            return "player"
+        end
+        local ddBtn = EllesmereUI.BuildDropdownControl(
+            row, ddW, row:GetFrameLevel() + 2,
+            { target = "Target", focus = "Focus", player = "Player" },
+            { "target", "focus", "player" },
+            Shown,
+            function(v)
+                if v == Shown() then return end
+                db.profile[unitKey].lookSource = (v ~= "focus") and v or nil
+                ReloadAndUpdate()
+                EllesmereUI:RefreshPage(true)
+            end)
+        ddBtn._ttText = "The main frame this frame copies its border, bar texture and hover highlight from."
+        EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
+
+        local label = EllesmereUI.MakeFont(row, 14, nil, 1, 1, 1)
+        label:SetText(EllesmereUI.L("Copy Look From"))
+        label:SetTextColor(1, 1, 1, 0.6)
+        return label, ddBtn
+    end
+
     -- Centered label + action dropdown atop a unit's settings: lists the group's
     -- other frames and copies FROM the chosen one onto this frame after a
     -- confirm popup. getValue always returns the placeholder so the dropdown
@@ -2045,7 +2098,10 @@ initFrame:SetScript("OnEvent", function(self)
     -- be acknowledged once before it overwrites anything. The acknowledgment
     -- is account-wide (EllesmereUIDB root, not per-profile) and covers every
     -- frame's row -- it educates the user, not a profile.
-    local function BuildApplyAllRow(parent, y, groupUnits, curUnit)
+    --
+    -- withLook (the mini frames) puts the frame's Copy Look From pair beside it,
+    -- the two pairs centred as one line.
+    local function BuildApplyAllRow(parent, y, groupUnits, curUnit, withLook)
         local ddValues = { [""] = "Choose Frame..." }
         local ddOrder = {}
         for _, key in ipairs(groupUnits) do
@@ -2065,7 +2121,7 @@ initFrame:SetScript("OnEvent", function(self)
         label:SetText(EllesmereUI.L("Apply All Settings From"))
         label:SetTextColor(1, 1, 1, 0.6)
 
-        local DD_W, GAP = 180, 12
+        local DD_W, GAP, PAIR_GAP = 180, 12, 40
         local ddBtn = EllesmereUI.BuildDropdownControl(
             row, DD_W, row:GetFrameLevel() + 2,
             ddValues, ddOrder,
@@ -2095,43 +2151,19 @@ initFrame:SetScript("OnEvent", function(self)
         ddBtn._ttText = "Copy every shared setting from another frame in this group to this frame."
         EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
 
-        -- Center the label + dropdown pair as one line
+        -- Center the label + dropdown pair (both pairs with withLook) as one line
         local totalW = label:GetStringWidth() + GAP + DD_W
+        local lookLabel, lookDD
+        if withLook then
+            lookLabel, lookDD = BuildLookSourcePair(row, curUnit, DD_W)
+            totalW = totalW + PAIR_GAP + lookLabel:GetStringWidth() + GAP + DD_W
+        end
         label:SetPoint("LEFT", row, "CENTER", -totalW / 2, 0)
         ddBtn:SetPoint("LEFT", label, "RIGHT", GAP, 0)
-
-        return row, ROW_H, ddBtn
-    end
-
-    -- "Copy Look From" under a mini frame's Apply All Settings From row: the
-    -- main frame it copies its border, bar texture and hover highlight from
-    -- (lookSource; nil = Automatic). Its dropdown sits under that row's, the
-    -- label right-aligned beside it.
-    local function BuildLookSourceRow(parent, y, settingsTable, alignDD)
-        local ROW_H = 40
-        local contentPad = EllesmereUI.CONTENT_PAD or 45
-        local row = CreateFrame("Frame", nil, parent)
-        PP.Size(row, parent:GetWidth() - contentPad * 2, ROW_H)
-        PP.Point(row, "TOPLEFT", parent, "TOPLEFT", contentPad, y)
-
-        local ddBtn = EllesmereUI.BuildDropdownControl(
-            row, 180, row:GetFrameLevel() + 2,
-            { auto = "Automatic", target = "Target", focus = "Focus", player = "Player" },
-            { "auto", "target", "focus", "player" },
-            function() return settingsTable.lookSource or "auto" end,
-            function(v)
-                settingsTable.lookSource = (v ~= "auto") and v or nil
-                ReloadAndUpdate()
-                EllesmereUI:RefreshPage(true)
-            end)
-        ddBtn._ttText = "The main frame this frame copies its border, bar texture and hover highlight from. Automatic uses Focus, then Target, then Player."
-        EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
-        ddBtn:SetPoint("TOPLEFT", alignDD, "BOTTOMLEFT", 0, -10)
-
-        local label = EllesmereUI.MakeFont(row, 14, nil, 1, 1, 1)
-        label:SetText(EllesmereUI.L("Copy Look From"))
-        label:SetTextColor(1, 1, 1, 0.6)
-        label:SetPoint("RIGHT", ddBtn, "LEFT", -12, 0)
+        if lookLabel then
+            lookLabel:SetPoint("LEFT", ddBtn, "RIGHT", PAIR_GAP, 0)
+            lookDD:SetPoint("LEFT", lookLabel, "RIGHT", GAP, 0)
+        end
 
         return row, ROW_H
     end
@@ -2817,7 +2849,6 @@ initFrame:SetScript("OnEvent", function(self)
         btbTextOrder = btbTextOrder, btbTextValues = btbTextValues, buffAnchorOrder = buffAnchorOrder,
         buffAnchorValues = buffAnchorValues, buffGrowthOrder = buffGrowthOrder, buffGrowthValues = buffGrowthValues,
         BuildApplyAllRow = BuildApplyAllRow, BuildBarTexDropdown = BuildBarTexDropdown, BuildInactiveNotice = BuildInactiveNotice,
-        BuildLookSourceRow = BuildLookSourceRow,
         CLASS_FULL_COORDS = CLASS_FULL_COORDS, CLASS_FULL_SPRITE_BASE = CLASS_FULL_SPRITE_BASE, classIconLocOrder = classIconLocOrder,
         classIconLocValues = classIconLocValues, classIconOrder = classIconOrder, classIconValues = classIconValues,
         classPowerPosOrder = classPowerPosOrder, classPowerPosValues = classPowerPosValues, classPowerStyleOrder = classPowerStyleOrder,
