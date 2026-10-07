@@ -135,7 +135,7 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
             -- isModifier rows (the Visibility match toggle) are not conditions: excluded
             -- from the summary and from the "All" shortcut. item.excludeFromSummaryFn
             -- opts a row out the same way (e.g. locked behind an unlearned talent).
-            if not item.isHeader and not item.isTopAction and not item.isModifier
+            if not item.isHeader and not item.isTopAction and not item.isModifier and not item.isInput
                and not (item.excludeFromSummaryFn and item.excludeFromSummaryFn()) then
                 total = total + 1
                 if getFn(item.key) then names[#names + 1] = EllesmereUI.L(item.label) end
@@ -164,6 +164,7 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
         if menu then return end
         local ITEM_H = 28
         local HDR_H = 22
+        local INPUT_H = 34
         -- Opt-in top-action rows (item.isTopAction with label + onClick): accent clickable entries pinned ABOVE the search box with a divider under the group -- the "Custom Spell ID at the top" pattern from the CDM spell pickers. Excluded from the scroll list, the checkable count, and the summary label.
         local topActions = {}
         -- Top-action locked tints refresh in the same sweeps as _allRows. They can't JOIN _allRows: the search relayout repositions every frame in that list, and top actions live above the search box.
@@ -177,6 +178,7 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
         for _, item in ipairs(items) do
             if item.isTopAction then -- rendered above the search box
             elseif item.isHeader then contentH = contentH + HDR_H
+            elseif item.isInput then contentH = contentH + INPUT_H
             else contentH = contentH + ITEM_H; checkableCount = checkableCount + 1 end
         end
         local SEARCH_H = searchable and 26 or 0
@@ -484,6 +486,64 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
                 end)
                 _allRows[#_allRows + 1] = { frame = row, isHeader = false, isAction = true, label = item.label, height = ITEM_H }
                 yOff = yOff - ITEM_H
+            elseif item.isInput then
+                -- Input item (item.isInput with get/set): a free-text field spanning the
+                -- row. Commits on Enter and focus loss, Escape reverts. set(text) returns
+                -- false to reject, in which case the field reverts to get().
+                local row = CreateFrame("Frame", nil, itemParent)
+                row:SetHeight(INPUT_H)
+                row:SetPoint("TOPLEFT", child, "TOPLEFT", 1, yOff)
+                row:SetPoint("TOPRIGHT", child, "TOPRIGHT", -1, yOff)
+                row:SetFrameLevel(menu:GetFrameLevel() + 2)
+                local box = CreateFrame("EditBox", nil, row)
+                box:SetPoint("LEFT", row, "LEFT", 10, 0)
+                box:SetPoint("RIGHT", row, "RIGHT", -10, 0)
+                box:SetHeight(INPUT_H - 8)
+                box:SetFrameLevel(row:GetFrameLevel() + 1)
+                box:SetFont(fontPath, 11, "")
+                box:SetTextColor(1, 1, 1, 0.9)
+                box:SetAutoFocus(false)
+                box:SetTextInsets(6, 6, 0, 0)
+                local boxBg = box:CreateTexture(nil, "BACKGROUND")
+                boxBg:SetAllPoints()
+                boxBg:SetColorTexture(0, 0, 0, 0.35)
+                EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, PP)
+                local placeholder = box:CreateFontString(nil, "OVERLAY")
+                placeholder:SetFont(fontPath, 11, "")
+                placeholder:SetTextColor(0.5, 0.5, 0.5, 0.6)
+                placeholder:SetPoint("LEFT", box, "LEFT", 6, 0)
+                placeholder:SetText(EllesmereUI.L(item.placeholder or item.label or ""))
+                local function Load()
+                    local v = item.get and item.get() or ""
+                    box:SetText(v)
+                    box:SetCursorPosition(0)
+                    placeholder:SetShown(v == "")
+                end
+                Load()
+                local reverting = false
+                local function Commit()
+                    if reverting then return end
+                    local ok = item.set and item.set(box:GetText())
+                    if ok == false then Load() end
+                    if box:HasFocus() then box:ClearFocus() end
+                end
+                box:SetScript("OnTextChanged", function(self) placeholder:SetShown(self:GetText() == "") end)
+                box:SetScript("OnEnterPressed", Commit)
+                box:SetScript("OnEditFocusLost", Commit)
+                box:SetScript("OnEscapePressed", function(self)
+                    reverting = true
+                    Load()
+                    self:ClearFocus()
+                    reverting = false
+                end)
+                if item.tooltip then
+                    box:HookScript("OnEnter", function(self) EllesmereUI.ShowWidgetTooltip(self, item.tooltip) end)
+                    box:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                end
+                -- Refresh sweeps reload the field unless the user is typing in it.
+                row._updateCheck = function() if not box:HasFocus() then Load() end end
+                _allRows[#_allRows + 1] = { frame = row, isHeader = false, isInput = true, label = item.label, height = INPUT_H }
+                yOff = yOff - INPUT_H
             else
 
             local row = CreateFrame("Button", nil, itemParent)
@@ -1076,11 +1136,32 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
             else
                 ApplyNormal()
             end
+            -- An in-place rebuild (ddBtn:RebuildMenu) hides the old menu only to
+            -- replace it; that is not a close for the caller.
+            if self._rebuilding then return end
             if onMenuClosed then onMenuClosed() end
             -- Controller cursor: back onto the dropdown button (a no-op once that is hidden too).
             if EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(ddBtn) end
         end)
         if menu._padFocus and EllesmereUI.PadCursorShown() then menu._padFocus() end
+    end
+
+    -- Dynamic menus (itemsFn) normally re-evaluate on the next OPEN. A row that
+    -- changes which rows exist (the Visibility "Custom" state) asks for it right
+    -- away so the menu swaps under the cursor instead of on the next click.
+    function ddBtn:RebuildMenu()
+        if not itemsFn then return end
+        local wasShown = menu and menu:IsShown()
+        items = itemsFn() or {}
+        if menu then
+            menu._rebuilding = true
+            menu:Hide()
+            menu:SetParent(nil)
+            menu = nil
+            ddBtn._ddMenu = nil
+        end
+        UpdateLabel()
+        if wasShown then ShowMenu() end
     end
 
     ddBtn:SetScript("OnClick", function() ShowMenu() end)
