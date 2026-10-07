@@ -2306,6 +2306,7 @@ local defaults = {
 if EABR.FOREVER then
     defaults.profile.forever = {
         camp = false,       -- Camp Benefits reminder; opt-in, it shows whenever the buff is missing
+        gathering = false,  -- Find Minerals / Find Herbs reminder (either one counts); opt-in
         whereToShow = {},   -- section "Where to Show" (an absent bucket = shown)
         customIDs = {},     -- spell IDs the user tracks, in the order added
         palAura = false,        -- paladin: aura reminder
@@ -4341,6 +4342,44 @@ function EABR.CollectForever(missing, inInstance, inPvP, restricted)
     end
 end
 
+-- WoW Forever gathering tracking: Find Minerals and Find Herbs share the one
+-- tracking slot (casting either replaces whatever tracking runs), so either
+-- counts as on, the way any aura counts for a paladin. Shown while the player
+-- knows one of them, as a click-to-cast button for the one last seen running
+-- this session (Find Minerals first when both are known). Skipped under the
+-- aura lock and in battlegrounds / arenas like Camp Benefits; the section's
+-- "Where to Show" applies.
+if EABR.FOREVER then
+    EABR.GATHER_TRACKING = { 2580, 2383 }  -- Find Minerals, Find Herbs
+end
+
+function EABR.CollectForeverGathering(missing, inInstance, inPvP, restricted)
+    local fo = db.profile.forever
+    if restricted or inPvP or not (fo and fo.gathering) then return end
+    if not EABR.SectionShows(fo.whereToShow, inInstance) then return end
+    local G = EABR.GATHER_TRACKING
+    local one = EABR._gatherOne
+    if not one then one = {}; EABR._gatherOne = one end
+    for i = 1, #G do
+        one[1] = G[i]
+        if PlayerHasAuraByID(one) then EABR._gatherLast = G[i]; return end
+    end
+    local id = EABR._gatherLast
+    if not Known(id) then
+        id = nil
+        for i = 1, #G do
+            if Known(G[i]) then id = G[i]; break end
+        end
+        if not id then return end
+    end
+    local e = AcquireEntry()
+    e.mode = "spell"; e.spellID = id
+    e.texture = Tex(id)
+    e.label = EllesmereUI.L("Tracking")
+    e.cat = "forever"; e.dismissKey = "forever:gather"
+    missing[#missing+1] = e
+end
+
 -------------------------------------------------------------------------------
 --  WoW Forever Raid Buffs: the retail section's two views over that client's
 --  four buffs (RAID_BUFFS). A member has a buff while an aura with one of its
@@ -4891,6 +4930,7 @@ local function Refresh()
     if EABR.FOREVER then
         if remindersOn then
             EABR.CollectForeverRaidBuffs(missing, playerClass, inInstance)
+            EABR.CollectForeverGathering(missing, inInstance, inPvP, restricted)
             EABR.CollectForever(missing, inInstance, inPvP, restricted)
             EABR.CollectForeverPaladin(missing, restricted)
         else

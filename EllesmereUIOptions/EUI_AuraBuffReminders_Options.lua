@@ -1415,6 +1415,18 @@ initFrame:SetScript("OnEvent", function(self)
                 onChange = RefreshAll,
             });  y = y - h
 
+            -- Find Minerals / Herbs | (empty)
+            _, h = W:DualRow(parent, y,
+                { type="toggle", text="Find Minerals / Herbs",
+                  tooltip="Reminds you when neither Find Minerals nor Find Herbs is active. Only one tracking runs at a time, so either one counts.\nClick casts the one you used last (Find Minerals first when you know both). Shown only while you know one of them, never in combat or in battlegrounds and arenas.",
+                  getValue=function() local f = FDB(); return f and f.gathering == true end,
+                  setValue=function(v)
+                      local f = FDB(); if not f then return end; f.gathering = v
+                      RefreshAll()
+                  end },
+                EllesmereUI.BlankRowCfg()
+            );  y = y - h
+
             -- Camp Benefits | Add Custom Spell
             _, h = W:DualRow(parent, y,
                 { type="toggle", text="Camp Benefits",
