@@ -257,6 +257,21 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
                     RefreshST(); EllesmereUI:RefreshPage()
                 end, true, 20)
             PP.Point(swatch, "RIGHT", ctrl, "LEFT", -8, 0)
+            rgn._lastInline = swatch  -- the Corner Radius cog chains left of the swatch
+            -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog on the
+            -- border size control.
+            if not EllesmereUI._prebuilding then
+                EllesmereUI.BuildInlineCog(bsRow._rightRegion, {
+                    title = "Corner Radius", tip = "Corner Radius",
+                    disabled = function() if stOff() then return true end; local p = DB(); return not EllesmereUI.RoundedStyleOK(p and p.swingTimer.borderTexture) end,
+                    disabledTooltip = function() if stOff() then return ST_TIP end; return "This option requires the Solid, Glow or Shadow border style." end,
+                    rows = {
+                        { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+                          get = function() local p = DB(); return p and p.swingTimer.cornerRadius or 0 end,
+                          set = function(v) local p = DB(); if not p then return end; p.swingTimer.cornerRadius = v; RefreshST() end },
+                    },
+                })
+            end
             local block = CreateFrame("Frame", nil, swatch)
             block:SetAllPoints()
             block:SetFrameLevel(swatch:GetFrameLevel() + 10)

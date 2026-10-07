@@ -1170,6 +1170,7 @@ local friendlyFrameCache = CreateFramePool("Frame", UIParent, nil, nil, false, f
             PP.HideBorder(plate.health)
             ns.HideCustomBorder(plate)
             ns.NP_ApplyClassicHealthArt(plate, GetFriendlyHealthBarHeight())
+            ns.NP_ApplyRounding(plate)
             return
         end
         if ns.IsCustomBorderEnabled() then
@@ -1187,6 +1188,7 @@ local friendlyFrameCache = CreateFramePool("Frame", UIParent, nil, nil, false, f
         end
         -- WoW Forever: the level box right of the bar, as on the enemy plates.
         if ns._npForever then ns.NP_ApplyForeverLevelBox(plate, GetFriendlyHealthBarHeight()) end
+        ns.NP_ApplyRounding(plate)
     end
     function plate:ApplyBorderColor()
         if not PP then return end
@@ -1194,7 +1196,7 @@ local friendlyFrameCache = CreateFramePool("Frame", UIParent, nil, nil, false, f
             ns.ApplyCustomBorderColor(plate)
         else
             local cr, cg, cb = ns.GetBorderColor()
-            PP.SetBorderColor(plate.health, cr, cg, cb, 1)
+            ns.NP_BasicBorderColor(plate, cr, cg, cb, 1)
         end
     end
 
@@ -1574,7 +1576,7 @@ function FriendlyFrame:ApplyTarget()
                 if not self._customBorder then ns.ApplyCustomBorderStyle(self) end
                 EllesmereUI.SetBorderStyleColor(self._customBorder, bc.r, bc.g, bc.b, 1)
             else
-                PP.SetBorderColor(self.health, bc.r, bc.g, bc.b, 1)
+                ns.NP_BasicBorderColor(self, bc.r, bc.g, bc.b, 1)
             end
             self._fxBorderTinted = true
         elseif self._fxBorderTinted then

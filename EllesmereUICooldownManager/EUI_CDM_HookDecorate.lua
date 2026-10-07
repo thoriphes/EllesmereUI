@@ -1234,10 +1234,11 @@ local function DecorateFrame(frame, barData)
                 -- flag; normalize here so every comparison below is unchanged.
                 -- Hidden Until Usable = Hidden (On CD) + the usable flag.
                 local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift"
-                    or cse == "hiddenUnusableShift")
+                    or cse == "hiddenUnusableShift" or cse == "hiddenFormShift")
                 local cseUsable = (cse == "hiddenUnusable" or cse == "hiddenUnusableShift")
                 if cse == "hiddenOnCDShift" or cseUsable then cse = "hiddenOnCD"
-                elseif cse == "hiddenReadyShift" then cse = "hiddenReady" end
+                elseif cse == "hiddenReadyShift" then cse = "hiddenReady"
+                elseif cse == "hiddenFormShift" then cse = "hiddenForm" end
                 if not cse then
                     if fd._cdStateGlowOn then
                         ns.StopCdGlow(fd)
@@ -1258,7 +1259,8 @@ local function DecorateFrame(frame, barData)
                 end
                 -- Clear stale hidden state when switching to a non-hidden effect
                 -- (lowerAlphaOnCD is alpha-owning like the hidden modes, so exclude it).
-                if cse ~= "hiddenOnCD" and cse ~= "hiddenReady" and cse ~= "lowerAlphaOnCD" then
+                if cse ~= "hiddenOnCD" and cse ~= "hiddenReady" and cse ~= "lowerAlphaOnCD"
+                   and cse ~= "hiddenForm" then
                     if fc2 and fc2._cdStateHidden then
                         fc2._cdStateHidden = false
                         local bd2 = barDataByKey and barDataByKey[bk2]
@@ -1273,12 +1275,13 @@ local function DecorateFrame(frame, barData)
                 -- evaluator (ArmCdStateEval -- see its comment for the
                 -- one-frame wait). cse is normalized, so Shift variants arrive
                 -- as their base mode plus cseShift.
-                if cse == "hiddenOnCD" or cse == "hiddenReady" or cse == "lowerAlphaOnCD" then
+                if cse == "hiddenOnCD" or cse == "hiddenReady" or cse == "lowerAlphaOnCD"
+                   or cse == "hiddenForm" then
                     ArmCdStateEval(frame, fd, cse, cseShift,
                         (ss2 and ss2.cdStateLowerAlpha) or 0.5,
                         ss2 and ss2.chargeHideUntilSpent, cseUsable)
                     -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
-                    if cseUsable then ns.WatchCdUsable(frame) end
+                    if cseUsable or cse == "hiddenForm" then ns.WatchCdUsable(frame, cse == "hiddenForm") end
                     -- Hidden (CD Ready) on a charge spell also needs the refill-to-max
                     -- edge, which this hook never fires. Registered once per spell
                     -- binding (a pooled frame can be handed a different spell), so

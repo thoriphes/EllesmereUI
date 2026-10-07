@@ -4327,6 +4327,23 @@ EllesmereUI.RegisterMigration({
     end,
 })
 
+-- Spell ID on Tooltip became on by default (an unset showSpellID reads as on,
+-- EllesmereUI.SpellIDOn). An account from before keeps it off: its unset value
+-- is written off. Existing users ONLY: a fresh install or Reset ALL has no
+-- profiles yet, is genesis-stamped, and takes the new default.
+EllesmereUI.RegisterMigration({
+    id          = "spellid_default_on_v1",
+    scope       = "global",
+    description = "Keep Spell ID on Tooltip off for existing users after its default changed from off to on.",
+    body = function(ctx)
+        local db = ctx.db
+        if not (db.profiles and next(db.profiles)) then return end
+        if db.showSpellID == nil then
+            db.showSpellID = false
+        end
+    end,
+})
+
 --------------------------------------------------------------------------------
 --  WOW FOREVER: ONE-TIME BUFF CLEAR
 --
