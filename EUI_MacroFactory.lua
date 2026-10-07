@@ -103,6 +103,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
             label = "Trinket 1",
             fixedBody = "/use 13",
             fixedTooltip = "13",
+            forever = true,
         },
         {
             name = "EUI_Trinket2",
@@ -110,6 +111,18 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
             label = "Trinket 2",
             fixedBody = "/use 14",
             fixedTooltip = "14",
+            forever = true,
+        },
+        {
+            -- WoW Forever: Find Minerals and Find Herbs share one tracking slot,
+            -- so each press swaps to the other one. A cast refused by the GCD
+            -- does not advance the sequence, so the key can be spammed.
+            name = "EUI_FindMinHerb",
+            icon = "Interface\\Icons\\spell_nature_earthquake",
+            label = "Find Minerals / Herbs",
+            spells = {2580, 2383}, -- Find Minerals, Find Herbs
+            fixedBody = "/castsequence {1}, {2}",
+            foreverOnly = true,
         },
         {
             name = "EUI_Focus",
@@ -165,6 +178,20 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
             end,
         },
     }
+
+    -- WoW Forever keeps only the general macros flagged `forever` (the potions and
+    -- food are retail items; Set Focus's marker line uses the 12.0.7 `~` form)
+    -- plus its own `foreverOnly` ones, which retail never shows.
+    local IS_FOREVER = EllesmereUI.IS_FOREVER
+    do
+        local kept = {}
+        for _, def in ipairs(GENERAL_DEFS) do
+            if IS_FOREVER and (def.forever or def.foreverOnly) or not (IS_FOREVER or def.foreverOnly) then
+                kept[#kept + 1] = def
+            end
+        end
+        GENERAL_DEFS = kept
+    end
 
     ---------------------------------------------------------------------------
     --  Spec macro definitions (keyed by specID)
@@ -492,7 +519,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
     local activeClassName = UnitClass("player") or "Unknown"
     -- All spec macro bodies use spell-ID {n} tokens (localized at build time via
     -- ResolveSpellTokens), so they work on every client locale.
-    local activeSpecDefs = activeSpecID and SPEC_DEFS[activeSpecID] or {}
+    local activeSpecDefs = not IS_FOREVER and activeSpecID and SPEC_DEFS[activeSpecID] or {}
 
     ---------------------------------------------------------------------------
     --  DB helper (shared across all buttons and event handlers)
@@ -669,8 +696,8 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
     local generalRows = math.ceil(#GENERAL_DEFS / ICONS_PER_ROW)
     -- Reserve a constant height (general side vs the max spec viewport) so a spec
     -- change can rebuild this section in place without shifting the sections
-    -- below it on the page.
-    local maxRows = math.max(generalRows, MAX_SPEC_VISIBLE_ROWS)
+    -- below it on the page. WoW Forever has no spec macros, so no viewport.
+    local maxRows = IS_FOREVER and generalRows or math.max(generalRows, MAX_SPEC_VISIBLE_ROWS)
     local SECTION_H = 102 + ROW_STRIDE * (maxRows - 1)
 
     local container = CreateFrame("Frame", nil, parent)
