@@ -981,6 +981,9 @@ function NameplateFrame:SetUnit(unit, nameplate)
     -- (skipped on recycled plates) and the threshold watcher only reaches plates active at flip
     -- time, so a plate pooled during a no-execute window would return glowless. Re-assert.
     ns.ApplyLowHpGlow(self)
+    -- Hide Gray-Level / Neutral Enemy Nameplates (also clears a pooled plate's flag after an
+    -- off flip).
+    if ns._trivOn or self._trivHidden then ns.TRIV_Eval(self) end
     -- Critical: health bar must display immediately
     self:UpdateHealth()
     -- PERF: defer non-critical work 1 frame. Stacking bounds, name, cast bar, classification,
