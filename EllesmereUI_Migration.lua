@@ -4344,6 +4344,23 @@ EllesmereUI.RegisterMigration({
     end,
 })
 
+-- The Bags sidebar's one-time "categories can be dragged" tip is for new
+-- users: an account that already ran Bags (it seeds its default category
+-- groups at its first login) starts with it seen. A fresh install or Reset ALL
+-- is genesis-stamped and sees it, and so does an account that turns Bags on
+-- for the first time later.
+EllesmereUI.RegisterMigration({
+    id          = "bags_category_tip_existing_seen_v1",
+    scope       = "global",
+    description = "Mark the Bags category drag tip as seen for existing Bags users, so only new users see it.",
+    body = function(ctx)
+        local db = ctx.db
+        if db.bagCategoryTipSeen == nil and db.bagDefaultGroupsSeeded then
+            db.bagCategoryTipSeen = true
+        end
+    end,
+})
+
 --------------------------------------------------------------------------------
 --  WOW FOREVER: ONE-TIME BUFF CLEAR
 --

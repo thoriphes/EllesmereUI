@@ -138,16 +138,19 @@ local function BuildDisplayLayout(parent, y, ctx)
           end }))
     y = y - h
     -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog on the
-    -- border size control. The stock styles keep every plate square.
+    -- border size control. The stock styles keep every plate square, and so
+    -- does Wrap Around Castbar (the plates stand rounding down while it is on).
     if not EllesmereUI._prebuilding then
         EllesmereUI.BuildInlineCog(borderStyleRow._rightRegion, {
             title = "Corner Radius", tip = "Corner Radius",
             disabled = function()
                 if EllesmereUI.BlizzStyle.Get("nameplates") then return true end
+                if DBVal("wrapBorderCastbar") == true then return true end
                 return DBVal("customBorderEnabled") and not EllesmereUI.RoundedStyleOK(DBVal("customBorderTexture") or defaults.customBorderTexture)
             end,
             disabledTooltip = function()
                 if EllesmereUI.BlizzStyle.Get("nameplates") then return EllesmereUI.BlizzStyle.Label("nameplates") end
+                if DBVal("wrapBorderCastbar") == true then return "Wrap Around Castbar" end
                 return "This option requires the Solid, Glow or Shadow border style."
             end,
             requireState = "disabled",
@@ -221,8 +224,10 @@ local function BuildDisplayLayout(parent, y, ctx)
                 DB().wrapBorderCastbar = v
                 -- Unconditional re-apply so toggling OFF also unwraps any plate mid-cast and wrapped.
                 ns.ApplyBorderWrapToAll()
+                -- Corner Radius stands down while the wrap is on: square or re-round the plates.
+                if (DBVal("cornerRadius") or 0) > 0 then ns.RefreshBorder(); ns.RefreshCastBorder() end
                 UpdatePreview()
-                -- Show Seam Line's disabled state follows this toggle.
+                -- Show Seam Line's and Corner Radius's disabled states follow this toggle.
                 EllesmereUI:RefreshPage()
               end },
         }

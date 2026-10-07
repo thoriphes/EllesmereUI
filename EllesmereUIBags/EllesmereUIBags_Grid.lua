@@ -128,19 +128,29 @@ local function GetOrCreateSlot(idx)
 end
 ns.GetOrCreateSlot = GetOrCreateSlot
 
--- A slot's desaturation (locked, grey with the option on, Junk Marker junk)
--- and its Junk Marker coin badge, lifted past the bottom-left corner.
+-- A slot's desaturation (locked; grey items and Junk Marker junk while Junk
+-- Item Visuals' Desaturate is on) and its Junk Marker coin badge (its Show Coin
+-- Icon): the game's coin, cropped round, lifted past the bottom-left corner.
 local function PaintJunkState(btn, info, markerJunk)
+    local p = BP()
     local quality = info.quality or 1
-    SetItemButtonDesaturated(btn, info.isLocked or (BP().bagDesaturateJunkItems and quality == 0) or markerJunk)
-    if markerJunk then
-        if not btn._junkCoin then
-            btn._junkCoin = btn:CreateTexture(nil, "OVERLAY", nil, 6)
-            btn._junkCoin:SetTexture(ns.JUNK_COIN)
-            btn._junkCoin:SetSize(13, 13)
-            btn._junkCoin:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", -3, -3)
+    SetItemButtonDesaturated(btn, info.isLocked
+        or (p.bagDesaturateJunkItems == true and (quality == 0 or markerJunk)) or false)
+    if markerJunk and p.bagShowJunkCoin == true then
+        local coin = btn._junkCoin
+        if not coin then
+            coin = btn:CreateTexture(nil, "OVERLAY", nil, 6)
+            coin:SetTexture(ns.JUNK_COIN)
+            coin:SetTexCoord(0.12, 0.88, 0.12, 0.88)
+            local mask = btn:CreateMaskTexture()
+            mask:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+            mask:SetAllPoints(coin)
+            coin:AddMaskTexture(mask)
+            coin:SetSize(12, 12)
+            coin:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", -3, -3)
+            btn._junkCoin = coin
         end
-        btn._junkCoin:Show()
+        coin:Show()
     elseif btn._junkCoin then
         btn._junkCoin:Hide()
     end

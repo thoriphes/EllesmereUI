@@ -8,7 +8,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --    owner         the frame that keeps the state and hosts the body mask;
 --                  an ancestor of every body texture
 --    radius        0..16, 0 removes everything this owner added; never more
---                  than half the shape's short side
+--                  than (the shape's short side - 1) / 2
 --    opts.style    the border style key; only Solid, Glow and Shadow round
 --                  (EllesmereUI.RoundedStyleOK), any other style removes it
 --    opts.roots    up to 6 frames whose Texture regions (recursively) form
@@ -23,6 +23,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  border painted without EllesmereUI.SetBorderStyleColor (which recolours it
 --  on its own).
 --
+--  Masks: rounded-<r>.tga / rounded-inv-<r>.tga, (2r + 1) texels square
+--  (.tools/rounded-glow/make_rounded_masks.py), sliced at r texels; no larger,
+--  since the client shrinks the corners of a sliced texture bigger than its
+--  region.
 --  Body: a texture takes at most 3 masks, so each body texture gets ONE
 --  nine-sliced rounded-rect mask, hosted on the owner (an ancestor of every
 --  body texture, so it reaches into SetClipsChildren frames too). The bar
@@ -35,8 +39,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  One set of these parts per border container, so a border that moves
 --  between frames (nameplate Basic <-> Custom) reuses its parts.
 --  Glow / Shadow: the stock nine-slice glow is faded out and redrawn round:
---  its own edge art along the sides plus generated round corners with the
---  same profile, its peak on the rounded outline.
+--  its own edge art along the sides plus round corners generated from that
+--  edge art (.tools/rounded-glow/make_glow_corners.py), its peak on the
+--  rounded outline. Below half the glow width a corner piece spans the whole
+--  band and the sides start past it, so they never overlap.
 --  Pieces drawn outside the body stay square: the Raid Frames aggro and
 --  dispel borders and party portrait, the Unit Frames threat border.
 --
@@ -51,10 +57,15 @@ if not EllesmereUI then return end
 local MEDIA = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
 local GLOW_EDGE = "Interface\\AddOns\\EllesmereUI\\media\\borders\\glow-border"
 local MAX_RADIUS = 16 -- rounded-1.tga .. rounded-16.tga
--- glow-corner-1..16.tga: q = (E/2) / (E/2 + r) from QMIN to QMAX.
-local GLOW_QMIN, GLOW_QMAX, GLOW_NQ = 0.25, 0.95, 16
+-- Glow corner art (the generator's constants match these): glow-corner-1..NA
+-- for a radius of at least half the glow width E, by f = band width / radius
+-- in even log steps from FMIN to 2; glow-tight-1..NB below that, by
+-- k = S / E in even steps between 0.5 and 1 (S: the glow's outer corner to
+-- the arc center).
+local GLOW_FMIN, GLOW_NA, GLOW_NB = 0.03, 32, 12
+local GLOW_LOGSTEP = math.log(2 / GLOW_FMIN) / (GLOW_NA - 1)
 local STRETCHED = Enum.UITextureSliceMode.Stretched
-local floor, min, max = math.floor, math.min, math.max
+local floor, min, max, log, exp = math.floor, math.min, math.max, math.log, math.exp
 local pairs, select, pcall = pairs, select, pcall
 
 -- Media paths by number, built on first use.
@@ -68,12 +79,14 @@ end
 local ROUNDED = Paths("rounded-%d.tga")
 local ROUNDED_INV = Paths("rounded-inv-%d.tga")
 local GLOW_CORNER = Paths("glow-corner-%d.tga")
+local GLOW_TIGHT = Paths("glow-tight-%d.tga")
 
+-- dx, dy: the inward direction from each corner.
 local CORNERS = {
-    { p = "TOPLEFT",     tc = { 0, 1, 0, 1 } },
-    { p = "TOPRIGHT",    tc = { 1, 0, 0, 1 } },
-    { p = "BOTTOMLEFT",  tc = { 0, 1, 1, 0 } },
-    { p = "BOTTOMRIGHT", tc = { 1, 0, 1, 0 } },
+    { p = "TOPLEFT",     tc = { 0, 1, 0, 1 }, dx = 1,  dy = -1 },
+    { p = "TOPRIGHT",    tc = { 1, 0, 0, 1 }, dx = -1, dy = -1 },
+    { p = "BOTTOMLEFT",  tc = { 0, 1, 1, 0 }, dx = 1,  dy = 1 },
+    { p = "BOTTOMRIGHT", tc = { 1, 0, 1, 0 }, dx = -1, dy = 1 },
 }
 local STRIPS = { "_top", "_bottom", "_left", "_right" }
 local STYLE_OK = { solid = true, glow = true, shadow = true }
@@ -215,10 +228,22 @@ local function SolidParts(st, cont)
     local sd = st.solids[cont]
     if sd then return sd end
     sd = { cont = cont }
-    local fill = cont:CreateTexture(nil, "OVERLAY", nil, 7)
+    -- The fill and its hole draw their slice corners in their frame's units,
+    -- as the body mask does in the owner's. A scale-decoupled container
+    -- (nameplates: its strips keep whole pixels whatever the plate's scale)
+    -- runs other units, so there they take a layer of their own on the border
+    -- frame, at the body's scale.
+    local host = cont
+    if cont.IsIgnoringParentScale and cont:IsIgnoringParentScale() then
+        host = CreateFrame("Frame", nil, cont:GetParent())
+        host:SetAllPoints(cont)
+        host:EnableMouse(false)
+        sd.layer = host
+    end
+    local fill = host:CreateTexture(nil, "OVERLAY", nil, 7)
     ownTex[fill] = true
     sd.fill = fill
-    local hole = cont:CreateMaskTexture()
+    local hole = host:CreateMaskTexture()
     hole:SetPoint("TOPLEFT", cont._left, "TOPRIGHT", 0, 0)
     hole:SetPoint("BOTTOMRIGHT", cont._right, "BOTTOMLEFT", 0, 0)
     sd.hole = hole
@@ -266,6 +291,12 @@ local function SolidOn(st, cont, radius, inner)
         SetRounded(sd.fill, radius)
         sd.radius = radius
     end
+    -- The layer draws where the container does.
+    local layer = sd.layer
+    if layer then
+        local lvl = cont:GetFrameLevel()
+        if layer:GetFrameLevel() ~= lvl then layer:SetFrameLevel(lvl) end
+    end
     sd.fill:SetVertexColor(cont._top:GetVertexColor())
     sd.fill:Show()
 end
@@ -287,11 +318,9 @@ local function GlowParts(st, border)
     local f = CreateFrame("Frame", nil, border)
     f:EnableMouse(false)
     gl = { frame = f, corner = {}, edge = {} }
+    -- Corner pieces: art, size, place and crop are set per shape by GlowOn.
     for i = 1, 4 do
-        local c = CORNERS[i]
         local t = f:CreateTexture(nil, "BORDER")
-        t:SetTexCoord(c.tc[1], c.tc[2], c.tc[3], c.tc[4])
-        t:SetPoint(c.p, f, c.p, 0, 0)
         ownTex[t] = true
         gl.corner[i] = t
     end
@@ -329,42 +358,69 @@ local function GlowOn(st, border, bd, radius)
         f:SetParent(border)
         gl.S = nil
     end
-    -- Corner square: from the glow's outer corner to the arc center, at most
-    -- half the glow's short side.
+    -- S: from the glow's outer corner to the arc center, at most half the
+    -- glow's short side.
     local S = E / 2 + radius
     local half = HalfSide(bd)
     if half and S > half then S = half end
     local lvl = bd:GetFrameLevel()
-    if gl.S ~= S or gl.E ~= E or gl.lvl ~= lvl then
-        gl.S, gl.E, gl.lvl = S, E, lvl
+    if gl.S ~= S or gl.E ~= E or gl.half ~= half or gl.lvl ~= lvl then
+        gl.S, gl.E, gl.half, gl.lvl = S, E, half, lvl
         f:ClearAllPoints()
         f:SetAllPoints(bd)
         f:SetFrameLevel(lvl)
-        local n = floor(((E / 2) / S - GLOW_QMIN) / ((GLOW_QMAX - GLOW_QMIN) / (GLOW_NQ - 1)) + 0.5) + 1
-        local path = GLOW_CORNER[Clamp(n, 1, GLOW_NQ)]
-        for i = 1, 4 do
-            local t = gl.corner[i]
-            t:SetTexture(path)
-            t:SetSize(S, S)
+        -- size: the piece's side; inset: its outer corner in from the glow's;
+        -- crop: the share of the art shown; run: where the sides start; band:
+        -- the width every piece draws the glow at, centered on the outline.
+        local path, size, inset, crop, run, band
+        if S >= E then
+            -- The band fits between the outer corner and the arc center: the
+            -- nearest step's piece, sized so its outline lands on this radius
+            -- round this arc center. Its band is within a few percent of the
+            -- border's, and the sides take the same width, so they meet it.
+            local r = S - E / 2
+            local n = Clamp(floor(log(E / r / GLOW_FMIN) / GLOW_LOGSTEP + 0.5) + 1, 1, GLOW_NA)
+            local fn = GLOW_FMIN * exp((n - 1) * GLOW_LOGSTEP)
+            size, band = r * (1 + fn / 2), fn * r
+            inset, crop, run = S - size, 1, S
+            path = GLOW_CORNER[n]
+        else
+            -- A radius under half the band: the piece spans the whole band (at
+            -- most half the short side, the art cut to match), its straight
+            -- parts on the sides' own line, and the sides start past it.
+            size = (half and half < E) and half or E
+            inset, crop, run, band = 0, size / E, size, E
+            path = GLOW_TIGHT[Clamp(floor((S / E - 0.5) * 2 * GLOW_NB) + 1, 1, GLOW_NB)]
         end
-        local e = gl.edge
+        for i = 1, 4 do
+            local c, t = CORNERS[i], gl.corner[i]
+            local tc = c.tc
+            t:SetTexture(path)
+            t:SetTexCoord(tc[1] * crop, tc[2] * crop, tc[3] * crop, tc[4] * crop)
+            t:SetSize(size, size)
+            t:ClearAllPoints()
+            t:SetPoint(c.p, f, c.p, c.dx * inset, c.dy * inset)
+        end
+        -- The sides: band wide, centered on the outline (E / 2 in from the
+        -- glow's edge), from run to run.
+        local e, o = gl.edge, (E - band) / 2
         local top, bottom, left, right = e[1], e[2], e[3], e[4]
         top:ClearAllPoints()
-        top:SetPoint("TOPLEFT", f, "TOPLEFT", S, 0)
-        top:SetPoint("TOPRIGHT", f, "TOPRIGHT", -S, 0)
-        top:SetHeight(E)
+        top:SetPoint("TOPLEFT", f, "TOPLEFT", run, -o)
+        top:SetPoint("TOPRIGHT", f, "TOPRIGHT", -run, -o)
+        top:SetHeight(band)
         bottom:ClearAllPoints()
-        bottom:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", S, 0)
-        bottom:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -S, 0)
-        bottom:SetHeight(E)
+        bottom:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", run, o)
+        bottom:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -run, o)
+        bottom:SetHeight(band)
         left:ClearAllPoints()
-        left:SetPoint("TOPLEFT", f, "TOPLEFT", 0, -S)
-        left:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, S)
-        left:SetWidth(E)
+        left:SetPoint("TOPLEFT", f, "TOPLEFT", o, -run)
+        left:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", o, run)
+        left:SetWidth(band)
         right:ClearAllPoints()
-        right:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, -S)
-        right:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, S)
-        right:SetWidth(E)
+        right:SetPoint("TOPRIGHT", f, "TOPRIGHT", -o, -run)
+        right:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -o, run)
+        right:SetWidth(band)
     end
     local r, g, b, a = bd:GetBackdropBorderColor()
     for i = 1, 4 do
@@ -417,10 +473,19 @@ EllesmereUI.RoundedBorderColor = OnBorderColor
 local function Fit(st)
     local border, rect = st.border, st.rect
     local radius = st.radius
+    -- A radius-r mask is 2r + 1 texels square, and the client shrinks a sliced
+    -- texture's corners on a region smaller than the texture: the radius stays
+    -- at most (short side - 1) / 2, so the region always holds its mask.
     local half = HalfSide(rect)
-    if half and half >= 1 and radius > half then radius = floor(half) end
-    local cont = border and EllesmereUI.PP.GetBorders(border)
-    local edge = cont and cont._top and border:IsShown() and cont:IsShown()
+    if half and half >= 1 then
+        local cap = max(1, floor(half - 0.5))
+        if radius > cap then radius = cap end
+    end
+    -- A border frame that is the owner itself hides along with the body, so
+    -- its own shown flag says nothing (a nameplate cast bar between casts).
+    local cont = border and (border == st.owner or border:IsShown())
+        and EllesmereUI.PP.GetBorders(border)
+    local edge = cont and cont._top and cont:IsShown()
         and cont._top:IsShown() and cont._snapEdge or 0
     local inner = radius
     if edge > 0 then
@@ -428,6 +493,13 @@ local function Fit(st)
         local cs, rs = cont:GetEffectiveScale(), rect:GetEffectiveScale()
         if rs > 0 then edge = edge * cs / rs end
         inner = max(1, floor(radius - edge + 0.5))
+        -- The inner rect holds the hole's and the body's masks the same way:
+        -- past it their corners shrink or overlap and square their ends off,
+        -- so a thin bar's body would poke out past the ring.
+        if half then
+            local cap = floor(half - edge - 0.5)
+            if cap >= 1 and inner > cap then inner = cap end
+        end
         return radius, inner, cont, nil
     end
     local bd = border and EllesmereUI._bdBorderData[border]

@@ -925,20 +925,21 @@ end
 ns.ApplyHealthBarTexture = ApplyHealthBarTexture
 
 -- Rounded corners (EllesmereUI_RoundedCorners.lua; nothing at radius 0, under
--- the stock styles or under a custom border style that cannot round). The
--- body is listed texture by texture: glows and arrows on the health bar reach
--- past it and must stay unmasked. Re-run after every retexture (a path swap
--- mints a new fill object). The custom border frame is the shape while it is
--- on, so the ring follows it round the cast bar while Wrap Border Around
--- Castbar holds it there. part: "health" or "cast" for one bar, nil for both.
--- The opts tables are reused (the kit reads them during the call only).
-local NO_ROOTS, HP_TEX, CAST_TEX = {}, {}, {}
-local HP_OPTS = { roots = NO_ROOTS, textures = HP_TEX }
+-- the stock styles, under a custom border style that cannot round, or while
+-- Wrap Border Around Castbar is on, which greys Corner Radius out). The body
+-- is listed texture by texture: glows and arrows on the health bar reach past
+-- it and must stay unmasked. Re-run after every retexture (a path swap mints a
+-- new fill object). The custom border frame is the shape while it is on.
+-- part: "health" or "cast" for one bar, nil for both. The opts tables are
+-- reused (the kit reads them during the call only).
+local NO_ROOTS, HP_ROOTS, HP_TEX, CAST_TEX = {}, {}, {}, {}
+local HP_OPTS = { roots = HP_ROOTS, textures = HP_TEX }
 local CAST_OPTS = { roots = NO_ROOTS, textures = CAST_TEX }
 function ns.NP_ApplyRounding(plate, part)
     local health = plate.health
     if not health then return end
     local radius = (not ns.NP_Blizz() and p and p.cornerRadius) or 0
+    if radius > 0 and ns.GetWrapBorderCastbar() then radius = 0 end
     local customOn = radius > 0 and ns.IsCustomBorderEnabled()
     local style = customOn and ((p and p.customBorderTexture) or defaults.customBorderTexture) or "solid"
     if not EllesmereUI.RoundedStyleOK(style) then radius = 0 end
@@ -963,6 +964,11 @@ function ns.NP_ApplyRounding(plate, part)
         HP_TEX[4], HP_TEX[5] = plate.highlight, plate.targetHighlight
         HP_TEX[6] = ab and ab:GetStatusBarTexture()
         HP_TEX[7] = fw and fw:GetStatusBarTexture()
+        -- The Target, Focus and Hover Texture overlays: one texture in each of
+        -- their clip frames (built on first use, nil until then)
+        HP_ROOTS[1], HP_ROOTS[2] = plate.targetClipFill, plate.targetClipBg
+        HP_ROOTS[3], HP_ROOTS[4] = plate.focusClipFill, plate.focusClipBg
+        HP_ROOTS[5], HP_ROOTS[6] = plate.hoverClipFill, plate.hoverClipBg
         EllesmereUI.RoundCorners(plate, radius, HP_OPTS)
     end
     local cast = plate.cast

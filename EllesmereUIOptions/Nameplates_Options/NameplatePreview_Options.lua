@@ -1099,6 +1099,8 @@ local function BuildNameplatePreview(parent, parentW)
         -- frame (the live plate's Basic border is that same Solid border).
         do
             local radius = (not EllesmereUI.BlizzStyle.Get("nameplates") and DBVal("cornerRadius")) or 0
+            -- Wrap Around Castbar keeps the plates square, as on a live plate.
+            if DBVal("wrapBorderCastbar") == true then radius = 0 end
             local style = customOn and (DBVal("customBorderTexture") or defaults.customBorderTexture) or "solid"
             -- A custom style that cannot round keeps the cast bar square too.
             if not EllesmereUI.RoundedStyleOK(style) then radius = 0 end
