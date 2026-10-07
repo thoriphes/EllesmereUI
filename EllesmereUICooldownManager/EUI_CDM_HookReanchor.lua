@@ -1777,7 +1777,7 @@ local function CollectAndReanchor()
                                     local ssS = ResolveSpellSettings(srcList[i], fcS.spellID, sdS, bd.key)
                                     local effS = ns.GetSpellCdStateEffect(srcList[i], ssS)
                                     if effS == "hiddenOnCDShift" or effS == "hiddenReadyShift"
-                                       or effS == "hiddenUnusableShift" then
+                                       or effS == "hiddenUnusableShift" or effS == "hiddenFormShift" then
                                         blocked = true; break
                                     end
                                 end
@@ -2307,6 +2307,7 @@ local function CollectAndReanchor()
     -- rebuilds it against the fresh claim set.
     if ns._cdmClaimGen then ns._cdmClaimGen = ns._cdmClaimGen + 1 end
     if ns.RefreshStaleCDMKeybinds then ns.RefreshStaleCDMKeybinds() end
+    if ns.CdmReconcileFormWatch then ns.CdmReconcileFormWatch(usedFrames, unresolvedFrames, allActiveFrames) end
 end
 ns.CollectAndReanchor = CollectAndReanchor
 

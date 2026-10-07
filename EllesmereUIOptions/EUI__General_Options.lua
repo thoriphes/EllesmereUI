@@ -337,7 +337,7 @@ EllesmereUI._WHATSNEW_PATCHES = {
                 title  = "List View",
                 desc   = "Bags and the bank can show items as a list with sortable, resizable columns, adjustable rows and an Upgrade Track column. Drag a corner to resize the bags or bank, and drop items picked up elsewhere anywhere on the empty bag space.",
                 nav    = { module = "EllesmereUIBags", page = "Bags",
-                           section = "LIST VIEW", highlight = "Row Height" },
+                           section = "DISPLAY (LIST)", highlight = "Row Height" },
             },
             {
                 module = "QoL",
@@ -375,7 +375,7 @@ EllesmereUI._WHATSNEW_PATCHES = {
                 title  = "Allow Windows Over Bags",
                 desc   = "Other windows, like the Auction House, can now come in front of the bags; turn it off to keep the bags on top, as before",
                 nav    = { module = "EllesmereUIBags", page = "Bags",
-                           section = "LAYOUT", highlight = "Allow Windows Over Bags" },
+                           section = "LAYOUT", highlight = "Frame Strata" },
             },
             {
                 forever = true,
@@ -2553,8 +2553,8 @@ initFrame:SetScript("OnEvent", function(self)
 
         -------------------------------------------------------------------
         --  DEVELOPER -- both toggles are duplicated in Quality of Life
-        --  (Suppress Lua Errors) and Blizzard UI Enhanced (Show Spell ID on
-        --  Tooltip): hidden here when BOTH modules are loaded, shown if either is missing so the settings stay reachable.
+        --  (Suppress Lua Errors) and Blizzard Skins+ (Spell ID on Tooltip):
+        --  hidden here when BOTH modules are loaded, shown if either is missing so the settings stay reachable.
         -------------------------------------------------------------------
         local _devDupesAvailable = C_AddOns and C_AddOns.IsAddOnLoaded
             and C_AddOns.IsAddOnLoaded("EllesmereUIQoL")
@@ -2572,9 +2572,9 @@ initFrame:SetScript("OnEvent", function(self)
                     EllesmereUIDB.suppressErrors = v
                     SetCVarSafe("scriptErrors", v and "0" or "1")
                   end },
-                { type="toggle", text="Show Spell ID on Tooltip",
+                { type="toggle", text="Spell ID on Tooltip",
                   getValue=function()
-                    return EllesmereUIDB and EllesmereUIDB.showSpellID or false
+                    return EllesmereUI.SpellIDOn()
                   end,
                   setValue=function(v)
                     if not EllesmereUIDB then EllesmereUIDB = {} end
@@ -2725,8 +2725,8 @@ initFrame:SetScript("OnEvent", function(self)
                 -- Reset UI scale so next reload re-snapshots from Blizzard default
                 EllesmereUIDB.ppUIScale = nil
                 EllesmereUIDB.ppUIScaleAuto = nil
-                -- Developer settings defaults
-                EllesmereUIDB.showSpellID = false
+                -- Developer settings defaults (Spell ID on Tooltip: unset = on)
+                EllesmereUIDB.showSpellID = nil
                 if EllesmereUI.SyncAuraSpellIDCVar then EllesmereUI.SyncAuraSpellIDCVar() end
                 EllesmereUIDB.suppressErrors = true
                 -- Crosshair: the root is the inherited global default, reset here (per-profile overrides clear with the profile's own reset).

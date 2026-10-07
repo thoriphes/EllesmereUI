@@ -1350,10 +1350,14 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                           return base
                       end },
                     -- Shift variants: same hide as the plain modes below, but the bar re-lays out so the remaining icons close the gap.
+                    { val = "hiddenFormShift", label = "Show Only Selected Forms/Stances (Shift Icons)",
+                      tooltip = "Automatically show in the forms or stances permitted by the spell. Keep normal cooldown styling while visible; combat and low resources do not hide it." },
                     { val = "hiddenOnCDShift",  label = "Hidden on CD (Shift Icons)" },
                     { val = "hiddenReadyShift", label = "Hidden CD Ready (Shift Icons)" },
                     { val = "hiddenUnusableShift", label = "Hidden Until Usable (Shift Icons)",
                       tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
+                    { val = "hiddenForm", label = "Show Only Selected Forms/Stances",
+                      tooltip = "Automatically show in the forms or stances permitted by the spell. Keep normal cooldown styling while visible; combat and low resources do not hide it." },
                     { val = "hiddenOnCD",      label = "Hidden (On CD)" },
                     { val = "hiddenReady",     label = "Hidden (CD Ready)" },
                     { val = "hiddenUnusable",  label = "Hidden (Until Usable)",
@@ -2752,10 +2756,14 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                           end },
                         -- Shift variants: same hide as the plain modes below, but
                         -- the bar re-lays out so remaining icons close the gap.
+                        { val = "hiddenFormShift", label = "Show Only Selected Forms/Stances (Shift Icons)",
+                          tooltip = "Automatically show in the forms or stances permitted by the spell. Keep normal cooldown styling while visible; combat and low resources do not hide it." },
                         { val = "hiddenOnCDShift",  label = "Hidden on CD (Shift Icons)" },
                         { val = "hiddenReadyShift", label = "Hidden CD Ready (Shift Icons)" },
                         { val = "hiddenUnusableShift", label = "Hidden Until Usable (Shift Icons)",
                           tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
+                        { val = "hiddenForm", label = "Show Only Selected Forms/Stances",
+                          tooltip = "Automatically show in the forms or stances permitted by the spell. Keep normal cooldown styling while visible; combat and low resources do not hide it." },
                         { val = "hiddenOnCD",      label = "Hidden (On CD)" },
                         { val = "hiddenReady",     label = "Hidden (CD Ready)" },
                         { val = "hiddenUnusable",  label = "Hidden (Until Usable)",

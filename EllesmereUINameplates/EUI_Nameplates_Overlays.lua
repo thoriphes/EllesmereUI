@@ -303,6 +303,7 @@ local function EnsureTargetHighlight(plate)
         t:AddMaskTexture(plate._blizzBarMask)
         plate._blizzMaskedTarget = true
     end
+    ns.NP_ApplyRounding(plate, "health")
 end
 
 -- Target arrow styles: key -> { l=left texture, r=right texture, w=drawn width at height 16

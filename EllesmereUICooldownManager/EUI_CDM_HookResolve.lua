@@ -376,12 +376,14 @@ function ns.CdmBarHasShiftCdState(barKey)
                     eff = ss and ss.cdStateEffect
                 end
                 if eff ~= "hiddenOnCDShift" and eff ~= "hiddenReadyShift" and eff ~= "hiddenUnusableShift"
+                   and eff ~= "hiddenFormShift"
                    and ns.GetEffectiveCustomActiveState then
                     local cas = ns.GetEffectiveCustomActiveState(sid)
                     if cas and cas.cdStateEffect then eff = cas.cdStateEffect end
                 end
             end
-            if eff == "hiddenOnCDShift" or eff == "hiddenReadyShift" or eff == "hiddenUnusableShift" then
+            if eff == "hiddenOnCDShift" or eff == "hiddenReadyShift" or eff == "hiddenUnusableShift"
+               or eff == "hiddenFormShift" then
                 return true
             end
         end

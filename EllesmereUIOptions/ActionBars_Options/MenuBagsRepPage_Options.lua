@@ -442,7 +442,7 @@ local function DataBarKit(parent)
                   if defTh then s.borderThickness = defTh end
                   Done()
               end) },
-            EllesmereUI.BorderPxSliderCfg{ text="Border Size", tooltip=false,
+            EllesmereUI.BorderPxSliderCfg{ text="Border Size",
               disabled=_blizzDis, disabledTooltip=BLIZZ_DIS_TIP, rawTooltip=true,
               -- The step the bar renders with (ResolveBorderThickness): an
               -- unknown thickness is thin.
