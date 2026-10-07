@@ -4347,14 +4347,15 @@ end
 -- counts as on, the way any aura counts for a paladin. Shown while the player
 -- knows one of them, as a click-to-cast button for the one last seen running
 -- this session (Find Minerals first when both are known). Skipped under the
--- aura lock like Camp Benefits; the section's "Where to Show" applies.
+-- aura lock and in battlegrounds / arenas like Camp Benefits; the section's
+-- "Where to Show" applies.
 if EABR.FOREVER then
     EABR.GATHER_TRACKING = { 2580, 2383 }  -- Find Minerals, Find Herbs
 end
 
-function EABR.CollectForeverGathering(missing, inInstance, restricted)
+function EABR.CollectForeverGathering(missing, inInstance, inPvP, restricted)
     local fo = db.profile.forever
-    if restricted or not (fo and fo.gathering) then return end
+    if restricted or inPvP or not (fo and fo.gathering) then return end
     if not EABR.SectionShows(fo.whereToShow, inInstance) then return end
     local G = EABR.GATHER_TRACKING
     local one = EABR._gatherOne
@@ -4929,7 +4930,7 @@ local function Refresh()
     if EABR.FOREVER then
         if remindersOn then
             EABR.CollectForeverRaidBuffs(missing, playerClass, inInstance)
-            EABR.CollectForeverGathering(missing, inInstance, restricted)
+            EABR.CollectForeverGathering(missing, inInstance, inPvP, restricted)
             EABR.CollectForever(missing, inInstance, inPvP, restricted)
             EABR.CollectForeverPaladin(missing, restricted)
         else
