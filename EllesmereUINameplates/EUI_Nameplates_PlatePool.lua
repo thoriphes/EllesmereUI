@@ -1010,6 +1010,8 @@ function ns.RefreshAllSettings()
     -- Friendly bar and name colours: a profile or override flip of the class colour
     -- toggles reaches the live full plates.
     if ns.RefreshFriendlyColors then ns.RefreshFriendlyColors() end
+    -- Force Nameplate on Current Target: same shape (event-driven, self-guarded).
+    if ns.TF_Refresh then ns.TF_Refresh() end
     -- WoW Forever: a profile or override flip of the friendly Name Format, the
     -- Subtitle Text mode or its guild brackets reaches the live friendly names
     -- (one compare while they are unchanged).
