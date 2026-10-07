@@ -2504,6 +2504,27 @@ initFrame:SetScript("OnEvent", function(self)
         return crossed
     end
 
+    -- A card's style as a dropdown row on another page (Action Bars' Menu,
+    -- Bags & Rep Bars mirrors the Micro Menu and Bag Bar cards): the card's
+    -- own list, read and write, reload popup included, greyed while window
+    -- skins are off for the profile. nil for a card this client does not
+    -- offer (the Bag Bar off WoW Forever).
+    function EllesmereUI.WindowSkinStyleCfg(winKey, text, tooltip)
+        local win
+        for i = 1, #WINDOWS do
+            if WINDOWS[i].key == winKey then win = WINDOWS[i]; break end
+        end
+        if not win then return nil end
+        return { type = "dropdown", text = text, tooltip = tooltip,
+            values = win.styleValues or WS_STYLE_VALUES, order = win.styleOrder or WS_STYLE_ORDER,
+            disabled = EllesmereUI.BlizzWindowSkinsKilled, disabledTooltip = "Window Skins",
+            getValue = function() return WSGetStyle(win) end,
+            setValue = function(v)
+                WSSetStyle(win, v)
+                EllesmereUI:RefreshPage()
+            end }
+    end
+
     -- One expandable card: custom header (mini-window glyph + title + style
     -- dropdown + chevron) over a shared card background, with the window's
     -- rows below when expanded. Returns the new y cursor.

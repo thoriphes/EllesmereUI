@@ -123,9 +123,9 @@ end
 -- Junk: always the last category (InitCategories puts it there, and drags and
 -- moves never pass it), so turning the Junk Marker on or off never shifts
 -- another category's index (bagVisualOrder is index-keyed). No types: grey items
--- and marks are its members. Its icon is the Junk Marker's coin (the header
--- button and the item badge too): our own art, drawn whole.
-ns.JUNK_COIN = "Interface\\AddOns\\EllesmereUIBags\\Media\\gold.png"
+-- and marks are its members. Its icon is the game's coin, as is the item badge
+-- (only the header button draws our own coin art).
+ns.JUNK_COIN = 133784
 DEFAULT_CATEGORIES[#DEFAULT_CATEGORIES + 1] = {
     name = "Junk", types = {}, isJunk = true, appendLast = true, noGroup = true, icon = ns.JUNK_COIN,
 }

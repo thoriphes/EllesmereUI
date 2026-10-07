@@ -756,7 +756,8 @@ end
 -- the account's windows swap back to each profile's look on a profile switch
 -- (EllesmereUI.ReconcileWindowSkinLook). WoW Forever has a window slot of
 -- its own, whose first visit skins every window as the EllesmereUI look's
--- does; a window look recorded before that slot existed stays as it is.
+-- does but the micro menu and the bag bar (Blizz Default); a window look
+-- recorded before that slot existed stays as it is.
 local function WholeUIWindowsPending(styleKey)
     local swap = EllesmereUI.SwapWindowSkinStyle
     return swap ~= nil and swap(styleKey, true, InferredStockStyle())

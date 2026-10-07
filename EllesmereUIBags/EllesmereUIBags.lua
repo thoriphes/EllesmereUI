@@ -3881,9 +3881,10 @@ local function BuildButtons()
     -- Placed by SyncHeaderIcons, left of the next shown header icon
     local junk = CreateFrame("Button", nil, header)
     junk:SetSize(22, 22)
-    -- The art's coin sits inside a thin margin: drawn 24 px, the coin fills the button
+    -- Our own coin art (the item badge and the Junk category keep the game's
+    -- coin). It sits inside a thin margin: drawn 24 px, the coin fills the button
     junk.icon = junk:CreateTexture(nil, "OVERLAY")
-    junk.icon:SetTexture(ns.JUNK_COIN)
+    junk.icon:SetTexture("Interface\\AddOns\\EllesmereUIBags\\Media\\gold.png")
     junk.icon:SetSize(24, 24)
     junk.icon:SetPoint("CENTER")
     junk.icon:SetAlpha(0.9)
@@ -5006,7 +5007,9 @@ local function CreateSidebar()
 end
 
 -- One-time tip on the sidebar's categories: they can be dragged to reorder.
--- Shown whenever the bags open with the sidebar showing, until its Okay is
+-- New users only (an account that ran Bags before it starts with it seen:
+-- bags_category_tip_existing_seen_v1 in EllesmereUI_Migration.lua). Shown
+-- whenever the bags open with the sidebar showing, until its Okay is
 -- clicked (EllesmereUIDB.bagCategoryTipSeen); a sidebar that hides takes it
 -- down until the next time. Its arrow points at the first category that can
 -- be dragged (past the fixed views and the unmovable Pinned / Recent rows),
@@ -5629,11 +5632,9 @@ local function BuildSidebarButtons(categoryCounts, totalCount)
             btn._icon:SetTexCoord(0, 1, 0, 1)
         else
             -- Through the client icon map: a default the Forever client
-            -- cannot draw takes its vanilla-era stand-in there. Our own art
-            -- (a file path: the Junk coin) is drawn whole.
+            -- cannot draw takes its vanilla-era stand-in there.
             btn._icon:SetTexture(EllesmereUI.ClientIcon(entry.icon))
-            local c = type(entry.icon) == "string" and 0 or 0.08
-            btn._icon:SetTexCoord(c, 1 - c, c, 1 - c)
+            btn._icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
         end
         btn._icon:SetAlpha(isSelected and 1 or 0.75)
         -- Smaller icon for indented members

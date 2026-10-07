@@ -2523,10 +2523,10 @@ function EUI_Bank:RefreshBank()
     -- Shared slot render: updates a single button with item or empty state
     -- One reused data table for third-party overlay painters (EUI_Bags.RunItemOverlays).
     local overlayData = {}
-    -- Junk Marker junk, and grey items while Desaturate Junk Items is on, grey
-    -- here as on the bank's list rows (read once per refresh)
+    -- Junk Item Visuals' Desaturate greys grey items and Junk Marker junk here
+    -- as on the bank's list rows (read once per refresh)
     local junkOn = _G.EUI_CategoryManager:IsJunkMarkerEnabled()
-    local desatGreys = BP().bagDesaturateJunkItems == true
+    local desatJunk = BP().bagDesaturateJunkItems == true
     local function RenderSlotContent(btn, bagID, slot, cachedInfo)
         if btn.ProfessionQualityOverlay then btn.ProfessionQualityOverlay:SetAlpha(0) end
         if btn.IconOverlay then btn.IconOverlay:SetAlpha(0); btn.IconOverlay:Hide() end
@@ -2552,8 +2552,8 @@ function EUI_Bank:RefreshBank()
             btn:SetItemButtonTexture(info.iconFileID)
             btn:SetItemButtonCount(info.stackCount)
             local quality = info.quality or 1
-            SetItemButtonDesaturated(btn, info.isLocked or (desatGreys and quality == 0)
-                or (junkOn and _G.EUI_CategoryManager:IsJunk(info.itemID, quality)))
+            SetItemButtonDesaturated(btn, info.isLocked or (desatJunk and (quality == 0
+                or (junkOn and _G.EUI_CategoryManager:IsJunk(info.itemID, quality)))) or false)
             local itemLink = C_Container.GetContainerItemLink(bagID, slot)
             if itemLink then btn:SetItemButtonQuality(quality, itemLink, false, false) end
             if btn.ProfessionQualityOverlay and btn.ProfessionQualityOverlay:IsShown() and btn._textOverlay then
@@ -2932,10 +2932,9 @@ function BuildBankSidebar()
         else
             -- Through the client icon map, like the bag window's sidebar: a
             -- default the Forever client cannot draw takes its stand-in there.
-            -- Our own art (a file path: the Junk coin) is drawn whole.
+            -- Cropped on every paint (a pooled row may last have drawn an atlas).
             btn._icon:SetTexture(EllesmereUI.ClientIcon(icon))
-            local c = type(icon) == "string" and 0 or 0.08
-            btn._icon:SetTexCoord(c, 1 - c, c, 1 - c)
+            btn._icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
         end
         btn._icon:SetAlpha(isSelected and 1 or 0.75)
 

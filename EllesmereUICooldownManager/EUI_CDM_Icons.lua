@@ -1030,23 +1030,20 @@ local function RefreshCDMIconAppearance(barKey)
             -- against the family store, with bar-tier fallback.
             local csSs = ns.ResolveSpellSettings and ns.ResolveSpellSettings(icon, csSid, csSd, csBk)
             local cse = ns.GetSpellCdStateEffect(icon, csSs)
-            -- Shift-Icons variants behave exactly like their base hidden mode plus the layout flag; normalize so the branches below stay as-is.
-            -- Hidden Until Usable = Hidden (On CD) + "not usable" counting as unavailable.
-            local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift"
-                or cse == "hiddenUnusableShift" or cse == "hiddenFormShift")
-            local cseUsable = (cse == "hiddenUnusable" or cse == "hiddenUnusableShift")
-            if cse == "hiddenOnCDShift" or cseUsable then cse = "hiddenOnCD"
-            elseif cse == "hiddenReadyShift" then cse = "hiddenReady"
-            elseif cse == "hiddenFormShift" then cse = "hiddenForm" end
+            -- The hide effects run as their base mode plus flags (ns.CD_STATE_HIDE: Shift Icons, Hidden Until Usable, Hidden Outside Form/Stance), so the branches below stay as-is.
+            local m = cse and ns.CD_STATE_HIDE[cse]
+            local cseShift, cseUsable, cseForm
+            if m then cse, cseShift, cseUsable, cseForm = m.base, m.shift, m.usable, m.form end
             if cse then
                 local csLive = csSid
                 if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
                     csLive = C_SpellBook.FindSpellOverrideByID(csSid) or csSid
                 end
                 local onCD
-                if cse == "hiddenForm" then
-                    ns.WatchCdUsable(icon, true)
+                if cseForm then
+                    -- Only the form decides; form changes re-arm through the form watch.
                     onCD = ns.CdmSpellOutsideForm(csLive)
+                    ns.WatchCdUsable(icon, true)
                 else
                     local cseInfo = C_Spell.GetSpellCooldown(csLive)
                     onCD = cseInfo and cseInfo.isActive and not cseInfo.isOnGCD
@@ -1056,9 +1053,9 @@ local function RefreshCDMIconAppearance(barKey)
                     -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
                     ns.WatchCdUsable(icon)
                 end
-                if cse == "hiddenOnCD" or cse == "hiddenReady" or cse == "hiddenForm" then
+                if cse == "hiddenOnCD" or cse == "hiddenReady" then
                     local hide
-                    if cse == "hiddenOnCD" or cse == "hiddenForm" then
+                    if cse == "hiddenOnCD" then
                         hide = onCD and true or false
                     else
                         -- Hidden (CD Ready): on a charge spell "ready" means AT MAX charges, so the icon keeps tracking the recharge instead of vanishing with a charge still down (ns.CdmCdStateReady).
@@ -1148,7 +1145,6 @@ local function RefreshCDMIconAppearance(barKey)
         -- either way, so both kinds share this one line without widening the skip above.
         if ns.ApplyOnlyNumbers then ns.ApplyOnlyNumbers(icon, _getFD(icon), barData) end
     end
-    if ns.CdmReconcileFormWatch then ns.CdmReconcileFormWatch() end
 end
 ns.RefreshCDMIconAppearance = RefreshCDMIconAppearance
 
