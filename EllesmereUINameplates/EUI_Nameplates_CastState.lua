@@ -40,6 +40,14 @@ ns._oorAlpha = 1  -- cached out-of-range alpha; 1 = inert
 function ns.NT_Apply(plate)
     local unit = plate.unit
     if not unit then return end
+    -- Hide Gray-Level / Neutral Enemy Nameplates win over every fade (ns.TRIV_Eval).
+    if plate._trivHidden then
+        if plate._ntCurAlpha ~= 0 then
+            plate._ntCurAlpha = 0
+            plate:SetAlpha(0)
+        end
+        return
+    end
     local a = 1
     local tfHidden = ns._tfHidden
     if tfHidden and tfHidden[unit] then
@@ -76,6 +84,110 @@ function ns.NT_RefreshSetting()
     ns._ntAlpha = v / 100
     ns._ntKeepFocus = not (p and p.nonTargetKeepFocus == false)
     ns.NT_ApplyAll()
+end
+
+-------------------------------------------------------------------------------
+--  Hide Gray-Level / Neutral Enemy Nameplates, Always Show Quest Mob Nameplates.
+--  A hidden plate gets root alpha 0 through ns.NT_Apply, so no frame is hidden
+--  or re-anchored. Gray = an attackable unit too low to give experience
+--  (UnitIsTrivial, the grey level colour). Neutral = an attackable unit with
+--  the yellow reaction (UnitReaction 4), the wildlife that won't aggro. With
+--  Always Show Quest Mobs and Hide Enemy Nameplates out of Combat both on, the
+--  OOC rule stops turning nameplateShowEnemies off (ns.ApplyOOCPlates) and the
+--  non-quest plates are hidden here instead, so a quest mob keeps its plate;
+--  quest mobs are exempt from the gray and neutral rules too. Every hidden
+--  plate comes back while the unit is the target or focus, or has the player
+--  on its threat table (it is fighting you). Off = one boolean test per hook
+--  (ns._trivOn).
+-------------------------------------------------------------------------------
+ns._trivHide = false     -- Hide Gray-Level Enemy Nameplates
+ns._neutralHide = false  -- Hide Neutral Enemy Nameplates
+ns._questAlways = false  -- Always Show Quest Mob Nameplates
+ns._questSoftOOC = false -- quest exemption + OOC hide: hide OOC by alpha, not by CVar
+ns._trivOn = false       -- any of the above needs the per-plate evaluation
+ns._trivInCombat = false -- player combat state, kept from the REGEN edges
+
+function ns.TRIV_Eval(plate)
+    local unit = plate.unit
+    if not unit then return end
+    local hide = false
+    local ooc = ns._questSoftOOC and not ns._trivInCombat
+    if (ns._trivHide or ns._neutralHide or ooc)
+       and not UnitIsUnit(unit, "target") and not UnitIsUnit(unit, "focus") then
+        local sv = issecretvalue
+        local threat = UnitThreatSituation("player", unit)
+        local engaged = (sv and sv(threat)) or threat ~= nil
+        if not engaged and not (ns._questAlways and ns.IsQuestMob and ns.IsQuestMob(unit)) then
+            if ooc then
+                hide = true
+            else
+                if ns._trivHide then
+                    local triv = UnitIsTrivial(unit)
+                    hide = triv == true and not (sv and sv(triv))
+                end
+                if not hide and ns._neutralHide then
+                    local reaction = UnitReaction(unit, "player")
+                    local canAttack = UnitCanAttack("player", unit)
+                    hide = not (sv and (sv(reaction) or sv(canAttack)))
+                        and reaction == 4 and canAttack == true
+                end
+            end
+        end
+    end
+    if (plate._trivHidden or false) ~= hide then
+        plate._trivHidden = hide or nil
+        ns.NT_Apply(plate)
+    end
+end
+
+function ns.TRIV_EvalAll()
+    for _, plate in pairs(ns.plates) do
+        ns.TRIV_Eval(plate)
+    end
+end
+
+-- The player's level moves the grey cutoff, a unit's level moves the unit
+-- across it; UNIT_FACTION moves a unit in or out of neutral; the combat edges
+-- flip the out-of-combat hide. Each set is armed only while its option is on.
+ns._trivLevelEv = CreateFrame("Frame")
+ns._trivLevelEv:SetScript("OnEvent", function(_, event, unit)
+    if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+        ns._trivInCombat = event == "PLAYER_REGEN_DISABLED"
+        ns.TRIV_EvalAll()
+        return
+    end
+    if event == "PLAYER_LEVEL_CHANGED" then
+        ns.TRIV_EvalAll()
+        return
+    end
+    local plate = unit and unit ~= "player" and ns.plates[unit]
+    if plate then ns.TRIV_Eval(plate) end
+end)
+
+-- Re-reads the toggles and re-evaluates every plate (an off flip shows them all).
+-- Called from the options toggles, ns.ApplyOOCPlates, OnInitialize and
+-- RefreshAllSettings. Never writes the CVar: ns.ApplyOOCPlates owns it.
+function ns.TRIV_RefreshSetting()
+    ns._trivHide = (p and p.hideTrivialEnemies) == true
+    ns._questAlways = (p and p.questMobAlwaysShow) == true
+    ns._questSoftOOC = ns._questAlways and (p and p.hideEnemyPlatesOOC) == true
+    ns._neutralHide = (p and p.hideNeutralEnemies) == true
+    ns._trivOn = ns._trivHide or ns._neutralHide or ns._questSoftOOC
+    ns._trivInCombat = UnitAffectingCombat("player") == true
+    local f = ns._trivLevelEv
+    f:UnregisterAllEvents()
+    if ns._trivHide then
+        f:RegisterEvent("UNIT_LEVEL")
+        f:RegisterEvent("PLAYER_LEVEL_CHANGED")
+    end
+    if ns._neutralHide then
+        f:RegisterEvent("UNIT_FACTION")
+    end
+    if ns._questSoftOOC then
+        f:RegisterEvent("PLAYER_REGEN_DISABLED")
+        f:RegisterEvent("PLAYER_REGEN_ENABLED")
+    end
+    ns.TRIV_EvalAll()
 end
 
 function ns.HideHoverEffect(plate)
