@@ -273,6 +273,9 @@ local defaults = {
     friendlyBelowNameColor = { r = 0.8, g = 0.8, b = 0.8 },
     friendlyBelowNameClassColor = false,
     friendlyBelowNameGuildBrackets = true,
+    hideTrivialEnemies = false,
+    hideNeutralEnemies = false,
+    questMobAlwaysShow = false,
     showEnemyPets = false,
     forceTargetPlate = false,  -- Force Nameplate on Current Target (EUI_Nameplates_TargetForce.lua)
     font = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF",
