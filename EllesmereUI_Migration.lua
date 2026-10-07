@@ -4327,6 +4327,23 @@ EllesmereUI.RegisterMigration({
     end,
 })
 
+-- Spell ID on Tooltip became on by default (an unset showSpellID reads as on,
+-- EllesmereUI.SpellIDOn). An account from before keeps it off: its unset value
+-- is written off. Existing users ONLY: a fresh install or Reset ALL has no
+-- profiles yet, is genesis-stamped, and takes the new default.
+EllesmereUI.RegisterMigration({
+    id          = "spellid_default_on_v1",
+    scope       = "global",
+    description = "Keep Spell ID on Tooltip off for existing users after its default changed from off to on.",
+    body = function(ctx)
+        local db = ctx.db
+        if not (db.profiles and next(db.profiles)) then return end
+        if db.showSpellID == nil then
+            db.showSpellID = false
+        end
+    end,
+})
+
 --------------------------------------------------------------------------------
 --  WOW FOREVER: ONE-TIME BUFF CLEAR
 --
@@ -5113,3 +5130,27 @@ do
         end)
     end
 end
+
+-- WoW Forever: Find Minerals / Find Herbs became a built-in Aura Buff Reminders
+-- toggle (forever.gathering), which treats either tracking as on. A profile that
+-- tracked either one as a custom spell ID gets the toggle on instead, and those
+-- custom entries go (the single-ID reminder nagged whenever the other one ran).
+EllesmereUI.RegisterMigration({
+    id          = "forever_gathering_tracking_v1",
+    scope       = "profile",
+    description = "Move Find Minerals / Find Herbs custom reminders to the built-in gathering toggle",
+    body        = function(ctx)
+        local abr = ctx.profile.addons and ctx.profile.addons.EllesmereUIAuraBuffReminders
+        local fo = type(abr) == "table" and abr.forever
+        local ids = type(fo) == "table" and fo.customIDs
+        if type(ids) ~= "table" then return end
+        local moved = false
+        for i = #ids, 1, -1 do
+            if ids[i] == 2580 or ids[i] == 2383 then  -- Find Minerals, Find Herbs
+                table.remove(ids, i)
+                moved = true
+            end
+        end
+        if moved then fo.gathering = true end
+    end,
+})
