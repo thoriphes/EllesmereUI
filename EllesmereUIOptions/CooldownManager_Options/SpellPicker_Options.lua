@@ -280,6 +280,46 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
         mH = mH + ITEM_H
     end
 
+    local function AddTalentConditionsRow(spellID, ss, ensureSettings)
+        local tcConds = rawget(ss, "talentConditions")
+        local tcCount = type(tcConds) == "table" and #tcConds or 0
+        local tcRow = CreateFrame("Button", nil, inner)
+        tcRow:SetHeight(ITEM_H)
+        tcRow:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH)
+        tcRow:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH)
+        tcRow:SetFrameLevel(menu:GetFrameLevel() + 2)
+        local tcLbl = tcRow:CreateFontString(nil, "OVERLAY")
+        tcLbl:SetFont(FONT_PATH, 11, GetCDMOptOutline())
+        tcLbl:SetPoint("LEFT", 10, 0); tcLbl:SetPoint("RIGHT", -10, 0)
+        tcLbl:SetJustifyH("LEFT"); tcLbl:SetWordWrap(false); tcLbl:SetMaxLines(1)
+        tcLbl:SetText(EllesmereUI.Lf("Talent Conditions: %1$s",
+            tcCount > 0 and tostring(tcCount) or EllesmereUI.L("None")))
+        tcLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+        local tcHl = tcRow:CreateTexture(nil, "ARTWORK")
+        tcHl:SetAllPoints(); tcHl:SetColorTexture(1, 1, 1, 0); tcHl:SetAlpha(0)
+        tcRow:SetScript("OnEnter", function()
+            tcLbl:SetTextColor(1, 1, 1, 1)
+            tcHl:SetColorTexture(1, 1, 1, hlA); tcHl:SetAlpha(1)
+            if menu._openSub and menu._openSub:IsShown() then menu._openSub:Hide() end
+            EllesmereUI.ShowWidgetTooltip(tcRow, EllesmereUI.L("Show this icon only while the talents you pick are taken, or not taken."))
+        end)
+        tcRow:SetScript("OnLeave", function()
+            tcLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA); tcHl:SetAlpha(0)
+            EllesmereUI.HideWidgetTooltip()
+        end)
+        tcRow:SetScript("OnClick", function()
+            EllesmereUI.HideWidgetTooltip()
+            menu:Hide()
+            ns.ShowCDMTalentConditionsPopup(spellID, tcConds, function(newConds)
+                ensureSettings()
+                ss.talentConditions = newConds
+                if newConds then ns._cdmAnyTalentCond = true end
+                RefreshCDPreview()
+            end)
+        end)
+        mH = mH + ITEM_H
+    end
+
     if removeOnly then
         -- Per-icon settings: CD/utility bars get the full menu; buff-family bars get a
         -- buff-specific subset. custom_buff (Auras) bars excluded here (separate system).
@@ -313,9 +353,18 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                     spellID = ns.HostedBuffMarkerToSpell(spellID)
                 end
             end
-            if spellID and spellID ~= 0 and not ns.IsEmptySlotMarker(spellID) then
-                -- Empty Slot: no spell/item behind it, so skip the whole per-icon settings
-                -- tree -- the "Remove Spell" row built above is the entire menu for it.
+            if ns.IsEmptySlotMarker(spellID) then
+                -- Empty slots only expose identity-level conditions, never icon styling.
+                if not EllesmereUI.IS_FOREVER and not isBuffBar and not (bd and bd.isGhostBar) then
+                    local store = ns.GetSpellSettingsStore(barKey, true)
+                    if store then
+                        local ss = store[spellID] or {}
+                        AddTalentConditionsRow(spellID, ss, function()
+                            store[spellID] = ss
+                        end)
+                    end
+                end
+            elseif spellID and spellID ~= 0 then
                 -- Hosted-buff SLOT? The slot decides, not the flag alone: the same
                 -- spellID can also be this bar's cooldown entry, which must keep the CD
                 -- store + cd/util menu. Legacy fallback: flag set with no marker entry yet means the plain entry is the buff (pre-marker data).
@@ -1350,18 +1399,18 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                           return base
                       end },
                     -- Shift variants: same hide as the plain modes below, but the bar re-lays out so the remaining icons close the gap.
-                    { val = "hiddenFormShift", label = "Show Only Selected Forms/Stances (Shift Icons)",
-                      tooltip = "Automatically show in the forms or stances permitted by the spell. Keep normal cooldown styling while visible; combat and low resources do not hide it." },
                     { val = "hiddenOnCDShift",  label = "Hidden on CD (Shift Icons)" },
                     { val = "hiddenReadyShift", label = "Hidden CD Ready (Shift Icons)" },
                     { val = "hiddenUnusableShift", label = "Hidden Until Usable (Shift Icons)",
                       tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
-                    { val = "hiddenForm", label = "Show Only Selected Forms/Stances",
-                      tooltip = "Automatically show in the forms or stances permitted by the spell. Keep normal cooldown styling while visible; combat and low resources do not hide it." },
+                    { val = "hiddenFormShift", label = "Hidden Outside Form/Stance (Shift Icons)",
+                      tooltip = "Only shown in the form or stance the spell needs, even while it is on cooldown." },
                     { val = "hiddenOnCD",      label = "Hidden (On CD)" },
                     { val = "hiddenReady",     label = "Hidden (CD Ready)" },
                     { val = "hiddenUnusable",  label = "Hidden (Until Usable)",
                       tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
+                    { val = "hiddenForm",      label = "Hidden (Outside Form/Stance)",
+                      tooltip = "Only shown in the form or stance the spell needs, even while it is on cooldown." },
                     -- One CD Ready glow per variant; the style is its own row below
                     -- (cdStateGlowStyle). The stored button* values still render as
                     -- Action Button Glow and read back as the matching entry here.
@@ -2756,18 +2805,18 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                           end },
                         -- Shift variants: same hide as the plain modes below, but
                         -- the bar re-lays out so remaining icons close the gap.
-                        { val = "hiddenFormShift", label = "Show Only Selected Forms/Stances (Shift Icons)",
-                          tooltip = "Automatically show in the forms or stances permitted by the spell. Keep normal cooldown styling while visible; combat and low resources do not hide it." },
                         { val = "hiddenOnCDShift",  label = "Hidden on CD (Shift Icons)" },
                         { val = "hiddenReadyShift", label = "Hidden CD Ready (Shift Icons)" },
                         { val = "hiddenUnusableShift", label = "Hidden Until Usable (Shift Icons)",
                           tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
-                        { val = "hiddenForm", label = "Show Only Selected Forms/Stances",
-                          tooltip = "Automatically show in the forms or stances permitted by the spell. Keep normal cooldown styling while visible; combat and low resources do not hide it." },
+                        { val = "hiddenFormShift", label = "Hidden Outside Form/Stance (Shift Icons)",
+                          tooltip = "Only shown in the form or stance the spell needs, even while it is on cooldown." },
                         { val = "hiddenOnCD",      label = "Hidden (On CD)" },
                         { val = "hiddenReady",     label = "Hidden (CD Ready)" },
                         { val = "hiddenUnusable",  label = "Hidden (Until Usable)",
                           tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
+                        { val = "hiddenForm",      label = "Hidden (Outside Form/Stance)",
+                          tooltip = "Only shown in the form or stance the spell needs, even while it is on cooldown." },
                         { val = "pixelGlowReady",  label = "Glow (CD Ready)" },
                         { val = "glowOnCD",        label = "Glow (On CD)" },
                     }
@@ -3820,44 +3869,7 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                    and type(spellID) == "number" and spellID > 0
                    and not ((ns._myRacialsSet and ns._myRacialsSet[spellID])
                             or (sd.customSpellIDs and sd.customSpellIDs[spellID])) then
-                    local tcConds = rawget(ss, "talentConditions")
-                    local tcCount = type(tcConds) == "table" and #tcConds or 0
-                    local tcRow = CreateFrame("Button", nil, inner)
-                    tcRow:SetHeight(ITEM_H)
-                    tcRow:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH)
-                    tcRow:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH)
-                    tcRow:SetFrameLevel(menu:GetFrameLevel() + 2)
-                    local tcLbl = tcRow:CreateFontString(nil, "OVERLAY")
-                    tcLbl:SetFont(FONT_PATH, 11, GetCDMOptOutline())
-                    tcLbl:SetPoint("LEFT", 10, 0); tcLbl:SetPoint("RIGHT", -10, 0)
-                    tcLbl:SetJustifyH("LEFT"); tcLbl:SetWordWrap(false); tcLbl:SetMaxLines(1)
-                    tcLbl:SetText(EllesmereUI.Lf("Talent Conditions: %1$s",
-                        tcCount > 0 and tostring(tcCount) or EllesmereUI.L("None")))
-                    tcLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
-                    local tcHl = tcRow:CreateTexture(nil, "ARTWORK")
-                    tcHl:SetAllPoints(); tcHl:SetColorTexture(1, 1, 1, 0); tcHl:SetAlpha(0)
-                    tcRow:SetScript("OnEnter", function()
-                        tcLbl:SetTextColor(1, 1, 1, 1)
-                        tcHl:SetColorTexture(1, 1, 1, hlA); tcHl:SetAlpha(1)
-                        if menu._openSub and menu._openSub:IsShown() then menu._openSub:Hide() end
-                        EllesmereUI.ShowWidgetTooltip(tcRow, EllesmereUI.L("Show this icon only while the talents you pick are taken, or not taken."))
-                    end)
-                    tcRow:SetScript("OnLeave", function()
-                        tcLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA); tcHl:SetAlpha(0)
-                        EllesmereUI.HideWidgetTooltip()
-                    end)
-                    tcRow:SetScript("OnClick", function()
-                        EllesmereUI.HideWidgetTooltip()
-                        menu:Hide()
-                        ns.ShowCDMTalentConditionsPopup(spellID, tcConds, function(newConds)
-                            EnsureSS()
-                            ss.talentConditions = newConds
-                            -- Live-arm the session gate (monotonic; the login rescan covers already-saved settings).
-                            if newConds then ns._cdmAnyTalentCond = true end
-                            RefreshCDPreview()
-                        end)
-                    end)
-                    mH = mH + ITEM_H
+                    AddTalentConditionsRow(spellID, ss, EnsureSS)
                 end
 
                 -- Custom Icon (per-spell ONLY -- deliberately outside the Apply-to-Bar

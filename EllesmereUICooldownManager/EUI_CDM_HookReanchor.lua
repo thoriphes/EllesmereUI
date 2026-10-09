@@ -1286,10 +1286,12 @@ local function CollectAndReanchor()
                             -- Empty Slot: pure grid spacer, no live state to
                             -- push. Must be tested before the item-preset
                             -- branch: it is also <= -100.
-                            local f = GetOrCreateEmptySlotFrame(sid)
-                            frames[#frames + 1] = f
-                            local fc = FC(f)
-                            fc.barKey = barKey; fc.spellID = sid
+                            if ns.EmptySlotTalentConditionsHold(barKey, sid) then
+                                local f = GetOrCreateEmptySlotFrame(sid)
+                                frames[#frames + 1] = f
+                                local fc = FC(f)
+                                fc.barKey = barKey; fc.spellID = sid
+                            end
                         elseif sid and sid <= -100 then
                             -- Item preset (potions, healthstone, etc.) or a
                             -- user-added custom item ID. Frame creation (incl.
@@ -1775,9 +1777,7 @@ local function CollectAndReanchor()
                                 if fcS then
                                     if fcS._cdStateShiftHidden then blocked = true; break end
                                     local ssS = ResolveSpellSettings(srcList[i], fcS.spellID, sdS, bd.key)
-                                    local effS = ns.GetSpellCdStateEffect(srcList[i], ssS)
-                                    if effS == "hiddenOnCDShift" or effS == "hiddenReadyShift"
-                                       or effS == "hiddenUnusableShift" or effS == "hiddenFormShift" then
+                                    if ns.CdStateShifts(ns.GetSpellCdStateEffect(srcList[i], ssS)) then
                                         blocked = true; break
                                     end
                                 end
@@ -2307,7 +2307,6 @@ local function CollectAndReanchor()
     -- rebuilds it against the fresh claim set.
     if ns._cdmClaimGen then ns._cdmClaimGen = ns._cdmClaimGen + 1 end
     if ns.RefreshStaleCDMKeybinds then ns.RefreshStaleCDMKeybinds() end
-    if ns.CdmReconcileFormWatch then ns.CdmReconcileFormWatch(usedFrames, unresolvedFrames, allActiveFrames) end
 end
 ns.CollectAndReanchor = CollectAndReanchor
 

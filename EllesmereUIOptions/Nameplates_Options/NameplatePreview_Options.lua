@@ -1007,6 +1007,7 @@ local function BuildNameplatePreview(parent, parentW)
         local pctStr = curHpPct .. "%"
         local pctNoSignStr = tostring(curHpPct)
         local hpNumStr = tostring(curHpVal):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+        local hpMaxStr = tostring(PV_CONST.FAKE_MAX_HP):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
         -- Synthetic fractional percent so "Show % Decimal" is visible here (the fake preview HP is a whole number).
         local pctStrDec = string.format("%.1f%%", curHpPct + 0.4)
         local pctNoSignStrDec = string.format("%.1f", curHpPct + 0.4)
@@ -1099,6 +1100,8 @@ local function BuildNameplatePreview(parent, parentW)
         -- frame (the live plate's Basic border is that same Solid border).
         do
             local radius = (not EllesmereUI.BlizzStyle.Get("nameplates") and DBVal("cornerRadius")) or 0
+            -- Wrap Around Castbar keeps the plates square, as on a live plate.
+            if DBVal("wrapBorderCastbar") == true then radius = 0 end
             local style = customOn and (DBVal("customBorderTexture") or defaults.customBorderTexture) or "solid"
             -- A custom style that cannot round keeps the cast bar square too.
             if not EllesmereUI.RoundedStyleOK(style) then radius = 0 end
@@ -1515,7 +1518,7 @@ local function BuildNameplatePreview(parent, parentW)
             elseif ns.IsComboHealthText(element) then
                 SetPVFont(hpText, fontPath, fontSize, npOutline)
                 hpText:SetParent(healthTextFrame)
-                ns.SetCombinedHealthText(hpText, element, dec and pctStrDec or pctStr, hpNumStr)
+                ns.SetCombinedHealthText(hpText, element, dec and pctStrDec or pctStr, hpNumStr, hpMaxStr)
                 hpText:SetPoint(point, health, anchor, xOff, yOff)
                 hpText:SetTextColor(cr, cg, cb, 1)
                 hpText:Show()
@@ -1568,7 +1571,7 @@ local function BuildNameplatePreview(parent, parentW)
                 hpNumber:Show()
             elseif ns.IsComboHealthText(element) then
                 SetPVFont(hpText, fontPath, fontSize, npOutline)
-                ns.SetCombinedHealthText(hpText, element, dec and pctStrDec or pctStr, hpNumStr)
+                ns.SetCombinedHealthText(hpText, element, dec and pctStrDec or pctStr, hpNumStr, hpMaxStr)
                 hpText:SetParent(topTextFrame)
                 hpText:SetPoint("BOTTOM", health, "TOP", txOff, 4 + nameYOff + cpPush + tyOff)
                 hpText:SetTextColor(cr, cg, cb, 1)

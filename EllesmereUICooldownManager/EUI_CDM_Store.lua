@@ -256,8 +256,8 @@ end
 --  HOSTED_BUFF_MARKER_BASE, so it can never collide with either.
 --
 --  seq is derived from the data itself (highest existing seq across every
---  spec's bars, +1) rather than a saved counter: the markers live in the
---  per-spec spell store (SpellStore), but a profile-level counter lives in a
+--  spec's bars and saved slot settings, +1) rather than a saved counter: the
+--  markers live in the per-spec spell store (SpellStore), but a counter lives in a
 --  DIFFERENT table -- an import/sync can bring in markers the counter never
 --  saw, so a freshly minted one could collide with an already-saved marker
 --  (the Add then either no-ops as a "duplicate" or steals the slot from
@@ -271,6 +271,16 @@ function ns.NewEmptySlotMarker()
     local sp = SpellStore and SpellStore.GetSpecProfiles and SpellStore.GetSpecProfiles()
     if sp then
         for _, prof in pairs(sp) do
+            -- Removed slots can leave saved conditions behind; never reuse their id.
+            local settings = prof and prof.spellSettingsCD
+            if settings then
+                for id in pairs(settings) do
+                    if ns.IsEmptySlotMarker(id) then
+                        local seq = -id - ns.EMPTY_SLOT_MARKER_BASE
+                        if seq > maxSeq then maxSeq = seq end
+                    end
+                end
+            end
             local barSpells = prof and prof.barSpells
             if barSpells then
                 for _, bs in pairs(barSpells) do
@@ -681,6 +691,28 @@ end
 function ns.GetSpellCdStateEffect(frame, settings)
     if frame and ns.CdmIsInjectedFrame and ns.CdmIsInjectedFrame(frame) then return nil end
     return settings and settings.cdStateEffect
+end
+
+-- The hide effects by saved value: the base mode the evaluators run, plus
+-- shift (the bar closes the gap: Shift Icons), usable (an unusable spell also
+-- hides: Hidden Until Usable) and form (only the spell's form or stance
+-- decides, whatever its cooldown: Hidden Outside Form/Stance). A new hide
+-- effect is one entry here.
+ns.CD_STATE_HIDE = {
+    hiddenOnCD          = { base = "hiddenOnCD" },
+    hiddenReady         = { base = "hiddenReady" },
+    hiddenUnusable      = { base = "hiddenOnCD", usable = true },
+    hiddenForm          = { base = "hiddenOnCD", form = true },
+    hiddenOnCDShift     = { base = "hiddenOnCD", shift = true },
+    hiddenReadyShift    = { base = "hiddenReady", shift = true },
+    hiddenUnusableShift = { base = "hiddenOnCD", shift = true, usable = true },
+    hiddenFormShift     = { base = "hiddenOnCD", shift = true, form = true },
+}
+
+-- True for a Shift Icons effect
+function ns.CdStateShifts(eff)
+    local m = eff and ns.CD_STATE_HIDE[eff]
+    return m and m.shift or false
 end
 
 -- CD Ready glow style (CDM saved numbering), read from the same settings table as

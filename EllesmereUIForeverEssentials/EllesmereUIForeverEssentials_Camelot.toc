@@ -5,7 +5,7 @@
 ## Group: EllesmereUI
 ## Notes: Essential tools for WoW Forever.
 ## Author: Ellesmere
-## Version: 9.3.9
+## Version: 9.4
 ## Dependencies: EllesmereUI
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
@@ -27,3 +27,7 @@ EllesmereUIForeverEssentials_ThreatFeed.lua
 
 # Loot (loot feed)
 EllesmereUIForeverEssentials_LootFeed.lua
+
+# Macros (macro manager)
+EllesmereUIForeverEssentials_MacroBuilder.lua
+EllesmereUIForeverEssentials_MacroManager.lua

@@ -750,17 +750,11 @@ initFrame:SetScript("OnEvent", function(self)
                 })
             end
 
-            -- Desaturate Junk Items | Quality Item Border
-            _, h = W:DualRow(parent, y,
-                { type="toggle", text="Desaturate Junk Items",
-                  tooltip="Display junk items in a greyed-out style.",
-                  getValue=function() return db.profile.bagDesaturateJunkItems == true end,
-                  setValue=function(v)
-                      db.profile.bagDesaturateJunkItems = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                      local bank = _G.EUI_BankFrame
-                      if bank and bank.RefreshBank then bank:RefreshBank() end
-                  end },
+            -- Junk Item Visuals | Quality Item Border
+            local junkRow
+            junkRow, h = W:DualRow(parent, y,
+                { type="label", text="Junk Item Visuals",
+                  tooltip="Choose how junk items look in the bags and bank." },
                 { type="toggle", text="Quality Item Border",
                   tooltip="Draw a border in the item's quality color around item icons in the bags and bank. Round list icons have no border.",
                   getValue=function() return db.profile.bagQualityBorder ~= false end,
@@ -773,6 +767,34 @@ initFrame:SetScript("OnEvent", function(self)
                       if bank and bank.RefreshBank then bank:RefreshBank() end
                   end }
             ); y = y - h
+
+            -- Junk Item Visuals dropdown (left side). The coin badge is drawn
+            -- only by the bag window's Grid and Compact displays, so the List
+            -- display lists Desaturate alone.
+            if not EllesmereUI._prebuilding then
+                local JUNK_VISUALS = {
+                    { key = "bagDesaturateJunkItems", label = "Desaturate",
+                      tooltip = "Display junk items in a greyed-out style." },
+                }
+                if not bagList then
+                    JUNK_VISUALS[2] = { key = "bagShowJunkCoin", label = "Show Coin Icon",
+                      tooltip = "Show a coin on the corner of each junk item's icon." }
+                end
+                local junkRgn = junkRow._leftRegion
+                local junkDD, junkDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    junkRgn, 210, junkRgn:GetFrameLevel() + 2, JUNK_VISUALS,
+                    function(key) return db.profile[key] == true end,
+                    function(key, v)
+                        db.profile[key] = v and true or false
+                        if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                        local bank = _G.EUI_BankFrame
+                        if bank and bank.RefreshBank then bank:RefreshBank() end
+                    end, nil, 10)
+                PP.Point(junkDD, "RIGHT", junkRgn, "RIGHT", -20, 0)
+                junkRgn._control = junkDD
+                junkRgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(junkDDRefresh)
+            end
 
             -- Bag Top Bar Icons (+ inline cog: Sort to Bottom) | Gold Tracking and History
             local iconsRow

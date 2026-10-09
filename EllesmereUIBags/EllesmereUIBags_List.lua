@@ -733,8 +733,9 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
             -- Round: fixed crop past the icon's baked-in border so the circle edge stays clean
             local z = round and ROUND_ZOOM or (BP().bagItemIconZoom or 0.08)
             icon:SetTexCoord(z, 1 - z, z, 1 - z)
-            icon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems and q == 0)
-                or EUI_CategoryManager:IsJunk(info.itemID, q))
+            -- Junk Item Visuals' Desaturate greys grey items and Junk Marker junk
+            icon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems == true
+                and (q == 0 or EUI_CategoryManager:IsJunk(info.itemID, q))) or false)
             if EUI._BagsItemUnusable(data.bag, data.slot, data.itemLink, info.itemID) then
                 icon:SetVertexColor(1, 0.1, 0.1)
             else
@@ -803,8 +804,8 @@ ns.RenderListRow = RenderRow
 ns.ListRows = _rows
 function ns.ListPaintJunk(btn, info)
     local q = info.quality or 1
-    btn._lvIcon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems and q == 0)
-        or EUI_CategoryManager:IsJunk(info.itemID, q) or false)
+    btn._lvIcon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems == true
+        and (q == 0 or EUI_CategoryManager:IsJunk(info.itemID, q))) or false)
 end
 
 -- Empty bag slot row (OneBag / MultiBag); clicking or dropping an item

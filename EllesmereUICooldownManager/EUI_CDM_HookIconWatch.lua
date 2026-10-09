@@ -672,106 +672,144 @@ function ns.CdmSpellNotUsable(liveSid)
     return not (usable or noPower)
 end
 
--- Form requirements are independent of cooldown, combat and resource usability.
+-- Hidden Outside Form/Stance: the spell's form requirement line, which Blizzard
+-- draws red while the current form or stance does not meet it. That answer
+-- changes only with the form, so it is kept per spell and form ID: once a pair
+-- is read, a form change costs a table lookup. A spell whose tooltip names no
+-- form (a caster spell such as Moonfire) is outside its form while shapeshifted
+-- when the game says it cannot be cast now for a reason other than power,
+-- asked live, provided it could be cast when last seen in caster form: a
+-- warrior (never in caster form) and a spell waiting on a proc never hide this
+-- way. A pair whose tooltip cannot be read (not loaded yet, or secret in
+-- combat) shows its icon and is read again only at the next form change or
+-- combat end (ns.CdmRetryUnreadForms), never per evaluation; a talent change
+-- clears the table (ScheduleTalentRebuild).
 do
-    local cache, names, events
-    local function Secret(v) return issecretvalue and issecretvalue(v) end
-    function ns.CdmInvalidateFormState()
-        if cache then wipe(cache) end
-        names = nil
+    local outside = {}   -- [spellID][formID] -> true (red form line), false (met), NO_LINE or UNREAD
+    local casterOK = {}  -- [spellID] -> castable (power aside) when last seen in caster form
+    local UNREAD, NO_LINE = "unread", "noline"
+    local unreadN = 0
+    -- Read nil-safe: a client without these enums falls back to the text path
+    local LINE_TYPES = Enum.TooltipDataLineType or {}
+    local REQ_TYPES = Enum.TooltipDataUsageRequirementType or {}
+    local LINE_REQ, LINE_NONE, REQ_FORM = LINE_TYPES.UsageRequirement, LINE_TYPES.None, REQ_TYPES.ShapeshiftForm
+    local TEMPLATES = { SPELL_REQUIRED_FORM, SPELL_REQUIRED_FORM_NOSPACE }
+    local formNames, formCount  -- the player's form names, read when the count changes
+
+    -- Tooltip data can come back as secret tables, and indexing one throws
+    local function Readable(t)
+        return type(t) == "table" and (not canaccesstable or canaccesstable(t))
     end
-    function ns.CdmInvalidateFormSpell(sid)
-        if Secret(sid) or type(sid) ~= "number" or not cache or cache[sid] == nil then return false end
-        -- Both native and preset listeners must see the invalidation before repaint.
-        cache[sid] = "invalid"
-        return true
-    end
-    function ns.CdmSetFormEvents(frame, enabled)
-        if not events then
-            if not enabled then return end
-            events = { UPDATE_SHAPESHIFT_FORM = true, UPDATE_SHAPESHIFT_FORMS = true,
-                SPELLS_CHANGED = true, PLAYER_ENTERING_WORLD = true, PLAYER_TALENT_UPDATE = true,
-                TRAIT_CONFIG_UPDATED = true, PLAYER_REGEN_ENABLED = true,
-                SPELL_DATA_LOAD_RESULT = true, SPELL_TEXT_UPDATE = true }
-        end
-        if enabled then ns.CdmInvalidateFormState() end
-        for event in pairs(events) do
-            if enabled then frame:RegisterEvent(event) else frame:UnregisterEvent(event) end
-        end
-    end
-    function ns.CdmIsFormEvent(event) return events and events[event] end
-    local function FormNames()
-        if names then return names end
-        local count = GetNumShapeshiftForms()
-        if Secret(count) or type(count) ~= "number" or count == 0 then return end
-        local found = {}
-        for i = 1, count do
-            local _, _, _, sid = GetShapeshiftFormInfo(i)
-            if Secret(sid) or type(sid) ~= "number" then return end
-            local info = C_Spell.GetSpellInfo(sid)
-            if Secret(info) or type(info) ~= "table" then return end
-            local name = info.name
-            if Secret(name) or type(name) ~= "string" or name == "" then return end
-            found[#found + 1] = name
-        end
-        names = found
-        return names
-    end
-    local function MatchesFormFormat(text, template)
-        local pos = type(template) == "string" and template:find("%s", 1, true)
-        if not pos then return false end
-        local prefix, suffix = template:sub(1, pos - 1), template:sub(pos + 2)
-        return text:sub(1, #prefix) == prefix and (#suffix == 0 or text:sub(-#suffix) == suffix)
-    end
-    local function IsFormLine(line)
-        local typed = line.type == Enum.TooltipDataLineType.UsageRequirement
-        local requirement = line.usageRequirementType
-        if typed and type(requirement) == "number" then
-            return requirement == Enum.TooltipDataUsageRequirementType.ShapeshiftForm
-        end
-        if not typed and line.type ~= nil and line.type ~= Enum.TooltipDataLineType.None then return false end
-        local text = line.leftText
-        if Secret(text) or type(text) ~= "string" or text == "" then return nil end
-        -- Untyped form lines use the localized spell-form format.
+
+    -- Text test for a line not typed as a shapeshift requirement: it names one
+    -- of the player's forms (an untyped line must also read as the localized
+    -- "Requires %s").
+    local function NamesForm(text, typed)
         if not typed then
-            if not MatchesFormFormat(text, SPELL_REQUIRED_FORM)
-               and not MatchesFormFormat(text, SPELL_REQUIRED_FORM_NOSPACE) then return false end
+            local fits = false
+            for i = 1, 2 do
+                local tpl = TEMPLATES[i]
+                local at = type(tpl) == "string" and tpl:find("%s", 1, true)
+                if at then
+                    local pre, suf = tpl:sub(1, at - 1), tpl:sub(at + 2)
+                    if text:sub(1, #pre) == pre and text:sub(#text - #suf + 1) == suf then fits = true end
+                end
+            end
+            if not fits then return false end
         end
-        local formNames = FormNames()
-        if not formNames then return nil end
-        for _, name in ipairs(formNames) do
-            if text:find(name, 1, true) then return true end
-        end
-        return false
-    end
-    function ns.CdmSpellOutsideForm(sid)
-        if Secret(sid) or type(sid) ~= "number" or sid <= 0 then return false end
-        if not cache then cache = {} end
-        local cached = cache[sid]
-        if cached ~= nil and cached ~= "invalid" then return cached == true end
-        cache[sid] = "uncertain"
-        local ok, data = pcall(C_TooltipInfo.GetSpellByID, sid)
-        if not ok or Secret(data) or type(data) ~= "table" then return false end
-        local lines = data.lines
-        if Secret(lines) or type(lines) ~= "table" or #lines == 0 then return false end
-        local uncertain = false
-        for _, line in ipairs(lines) do
-            if Secret(line) or type(line) ~= "table" or Secret(line.type)
-               or Secret(line.usageRequirementType) then return false end
-            local isForm = IsFormLine(line)
-            if isForm == nil then uncertain = true
-            elseif isForm then
-                local color = line.leftColor
-                if Secret(color) or type(color) ~= "table" then return false end
-                local r, g, b = color.r, color.g, color.b
-                if Secret(r) or Secret(g) or Secret(b) then return false end
-                if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then return false end
-                -- Only the form requirement's unmet (red) color hides the icon.
-                if r >= 0.9 and g <= 0.2 and b <= 0.2 then cache[sid] = true; return true end
+        local n = GetNumShapeshiftForms()
+        if n ~= formCount then
+            formNames, formCount = {}, n
+            for i = 1, n do
+                local _, _, _, formSid = GetShapeshiftFormInfo(i)
+                local name = formSid and C_Spell.GetSpellName(formSid)
+                if name then formNames[#formNames + 1] = name end
             end
         end
-        if not uncertain then cache[sid] = false end
+        for i = 1, #formNames do
+            if text:find(formNames[i], 1, true) then return true end
+        end
         return false
+    end
+
+    -- true / false from the form line, NO_LINE when no line names a form, or
+    -- nil when the answer cannot be read. A form line is typed as a shapeshift
+    -- requirement or, whatever its type, names one of the player's forms (an
+    -- untyped one as "Requires %s"). A line that cannot be read is skipped, so
+    -- the form line further down still decides; only when no line decides and
+    -- one was unreadable is the answer unknown.
+    local function Read(sid)
+        local data = C_TooltipInfo.GetSpellByID(sid)
+        if not Readable(data) then return nil end
+        local lines = data.lines
+        if not Readable(lines) or #lines == 0 then return nil end
+        local unread = false
+        for i = 1, #lines do
+            local line = lines[i]
+            local ok, t, req = Readable(line)
+            if ok then t, req = line.type, line.requirementType end
+            if not ok or issecretvalue(t) or issecretvalue(req) then
+                unread = true
+            else
+                local isForm = req ~= nil and req == REQ_FORM
+                if not isForm and (t == LINE_REQ or t == LINE_NONE or t == nil) then
+                    local text = line.leftText
+                    if issecretvalue(text) then
+                        unread = true
+                    elseif type(text) == "string" then
+                        isForm = NamesForm(text, LINE_REQ ~= nil and t == LINE_REQ)
+                    end
+                end
+                if isForm then
+                    local c = line.leftColor
+                    if not Readable(c) then return nil end
+                    local r, g, b = c.r, c.g, c.b
+                    if r == nil or g == nil or b == nil
+                        or issecretvalue(r) or issecretvalue(g) or issecretvalue(b) then return nil end
+                    return r >= 0.9 and g <= 0.2 and b <= 0.2
+                end
+            end
+        end
+        if unread then return nil end
+        return NO_LINE
+    end
+
+    function ns.CdmSpellOutsideForm(sid)
+        local form = GetShapeshiftFormID() or 0
+        local row = outside[sid]
+        local v = row and row[form]
+        if v == nil then
+            if not row then row = {}; outside[sid] = row end
+            v = Read(sid)
+            if v == nil then
+                v = UNREAD
+                unreadN = unreadN + 1
+            end
+            row[form] = v
+        end
+        if v ~= NO_LINE then return v == true end
+        if form == 0 then
+            casterOK[sid] = not ns.CdmSpellNotUsable(sid)
+            return false
+        end
+        return casterOK[sid] == true and ns.CdmSpellNotUsable(sid)
+    end
+
+    -- A form change or combat end: answers that could not be read are read again
+    function ns.CdmRetryUnreadForms()
+        if unreadN == 0 then return end
+        unreadN = 0
+        for _, row in pairs(outside) do
+            for form, v in pairs(row) do
+                if v == UNREAD then row[form] = nil end
+            end
+        end
+    end
+
+    function ns.CdmWipeFormCache()
+        wipe(outside)
+        wipe(casterOK)
+        unreadN, formCount = 0, nil
     end
 end
 
@@ -782,7 +820,7 @@ end
 -- evaluation (charge spells report isActive with charges left, GCD tail races).
 -- The OnUpdate script is installed ONCE per frame object: the hook fires per
 -- repaint, so per-arm work stays plain field writes, never closure creation.
-local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent, usable)
+local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent, usable, form)
     local pending = fd._cdStatePending
     if not pending then
         pending = CreateFrame("Frame")
@@ -799,9 +837,11 @@ local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent
                 liveSid = C_SpellBook.FindSpellOverrideByID(sid3) or sid3
             end
             local onCD
-            -- Form-only visibility ignores cooldowns and general usability.
-            -- Hidden Until Usable retains its separate usability/CD behavior.
-            if self.cse == "hiddenForm" then
+            -- Hidden Outside Form/Stance arrives as Hidden (On CD) with the form
+            -- flag: only the form decides, so the cooldown is never read. Hidden
+            -- Until Usable arrives with the usable flag: an unusable spell hides
+            -- whatever its cooldown, so that read is skipped.
+            if self.form then
                 onCD = ns.CdmSpellOutsideForm(liveSid)
             elseif self.usable and ns.CdmSpellNotUsable(liveSid) then
                 onCD = true
@@ -826,7 +866,7 @@ local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent
                 end
             else
                 local hide
-                if myCse == "hiddenOnCD" or myCse == "hiddenForm" then
+                if myCse == "hiddenOnCD" then
                     hide = onCD
                 else
                     -- Hidden (CD Ready): on a charge spell "ready" is max
@@ -850,6 +890,7 @@ local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent
     pending.shift = cseShift
     pending.hideUntilSpent = hideUntilSpent
     pending.usable = usable
+    pending.form = form
     pending:Show()
 end
 
@@ -917,103 +958,95 @@ function ns.WatchCdStateChargeIfEnabled(frame)
 end
 
 -------------------------------------------------------------------------------
---  Hidden Until Usable: proc edges
---  The mode runs as Hidden (On CD) with "not usable" counting as unavailable,
---  so its cooldown edges ride the SetDesaturated hook like every hidden mode.
---  A proc (Overpower after a dodge, Victory Rush after a kill) changes only
---  usability, which Blizzard's own icons follow through SPELL_UPDATE_USABLE.
---  That event is registered only while an icon runs the mode; a burst folds
---  into one pass on the next frame, which re-resolves each watched icon (an
---  icon whose mode, spell or owner changed leaves the set) and re-arms the
---  shared evaluator. The set drains itself, then the event unregisters.
+--  Hidden Until Usable and Hidden Outside Form/Stance: their edges
+--  Both run as Hidden (On CD) with a flag (ns.CD_STATE_HIDE), so their
+--  cooldown edges ride the SetDesaturated hook like every hidden mode. A proc
+--  (Overpower after a dodge, Victory Rush after a kill) changes only
+--  usability, which Blizzard's own icons follow through SPELL_UPDATE_USABLE;
+--  a form or stance change fires UPDATE_SHAPESHIFT_FORM (with combat end,
+--  which retries form answers that were secret). Each event is registered
+--  only while an icon runs its mode; a burst folds into one pass on the next
+--  frame, which re-resolves each watched icon (an icon whose mode, spell or
+--  owner changed leaves the set) and re-arms the shared evaluator. The set
+--  drains itself, and an event unregisters once no icon needs it.
 -------------------------------------------------------------------------------
 do
     local watch = setmetatable({}, { __mode = "k" })  -- icon frame -> true
-    local eventFrame, flushFrame, formWatch, usableWatch
+    local eventFrame, flushFrame
+    local usableOn, formOn = false, false
+    local flushedForm  -- the form ID the last pass evaluated
 
-    local function Flush(self, _, reconcileOnly, claimedFrames, unresolvedFrames, activeFrames)
-        if not reconcileOnly then self:Hide() end
-        local hasForms, hasUsable = false, false
+    local function SyncEvents(usable, form)
+        if usable ~= usableOn then
+            usableOn = usable
+            if usable then eventFrame:RegisterEvent("SPELL_UPDATE_USABLE")
+            else eventFrame:UnregisterEvent("SPELL_UPDATE_USABLE") end
+        end
+        if form ~= formOn then
+            formOn = form
+            -- Combat end too: it retries form answers that were secret in combat.
+            -- And the player's auras: a powershift (re-entering the form you are
+            -- in) fires the form event as the form drops but none as it comes
+            -- back, the same gap that leaves Blizzard's action bar on its caster
+            -- page; the form's own aura returning still fires UNIT_AURA.
+            if form then
+                eventFrame:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
+                eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+                eventFrame:RegisterUnitEvent("UNIT_AURA", "player")
+            else
+                eventFrame:UnregisterEvent("UPDATE_SHAPESHIFT_FORM")
+                eventFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+                eventFrame:UnregisterEvent("UNIT_AURA")
+            end
+        end
+    end
+
+    local function Flush(self)
+        self:Hide()
+        flushedForm = GetShapeshiftFormID() or 0
+        local usable, form = false, false
         for frame in pairs(watch) do
             local fd = hookFrameData[frame]
             local fc = _ecmeFC[frame]
             local sid = fc and fc.spellID
             local bk = fc and fc.barKey
-            local cse
+            local m
             -- Same ownership guards as the SetDesaturated hook.
             if fd and sid and bk and bk:sub(1, 7) ~= "__ghost" and bk ~= ns.FOCUSKICK_BAR_KEY
                and not (ns.PresetHasCdState and ns.PresetHasCdState(frame)) then
-                cse = ns.GetSpellCdStateEffect(frame, ResolveSpellSettings(frame, sid, false))
+                local cse = ns.GetSpellCdStateEffect(frame, ResolveSpellSettings(frame, sid, false))
+                m = cse and ns.CD_STATE_HIDE[cse]
             end
-            if (cse == "hiddenForm" or cse == "hiddenFormShift") and claimedFrames
-               and not claimedFrames[frame] and not (unresolvedFrames and unresolvedFrames[frame]) then
-                -- Inactive pool frames retain their prior claim for unresolved reacquisition.
-                if activeFrames and activeFrames[frame] then fc.barKey = nil end
-                cse = nil
-            end
-            if cse ~= "hiddenForm" and cse ~= "hiddenFormShift" then
-                local pending = fd and fd._cdStatePending
-                if pending and pending.cse == "hiddenForm" then pending:Hide() end
-            end
-            if cse == "hiddenUnusable" or cse == "hiddenUnusableShift" then
-                hasUsable = true
-                if not reconcileOnly then
-                    ArmCdStateEval(frame, fd, "hiddenOnCD", cse == "hiddenUnusableShift", nil, nil, true)
-                end
-            elseif cse == "hiddenForm" or cse == "hiddenFormShift" then
-                hasForms = true
-                if not reconcileOnly then ArmCdStateEval(frame, fd, "hiddenForm", cse == "hiddenFormShift") end
+            if m and (m.usable or m.form) then
+                usable = usable or m.usable == true
+                form = form or m.form == true
+                ArmCdStateEval(frame, fd, m.base, m.shift, nil, nil, m.usable, m.form)
             else
                 watch[frame] = nil
             end
         end
-        if formWatch and not hasForms then
-            ns.CdmSetFormEvents(eventFrame, false)
-            formWatch = false
-            ns.CdmReconcileFormWatch = nil
-        end
-        if hasUsable and not usableWatch then
-            eventFrame:RegisterEvent("SPELL_UPDATE_USABLE")
-            usableWatch = true
-        elseif usableWatch and not hasUsable then
-            eventFrame:UnregisterEvent("SPELL_UPDATE_USABLE")
-            usableWatch = false
-        end
-        if not next(watch) then self:Hide() end
+        SyncEvents(usable, form)
     end
 
     -- Called wherever the mode is resolved for an icon (SetDesaturated hook,
-    -- RefreshCDMIconAppearance). One table read once the icon is watched.
-    function ns.WatchCdUsable(frame, forms)
-        if watch[frame] and ((forms and formWatch) or (not forms and usableWatch)) then return end
+    -- RefreshCDMIconAppearance); form = the icon runs Hidden Outside
+    -- Form/Stance. One table read once the icon is watched.
+    function ns.WatchCdUsable(frame, form)
+        if watch[frame] and ((form and formOn) or (not form and usableOn)) then return end
         watch[frame] = true
         if not eventFrame then
             flushFrame = ns.TakeShell()
             flushFrame:Hide()
             flushFrame:SetScript("OnUpdate", Flush)
             eventFrame = ns.TakeShell()
-            eventFrame:SetScript("OnEvent", function(_, event, sid)
-                if formWatch and ns.CdmIsFormEvent(event) then
-                    if event == "SPELL_DATA_LOAD_RESULT" or event == "SPELL_TEXT_UPDATE" then
-                        if not ns.CdmInvalidateFormSpell(sid) then return end
-                    else
-                        ns.CdmInvalidateFormState()
-                    end
-                end
+            eventFrame:SetScript("OnEvent", function(_, event)
+                -- UNIT_AURA counts only when the form changed since the last pass
+                if event == "UNIT_AURA" and (GetShapeshiftFormID() or 0) == flushedForm then return end
+                if event ~= "SPELL_UPDATE_USABLE" then ns.CdmRetryUnreadForms() end
                 flushFrame:Show()
             end)
         end
-        if not forms and not usableWatch then
-            eventFrame:RegisterEvent("SPELL_UPDATE_USABLE")
-            usableWatch = true
-        end
-        if forms and not formWatch then
-            ns.CdmSetFormEvents(eventFrame, true)
-            formWatch = true
-            ns.CdmReconcileFormWatch = function(claimedFrames, unresolvedFrames, activeFrames)
-                Flush(flushFrame, nil, true, claimedFrames, unresolvedFrames, activeFrames)
-            end
-        end
+        SyncEvents(usableOn or not form, formOn or form == true)
     end
 end
 
