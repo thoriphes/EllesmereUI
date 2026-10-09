@@ -1433,8 +1433,15 @@ initFrame:SetScript("OnEvent", function(self)
                   end }
             );  y = y - h
 
-            -- Add Custom Spell
+            -- Find Minerals / Herbs | Add Custom Spell
             _, h = W:DualRow(parent, y,
+                { type="toggle", text="Find Minerals / Herbs",
+                  tooltip="Reminds you when neither Find Minerals nor Find Herbs is active. Only one tracking runs at a time, so either one counts.\nClick casts the one you used last (Find Minerals first when you know both). Shown only while you know one of them, never in combat or in battlegrounds and arenas.",
+                  getValue=function() local f = FDB(); return f and f.gathering == true end,
+                  setValue=function(v)
+                      local f = FDB(); if not f then return end; f.gathering = v
+                      RefreshAll()
+                  end },
                 { type="input", text="Add Custom Spell", inputStyle="popup", placeholder="Spell ID", inputWidth=110,
                   tooltip="Type a spell ID and press Enter to be reminded whenever that buff is missing.\nOnly spells you know are shown; clicking the reminder casts it.\nUnknown IDs are ignored.",
                   getValue=function() return "" end,
@@ -1450,8 +1457,7 @@ initFrame:SetScript("OnEvent", function(self)
                       f.customIDs[#f.customIDs + 1] = id
                       RefreshAll()
                       C_Timer.After(0, function() EllesmereUI:RefreshPage(true) end)
-                  end },
-                EllesmereUI.BlankRowCfg()
+                  end }
             );  y = y - h
 
             y = BuildForeverCustomRows(parent, y)
