@@ -232,10 +232,11 @@ end
 -- the caster list.
 local BLESS_LISTS = {
     melee  = { "might", "wisdom", "kings" },              -- Ret, Enhancement, Feral
-    caster = { "wisdom", "kings", "might" },              -- casters, healers, Prot
+    caster = { "wisdom", "kings", "might" },              -- hybrid healers and casters, Prot
+    pure   = { "wisdom", "kings", "salvation", "might" }, -- Mage, Priest (pure casters: Salvation over Might)
     phys   = { "might", "kings", "salvation" },           -- Warrior, Rogue (no mana)
     hunter = { "kings", "wisdom", "might", "salvation" },
-    warlock = { "kings", "wisdom", "might" },
+    warlock = { "kings", "wisdom", "salvation", "might" },
 }
 local raidList = {}  -- scratch: a list with Salvation moved first
 local function BlessingList(unit, role)
@@ -246,6 +247,8 @@ local function BlessingList(unit, role)
         list = BLESS_LISTS.hunter
     elseif class == "WARLOCK" then
         list = BLESS_LISTS.warlock
+    elseif class == "MAGE" or class == "PRIEST" then
+        list = BLESS_LISTS.pure
     elseif class == "WARRIOR" or class == "ROGUE" then
         list = BLESS_LISTS.phys
     elseif (class == "PALADIN" or class == "SHAMAN" or class == "DRUID")
