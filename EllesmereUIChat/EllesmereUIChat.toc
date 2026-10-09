@@ -17,6 +17,9 @@ EllesmereUIChat.lua
 # chat frames stay as the secure formatting/data plane with visuals parked.
 EllesmereUIChat_Engine.lua
 
+# Timestamp Column (opt-in): stamps drawn beside the text in their own font.
+EllesmereUIChat_StampColumn.lua
+
 # Owned tab strip: our buttons over Blizzard's window storage (hidden dock
 # stays the routing backend; all management via the C config API).
 EllesmereUIChat_Tabs.lua
