@@ -11,7 +11,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  at most one blessing: the one their assigned role takes (Tank / Healer /
 --  DPS Blessing; None = no reminder), or, with no role assigned, any blessing
 --  counts (shown with the Kings icon). Solo, only Kings is reminded, on the
---  player, whatever the role. Thorns Only on Tank keeps Thorns to the
+--  player, whatever the role. A paladin keeps one blessing per target, so a
+--  member already carrying one of the player's blessings gets no blessing
+--  icon: casting another would replace it. Thorns Only on Tank keeps Thorns to the
 --  group's tanks, and to the player while solo or in a group without one.
 --  Settings (Indicators section, same shape as the raid marker):
 --  showMissingBuffs, missingBuffsPosition, missingBuffsSize,
@@ -240,8 +242,11 @@ end
 -- The blessing icon a member shows (a family index) or nil: solo, Kings on
 -- the player whatever the role (one reminder, no role picks); in a group,
 -- their role's blessing while the player can cast it and the member lacks
--- it, and with no role the Kings icon while they lack every blessing.
+-- it, and with no role the Kings icon while they lack every blessing. Never
+-- while the member carries one of the player's blessings, or that is unknown
+-- (st.ownBless, see Evaluate): it would be replaced.
 local function MissingBlessing(s, st, unit)
+    if st.ownBless ~= false then return nil end
     if solo then
         if provider.kings and st.kings == false and UnitIsUnit(unit, "player") then return BLESS_INDEX.kings end
         return nil
@@ -293,6 +298,28 @@ local function Evaluate(unit, restricted)
         end
         st[key] = value
     end
+    -- Whether a blessing on the member is the player's: true, false, or nil
+    -- while unknown (a blessing unread, or a secret read). Only blessings the
+    -- member carries are looked up again, by the player-cast filter.
+    local own
+    if known and blessCaster then
+        own = false
+        for b = 1, #BLESSINGS do
+            local bi = BLESSINGS[b]
+            local has = st[FAMILIES[bi].key]
+            if has == nil then own = nil; break end
+            if has then
+                local list = FamilyNames(bi)
+                for n = 1, #list do
+                    local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, unit, list[n], "HELPFUL|PLAYER")
+                    if not ok or issecretvalue(aura) then own = nil; break end
+                    if aura then own = true; break end
+                end
+                if own ~= false then break end
+            end
+        end
+    end
+    st.ownBless = own
 end
 
 -- A buff counts only while the player can cast it: their class casts it and
