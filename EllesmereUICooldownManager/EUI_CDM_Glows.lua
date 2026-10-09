@@ -446,7 +446,7 @@ ns.StartNativeGlow = StartNativeGlow
 ns.StopNativeGlow = StopNativeGlow
 
 -- Cooldown State Effect glow (CD Ready / On CD): Blackout renders on its own
--- frame BELOW frame.Cooldown (fd.blackoutOverlay, icon+12) instead of the
+-- frame BELOW frame.Cooldown (fd.blackoutOverlay, icon+11) instead of the
 -- shared fd.glowOverlay (icon+16, ABOVE the cooldown widget), so the swipe and
 -- countdown text stay visible on top of the fill; every other style keeps
 -- using the shared overlay. Picks the overlay from the resolved style and
@@ -475,7 +475,7 @@ function ns.StartCdGlow(fd, style, cr, cg, cb, alpha)
             bo:SetAllPoints(icon)
             bo:SetAlpha(0)
             bo:EnableMouse(false)
-            bo:SetFrameLevel(icon:GetFrameLevel() + 12)
+            bo:SetFrameLevel(icon:GetFrameLevel() + 11)
             fd.blackoutOverlay = bo
         end
         -- A fresh table per start: StartNativeGlow keeps opts by reference in
