@@ -179,6 +179,7 @@ function npAddon:OnInitialize()
     -- Non-Target Opacity: derive the cached value at login (no plates exist yet,
     -- so the apply loop no-ops; SetUnit fades new plates as they spawn).
     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+    if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
     -- Append SharedMedia textures to runtime tables so SM texture keys resolve at runtime
     EllesmereUI.AppendSharedMediaTextures(
         ns.healthBarTextureNames,
@@ -453,6 +454,9 @@ ns._oocPlatesCtl = CreateFrame("Frame")
 ns.ApplyOOCPlates = function()
     local ctl = ns._oocPlatesCtl
     local on = p and p.hideEnemyPlatesOOC == true
+    -- Always Show Quest Mob Nameplates: the CVar stays on and ns.TRIV_Eval
+    -- hides the non-quest plates out of combat instead.
+    if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
     if on then
         ctl:RegisterEvent("PLAYER_REGEN_DISABLED")
         ctl:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -460,7 +464,7 @@ ns.ApplyOOCPlates = function()
         ns._oocPlatesOwned = true
         -- Read-guarded: RefreshAllSettings calls this on every nameplate settings
         -- change, and a redundant SetCVar broadcasts CVAR_UPDATE to the whole UI.
-        local want = InCombatLockdown() and "1" or "0"
+        local want = (InCombatLockdown() or ns._questSoftOOC) and "1" or "0"
         if GetCVar("nameplateShowEnemies") ~= want then
             EllesmereUI.SetCVar("nameplateShowEnemies", want, "EllesmereUINameplates")
         end
@@ -482,7 +486,7 @@ ns._oocPlatesCtl:SetScript("OnEvent", function(self, event)
     end
     if event == "PLAYER_REGEN_DISABLED" then
         EllesmereUI.SetCVar("nameplateShowEnemies", "1", "EllesmereUINameplates")
-    elseif not InCombatLockdown() then
+    elseif not InCombatLockdown() and not ns._questSoftOOC then
         -- REGEN_ENABLED, or a world entry that lands out of combat.
         EllesmereUI.SetCVar("nameplateShowEnemies", "0", "EllesmereUINameplates")
     end
