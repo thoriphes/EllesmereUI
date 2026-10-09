@@ -115,7 +115,7 @@ local function BuildVisualIndicators(parent, y, W, onSection, EYE, CustomBorderO
         local mbRow
         mbRow, h = W:DualRow(parent, y,
             { type="dropdown", text="Missing Buffs", values=mbPositionValues, order=mbPositionOrder,
-              tooltip="Shows Fortitude, Mark of the Wild, Spirit or Thorns on a member who is missing it, for the buffs you can cast yourself (choose which in the cog).",
+              tooltip="Shows Fortitude, Mark of the Wild, Spirit, Thorns or a paladin blessing on a member who is missing it, for the buffs you can cast yourself (choose which in the cog). Left-click an icon to cast it on that member (out of combat).",
               getValue=function()
                   if not SVal("showMissingBuffs", true) then return "none" end
                   return SVal("missingBuffsPosition", "top")
@@ -136,44 +136,11 @@ local function BuildVisualIndicators(parent, y, W, onSection, EYE, CustomBorderO
               setValue=function(v) SSet("missingBuffsSize", v) end });  y = y - h
         do
             local rgn = mbRow._leftRegion
-            -- The role blessings, None first: the client's own spell names minus
-            -- the words every blessing starts with ("Blessing of ", in any
-            -- language; names sharing no leading word stay whole), English
-            -- if the names are not loaded. Reads go through the runtime's
-            -- resolver over the page's raw, party-aware reads, so an unset
-            -- role shows what it does.
-            local blessOrder = { "none", "might", "wisdom", "kings", "salvation", "light" }
-            local BLESS_ID = { might = 19740, wisdom = 19742, kings = 20217, salvation = 1038, light = 19977 }
-            local BLESS_EN = { might = "Might", wisdom = "Wisdom", kings = "Kings", salvation = "Salvation", light = "Light" }
-            local blessValues = { none = "None" }
-            local full, common = {}, nil
-            for i = 2, #blessOrder do
-                local n = C_Spell.GetSpellName(BLESS_ID[blessOrder[i]])
-                if not n then full = nil; break end
-                full[blessOrder[i]] = n
-                local j = 0
-                if common then
-                    while j < #common and j < #n and common:byte(j + 1) == n:byte(j + 1) do j = j + 1 end
-                end
-                common = common and common:sub(1, j) or n
-            end
-            local cut = full and common and common:match("^(.*%s)")
-            for i = 2, #blessOrder do
-                local k = blessOrder[i]
-                local n = full and full[k]
-                blessValues[k] = (n and cut) and n:sub(#cut + 1) or n or BLESS_EN[k]
-            end
-            local view = setmetatable({}, { __index = function(_, k) return SGet(k) end })
-            local function BlessRow(label, tip, role)
-                return { type="dropdown", label=label, tooltip=tip, values=blessValues, order=blessOrder,
-                  get=function() return ns.RF_FvBlessingChoice(view, role) end,
-                  set=function(v) SSet(ns.RF_FvBlessingKey[role], v) end }
-            end
             local rows = {
                 -- One switch per buff (all on by default). The list is the
                 -- profile's, shared across classes, so every buff is listed;
                 -- only the ones this character can cast ever show. The
-                -- paladin blessings follow the role rows below instead.
+                -- paladin blessings have their own switch below.
                 { type="reordercheck", label="Buffs", ddWidth=170,  -- the Glow dropdown's width
                   hint="Only buffs you can cast show",
                   items={
@@ -192,9 +159,11 @@ local function BuildVisualIndicators(parent, y, W, onSection, EYE, CustomBorderO
                   disabledTooltip="Thorns",
                   get=function() return SVal("missingBuffsThornsTank", false) end,
                   set=function(v) SSet("missingBuffsThornsTank", v and true or false) end },
-                BlessRow("Tank Blessing", "Reminds you while a tank lacks this blessing. Members with no assigned role count any blessing.", "TANK"),
-                BlessRow("Healer Blessing", "Reminds you while a healer lacks this blessing.", "HEALER"),
-                BlessRow("DPS Blessing", "Reminds you while a damage dealer lacks this blessing.", "DAMAGER"),
+                -- Paladin blessings: one per member, picked by class.
+                { type="toggle", label="Paladin Blessings",
+                  tooltip="Reminds you while a member has no blessing from you, picked by class: Might for Warriors, Rogues and damage-role Paladins, Shamans and Druids; Kings for Hunters and Warlocks; Wisdom for everyone else. Blessings other paladins gave are skipped. In a raid, everyone but the tanks gets Salvation first.",
+                  get=function() return SVal("missingBuffsBlessing", true) end,
+                  set=function(v) SSet("missingBuffsBlessing", v and true or false) end },
                 { type="slider", label="Offset X", min=-50, max=50, step=1,
                   get=function() return SVal("missingBuffsOffsetX", 0) end,
                   set=function(v) SSet("missingBuffsOffsetX", v) end },
