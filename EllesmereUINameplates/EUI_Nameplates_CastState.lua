@@ -41,14 +41,21 @@ function ns.NT_Apply(plate)
     local unit = plate.unit
     if not unit then return end
     local a = 1
-    local nt = ns._ntAlpha
-    if nt < 1 and UnitExists("target")
-       and not UnitIsUnit(unit, "target")
-       and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus"))
-       and not UnitIsUnit(unit, "player") then
-        a = nt
+    local tfHidden = ns._tfHidden
+    if tfHidden and tfHidden[unit] then
+        -- Force Nameplate on Current Target: a plate in a category held on for
+        -- the target alone (EUI_Nameplates_TargetForce.lua). Fully hidden.
+        a = 0
+    else
+        local nt = ns._ntAlpha
+        if nt < 1 and UnitExists("target")
+           and not UnitIsUnit(unit, "target")
+           and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus"))
+           and not UnitIsUnit(unit, "player") then
+            a = nt
+        end
+        a = a * (plate._oorCurAlpha or 1)
     end
-    a = a * (plate._oorCurAlpha or 1)
     if (plate._ntCurAlpha or 1) ~= a then
         plate._ntCurAlpha = a
         plate:SetAlpha(a)
