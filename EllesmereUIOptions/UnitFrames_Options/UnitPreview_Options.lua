@@ -2888,18 +2888,26 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             end
         end
 
-        -- Border size and color (encompasses health+power+BTB+above pips); a mini
-        -- frame's Border Size override replaces the donor's size, as live.
-        local bs = s.borderSizeOverride or bds.borderSize or 1
-        local bc = bds.borderColor or { r = 0, g = 0, b = 0 }
-        local bTexKey = bds.borderTexture or "solid"
+        -- Border size and color (encompasses health+power+BTB+above pips).
+        -- Mini frames: per-key donor/override resolution, same as the live
+        -- frame (ns.ResolveMiniBorderValue is a plain bds read when the frame's
+        -- Advanced borders are off; bds = the donor, or a boss frame's own).
+        local function PB(key) return ns.ResolveMiniBorderValue(s, key, bds) end
+        -- Size as the live mini frame resolves it (Advanced override, else the
+        -- per-frame Border Size, else the donor); main frames: s == ds.
+        local pov = s.borderAdvanced and s.borderOverride
+        local bs = (pov and pov.borderSize) or s.borderSizeOverride or bds.borderSize or 1
+        local bc = PB("borderColor") or { r = 0, g = 0, b = 0 }
+        local bTexKey = PB("borderTexture") or "solid"
         local borderH = bh2 + (s.bottomTextBar and btbIsAtt and (s.bottomTextBarHeight or 16) or 0)
         border:ClearAllPoints()
         border:SetPoint("TOPLEFT", barArea, "TOPLEFT", 0, 0)
         border:SetPoint("TOPRIGHT", barArea, "TOPRIGHT", 0, 0)
         border:SetHeight(borderH)
-        EllesmereUI.ApplyBorderStyle(border, bs, bc.r, bc.g, bc.b, bds.borderAlpha or 1, bTexKey, bds.borderTextureOffset, bds.borderTextureOffsetY, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs, nil,
-            EllesmereUI.BorderPx((not s.borderSizeOverride) and bds.borderSizePx, bs, bTexKey))
+        -- Donor's exact pixel size rides along only while this frame is not
+        -- setting the size itself (Advanced borderSize, or borderSizeOverride).
+        EllesmereUI.ApplyBorderStyle(border, bs, bc.r, bc.g, bc.b, PB("borderAlpha") or 1, bTexKey, PB("borderTextureOffset"), PB("borderTextureOffsetY"), PB("borderTextureShiftX"), PB("borderTextureShiftY"), "unitframes", bs, nil,
+            EllesmereUI.BorderPx((not ((pov and pov.borderSize) or s.borderSizeOverride)) and bds.borderSizePx, bs, bTexKey))
 
         -- Class Power Pips update (player only)
         if cpPipContainer and cpPips then
@@ -3647,10 +3655,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
 
         -- Recalculate border sizes after scale change so they stay pixel-perfect
         if border then
-            local bs2 = s.borderSizeOverride or bds.borderSize or 1
-            local bTex2 = bds.borderTexture or "solid"
-            EllesmereUI.ApplyBorderStyle(border, bs2, (bds.borderColor or {r=0,g=0,b=0}).r, (bds.borderColor or {r=0,g=0,b=0}).g, (bds.borderColor or {r=0,g=0,b=0}).b, bds.borderAlpha or 1, bTex2, bds.borderTextureOffset, bds.borderTextureOffsetY, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs2, nil,
-                EllesmereUI.BorderPx((not s.borderSizeOverride) and bds.borderSizePx, bs2, bTex2))
+            local bs2 = bs
+            local bc2 = PB("borderColor") or { r = 0, g = 0, b = 0 }
+            local bTex2 = PB("borderTexture") or "solid"
+            EllesmereUI.ApplyBorderStyle(border, bs2, bc2.r, bc2.g, bc2.b, PB("borderAlpha") or 1, bTex2, PB("borderTextureOffset"), PB("borderTextureOffsetY"), PB("borderTextureShiftX"), PB("borderTextureShiftY"), "unitframes", bs2, nil,
+                EllesmereUI.BorderPx((not ((pov and pov.borderSize) or s.borderSizeOverride)) and bds.borderSizePx, bs2, bTex2))
         end
         -- Rounded corners, as on the live frame: the border frame is the shape
         -- (health + power + attached portrait and text bar); the fill sits on
