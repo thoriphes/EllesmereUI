@@ -171,7 +171,7 @@ function ns.CdmApplyBlizzIconArt(frame)
             end
         end
     end
-    -- Ring above the art and swipe (+14), below glows (+16) and text (+23).
+    -- Ring above the art and swipe (+12), below glows (+16) and text (+23).
     local lvl = frame:GetFrameLevel() + 15
     if host:GetFrameLevel() ~= lvl then host:SetFrameLevel(lvl) end
     local w, h = frame:GetSize()
