@@ -702,13 +702,16 @@ local function SnapshotPositions()
 
     -- Snapshot anchor data so we can revert on discard (includes the
     -- growth-edge pin fields; losing them on cancel would force a lazy
-    -- recapture from whatever position the session left the bar at)
+    -- recapture from whatever position the session left the bar at, and the
+    -- explicit points: without them a pointed record reverts as a side record
+    -- whose point-to-point offsets mean something else, and the element jumps)
     wipe(snapshotAnchors)
     local anchorDB = GetAnchorDB()
     if anchorDB then
         for childKey, info in pairs(anchorDB) do
             snapshotAnchors[childKey] = {
                 target = info.target, side = info.side,
+                point = info.point, relPoint = info.relPoint,
                 offsetX = info.offsetX, offsetY = info.offsetY,
                 refX = info.refX, refY = info.refY,
                 edgeOffX = info.edgeOffX, edgeOffY = info.edgeOffY,
@@ -1050,6 +1053,7 @@ local function RevertPositions()
         for childKey, info in pairs(snapshotAnchors) do
             anchorDB[childKey] = {
                 target = info.target, side = info.side,
+                point = info.point, relPoint = info.relPoint,
                 offsetX = info.offsetX, offsetY = info.offsetY,
                 refX = info.refX, refY = info.refY,
                 edgeOffX = info.edgeOffX, edgeOffY = info.edgeOffY,
