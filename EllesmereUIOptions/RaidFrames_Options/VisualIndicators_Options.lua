@@ -115,7 +115,7 @@ local function BuildVisualIndicators(parent, y, W, onSection, EYE, CustomBorderO
         local mbRow
         mbRow, h = W:DualRow(parent, y,
             { type="dropdown", text="Missing Buffs", values=mbPositionValues, order=mbPositionOrder,
-              tooltip="Shows Fortitude, Mark of the Wild, Spirit or Thorns on a member who is missing it, for the buffs you can cast yourself (choose which in the cog).",
+              tooltip="Shows Fortitude, Mark of the Wild, Spirit, Thorns or a paladin blessing on a member who is missing it, for the buffs you can cast yourself (choose which in the cog). Left-click an icon to cast it on that member (out of combat).",
               getValue=function()
                   if not SVal("showMissingBuffs", true) then return "none" end
                   return SVal("missingBuffsPosition", "top")
@@ -161,7 +161,7 @@ local function BuildVisualIndicators(parent, y, W, onSection, EYE, CustomBorderO
                   set=function(v) SSet("missingBuffsThornsTank", v and true or false) end },
                 -- Paladin blessings: one per member, picked by class.
                 { type="toggle", label="Paladin Blessings",
-                  tooltip="Reminds you while a member has no blessing from you, picked by class: Might for Warriors, Rogues and damage-role Paladins, Shamans and Druids; Kings for Hunters; Wisdom for everyone else. Blessings other paladins gave are skipped. In a raid, everyone but the tanks gets Salvation first.",
+                  tooltip="Reminds you while a member has no blessing from you, picked by class: Might for Warriors, Rogues and damage-role Paladins, Shamans and Druids; Kings for Hunters and Warlocks; Wisdom for everyone else. Blessings other paladins gave are skipped. In a raid, everyone but the tanks gets Salvation first.",
                   get=function() return SVal("missingBuffsBlessing", true) end,
                   set=function(v) SSet("missingBuffsBlessing", v and true or false) end },
                 { type="slider", label="Offset X", min=-50, max=50, step=1,
