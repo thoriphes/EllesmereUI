@@ -987,6 +987,7 @@ function ns.RefreshAllSettings()
     -- (the enemy plates followed through the appearance pass above).
     if ns._npForever and ns.NP_ForeverWatchLevels() then ns.NP_ForeverFriendlyBoxes() end
     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+    if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
     if ns.RangeText_Apply then ns.RangeText_Apply() end
     if ns.ApplyClassPowerSetting then ns.ApplyClassPowerSetting() end
     if ns.DebuffColors_Refresh then ns.DebuffColors_Refresh() end
