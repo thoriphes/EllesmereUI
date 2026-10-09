@@ -143,10 +143,10 @@ local function DecorateFrame(frame, barData)
     end
     if fd.glowOverlay then fd.glowOverlay:SetFrameLevel(baseLvl + 16) end
     -- Blackout (solid-fill Cooldown State glow) sits BELOW frame.Cooldown
-    -- (icon+14), unlike every other glow style on glowOverlay (icon+16): a
+    -- (icon+12), unlike every other glow style on glowOverlay (icon+16): a
     -- fill above it would hide the swipe and countdown. Made by
     -- ns.StartCdGlow on the icon's first Blackout start.
-    if fd.blackoutOverlay then fd.blackoutOverlay:SetFrameLevel(baseLvl + 12) end
+    if fd.blackoutOverlay then fd.blackoutOverlay:SetFrameLevel(baseLvl + 11) end
     if fd.textOverlay then fd.textOverlay:SetFrameLevel(baseLvl + 23) end
     if blizzArt then ns.CdmApplyBlizzIconArt(frame) end
 
