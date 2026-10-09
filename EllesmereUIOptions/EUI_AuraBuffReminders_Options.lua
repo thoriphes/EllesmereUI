@@ -1436,7 +1436,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- Add Custom Spell
             _, h = W:DualRow(parent, y,
                 { type="input", text="Add Custom Spell", inputStyle="popup", placeholder="Spell ID", inputWidth=110,
-                  tooltip="Type a spell ID and press Enter to be reminded whenever that buff is missing.\nUnknown IDs are ignored.",
+                  tooltip="Type a spell ID and press Enter to be reminded whenever that buff is missing.\nOnly spells you know are shown; clicking the reminder casts it.\nUnknown IDs are ignored.",
                   getValue=function() return "" end,
                   setValue=function(text)
                       local id = tonumber((text or ""):match("^%s*(%d+)%s*$"))
