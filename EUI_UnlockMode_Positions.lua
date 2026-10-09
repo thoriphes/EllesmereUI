@@ -905,8 +905,9 @@ end
 -- Offsets for a link, read from the live rects the way a drag does: near edge on
 -- the anchored side, center on the cross axis. The element's own extra offset (the
 -- raid container's per-tier offset) comes out, because every anchored apply folds
--- it back in. Returns nil when either rect is missing.
-EllesmereUI._CaptureAnchorOffsets = function(childKey, targetKey, side)
+-- it back in. Returns nil when either rect is missing. With a point pair (explicit
+-- anchors) the offset runs point to point instead, from the same rebased rects.
+EllesmereUI._CaptureAnchorOffsets = function(childKey, targetKey, side, point, relPoint)
     local child, tgt = UM.GetBarFrame(childKey), UM.GetBarFrame(targetKey)
     if not (child and child:GetLeft() and tgt and tgt:GetLeft()) then return nil end
     local uiS = UIParent:GetEffectiveScale()
@@ -917,6 +918,11 @@ EllesmereUI._CaptureAnchorOffsets = function(childKey, targetKey, side)
     local cT, cB = child:GetTop() * cS - exY, child:GetBottom() * cS - exY
     local tL, tR = tgt:GetLeft() * tS, tgt:GetRight() * tS
     local tT, tB = tgt:GetTop() * tS, tgt:GetBottom() * tS
+    if point and relPoint then
+        local ox, oy = EllesmereUI._AnchorPointXY(point, cL, cR, cT, cB)
+        local px, py = EllesmereUI._AnchorPointXY(relPoint, tL, tR, tT, tB)
+        return ox - px, oy - py
+    end
     local cCX, cCY = (cL + cR) / 2, (cT + cB) / 2
     local tCX, tCY = (tL + tR) / 2, (tT + tB) / 2
     if side == "LEFT" then return cR - tL, cCY - tCY end
@@ -1159,7 +1165,17 @@ UM.ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fro
     -- Compute child center
     local cx, cy
     local ai = GetAnchorInfo(childKey)
-    if ai and ai.offsetX ~= nil and ai.offsetY ~= nil then
+    -- Explicit points (cog menu): ai.point on this element sits ai.offsetX/Y from
+    -- ai.relPoint on the target, both any of the nine frame points. Replaces the
+    -- side/centre geometry below outright and needs no growth-edge pin: the own
+    -- point IS the fixed edge, so a resize grows away from it by construction.
+    local pointed = ai and ai.point and ai.relPoint and ai.offsetX ~= nil and ai.offsetY ~= nil
+    if pointed then
+        local px, py = EllesmereUI._AnchorPointXY(ai.relPoint, tL, tR, tT, tB)
+        local hx, hy = EllesmereUI._AnchorPointHalf(ai.point)
+        cx = px + ai.offsetX - hx * cW / 2
+        cy = py + ai.offsetY - hy * cH / 2
+    elseif ai and ai.offsetX ~= nil and ai.offsetY ~= nil then
         -- Edge-to-edge offset mode: the offset runs from the child's near edge to
         -- the target's anchor edge, so a resized child keeps that near edge fixed.
         local edgeX, edgeY
@@ -1251,7 +1267,10 @@ UM.ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fro
     -- current position; while frames lack bounds the legacy pin below still
     -- applies, so early-login frames degrade gracefully.
     local growPinned = false
-    if isCdmOrAB and ai and ai.target and ai.offsetX ~= nil and ai.offsetY ~= nil then
+    if pointed then
+        -- Explicit points: no pin, no edge preservation (see above).
+        growPinned = true
+    elseif isCdmOrAB and ai and ai.target and ai.offsetX ~= nil and ai.offsetY ~= nil then
         local gd = GetBarGrowDirActual(childKey)
         if gd and gd ~= "CENTER" then
             -- Lazy capture ONLY at provable quiescence: the settle pass (trusted by
@@ -1855,6 +1874,85 @@ local function ReapplyAllAnchors()
     end
 end
 
+-- Explicit anchors: the nine frame points a cog-menu pick offers, in list order,
+-- and their labels. On EllesmereUI with the rest of this block: the deferred body
+-- is at the Lua 5.1 200-local cap (the point arithmetic itself sits at the top of
+-- the file, ahead of the reapply stub).
+EllesmereUI._ANCHOR_POINTS = { "TOPLEFT", "TOP", "TOPRIGHT", "LEFT", "CENTER", "RIGHT", "BOTTOMLEFT", "BOTTOM", "BOTTOMRIGHT" }
+EllesmereUI._ANCHOR_POINT_LABEL = {
+    TOPLEFT = "Top Left", TOP = "Top", TOPRIGHT = "Top Right",
+    LEFT = "Left", CENTER = "Center", RIGHT = "Right",
+    BOTTOMLEFT = "Bottom Left", BOTTOM = "Bottom", BOTTOMRIGHT = "Bottom Right",
+}
+-- The side a point pair expresses, for the parts of the anchor system that read
+-- ai.side (chain extents, mover captions, fallback picks).
+function EllesmereUI._SideFromPoints(point, relPoint)
+    local px, py = EllesmereUI._AnchorPointHalf(point)
+    local rx, ry = EllesmereUI._AnchorPointHalf(relPoint)
+    if rx == 1 and px == -1 then return "RIGHT" end
+    if rx == -1 and px == 1 then return "LEFT" end
+    if ry == 1 and py == -1 then return "TOP" end
+    if ry == -1 and py == 1 then return "BOTTOM" end
+    return "CENTER"
+end
+-- The point pair a classic side means (child's near edge on the target's edge,
+-- centred across), so a record without points reads back the same way.
+function EllesmereUI._PointsFromSide(side)
+    if side == "LEFT" then return "RIGHT", "LEFT" end
+    if side == "RIGHT" then return "LEFT", "RIGHT" end
+    if side == "TOP" then return "BOTTOM", "TOP" end
+    if side == "BOTTOM" then return "TOP", "BOTTOM" end
+    return "CENTER", "CENTER"
+end
+function EllesmereUI.GetAnchorPoints(childKey)
+    local ai = GetAnchorInfo(childKey)
+    if not (ai and ai.target) then return nil end
+    if ai.point and ai.relPoint then return ai.point, ai.relPoint end
+    return EllesmereUI._PointsFromSide(ai.side)
+end
+
+-- Cog-menu editing of an existing anchor: own point, target point and the two
+-- offsets. A point change keeps the element where it is (the offset is
+-- re-derived from live bounds for the new pair); a typed offset moves it.
+-- Returns true when applied.
+function EllesmereUI.SetAnchorParams(childKey, p)
+    local ai = GetAnchorInfo(childKey)
+    if not (ai and ai.target) or InCombatLockdown() then return false end
+    if p.point or p.relPoint then
+        local curP, curR = EllesmereUI.GetAnchorPoints(childKey)
+        local point, relPoint = p.point or curP, p.relPoint or curR
+        -- The same capture a drag ends with, so the raid container's per-tier
+        -- offset comes out here too; nil while either rect is missing.
+        local ox, oy = EllesmereUI._CaptureAnchorOffsets(childKey, ai.target, nil, point, relPoint)
+        if ox == nil then return false end
+        local snap = (EllesmereUI.PP and EllesmereUI.PP.Snap) or function(v) return math.floor(v + 0.5) end
+        local side = EllesmereUI._SideFromPoints(point, relPoint)
+        if side ~= ai.side then
+            -- Memoized views over the anchor DB (the tracking bar growth-edge
+            -- extent watch) key on the side.
+            EllesmereUI._anchorLinksStamp = (EllesmereUI._anchorLinksStamp or 0) + 1
+        end
+        ai.point, ai.relPoint, ai.side = point, relPoint, side
+        ai.offsetX, ai.offsetY = snap(ox), snap(oy)
+        -- The growth-edge pin has nothing left to hold (the own point is the fixed
+        -- edge); cleared so a later side-path apply recaptures movement-free.
+        ai.refFor, ai.refX, ai.refY, ai.edgeOffX, ai.edgeOffY = nil, nil, nil, nil, nil
+    end
+    if p.offsetX then ai.offsetX = p.offsetX end
+    if p.offsetY then ai.offsetY = p.offsetY end
+    UM.ApplyAnchorPosition(childKey, ai.target, ai.side)
+    -- Synchronous like the nudge path: the element is already placed, and a
+    -- deferred cascade would paint the children one frame late.
+    UM.PropagateAnchorChain(childKey)
+    UM.hasChanges = true
+    local m = movers[childKey]
+    if m then
+        if m.RefreshAnchoredText then m:RefreshAnchoredText() end
+        UM.DeferMoverSync(m, function(mm) mm:Sync() end, UM.GetBarFrame(childKey))
+    end
+    return true
+end
+
 -- Recursively propagate anchor repositioning from a moved parent down the chain.
 -- visited guards circular anchor loops. changedAxis: "width", "height", or nil
 -- (nil = all axes, e.g. from a drag).
@@ -1894,9 +1992,20 @@ UM.PropagateAnchorChain = function(parentKey, visited, changedAxis)
             -- still-dominated CDM/chain-driven parent. Every other child keeps the
             -- original gate. fallbackMatch skips this entirely: info.side describes the
             -- PRIMARY anchor's geometry, meaningless for the fallback's own math.
+            -- Explicit points tie the cross axis to the picked target point, not to
+            -- its center: only a centered relPoint on the changed axis leaves the
+            -- child where it is (a corner moves with the edge under CENTER growth).
             local dominated = false
+            local relHx, relHy
+            if info.point and info.relPoint then
+                relHx, relHy = EllesmereUI._AnchorPointHalf(info.relPoint)
+            end
             if primaryMatch and changedAxis == "width" then
-                dominated = (info.side == "TOP" or info.side == "BOTTOM")
+                if relHx then
+                    dominated = (relHx == 0)
+                else
+                    dominated = (info.side == "TOP" or info.side == "BOTTOM")
+                end
                 if dominated then
                     if parentKey:sub(1, 4) == "CDM_"
                        or (EllesmereUI._abBarKeys and EllesmereUI._abBarKeys[parentKey]) then
@@ -1914,7 +2023,11 @@ UM.PropagateAnchorChain = function(parentKey, visited, changedAxis)
                     end
                 end
             elseif primaryMatch and changedAxis == "height" then
-                dominated = (info.side == "LEFT" or info.side == "RIGHT")
+                if relHy then
+                    dominated = (relHy == 0)
+                else
+                    dominated = (info.side == "LEFT" or info.side == "RIGHT")
+                end
                 if dominated then
                     if parentKey:sub(1, 4) == "CDM_"
                        or (EllesmereUI._abBarKeys and EllesmereUI._abBarKeys[parentKey]) then
