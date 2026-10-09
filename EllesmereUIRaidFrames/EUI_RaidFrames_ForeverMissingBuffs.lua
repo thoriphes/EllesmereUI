@@ -226,16 +226,18 @@ local function ScanTank()
     end
 end
 
--- Blessing priority per member. Forever has one spec per class, so hybrids
--- go by assigned role: Damage-role Paladins, Shamans and Druids and tank
--- Druids take the melee list, every other member without a list of their own
--- the caster list.
+-- Blessing priority per member, four blessings each. Forever has one spec
+-- per class, so hybrids (Paladin, Shaman, Druid) go by assigned role: Damage,
+-- and a Druid tank, take the melee list, Healer the healer list, the rest
+-- (a Paladin tank, no role) the caster list. Pure casters and healers rank
+-- Salvation over Might; a tank list never does.
 local BLESS_LISTS = {
-    melee  = { "might", "wisdom", "kings" },              -- Ret, Enhancement, Feral
-    caster = { "wisdom", "kings", "might" },              -- hybrid healers and casters, Prot
-    pure   = { "wisdom", "kings", "salvation", "might" }, -- Mage, Priest (pure casters: Salvation over Might)
-    phys   = { "might", "kings", "salvation" },           -- Warrior, Rogue (no mana)
-    hunter = { "kings", "wisdom", "might", "salvation" },
+    melee   = { "might", "wisdom", "kings", "salvation" },  -- Ret, Enhancement, Feral
+    healer  = { "wisdom", "kings", "salvation", "might" },  -- Holy, Restoration
+    caster  = { "wisdom", "kings", "might", "salvation" },  -- Prot Paladin, no role
+    pure    = { "wisdom", "kings", "salvation", "might" },  -- Mage, Priest
+    phys    = { "might", "kings", "salvation", "light" },   -- Warrior, Rogue (no mana: Light, not Wisdom)
+    hunter  = { "kings", "wisdom", "might", "salvation" },
     warlock = { "kings", "wisdom", "salvation", "might" },
 }
 local raidList = {}  -- scratch: a list with Salvation moved first
@@ -254,6 +256,8 @@ local function BlessingList(unit, role)
     elseif (class == "PALADIN" or class == "SHAMAN" or class == "DRUID")
        and (role == "DAMAGER" or (role == "TANK" and class == "DRUID")) then
         list = BLESS_LISTS.melee
+    elseif (class == "PALADIN" or class == "SHAMAN" or class == "DRUID") and role == "HEALER" then
+        list = BLESS_LISTS.healer
     else
         list = BLESS_LISTS.caster
     end
