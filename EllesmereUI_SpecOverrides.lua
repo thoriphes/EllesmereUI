@@ -544,6 +544,9 @@ for i = 1, #VIS_OV_FOLDERS do
     if not set then set = {}; SETTING_BLACKLIST[folder] = set end
     set.visibilityModes = true
     set.visibilityMatch = true
+    -- The custom conditional replaces the selection outright; an override holds the
+    -- scalar states only, so it is never captured.
+    set.visCustom = true
 end
 
 -- WoW Forever: the buff clear mark (EllesmereUI_Migration.lua) is bookkeeping,
