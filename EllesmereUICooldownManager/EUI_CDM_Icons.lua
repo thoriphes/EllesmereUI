@@ -708,15 +708,16 @@ local function RefreshCDMIconAppearance(barKey)
             tex:SetAllPoints(icon)
             tex:SetTexCoord(zoom, 1 - zoom, zoom, 1 - zoom)
         end
-        -- Update cooldown (full frame so swipe covers the entire icon). The swipe and the countdown
-        -- number both live on the Cooldown widget, so raise the whole widget ABOVE our border
-        -- (icon+13) or the border draws over the number (most visible with edge-offset text);
-        -- anchoring the number to cd (below) keeps the X/Y offset working. Side effect: the dark swipe lightly tints the thin border while active.
+        -- Update cooldown (full frame so swipe covers the entire icon). The swipe sits in the art's
+        -- layer, BELOW our border (icon+13), so the border draws over it exactly as it draws over the
+        -- icon art: a coloured swipe (the active-state tint) never paints over the border, whatever its
+        -- style or shape. The countdown number lives on the same widget, so a number offset onto the
+        -- icon's edge loses the pixels under the border; anchoring it to cd (below) keeps the X/Y offset working.
         if cd then
             cd:ClearAllPoints()
             cd:SetAllPoints(icon)
-            -- Above the border (icon+13); still below glow (icon+16) / text (icon+23).
-            pcall(cd.SetFrameLevel, cd, icon:GetFrameLevel() + 14)
+            -- Below the border (icon+13), above the Blackout fill (icon+11).
+            pcall(cd.SetFrameLevel, cd, icon:GetFrameLevel() + 12)
             -- Per-icon Duration Text override (ssb) falls back to the bar's values. Only Show
             -- Numbers no longer forces this on: hiding the duration (bar toggle or per-icon) under it leaves just the stack count.
             local showCD = ns.CdmDurationTextOn(barData)
