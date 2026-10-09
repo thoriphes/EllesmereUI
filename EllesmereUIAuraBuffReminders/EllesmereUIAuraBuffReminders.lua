@@ -2310,6 +2310,8 @@ if EABR.FOREVER then
         wellFed = false,    -- Well Fed reminder; opt-in, matched by aura name (every food has its own spell ID)
         whereToShow = {},   -- section "Where to Show" (an absent bucket = shown)
         customIDs = {},     -- spell IDs the user tracks, in the order added
+        palAura = false,        -- paladin: aura reminder
+        palRF = false,          -- paladin: Righteous Fury while grouped as Tank
     }
 end
 
@@ -4582,6 +4584,115 @@ function EABR.CollectForeverRaidBuffs(missing, playerClass, inInstance)
     EABR.FvSyncGroupWatch(watch, roster)
 end
 
+-------------------------------------------------------------------------------
+--  WoW Forever paladin buffs: the aura and Righteous Fury (blessings are the
+--  Raid Frames Missing Buffs indicator's). Each is opt-in, absence only, read
+--  out of combat (the aura lock throws in combat) and shown in all content.
+--  Per family, `ids` lists every rank lowest first; the highest learned one
+--  is cast. Data and the spell -> family map live on EABR (file-scope local cap).
+-------------------------------------------------------------------------------
+if EABR.FOREVER then
+    EABR.PAL = {
+        -- Aura priority: the first one learned that no other paladin runs.
+        auras = {
+            { key="ret",    ids={7294, 10298, 10299, 10300, 10301} },
+            { key="devo",   ids={465, 10290, 643, 10291, 1032, 10292, 10293} },
+            { key="conc",   ids={19746} },
+            { key="fire",   ids={19891, 19899, 19900} },
+            { key="shadow", ids={19876, 19895, 19896} },
+            { key="frost",  ids={19888, 19897, 19898} },
+        },
+        rf = { 407627, 25780 },
+        mine = {}, other = {},                         -- ScanPaladinBuffs scratch
+    }
+end
+
+-- Builds the spell -> family map once, on the first enabled pass.
+function EABR.InitForeverPaladin()
+    local PAL = EABR.PAL
+    local fam = {}
+    for _, a in ipairs(PAL.auras) do
+        for _, id in ipairs(a.ids) do fam[id] = a.key end
+    end
+    for _, id in ipairs(PAL.rf) do fam[id] = "rf" end
+    PAL.familyOf = fam
+end
+
+-- Fills PAL.mine / PAL.other with the paladin buff families on `u`, by
+-- source: one HELPFUL index scan. Anything the player did not provably cast
+-- counts as another paladin's (a caster outside the group has no sourceUnit).
+-- Index scans hard-error under the aura lock, so that returns false.
+function EABR.ScanPaladinBuffs(u)
+    local PAL = EABR.PAL
+    local mine, other, famOf = PAL.mine, PAL.other, PAL.familyOf
+    wipe(mine); wipe(other)
+    if EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted() then return false end
+    for i = 1, AURA_SCAN_LIMIT do
+        local aura = C_UnitAuras.GetAuraDataByIndex(u, i, "HELPFUL")
+        if not aura then break end
+        local sid = aura.spellId
+        local key = sid and not isSecret(sid) and famOf[sid]
+        if key then
+            if EABR._StrictAuraFromMe(aura) then mine[key] = true else other[key] = true end
+        end
+    end
+    return true
+end
+
+-- Highest learned rank of a rank list (lowest first), nil if none is learned.
+function EABR.PaladinBestRank(ranks)
+    for i = #ranks, 1, -1 do
+        if Known(ranks[i]) then return ranks[i] end
+    end
+    return nil
+end
+
+-- WoW Forever paladin collector. The aura reminds when the player runs none
+-- or the same one as another paladin, and casts the first aura in priority
+-- order that nobody else runs. Righteous Fury: grouped as Tank. Out of
+-- combat only; no "Where to Show" filtering.
+function EABR.CollectForeverPaladin(missing, restricted)
+    local fo = db.profile.forever
+    if restricted or not fo or GetPlayerClass() ~= "PALADIN" then return end
+    if not (fo.palAura or fo.palRF) then return end
+    local PAL = EABR.PAL
+    if not PAL.familyOf then EABR.InitForeverPaladin() end
+    if not EABR.ScanPaladinBuffs("player") then return end
+    local mine, other = PAL.mine, PAL.other
+
+    if fo.palAura then
+        local current, overlap
+        for _, a in ipairs(PAL.auras) do
+            if mine[a.key] then current = a.key; overlap = other[a.key] end
+        end
+        if not current or overlap then
+            for _, a in ipairs(PAL.auras) do
+                local id = not other[a.key] and EABR.PaladinBestRank(a.ids)
+                if id then
+                    local e = AcquireEntry()
+                    e.mode = "spell"; e.spellID = id
+                    e.label = ShortLabel(SpellName(id) or tostring(id))
+                    e.cat = "forever"; e.dismissKey = "forever:aura"
+                    missing[#missing+1] = e
+                    break
+                end
+            end
+        end
+    end
+
+    if fo.palRF and not mine.rf and IsInGroup()
+       and UnitGroupRolesAssigned("player") == "TANK" then
+        local id = EABR.PaladinBestRank(PAL.rf)
+        if id then
+            local e = AcquireEntry()
+            e.mode = "spell"; e.spellID = id
+            e.label = ShortLabel(SpellName(id) or tostring(id))
+            e.cat = "forever"; e.dismissKey = "forever:rf"
+            missing[#missing+1] = e
+        end
+    end
+end
+
 local function Refresh()
     _cachedOutline = nil
     EABR._nextDurationRefreshTime = nil
@@ -4655,6 +4766,7 @@ local function Refresh()
         if remindersOn then
             EABR.CollectForeverRaidBuffs(missing, playerClass, inInstance)
             EABR.CollectForever(missing, inInstance, inPvP, restricted)
+            EABR.CollectForeverPaladin(missing, restricted)
         else
             EABR.FvSyncGroupWatch(nil, false)
         end
@@ -5847,11 +5959,27 @@ function EABR:OnEnable()
 
     -- Registers broad UNIT_AURA only when the class needs group aura tracking AND only OOC: it fires 100+/sec in a raid, but in-combat CollectRaidBuffs only checks the player's own auras (PlayerHasAuraByID), so group events are pure waste. Evoker keeps broad in combat for ownOnRaid cache updates but skips RequestRefresh on group events (handler below).
     local function UpdateGroupAuraRegistration()
-        -- WoW Forever keeps the player-only UNIT_AURA from file scope,
-        -- whichever caller (loading screen, profile, spec override, options)
-        -- runs this pass: its one group reader, Raid Buffs, has its own watch,
-        -- synced by every refresh (EABR.FvSyncGroupWatch).
-        if EABR.FOREVER then return end
+        -- WoW Forever: Raid Buffs has its own group watch, synced by every
+        -- refresh (EABR.FvSyncGroupWatch). The paladin aura and Righteous
+        -- Fury read only the player's auras, but follow roster and role
+        -- changes and newly learned ranks. With both off (or not a paladin)
+        -- nothing is registered beyond the player-only UNIT_AURA from file
+        -- scope, whichever caller (loading screen, profile, options) runs this pass.
+        if EABR.FOREVER then
+            local fo = db.profile.forever
+            local any = fo and GetPlayerClass() == "PALADIN" and (fo.palAura or fo.palRF) and true or false
+            EABR._rosterRefresh = any
+            if any then
+                mainFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+                mainFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED")
+                mainFrame:RegisterEvent("SPELLS_CHANGED")
+            else
+                mainFrame:UnregisterEvent("GROUP_ROSTER_UPDATE")
+                mainFrame:UnregisterEvent("PLAYER_ROLES_ASSIGNED")
+                mainFrame:UnregisterEvent("SPELLS_CHANGED")
+            end
+            return
+        end
         local playerClass = GetPlayerClass()
         _needGroupAura = false
         _isEvokerOwnOnRaid = false
