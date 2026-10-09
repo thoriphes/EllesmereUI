@@ -14,6 +14,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  a PvE raid) the player can cast and no other paladin has given them.
 --  Solo, only Kings is reminded, on the player. Thorns Only on Tank keeps Thorns to the
 --  group's tanks, and to the player while solo or in a group without one.
+--  A left click on an icon casts that buff on the member (out of combat; see
+--  Click to cast).
 --  Settings (Indicators section, same shape as the raid marker):
 --  showMissingBuffs, missingBuffsPosition, missingBuffsSize,
 --  missingBuffsOffsetX/Y, one switch per buff (missingBuffsFort/Mark/Spirit/
@@ -75,15 +77,18 @@ local FAMILIES = {
 local NUM_FAMILIES = #FAMILIES
 for i = 1, NUM_FAMILIES do
     local fam = FAMILIES[i]
-    local names, ranks, ids = {}, {}, {}
+    local names, ranks, ids, single = {}, {}, {}, {}
     for _, key in ipairs(fam.from) do
         local shared = EllesmereUI.FOREVER_BUFF_FAMILIES[key]
         for _, id in ipairs(shared.names) do names[#names + 1] = id end
-        for _, id in ipairs(shared.single) do ranks[#ranks + 1] = id end
+        for _, id in ipairs(shared.single) do
+            ranks[#ranks + 1] = id
+            single[#single + 1] = id
+        end
         for _, id in ipairs(shared.group) do ranks[#ranks + 1] = id end
         for _, id in ipairs(shared.ids) do ids[#ids + 1] = id end
     end
-    fam.names, fam.ranks, fam.ids = names, ranks, ids
+    fam.names, fam.ranks, fam.ids, fam.single = names, ranks, ids, single
 end
 local FAMILY_BY_ID = {}  -- spell id -> family index
 local BLESSINGS, BLESS_INDEX = {}, {}  -- blessing family indices; key -> index
@@ -112,6 +117,7 @@ end
 -- (unknown); inst[unit] = the aura instances found, for the removed-aura probe.
 local state, inst = {}, {}
 local provider = {}      -- key -> the player can cast it (a rank in the spellbook)
+local castID = {}        -- family index -> the spell a click casts (highest known single-target rank)
 local blessCaster = false  -- the player can cast any blessing (every blessing is then read)
 local groupTank = false  -- a group member has the tank role (full passes)
 local solo = true        -- not in a group (full passes)
@@ -222,12 +228,14 @@ end
 
 -- Blessing priority per member. Forever has one spec per class, so hybrids
 -- go by assigned role: Damage-role Paladins, Shamans and Druids and tank
--- Druids take the melee list, every other member the caster list.
+-- Druids take the melee list, every other member without a list of their own
+-- the caster list.
 local BLESS_LISTS = {
     melee  = { "might", "wisdom", "kings" },              -- Ret, Enhancement, Feral
     caster = { "wisdom", "kings", "might" },              -- casters, healers, Prot
     phys   = { "might", "kings", "salvation" },           -- Warrior, Rogue (no mana)
     hunter = { "kings", "wisdom", "might", "salvation" },
+    warlock = { "kings", "wisdom", "might" },
 }
 local raidList = {}  -- scratch: a list with Salvation moved first
 local function BlessingList(unit, role)
@@ -236,6 +244,8 @@ local function BlessingList(unit, role)
     local list
     if class == "HUNTER" then
         list = BLESS_LISTS.hunter
+    elseif class == "WARLOCK" then
+        list = BLESS_LISTS.warlock
     elseif class == "WARRIOR" or class == "ROGUE" then
         list = BLESS_LISTS.phys
     elseif (class == "PALADIN" or class == "SHAMAN" or class == "DRUID")
@@ -349,7 +359,8 @@ local function Knows(fam)
     return false
 end
 
--- Re-reads what the player can cast; true when any buff changed.
+-- Re-reads what the player can cast, and the rank a click casts; true when
+-- any buff changed.
 local function ScanProviders()
     local changed, anyBless = false, false
     for i = 1, NUM_FAMILIES do
@@ -357,6 +368,17 @@ local function ScanProviders()
         local can = Knows(fam)
         if (provider[fam.key] == true) ~= can then
             provider[fam.key] = can
+            changed = true
+        end
+        local id
+        if can then
+            local single = fam.single
+            for r = #single, 1, -1 do
+                if C_SpellBook.IsSpellKnown(single[r]) then id = single[r]; break end
+            end
+        end
+        if castID[i] ~= id then
+            castID[i] = id
             changed = true
         end
         if can and fam.blessing then anyBless = true end
@@ -485,6 +507,75 @@ local function Layout(o, s, health, list, n)
     o:Show()
 end
 
+-------------------------------------------------------------------------------
+--  Click to cast
+-------------------------------------------------------------------------------
+-- A left click on an icon casts that buff (castID) on the frame's member.
+-- Secure buttons can only be set up out of combat, so each unit button gets
+-- a container that a state driver hides in combat; the buttons follow the
+-- icons again when combat ends. The container and its buttons take the unit
+-- from the unit button (useparent-unit), so a member the secure header
+-- reassigns still resolves. The buttons are anchored to the container by
+-- offsets read from the icons, never to the overlay: a protected frame
+-- anchored to it would make every in-combat move of the overlay a blocked
+-- action. Right and middle clicks, and hovering, reach the frame beneath.
+local clickPending = {}  -- unit button -> its icons changed in combat
+
+local function ClickContainer(btn, d)
+    local c = d.fvClick
+    if c then return c end
+    c = CreateFrame("Frame", nil, btn)
+    c:SetAllPoints(btn)
+    c:SetFrameLevel(btn:GetFrameLevel() + ns.LVL_MARKER + 3)
+    c:SetAttribute("useparent-unit", true)
+    c.buttons = {}
+    RegisterStateDriver(c, "visibility", "[combat] hide; show")
+    d.fvClick = c
+    return c
+end
+
+local function ClickButton(c, i)
+    local b = CreateFrame("Button", nil, c, "SecureActionButtonTemplate")
+    b:RegisterForClicks("LeftButtonDown", "LeftButtonUp")
+    b:SetPassThroughButtons("RightButton", "MiddleButton")
+    b:SetMouseMotionEnabled(false)
+    b:SetAttribute("useparent-unit", true)
+    b:SetAttribute("type", "spell")
+    c.buttons[i] = b
+    return b
+end
+
+-- One button over each of the n icons of o (family indices in list), none
+-- for n = 0. In combat it only notes the button for the combat-end pass.
+local function SyncClicks(btn, d, o, list, n)
+    if InCombatLockdown() then
+        clickPending[btn] = true
+        return
+    end
+    clickPending[btn] = nil
+    local c = d.fvClick
+    if n == 0 and not c then return end
+    c = c or ClickContainer(btn, d)
+    local cl, ct, cs = c:GetLeft(), c:GetTop(), c:GetEffectiveScale()
+    for i = 1, NUM_FAMILIES do
+        local b = c.buttons[i]
+        local id = i <= n and castID[list[i]]
+        local bg = id and o.slots[i].bg
+        local l, t = bg and bg:GetLeft(), bg and bg:GetTop()
+        if l and t and cl and ct then
+            b = b or ClickButton(c, i)
+            local k = bg:GetEffectiveScale() / cs
+            b:ClearAllPoints()
+            b:SetPoint("TOPLEFT", c, "TOPLEFT", l * k - cl, t * k - ct)
+            b:SetSize(bg:GetWidth() * k, bg:GetHeight() * k)
+            b:SetAttribute("spell", id)
+            b:Show()
+        elseif b then
+            b:Hide()
+        end
+    end
+end
+
 local paintList = {}
 local function PaintButton(btn, d)
     if not d.health then return end
@@ -493,6 +584,7 @@ local function PaintButton(btn, d)
     local o = d.fvMissing
     if not on then
         if o then HideOverlay(o) end
+        SyncClicks(btn, d, o, paintList, 0)
         return
     end
     local unit = btn:GetAttribute("unit")
@@ -519,12 +611,16 @@ local function PaintButton(btn, d)
             end
         end
     end
-    if n == 0 and not o then return end
+    if n == 0 and not o then
+        SyncClicks(btn, d, o, paintList, 0)
+        return
+    end
     if not o then
         o = Overlay(btn, btn:GetFrameLevel() + ns.LVL_MARKER)
         d.fvMissing = o
     end
     Layout(o, s, d.health, paintList, n)
+    SyncClicks(btn, d, o, paintList, n)
 end
 
 local function PaintUnit(unit)
@@ -688,6 +784,14 @@ world:SetScript("OnEvent", function(_, event, rtype)
         -- A buff learned or lost (a rank trained, the Divine Spirit talent
         -- taken or dropped) re-reads everyone; anything else costs one scan.
         if ScanProviders() then MarkAll() end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        -- Combat over: the click buttons of every frame painted in combat
+        -- follow its icons again.
+        local GetFFD = ns.GetFFD
+        for b in pairs(clickPending) do
+            clickPending[b] = nil
+            PaintButton(b, GetFFD(b))
+        end
     elseif event == "ADDON_RESTRICTION_STATE_CHANGED" then
         -- A restriction starting or lifting changes which buffs can be read.
         -- The pass runs next frame, after the activation dispatch, so it reads
@@ -717,6 +821,8 @@ local function SetEvents(on)
         world:RegisterEvent("ADDON_RESTRICTION_STATE_CHANGED")
         -- What the player can cast (only a priest, druid or paladin gets here).
         world:RegisterEvent("SPELLS_CHANGED")
+        -- The click buttons catch up with the icons after combat.
+        world:RegisterEvent("PLAYER_REGEN_ENABLED")
     else
         world:UnregisterAllEvents()
     end
@@ -788,6 +894,7 @@ function ns.RF_FvMissingUnit(btn, d, unit)
     if not unit then
         -- An emptied button hides: its glows leave the driver with it.
         if d.fvMissing then HideOverlay(d.fvMissing) end
+        SyncClicks(btn, d, d.fvMissing, paintList, 0)
         return
     end
     pendingBtns[btn] = true
