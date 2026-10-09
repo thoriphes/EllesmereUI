@@ -4301,12 +4301,13 @@ end
 
 -- WoW Forever collector: the Camp Benefits campfire buff and the user's custom
 -- spell IDs, absence only (no expiry thresholds). A custom ID counts as up
--- while any spell of its rank family is (EABR.ForeverFamily). Entries are
--- display-only textures carrying the spell for the tooltip; presence goes
--- through PlayerHasAuraByID, so combat falls back to the pre-pull snapshot
--- exactly like the Auras section. Camp Benefits is skipped under the aura lock
--- and in PvP. The one-slot id table, the cached families and the dismiss-key
--- memo keep the pass allocation-free.
+-- while any spell of its rank family is (EABR.ForeverFamily). A custom spell
+-- shows only while the player knows it, as a click-to-cast button (cast on
+-- the player); Camp Benefits stays a display-only texture carrying the spell
+-- for the tooltip. Presence goes through PlayerHasAuraByID, so combat falls
+-- back to the pre-pull snapshot exactly like the Auras section. Camp Benefits
+-- is skipped under the aura lock and in PvP. The one-slot id table, the cached
+-- families and the dismiss-key memo keep the pass allocation-free.
 function EABR.CollectForever(missing, inInstance, inPvP, restricted)
     local fo = db.profile.forever
     if not fo or not EABR.SectionShows(fo.whereToShow, inInstance) then return end
@@ -4341,11 +4342,11 @@ function EABR.CollectForever(missing, inInstance, inPvP, restricted)
     if not keys then keys = {}; EABR._foreverKeys = keys end
     for i = 1, #custom do
         local id = custom[i]
-        if not PlayerHasAuraByID(EABR.ForeverFamily(id)) then
+        if Known(id) and not PlayerHasAuraByID(EABR.ForeverFamily(id)) then
             local dk = keys[id]
             if not dk then dk = "forever:" .. id; keys[id] = dk end
             local e = AcquireEntry()
-            e.mode = "texture"; e.spellID = id
+            e.mode = "spell"; e.spellID = id
             e.texture = Tex(id)
             e.label = ShortLabel(SpellName(id) or tostring(id))
             e.cat = "forever"; e.dismissKey = dk
