@@ -2312,9 +2312,7 @@ if EABR.FOREVER then
         whereToShow = {},   -- section "Where to Show" (an absent bucket = shown)
         customIDs = {},     -- spell IDs the user tracks, in the order added
         palAura = false,        -- paladin: aura reminder
-        palBlessings = false,   -- paladin: one blessing button per party member
         palRF = false,          -- paladin: Righteous Fury while grouped as Tank
-        blessingOverride = {},  -- [character name] = blessing key from the member's list (right-click)
     }
 end
 
@@ -3268,10 +3266,9 @@ local function GetOrCreateIcon(index)
 
     -- Middle-click dismiss: hide this reminder until the next loading screen.
     -- Right-click on a multi-pet-cycle reminder previews the next pet without
-    -- casting; on a WoW Forever blessing button it switches that member to
-    -- the next blessing (ShowIcon's pass-through toggle decides whether this
-    -- reminder claims the click at all, vs letting it fall through like every
-    -- other reminder does).
+    -- casting (ShowIcon's pass-through toggle decides whether this reminder
+    -- claims the click at all, vs letting it fall through like every other
+    -- reminder does).
     btn:HookScript("PostClick", function(self, button)
         if button == "MiddleButton" and self._dismissKey then
             _dismissedUntilLoad[self._dismissKey] = true
@@ -3279,8 +3276,6 @@ local function GetOrCreateIcon(index)
         elseif button == "RightButton" and self._petCycleTotal then
             EABR._petCycleIndex = ((EABR._petCycleIndex or 1) % self._petCycleTotal) + 1
             if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
-        elseif button == "RightButton" and self._blessNext then
-            EABR.SetBlessingOverride(self._blessName, self._blessNext)
         end
     end)
 
@@ -3390,7 +3385,6 @@ do
         e.substitute = nil
         e.groupHave = nil
         e.groupTotal = nil
-        e.blessName = nil; e.blessNext = nil
         return e
     end
 
@@ -3509,15 +3503,12 @@ local function ShowIcon(iconIdx, m)
     local btn = GetOrCreateIcon(iconIdx)
     btn._dismissKey = m.dismissKey or nil
     btn._petCycleTotal = m.petCycleTotal or nil
-    btn._blessName = m.blessName or nil
-    btn._blessNext = m.blessNext or nil
     -- Right-click is passed through to whatever's behind (e.g. camera drag)
-    -- for every other reminder; only a multi-pet cycle button and a blessing
-    -- button with another blessing to switch to claim it.
+    -- for every other reminder; only a multi-pet cycle button claims it.
     -- Click-routing changes are combat-protected, same as the attribute
     -- writes below, so this only ever runs OOC.
     if not InCombat() then
-        local wantRightCapture = (m.petCycleTotal or m.blessNext) and true or false
+        local wantRightCapture = m.petCycleTotal and true or false
         if btn._petCycleRightCapture ~= wantRightCapture then
             btn._petCycleRightCapture = wantRightCapture
             if wantRightCapture then
@@ -4634,13 +4625,11 @@ function EABR.CollectForeverRaidBuffs(missing, playerClass, inInstance)
 end
 
 -------------------------------------------------------------------------------
---  WoW Forever paladin buffs: the aura, Righteous Fury, and one blessing
---  button per party member (the player included). Each is opt-in, absence
---  only, read out of combat (the aura lock throws in combat) and shown in all
---  content. Per family, `ids` lists every rank lowest first (plus the Greater
---  and alternate IDs that occupy the same slot); `cast` lists the trainer
---  ranks the button may cast, the highest learned one winning. Data and the
---  spell -> family map live on EABR (file-scope local cap).
+--  WoW Forever paladin buffs: the aura and Righteous Fury (blessings are the
+--  Raid Frames Missing Buffs indicator's). Each is opt-in, absence only, read
+--  out of combat (the aura lock throws in combat) and shown in all content.
+--  Per family, `ids` lists every rank lowest first; the highest learned one
+--  is cast. Data and the spell -> family map live on EABR (file-scope local cap).
 -------------------------------------------------------------------------------
 if EABR.FOREVER then
     EABR.PAL = {
@@ -4653,28 +4642,8 @@ if EABR.FOREVER then
             { key="shadow", ids={19876, 19895, 19896} },
             { key="frost",  ids={19888, 19897, 19898} },
         },
-        -- Salvation is picked only for Warriors, Rogues and Hunters; Light is
-        -- never picked. Otherwise both only mark a member as already holding
-        -- one of the player's blessings.
-        blessings = {
-            might     = { cast={19740, 19834, 19835, 19836, 19837, 19838, 25291},
-                          ids={19740, 19834, 19835, 19836, 19837, 19838, 25291, 25782, 25916} },
-            wisdom    = { cast={19742, 19850, 19852, 19853, 19854, 25290},
-                          ids={19742, 19850, 19852, 19853, 19854, 25290, 25894, 25918} },
-            kings     = { cast={20217}, ids={20217, 25898, 1213408} },
-            salvation = { cast={1038}, ids={1038, 25895} },
-            light     = { cast={19977, 19978, 19979}, ids={19977, 19978, 19979, 25890, 26650} },
-        },
         rf = { 407627, 25780 },
-        -- Blessing priority by member: class, then group role for hybrids.
-        lists = {
-            melee  = { "might", "wisdom", "kings" },   -- Ret Paladin, Enhancement Shaman, Feral Druid
-            caster = { "wisdom", "kings", "might" },   -- casters, healers, Prot Paladin
-            phys   = { "might", "kings", "salvation" }, -- Warrior, Rogue (no mana: no Wisdom)
-            hunter = { "kings", "wisdom", "might", "salvation" },
-        },
         mine = {}, other = {},                         -- ScanPaladinBuffs scratch
-        keys = {},                                     -- dismiss-key memo by member name
     }
 end
 
@@ -4684,9 +4653,6 @@ function EABR.InitForeverPaladin()
     local fam = {}
     for _, a in ipairs(PAL.auras) do
         for _, id in ipairs(a.ids) do fam[id] = a.key end
-    end
-    for key, b in pairs(PAL.blessings) do
-        for _, id in ipairs(b.ids) do fam[id] = key end
     end
     for _, id in ipairs(PAL.rf) do fam[id] = "rf" end
     PAL.familyOf = fam
@@ -4721,109 +4687,14 @@ function EABR.PaladinBestRank(ranks)
     return nil
 end
 
--- Blessing priority list for a member. Forever has one spec ID per class, so
--- hybrids go by assigned group role: Damage = the melee list, and a Druid tank
--- too. The assigned role is read directly for the player as well:
--- UnitEffectiveRole prefers the spec's role, which on Forever is the one
--- starter spec whenever a compat shim defines GetSpecialization.
-function EABR.PaladinBlessingList(u, class)
-    local lists = EABR.PAL.lists
-    if class == "HUNTER" then return lists.hunter end
-    if class == "WARRIOR" or class == "ROGUE" then return lists.phys end
-    if class == "PALADIN" or class == "SHAMAN" or class == "DRUID" then
-        local role = UnitGroupRolesAssigned(u)
-        if role ~= nil and not isSecret(role)
-           and (role == "DAMAGER" or (role == "TANK" and class == "DRUID")) then
-            return lists.melee
-        end
-    end
-    return lists.caster
-end
-
--- First blessing (the manual override ahead of the list, when it is still in
--- the list) the player has learned and no other paladin already holds on the
--- member. Returns the family key and the rank to cast, or nil.
-function EABR.PaladinPickBlessing(list, override, other)
-    local B = EABR.PAL.blessings
-    local inList = false
-    for i = 1, #list do
-        if list[i] == override then inList = true end
-    end
-    if inList and not other[override] then
-        local id = EABR.PaladinBestRank(B[override].cast)
-        if id then return override, id end
-    end
-    for i = 1, #list do
-        local key = list[i]
-        if not other[key] then
-            local id = EABR.PaladinBestRank(B[key].cast)
-            if id then return key, id end
-        end
-    end
-    return nil
-end
-
--- The blessing a right-click switches to: the next one in the member's list
--- after `key` that is castable on the member, or nil when there is no alternative.
-function EABR.PaladinNextBlessing(key, other, cycle)
-    local B = EABR.PAL.blessings
-    local n, start = #cycle, 1
-    for i = 1, n do
-        if cycle[i] == key then start = i end
-    end
-    for step = 1, n - 1 do
-        local k = cycle[(start + step - 1) % n + 1]
-        if not other[k] and EABR.PaladinBestRank(B[k].cast) then return k end
-    end
-    return nil
-end
-
--- Right-click on a blessing button: that member gets `key` from now on
--- (saved by character name, per profile).
-function EABR.SetBlessingOverride(name, key)
-    local fo = db and db.profile.forever
-    if not (fo and name and key) then return end
-    fo.blessingOverride = fo.blessingOverride or {}
-    fo.blessingOverride[name] = key
-    if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
-end
-
--- One blessing button for `u` when it holds none of the player's blessings,
--- reading the ScanPaladinBuffs result for that unit. Click casts on the unit.
-function EABR.AddPaladinBlessing(missing, u, fo)
-    local PAL = EABR.PAL
-    local mine, other = PAL.mine, PAL.other
-    for key in pairs(PAL.blessings) do
-        if mine[key] then return end
-    end
-    local name = UnitName(u)
-    if name == nil or isSecret(name) then return end
-    local _, class = UnitClass(u)
-    if class == nil or isSecret(class) then return end
-    local override = fo.blessingOverride and fo.blessingOverride[name]
-    local list = EABR.PaladinBlessingList(u, class)
-    local key, id = EABR.PaladinPickBlessing(list, override, other)
-    if not key then return end
-    local dk = PAL.keys[name]
-    if not dk then dk = "forever:bless:" .. name; PAL.keys[name] = dk end
-    local e = AcquireEntry()
-    e.mode = "spell"; e.spellID = id; e.unit = u
-    e.label = name
-    e.cat = "forever"; e.dismissKey = dk
-    e.blessName = name
-    e.blessNext = EABR.PaladinNextBlessing(key, other, list)
-    missing[#missing+1] = e
-end
-
 -- WoW Forever paladin collector. The aura reminds when the player runs none
 -- or the same one as another paladin, and casts the first aura in priority
--- order that nobody else runs. Righteous Fury: grouped as Tank. Blessings:
--- the player, plus each party member in range (raids are not covered).
--- Out of combat only; no "Where to Show" filtering.
+-- order that nobody else runs. Righteous Fury: grouped as Tank. Out of
+-- combat only; no "Where to Show" filtering.
 function EABR.CollectForeverPaladin(missing, restricted)
     local fo = db.profile.forever
     if restricted or not fo or GetPlayerClass() ~= "PALADIN" then return end
-    if not (fo.palAura or fo.palBlessings or fo.palRF) then return end
+    if not (fo.palAura or fo.palRF) then return end
     local PAL = EABR.PAL
     if not PAL.familyOf then EABR.InitForeverPaladin() end
     if not EABR.ScanPaladinBuffs("player") then return end
@@ -4858,16 +4729,6 @@ function EABR.CollectForeverPaladin(missing, restricted)
             e.label = ShortLabel(SpellName(id) or tostring(id))
             e.cat = "forever"; e.dismissKey = "forever:rf"
             missing[#missing+1] = e
-        end
-    end
-
-    if not fo.palBlessings then return end
-    EABR.AddPaladinBlessing(missing, "player", fo)
-    if not IsInGroup() or IsInRaid() then return end
-    for i = 1, GetNumSubgroupMembers() do
-        local u = "party" .. i
-        if _unitOk(u) and UnitIsPlayer(u) and _unitInRange(u) and EABR.ScanPaladinBuffs(u) then
-            EABR.AddPaladinBlessing(missing, u, fo)
         end
     end
 end
@@ -6140,19 +6001,14 @@ function EABR:OnEnable()
     -- Registers broad UNIT_AURA only when the class needs group aura tracking AND only OOC: it fires 100+/sec in a raid, but in-combat CollectRaidBuffs only checks the player's own auras (PlayerHasAuraByID), so group events are pure waste. Evoker keeps broad in combat for ownOnRaid cache updates but skips RequestRefresh on group events (handler below).
     local function UpdateGroupAuraRegistration()
         -- WoW Forever: Raid Buffs has its own group watch, synced by every
-        -- refresh (EABR.FvSyncGroupWatch); the paladin buffs are the only
-        -- group reader registered here. Blessings read party members' auras
-        -- and range; all three follow roster and role changes and newly
-        -- learned ranks. With every toggle off (or not a paladin) nothing is
-        -- registered beyond the player-only UNIT_AURA from file scope,
-        -- whichever caller (loading screen, profile, options) runs this pass.
+        -- refresh (EABR.FvSyncGroupWatch). The paladin aura and Righteous
+        -- Fury read only the player's auras, but follow roster and role
+        -- changes and newly learned ranks. With both off (or not a paladin)
+        -- nothing is registered beyond the player-only UNIT_AURA from file
+        -- scope, whichever caller (loading screen, profile, options) runs this pass.
         if EABR.FOREVER then
             local fo = db.profile.forever
-            local isPal = fo and GetPlayerClass() == "PALADIN"
-            local bless = isPal and fo.palBlessings == true or false
-            local any = isPal and (fo.palAura or fo.palBlessings or fo.palRF) and true or false
-            _needGroupAura = bless
-            EABR._needsGroupAuraRefresh = bless
+            local any = fo and GetPlayerClass() == "PALADIN" and (fo.palAura or fo.palRF) and true or false
             EABR._rosterRefresh = any
             if any then
                 mainFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
@@ -6163,9 +6019,6 @@ function EABR:OnEnable()
                 mainFrame:UnregisterEvent("PLAYER_ROLES_ASSIGNED")
                 mainFrame:UnregisterEvent("SPELLS_CHANGED")
             end
-            _setBroad(bless and not InCombat())
-            EABR._foreverRangeWanted = bless
-            if EABR.SetForeverRangeTracking then EABR.SetForeverRangeTracking(bless) end
             return
         end
         local playerClass = GetPlayerClass()
@@ -6256,10 +6109,8 @@ function EABR:OnEnable()
         mainFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
     end
 
-    -- WoW Forever's Raid Buffs watch tracks its own range (EABR.FvSyncGroupWatch);
-    -- the tracking below feeds only the paladin blessings, switched on and off
-    -- with their toggle (EABR.SetForeverRangeTracking below).
-    if EABR.FOREVER and GetPlayerClass() ~= "PALADIN" then return end
+    -- WoW Forever's Raid Buffs watch tracks its own range (EABR.FvSyncGroupWatch).
+    if EABR.FOREVER then return end
 
     ---------------------------------------------------------------------------
     --  Range updates: UNIT_IN_RANGE_UPDATE mirrors the raid frames' range path, so range changes retrigger group-buff evaluation without polling.
@@ -6341,6 +6192,9 @@ function EABR:OnEnable()
         if _checkAllRangeUnits() then RequestRefresh() end
     end
 
+    rangeFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+    rangeFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+    rangeFrame:RegisterEvent("UNIT_PHASE")
     rangeFrame:SetScript("OnEvent", function(_, event)
         if event == "UNIT_PHASE" then
             _onRangeEvent(nil, event)
@@ -6348,29 +6202,7 @@ function EABR:OnEnable()
             _rebuildRangeTracking()
         end
     end)
-    local function _startRangeTracking()
-        rangeFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-        rangeFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
-        rangeFrame:RegisterEvent("UNIT_PHASE")
-        _rebuildRangeTracking()
-    end
-    if EABR.FOREVER then
-        function EABR.SetForeverRangeTracking(on)
-            on = on and true or false
-            if on == (EABR._foreverRangeOn == true) then return end
-            EABR._foreverRangeOn = on
-            if on then
-                _startRangeTracking()
-            else
-                rangeFrame:UnregisterAllEvents()
-                _clearRangeTrackers()
-                wipe(_lastRangeSet)
-            end
-        end
-        EABR.SetForeverRangeTracking(EABR._foreverRangeWanted)
-    else
-        _startRangeTracking()
-    end
+    _rebuildRangeTracking()
 end
 
 -------------------------------------------------------------------------------
@@ -6390,12 +6222,13 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
     if e == "PLAYER_REGEN_DISABLED" then
         -- First pull of this dungeon visit: the elevated pre-key/pre-pull
         -- threshold (EABR.GetShowUnderMinutes' showUnderMPlus) is over.
-        -- Drops broad UNIT_AURA in combat unless a group reader needs it (EABR.KeepGroupAuraInCombat).
-        if _needGroupAura and not EABR.KeepGroupAuraInCombat() then _setBroad(false) end
-        -- WoW Forever has no pre-key window and no Hunter's Mark reminder:
-        -- the rest of the retail pull bookkeeping is skipped.
+        -- WoW Forever has no pre-key window, none of retail's broad group aura
+        -- registration (its Raid Buffs keep their own watch) and no Hunter's
+        -- Mark reminder: the whole retail pull bookkeeping is skipped.
         if not EABR.FOREVER then
         MarkDungeonPullStarted()
+        -- Drops broad UNIT_AURA in combat unless a group reader needs it (EABR.KeepGroupAuraInCombat).
+        if _needGroupAura and not EABR.KeepGroupAuraInCombat() then _setBroad(false) end
         -- Only flag Hunter's Mark needed if the target doesn't already have it
         _huntersMarkNeeded = true
         if C_UnitAuras and C_UnitAuras.GetUnitAuraBySpellID

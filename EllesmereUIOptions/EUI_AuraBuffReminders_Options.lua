@@ -1462,7 +1462,7 @@ initFrame:SetScript("OnEvent", function(self)
 
             y = BuildForeverCustomRows(parent, y)
 
-            -- PALADIN section (paladins only): Auras | Blessings, Righteous Fury.
+            -- PALADIN section (paladins only): Auras | Righteous Fury.
             -- Each toggle also re-runs the event registration, since only an
             -- enabled reminder may register anything.
             if select(2, UnitClass("player")) == "PALADIN" then
@@ -1479,13 +1479,8 @@ initFrame:SetScript("OnEvent", function(self)
                 _, h = W:DualRow(parent, y,
                     PalToggle("palAura", "Auras",
                         "Reminds you when you run no aura, or the same aura as another paladin.\nClick casts the first aura nobody else runs: Retribution, Devotion, Concentration, then Fire, Shadow and Frost Resistance.\nShown everywhere except rested areas; uses the WoW Forever reminder sound."),
-                    PalToggle("palBlessings", "Blessings",
-                        "One button per party member (you included) who has none of your blessings.\nClick casts the blessing their class and role want most that no other paladin has given them. Right-click switches that player to your next blessing and remembers it.\nShown everywhere except rested areas; uses the WoW Forever reminder sound.")
-                );  y = y - h
-                _, h = W:DualRow(parent, y,
                     PalToggle("palRF", "Righteous Fury",
-                        "Reminds you when Righteous Fury is missing while you are in a group with the Tank role.\nShown everywhere except rested areas; uses the WoW Forever reminder sound."),
-                    EllesmereUI.BlankRowCfg()
+                        "Reminds you when Righteous Fury is missing while you are in a group with the Tank role.\nShown everywhere except rested areas; uses the WoW Forever reminder sound.")
                 );  y = y - h
             end
 
