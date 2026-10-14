@@ -976,7 +976,7 @@ function NameplateFrame:SetUnit(unit, nameplate)
     if ns.NPC_AttachPlate then ns.NPC_AttachPlate(self, unit) end
     if ns.DebuffColors_Attach then ns.DebuffColors_Attach(self, unit) end
     -- Non-Target Opacity (zero cost while off: one numeric compare).
-    if ns._ntAlpha < 1 then ns.NT_Apply(self) end
+    if ns._ntAlpha < 1 or ns._tfHidden then ns.NT_Apply(self) end
     -- Execute glow is per-spawn state, not appearance: ApplyAppearance is generation-cached
     -- (skipped on recycled plates) and the threshold watcher only reaches plates active at flip
     -- time, so a plate pooled during a no-execute window would return glowless. Re-assert.
