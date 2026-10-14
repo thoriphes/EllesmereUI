@@ -799,6 +799,7 @@ function NameplateFrame:UNIT_NAME_UPDATE()
 end
 function NameplateFrame:UNIT_THREAT_LIST_UPDATE()
     self:UpdateHealthColor()
+    if ns._trivOn then ns.TRIV_Eval(self) end
 end
 -- Faction badge: faction and PvP flag changes. The tap-state repaint rides the
 -- shared UNIT_FACTION handler (factionFrame), not this one.
