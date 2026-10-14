@@ -394,9 +394,9 @@ initFrame:SetScript("OnEvent", function(self)
         -- player's real EUI_* macros on bag/spec events), so the hidden search
         -- pre-build must never run it, and its rows are kept out of the search index so
         -- results can never point into it (the index would otherwise deep-link to rows
-        -- whose page state the factory manages itself). WoW Forever has no Macro
-        -- Factory: never built there, so none of its machinery runs.
-        if EllesmereUI.BuildMacroFactory and not EllesmereUI._prebuilding and not EllesmereUI.IS_FOREVER then
+        -- whose page state the factory manages itself). WoW Forever builds it with
+        -- that client's own general list (EllesmereUI.BuildMacroFactory).
+        if EllesmereUI.BuildMacroFactory and not EllesmereUI._prebuilding then
             EllesmereUI._searchIndexSuppress = true
             local mfH = EllesmereUI.BuildMacroFactory(parent, y, PP)
             EllesmereUI._searchIndexSuppress = nil
