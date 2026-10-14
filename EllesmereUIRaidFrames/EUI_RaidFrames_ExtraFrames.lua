@@ -26,7 +26,7 @@ local CreateFrame           = CreateFrame
 local allButtons, ApplyFont, GetFFD = I.allButtons, I.ApplyFont, I.GetFFD
 local IsPowerBarEnabled, PixelSnap = I.IsPowerBarEnabled, I.PixelSnap
 local unitToButton, StyleButton, UpdateButton = I.unitToButton, I.StyleButton, I.UpdateButton
-local UpdateReadyCheck = I.UpdateReadyCheck
+local UpdateReadyCheck, LayoutTopNameBar = I.UpdateReadyCheck, I.LayoutTopNameBar
 
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
@@ -161,6 +161,16 @@ XF.ResolveUnits = function()
     return units
 end
 
+-- The pitch between the duplicates. Attached beside Compact raid frames they take
+-- the groups' one pixel, so their rows stay level with the groups' (FB.Pitch: the
+-- boss group does the same).
+XF.Pitch = function(set, s)
+    if set and set.position ~= "free" and ns.RF_CompactOn(db.profile, false) then
+        return ns.RF_OnePixel(false)
+    end
+    return s.cellSpacing or 2
+end
+
 -- Geometry only: container size, button stacking, per-button size (Extra
 -- Width/Height offsets) and height-derived inner corrections (mirrors
 -- ns._ResizeButtons). All VISUALS come from the shared StyleButton /
@@ -190,7 +200,8 @@ XF.Layout = function()
     ns._xfExtraRatio = ratio
     if ns._RefreshProxyModes then ns._RefreshProxyModes() end
     ns._xfBmScale = (ns._bmScale or 1) * ratio
-    local sp = s.cellSpacing or 2
+    local sp = XF.Pitch(set, s)
+    XF.pitch = sp
     -- Free Move lays out on its own axes; attached modes stack group-sized
     -- runs of 5 (unitGrowth within a run, group growth across).
     local grow, wrap, horizontal = XF.GrowInfo(set, s)
@@ -260,6 +271,14 @@ XF.Layout = function()
         -- the extra proxy (mirrors ReloadFrames per-button styling) so texts/
         -- indicators/auras/BM buffs auto-resize. Bounded to the built slots.
         local xs = ns._scaledExtraProxy
+        if xs.topNameBarDivider == true or (d.topNameBar and d.topNameBar._divider) then
+            LayoutTopNameBar(xs, h, (d.power and d.power:IsShown()) and powerH or 0,
+                d.health, d.topNameBar, d.topNameBarBg, d.topNameBarText, d.power)
+            if xs.topNameBarDividerMatchColor == true and d.topNameBar and d.topNameBar._divider
+                and d.topNameBar._divider._powerArtMode == "divider" then
+                d.ApplyBorderColor()
+            end
+        end
         if d.nameText then
             ApplyFont(d.nameText, xs.nameSize or 10)
             if d.AnchorNameText then d.AnchorNameText() end
