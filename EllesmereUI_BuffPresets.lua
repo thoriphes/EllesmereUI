@@ -242,6 +242,7 @@ spells = {
         [185311] = { class = "ROGUE" },
         [108271] = { class = "SHAMAN" },
         [260881] = { class = "SHAMAN" },
+        [381755] = { class = "SHAMAN" },
         [108416] = { class = "WARLOCK" },
         [104773] = { class = "WARLOCK" },
         [132413] = { class = "WARLOCK" },
@@ -601,5 +602,17 @@ if EllesmereUI.IS_FOREVER == true then
             single = { 6673, 5242, 6192, 11549, 11550, 11551, 25289 }, group = {},
             ids = { 6673, 5242, 6192, 11549, 11550, 11551, 25289, 9128, 24438, 25101, 26043, 26099,
                     27578 } },
+    }
+end
+
+-- WoW Forever on-next-swing attacks per class (base spell IDs; every rank
+-- shares the name the readers compare). While one is queued the Resource
+-- Bars swing timer paints its melee rows and the Cooldown Manager lights the
+-- attack's icons. Built on WoW Forever only: retail has no such attacks.
+if EllesmereUI.IS_FOREVER == true then
+    EllesmereUI.FOREVER_NEXT_SWING = {
+        WARRIOR = { 78, 845 },  -- Heroic Strike, Cleave
+        DRUID   = { 6807 },     -- Maul
+        HUNTER  = { 2973 },     -- Raptor Strike
     }
 end

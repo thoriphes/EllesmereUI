@@ -781,7 +781,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
     if self.totText then self.totText:Hide() end
     -- Slot assignments may change element kinds: drop the value memo so the
     -- next UpdateHealthValues rewrites every slot's content.
-    self._hpTxtPct, self._hpTxtCur = nil, nil
+    self._hpTxtPct, self._hpTxtCur, self._hpTxtMax = nil, nil, nil
     if not self._cachedHealthSlots then
         self._cachedHealthSlots = { _count = 0 }
     end
@@ -1062,11 +1062,6 @@ function NameplateFrame:SetUnit(unit, nameplate)
             self:ApplyTarget()
             self:ApplyMouseover()
             self:UpdateCast()
-            -- Mirrored class colour only: on a fresh plate Blizzard's own SetUnit may not have
-            -- run yet, in which case the same-unit guard refused to mirror and the plate is
-            -- wearing the plain fallback. Retry once a frame later so it does not sit there
-            -- until the unit's next health event.
-            if self._mirrorPending then self:UpdateHealthColor() end
         end
     end
     C_Timer.After(0, self._deferredSetupCB)
@@ -1151,7 +1146,6 @@ function NameplateFrame:ClearUnit()
     self._absorbHidden = nil
     self._maxHPValid = nil
     self._lastHCr, self._lastHCg, self._lastHCb = nil, nil, nil
-    self._mirrorPending = nil
     -- Threat Colors border/text channels: drop the skip-if-unchanged caches so a recycled
     -- plate always repaints for its new unit. _threatBdOn / _threatNameOn are deliberately
     -- LEFT set -- they record that the border and name still carry a threat tint, and the
@@ -1162,7 +1156,7 @@ function NameplateFrame:ClearUnit()
     self._scUnit = nil
     -- Health-text value memo (UpdateHealthValues): a recycled plate must
     -- always write its first values, never skip against the old unit's.
-    self._hpTxtPct, self._hpTxtCur = nil, nil
+    self._hpTxtPct, self._hpTxtCur, self._hpTxtMax = nil, nil, nil
     self._ovFocShown, self._ovTgtShown = nil, nil
     self._focusLetterShown = nil
     if self._tptShown then self.threatPctText:Hide() end

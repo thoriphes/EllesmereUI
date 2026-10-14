@@ -373,7 +373,7 @@ local defaults = {
     factionStyle = "pvp",  -- Icon Style: a key of EllesmereUI.FACTION_ART
     classificationIncludeFaction = false,  -- "Rare/Quest + Faction": the badge shares the classification slot
     -- The classification element's two halves, each switchable in Core Positions:
-    -- the Rare Indicator (elite and rare marks) and the Quest Indicator.
+    -- the Elite/Rare Indicator (elite and rare marks) and the Quest Indicator.
     classificationHideRare = false,
     classificationHideQuest = false,
     factionOppositeOnly = false,
@@ -424,6 +424,7 @@ local defaults = {
     rangeTextOffsetY = 0,
     rangeTextColor = { r = 0.816, g = 0.357, b = 0.220 },  -- #D05B38
     maxDebuffs = 5,
+    showAuraTooltips = false,  -- Buff / Debuff icons show their tooltip on hover
     showBorder = true,
     borderSize = 1,
     borderColor = { r = 0.067, g = 0.067, b = 0.067 },
@@ -619,6 +620,8 @@ function ns.ApplyCustomBorderStyle(plate, szOverride)
         bf = CreateFrame("Frame", nil, plate.health)
         bf:SetAllPoints(plate.health)
         plate._customBorder = bf
+        -- Plates move by sub-pixels: the Pixels styles need their edge fill.
+        EllesmereUI.SetBorderEdgeFill(bf, true)
     end
     -- Health bars flatten render layers: a BORDER-layer backdrop would be clipped by the
     -- ARTWORK health fill, so lift it onto MEDIUM strata (same escape the plate uses for
@@ -635,6 +638,9 @@ function ns.ApplyCustomBorderStyle(plate, szOverride)
     -- The size it is drawn at (a target/hover effect size included): the cast bar
     -- wrap's lower piece and seam copy it (ns.NP_UpdateCustomBorderWrap).
     bf._cbTex, bf._cbSz, bf._cbPx = tex, sz, px
+    -- A target/hover effect size redraws a rounded glow at that size (ApplyBorder
+    -- rounds after its own call).
+    if szOverride and plate._npRounded then ns.NP_ApplyRounding(plate, "health") end
 end
 function ns.ApplyCustomBorderColor(plate)
     if not plate or not plate._customBorder then return end
@@ -704,6 +710,7 @@ function ns.NP_UpdateCustomBorderWrap(plate)
             lower:SetPoint("TOPRIGHT", plate.health, "BOTTOMRIGHT", 0, 0)
             lower:SetPoint("BOTTOM", cast, "BOTTOM", 0, 0)
             plate._cbWrapLower = lower
+            EUI.SetBorderEdgeFill(lower, true)
         end
         -- Above the cast spell icon, re-set every pass (a strata change on the lifted
         -- cast bar resets its children's levels).
@@ -794,6 +801,7 @@ function ns.NP_SetWrapJoin(plate, on, tex, r, g, b, a)
             joined.BottomLeftCorner:Show()
             joined.BottomRightCorner:Show()
             bf._cbJoinBd = nil
+            EllesmereUI.SyncBorderEdgeFill(bf)
         end
         if lower and lower._cbFillL then
             lower._cbFillL:Hide()
@@ -808,6 +816,8 @@ function ns.NP_SetWrapJoin(plate, on, tex, r, g, b, a)
     lbd.TopEdge:Hide()
     lbd.TopLeftCorner:Hide()
     lbd.TopRightCorner:Hide()
+    EllesmereUI.SyncBorderEdgeFill(bf)
+    EllesmereUI.SyncBorderEdgeFill(lower)
     local fl, fr = lower._cbFillL, lower._cbFillR
     if not fl then
         fl = lower:CreateTexture(nil, "BORDER")

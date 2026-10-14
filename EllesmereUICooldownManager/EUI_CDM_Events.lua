@@ -127,6 +127,9 @@ local function ScheduleTalentRebuild()
             if db and db.sv and db.sv.multiChargeSpells then
                 wipe(db.sv.multiChargeSpells)
             end
+            -- Hidden Outside Form/Stance answers (a talent can change which
+            -- forms a spell needs)
+            if ns.CdmWipeFormCache then ns.CdmWipeFormCache() end
         end
         -- Rebuild the cdID route map against the new talent set. The stored
         -- assignedSpells is left untouched (it's pure user intent); the route map is
@@ -183,8 +186,15 @@ local function ScheduleRosterRebuild()
     if ns.QueueReanchor then ns.QueueReanchor() end
 end
 
+-- Events that can move an ability to another action button (Bar Glows keyed per ability).
+local BAR_REBIND_EVENTS = {
+    ACTIONBAR_SLOT_CHANGED = true, ACTIONBAR_PAGE_CHANGED = true, UPDATE_BONUS_ACTIONBAR = true,
+    UPDATE_SHAPESHIFT_FORM = true, SPELLS_CHANGED = true,
+}
+
 eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
     if not ECME.db then return end
+    if ns._barGlowRebindOn and BAR_REBIND_EVENTS[event] then ns.QueueBarGlowRebind(event, unit) end
     if event == "PLAYER_LOGOUT" then
         ns.SaveCachedBarSizes()
         return

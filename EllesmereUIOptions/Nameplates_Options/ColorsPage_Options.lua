@@ -44,14 +44,14 @@ if EllesmereUI.IS_FOREVER then
             GapColor("threatGapAheadColor", "Ahead Color", "When your threat is higher."),
             GapColor("threatGapBehindColor", "Behind Color", "When theirs is higher."),
             Slider("threatPctSize", "Size", 6, 20),
-            Slider("threatPctXOffset", "X Offset", -100, 100),
-            Slider("threatPctYOffset", "Y Offset", -100, 100),
+            Slider("threatPctXOffset", "X Offset", -300, 300),
+            Slider("threatPctYOffset", "Y Offset", -300, 300),
         }
     end
 end
 
 -- EUI_DEBUFF_COLORS: the per-class debuff lists (the list kit lives in
--- EllesmereUINameplates_DebuffColors.lua). Under CLASSES one expandable card
+-- EllesmereUINameplates_DebuffColors.lua). One expandable card
 -- per class that holds an entry, its icon and its name in its class color on
 -- the header; Add Class, one wide button below them, starts one. Inside, the debuffs run down the left column
 -- and the combos down the right, each with up/down arrows beside its name
@@ -757,12 +757,9 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         end
     end
 
-    -- The cards (the house module card, as on Global Settings > Fonts).
+    -- The cards (the house module card, as on Global Settings > Fonts), the
+    -- first right under the settings above.
     if debuffColorOpen[playerClass] == nil then debuffColorOpen[playerClass] = true end
-    -- CLASSES sits closer to the mode row than a full header's height.
-    if #listed > 0 then
-        _, h = W:SectionHeader(parent, "CLASSES", y + 12); y = y - h + 12
-    end
     for _, entry in ipairs(listed) do
         local class, singles, combos = entry.class, entry.singles, entry.combos
         local tile = { key = class, display = NAME[class],
@@ -925,7 +922,8 @@ local function MakeColorPreviewBar(parentRow, colorType, colorKey, anchorFrame)
                 elseif ns.IsComboHealthText(element) then
                     local valStr = tostring(healthVal):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
                     pctFS:SetTextColor(sc.r, sc.g, sc.b, 1)
-                    ns.SetCombinedHealthText(pctFS, element, healthPct .. "%", valStr)
+                    local maxStr = tostring(FAKE_MAX_HP):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+                    ns.SetCombinedHealthText(pctFS, element, healthPct .. "%", valStr, maxStr)
                     pctFS:SetPoint(slot.anchor, health, slot.anchor, slot.xOff, 0)
                     pctFS:Show()
                 end
@@ -1455,12 +1453,17 @@ local function BuildColorsPage(pageName, parent, yOffset)
     _, h = W:SectionHeader(parent, SECTION_THREAT, y);  y = y - h
 
     -- Show Threat Colors (threatColorMode): Never / Instances (dungeons, raids and
-    -- delves) / Always; an unknown saved value reads as the default. Never locks every
-    -- threat-color control below. The WoW Forever Threat % rows are their own feature
-    -- and stay live.
+    -- delves) / Group or Pet ("always": everywhere) / Always ("alwaysSolo"); an unknown
+    -- saved value reads as the default. Never locks every threat-color control below.
+    -- The WoW Forever Threat % rows are their own feature and stay live. Under the first
+    -- two, damage dealers and healers get the colors in a group or with a pet out; Always
+    -- drops that rule. On WoW Forever the tank shapes and Righteous Fury count as tanking
+    -- while nobody in the group has the tank role.
     local function threatModeGet()
         local v = DBVal("threatColorMode")
-        if v ~= "never" and v ~= "instances" and v ~= "always" then v = defaults.threatColorMode end
+        if v ~= "never" and v ~= "instances" and v ~= "always" and v ~= "alwaysSolo" then
+            v = defaults.threatColorMode
+        end
         return v
     end
     local function threatNever() return threatModeGet() == "never" end
@@ -1468,9 +1471,9 @@ local function BuildColorsPage(pageName, parent, yOffset)
     -- Row 1: Show Threat Colors (left) ---- Tank Threat (right)
     _, h = W:DualRow(parent, y,
         { type="dropdown", text="Show Threat Colors",
-          tooltip="Where nameplates use the threat colors below. Instances covers dungeons, raids and delves.",
-          values={ never="Never", instances="Instances", always="Always" },
-          order={ "never", "instances", "always" },
+          tooltip="Where nameplates show threat colors.",
+          values={ never="Never", instances="Instances", always="Group or Pet", alwaysSolo="Always" },
+          order={ "never", "instances", "always", "alwaysSolo" },
           getValue=threatModeGet,
           setValue=function(v)
             DB().threatColorMode = v
