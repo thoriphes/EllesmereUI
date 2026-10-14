@@ -1731,7 +1731,7 @@ local function BuildPartyPage(pageName, parent, yOffset)
         -- (The Party Frames kit keeps its own spacing, set in its Frame
         -- Scale cog, so the Raid Frames layout's value survives a switch
         -- between the two.)
-        ns.RF_PartyKitGate({ type="slider", pixel=true, text="Frame Spacing", min=-5, max=15, step=1,
+        ns.RF_PartyKitGate({ type="slider", pixel=true, text="Frame Spacing", min=-5, max=50, step=1,
           -- Compact Mode (this slot's cog) uses one pixel instead.
           disabled=function() return ns.RF_CompactOn(db.profile, true) end,
           disabledTooltip="Compact Mode", requireState="disabled",
