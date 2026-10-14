@@ -64,7 +64,9 @@ ns.BlockFactories.audio = function(blockCfg, slot, content, barCtx)
     end
     -- The one volume writer, clamped to 0..1. A sound CVar write fires CVAR_UPDATE
     -- synchronously and the block's handler repaints the bar (and the owned tip,
-    -- outside a drag), so callers never repaint on their own.
+    -- outside a drag), so callers never repaint on their own. Plain SetCVar, not
+    -- EllesmereUI.SetCVar: this is the player's own volume (and mute), which
+    -- Uninstall EUI leaves as it is.
     local function SetChanVol(ch, v)
         SetCVar(ch.cvar, Clamp(v, 0, 1))
     end

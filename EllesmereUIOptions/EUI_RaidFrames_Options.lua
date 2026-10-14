@@ -56,7 +56,7 @@ function ns.RF_OptMoveFramesButton(row, rgn, opts)
     btn:SetFrameLevel(row:GetFrameLevel() + 5)
     local bbg = btn:CreateTexture(nil, "BACKGROUND")
     bbg:SetAllPoints()
-    bbg:SetColorTexture(0.06, 0.08, 0.10, 0.92)
+    bbg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
     EllesmereUI.MakeBorder(btn, 1, 1, 1, 0.25)
     local lbl = btn:CreateFontString(nil, "OVERLAY")
     EllesmereUI.ApplyModuleFont(lbl, nil, 13, "raidFrames")
@@ -378,7 +378,7 @@ function ns.RF_BuildPartyTargets(parent, y, W)
         ns._PT_Layout()
         Preview()
     end
-    local DARK_TIP = "Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Fonts & Colors."
+    local DARK_TIP = "Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Colors."
 
     _, h = W:SectionHeader(parent, "PARTY TARGETS", y); y = y - h
 
@@ -388,8 +388,14 @@ function ns.RF_BuildPartyTargets(parent, y, W)
     _, h = W:DualRow(parent, y,
         { type="toggle", text="Enable Party Targets",
           tooltip="Show a smaller secure target button beside each party frame. Left-click a button to target that party member's current target.",
+          disabled=function()
+              local p = db.profile
+              return not p.partyShowTargets and p.partyCompactMode and ns.PT_AlongStack(p, true)
+          end,
+          disabledTooltip="Move Party Targets beside the frame stack or turn off Compact Mode.", rawTooltip=true,
           getValue=function() return db.profile.partyShowTargets or false end,
           setValue=EllesmereUI.SectionToggleSetValue(function(v)
+              if v and db.profile.partyCompactMode and ns.PT_AlongStack(db.profile, true) then return end
               db.profile.partyShowTargets = v
               ns.PT_SetEnabled(v)
               Preview()
@@ -546,16 +552,19 @@ function ns.RF_BuildPartyTargets(parent, y, W)
           order={ "top", "bottom", "left", "right" },
           itemDisabled=function(v)
               local p = db.profile
+              if p.partyCompactMode and ns.PT_PositionAlongStack(v, p.partyHorizontal) then return true end
               if p.partyHorizontal or not ns.RF_PartyKit() then return false end
               local m = ns.RF_KitBuffMode(p)
               return (m == "RIGHT" and v == "right") or (m == "LEFT" and v == "left")
           end,
           itemDisabledTooltip=function(v)
+              if db.profile.partyCompactMode and ns.PT_PositionAlongStack(v, db.profile.partyHorizontal) then return "Compact Mode" end
               if v == "left" or v == "right" then return "Frame Style: Party Frames" end
           end,
           itemRequireState="disabled",
           getValue=function() return ns.PT_ShownSide() end,
           setValue=function(v)
+              if db.profile.partyCompactMode and ns.PT_PositionAlongStack(v, db.profile.partyHorizontal) then return end
               LaySet("partyTargetPosition", (v ~= ns.PT_ShownSide(true)) and v or nil)
           end },
         BLANK());  y = y - h
@@ -845,8 +854,31 @@ initFrame:SetScript("OnEvent", function(self)
     }
     local allGrowthOrder        = { "DOWN", "UP", "RIGHT", "LEFT" }
 
+    -- Group Growth additionally offers the grid flow: ns._RF_GRID_ROWS groups
+    -- stack down the first column (G1 above G2) before the next column starts to
+    -- the right (G3 above G4) -- a 2x2 raid block instead of one long run. Unit
+    -- Growth has no such mode: a header's children only ever run along one axis.
+    local groupGrowthValues = {
+        DOWN      = "Down",
+        UP        = "Up",
+        RIGHT     = "Right",
+        LEFT      = "Left",
+        DOWNRIGHT = "Down and then Right",
+    }
+    local groupGrowthOrder  = { "DOWN", "UP", "RIGHT", "LEFT", "DOWNRIGHT" }
+
+    -- Merge Groups renders through Blizzard's flat header, which has a single
+    -- column axis and cannot wrap into a grid, so the grid flow degrades to the
+    -- plain RIGHT run there (same self-heal as ns._RFEffectiveGrowth in the
+    -- runtime). Report what actually renders instead of showing a value the
+    -- merged grid ignores.
+    local function ReadGroupGrowth(v)
+        if v == "DOWNRIGHT" and SVal("mergeGroups", false) then return "RIGHT" end
+        return v
+    end
+
     -- ns._RFGrowthIsVertical is the runtime module's single source of truth for
-    -- this check (EllesmereUIRaidFrames.lua); reuse it here rather than a second copy.
+    -- this check (EUI_RaidFrames_Reload.lua); reuse it here rather than a second copy.
     local GrowthIsVertical = ns._RFGrowthIsVertical
 
     -- Merge Groups renders through Blizzard's flat SecureGroupHeader, whose column
@@ -1013,11 +1045,15 @@ initFrame:SetScript("OnEvent", function(self)
         ns._testMode = false
         if testModeFrame then
             testModeFrame:SetAlpha(1)
-            local fadeOutAG = testModeFrame:CreateAnimationGroup()
-            local fadeOutA = fadeOutAG:CreateAnimation("Alpha")
-            fadeOutA:SetFromAlpha(1); fadeOutA:SetToAlpha(0); fadeOutA:SetDuration(0.3)
+            local fadeOutAG = testModeFrame._fadeOut
+            if not fadeOutAG then
+                fadeOutAG = testModeFrame:CreateAnimationGroup()
+                local fadeOutA = fadeOutAG:CreateAnimation("Alpha")
+                fadeOutA:SetFromAlpha(1); fadeOutA:SetToAlpha(0); fadeOutA:SetDuration(0.3)
+                fadeOutAG:SetScript("OnFinished", function() testModeFrame:Hide() end)
+                testModeFrame._fadeOut = fadeOutAG
+            end
             testModeFrame:SetAlpha(0)
-            fadeOutAG:SetScript("OnFinished", function() testModeFrame:Hide() end)
             fadeOutAG:Play()
         end
         ns._indicatorsVisible = false
@@ -1046,81 +1082,36 @@ initFrame:SetScript("OnEvent", function(self)
         end
     end
 
-    local function OpenTestMode()
-        if testModeActive then CloseTestMode(); return end
-        testModeActive = true
-        ns._testMode = true
-
-        local PP = EllesmereUI.PanelPP or EllesmereUI.PP
-        local fontPath = (EllesmereUI.GetFontPath("raidFrames")) or "Fonts\\FRIZQT__.TTF"
-        local accentColor = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
-        local s = db.profile
-
-        if not testModeFrame then
-            testModeFrame = CreateFrame("Frame", nil, UIParent)
-            testModeFrame:SetFrameStrata("FULLSCREEN_DIALOG")
-            testModeFrame:SetAllPoints()
-            testModeFrame:EnableMouse(true)
-            local dimBg = testModeFrame:CreateTexture(nil, "BACKGROUND")
-            dimBg:SetAllPoints(); dimBg:SetColorTexture(0, 0, 0, 0.75)
-        end
-        testModeFrame:SetFrameLevel(50)
-        testModeFrame:SetAlpha(0)
-        testModeFrame:Show()
-
-        for _, c in ipairs({testModeFrame:GetChildren()}) do c:Hide(); c:SetParent(nil) end
-
-        -- Preview flags are set by ns._applyTestState() below.
-        local fadeInAG = testModeFrame:CreateAnimationGroup()
-        local fadeInA = fadeInAG:CreateAnimation("Alpha")
-        fadeInA:SetFromAlpha(0); fadeInA:SetToAlpha(1); fadeInA:SetDuration(0.3)
-        testModeFrame:SetAlpha(1)
-        fadeInAG:Play()
-
-        -- Force the preview up; ns._testMode forces overlay mode.
-        if ns.HidePreview then ns.HidePreview() end
-        C_Timer.After(0, function()
-            if ns.ShowPreview and ns._testMode then
-                ns.ShowPreview()
-                -- Re-apply now that preview frames exist and previewActive is true.
-                if ns._applyTestState then ns._applyTestState() end
-                -- Reanchor + fade in the sidebar once the container is placed.
-                C_Timer.After(0, function()
-                    if not ns._testMode then return end
-                    local oc = ns._overlayContainer
-                    if oc and oc:IsShown() and ns._testPanel then
-                        ns._testPanel:ClearAllPoints()
-                        ns._testPanel:SetPoint("RIGHT", oc, "LEFT", -20, 0)
-                        ns._testPanel:SetAlpha(0)
-                        ns._testPanel:Show()
-                        local panelFadeAG = ns._testPanel:CreateAnimationGroup()
-                        local panelFadeA = panelFadeAG:CreateAnimation("Alpha")
-                        panelFadeA:SetFromAlpha(0); panelFadeA:SetToAlpha(1); panelFadeA:SetDuration(0.3)
-                        ns._testPanel:SetAlpha(1)
-                        panelFadeAG:Play()
-                    end
-                end)
-            end
-        end)
-
+    -- Builds the Full Preview sidebar on the first open; every open re-dresses
+    -- it through panel._redress (fonts, accent, check states, hover looks, anchor).
+    local function BuildTestPanel(PP, fontPath, accentColor, s)
         local PANEL_W = 260
         local ROW_H = 32
         local PAD = 16
         local panel = CreateFrame("Frame", nil, testModeFrame)
-        ns._testPanel = panel
         panel:SetSize(PANEL_W, 600)
         panel:SetPoint("LEFT", testModeFrame, "LEFT", 40, 0)
         panel:Hide()  -- shown once the overlay container is positioned
         panel:SetFrameLevel(testModeFrame:GetFrameLevel() + 5)
         local panelBg = panel:CreateTexture(nil, "BACKGROUND")
-        panelBg:SetAllPoints(); panelBg:SetColorTexture(15/255, 17/255, 22/255, 0.9)
+        panelBg:SetAllPoints(); panelBg:SetColorTexture(17/255, 15/255, 12/255, 0.9)
         EllesmereUI.MakeBorder(panel, 1, 1, 1, 0.1, PP)
+        local panelFadeAG = panel:CreateAnimationGroup()
+        local panelFadeA = panelFadeAG:CreateAnimation("Alpha")
+        panelFadeA:SetFromAlpha(0); panelFadeA:SetToAlpha(1); panelFadeA:SetDuration(0.3)
+        panel._fadeIn = panelFadeAG
+
+        -- What every open re-dresses: each font string with its size, each
+        -- checkbox with its mark, each Edit button's background and label.
+        local fonts, checks, editParts = {}, {}, {}
 
         local function MakeFont(p, size, r, g, b, a)
             local fs = p:CreateFontString(nil, "OVERLAY")
             EllesmereUI.PrimeFontShadow(fs, true)
             fs:SetFont(fontPath, size, "")
             fs:SetTextColor(r or 1, g or 1, b or 1, a or 1)
+            fonts[#fonts + 1] = fs
+            fonts[#fonts + 1] = size
             return fs
         end
 
@@ -1141,7 +1132,9 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Every checkbox refresher, re-run together for mutual exclusion.
         local allRefreshFns = {}
-        local editGlow   -- shared edit-target glow, made on first use
+        -- Shared edit-target glow, made on first use and again whenever the
+        -- accent changed (a glow takes its colour when it first plays).
+        local editGlow, glowR, glowG, glowB
 
         local function CheckboxRow(label, getVal, setVal, editTarget)
             local row = CreateFrame("Frame", nil, panel)
@@ -1161,6 +1154,8 @@ initFrame:SetScript("OnEvent", function(self)
             checkMark:SetSize(12, 12)
             checkMark:SetPoint("CENTER")
             checkMark:SetColorTexture(accentColor.r, accentColor.g, accentColor.b, 1)
+            checks[#checks + 1] = cb
+            checks[#checks + 1] = checkMark
 
             local function Refresh()
                 local v = getVal()
@@ -1196,6 +1191,8 @@ initFrame:SetScript("OnEvent", function(self)
                 eBg:SetAllPoints(); eBg:SetColorTexture(1, 1, 1, 0.05)
                 local eLbl = MakeFont(editBtn, 10, 1, 1, 1, 0.4)
                 eLbl:SetPoint("CENTER"); eLbl:SetText(EllesmereUI.L("Edit"))
+                editParts[#editParts + 1] = eBg
+                editParts[#editParts + 1] = eLbl
                 editBtn:SetScript("OnEnter", function()
                     eBg:SetColorTexture(1, 1, 1, 0.1); eLbl:SetAlpha(0.7)
                 end)
@@ -1221,7 +1218,11 @@ initFrame:SetScript("OnEvent", function(self)
                                 end
                                 C_Timer.After(0.15, function()
                                     if not target:IsShown() then return end
-                                    editGlow = editGlow or EllesmereUI.MakeSettingGlow({ color = EllesmereUI.ELLESMERE_GREEN })
+                                    local eg = EllesmereUI.ELLESMERE_GREEN
+                                    if not editGlow or glowR ~= eg.r or glowG ~= eg.g or glowB ~= eg.b then
+                                        glowR, glowG, glowB = eg.r, eg.g, eg.b
+                                        editGlow = EllesmereUI.MakeSettingGlow({ color = eg })
+                                    end
                                     editGlow(target)
                                 end)
                             end)
@@ -1285,7 +1286,6 @@ initFrame:SetScript("OnEvent", function(self)
                 ns.StartPvBuffTicker()
             end
         end
-        ns._applyTestState()
 
         ---------------------------------------------------------------
         --  HEALTH & POWER BARS
@@ -1367,9 +1367,6 @@ initFrame:SetScript("OnEvent", function(self)
             end,
             { page = PAGE_MAIN })
 
-        -- Indicators may already be on from a previous session.
-        if testState.indicators then SetNonIndicatorRowsEnabled(false) end
-
         -- Content height plus room for the close button.
         panel:SetHeight(math.abs(cy) + 32 + PAD * 3)
 
@@ -1401,6 +1398,95 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end)
         testModeFrame:EnableKeyboard(true)
+
+        -- Every open starts the sidebar from the look a new one has.
+        panel._redress = function(fp, ac)
+            for i = 1, #fonts, 2 do fonts[i]:SetFont(fp, fonts[i + 1], "") end
+            for i = 1, #checks, 2 do
+                checks[i]:SetChecked(false)
+                checks[i + 1]:SetColorTexture(ac.r, ac.g, ac.b, 1)
+            end
+            for i = 1, #editParts, 2 do
+                editParts[i]:SetColorTexture(1, 1, 1, 0.05)
+                editParts[i + 1]:SetAlpha(1)
+            end
+            clBg:SetColorTexture(0.25, 0.25, 0.25, 0.6)
+            clLbl:SetAlpha(1)
+            for _, fn in ipairs(allRefreshFns) do fn() end
+            for _, row2 in ipairs(nonIndicatorRows) do
+                row2:SetAlpha(1)
+                row2:EnableMouse(false)
+            end
+            -- Indicators may already be on from a previous open.
+            if testState.indicators then SetNonIndicatorRowsEnabled(false) end
+            panel:ClearAllPoints()
+            panel:SetPoint("LEFT", testModeFrame, "LEFT", 40, 0)
+            panel:SetAlpha(1)
+            panel:Hide()  -- shown once the overlay container is positioned
+            panel:SetFrameLevel(testModeFrame:GetFrameLevel() + 5)
+        end
+        ns._testPanel = panel
+    end
+
+    local function OpenTestMode()
+        if testModeActive then CloseTestMode(); return end
+        testModeActive = true
+        ns._testMode = true
+
+        local PP = EllesmereUI.PanelPP or EllesmereUI.PP
+        local fontPath = (EllesmereUI.GetFontPath("raidFrames")) or "Fonts\\FRIZQT__.TTF"
+        local accentColor = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
+        local s = db.profile
+
+        if not testModeFrame then
+            testModeFrame = CreateFrame("Frame", nil, UIParent)
+            testModeFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+            testModeFrame:SetAllPoints()
+            testModeFrame:EnableMouse(true)
+            local dimBg = testModeFrame:CreateTexture(nil, "BACKGROUND")
+            dimBg:SetAllPoints(); dimBg:SetColorTexture(0, 0, 0, 0.75)
+        end
+        testModeFrame:SetFrameLevel(50)
+        testModeFrame:SetAlpha(0)
+        testModeFrame:Show()
+
+        -- Preview flags are set by ns._applyTestState() below.
+        local fadeInAG = testModeFrame._fadeIn
+        if not fadeInAG then
+            fadeInAG = testModeFrame:CreateAnimationGroup()
+            local fadeInA = fadeInAG:CreateAnimation("Alpha")
+            fadeInA:SetFromAlpha(0); fadeInA:SetToAlpha(1); fadeInA:SetDuration(0.3)
+            testModeFrame._fadeIn = fadeInAG
+        end
+        testModeFrame:SetAlpha(1)
+        fadeInAG:Play()
+
+        -- Force the preview up; ns._testMode forces overlay mode.
+        if ns.HidePreview then ns.HidePreview() end
+        C_Timer.After(0, function()
+            if ns.ShowPreview and ns._testMode then
+                ns.ShowPreview()
+                -- Re-apply now that preview frames exist and previewActive is true.
+                if ns._applyTestState then ns._applyTestState() end
+                -- Reanchor + fade in the sidebar once the container is placed.
+                C_Timer.After(0, function()
+                    if not ns._testMode then return end
+                    local oc = ns._overlayContainer
+                    if oc and oc:IsShown() and ns._testPanel then
+                        ns._testPanel:ClearAllPoints()
+                        ns._testPanel:SetPoint("RIGHT", oc, "LEFT", -20, 0)
+                        ns._testPanel:SetAlpha(0)
+                        ns._testPanel:Show()
+                        ns._testPanel:SetAlpha(1)
+                        ns._testPanel._fadeIn:Play()
+                    end
+                end)
+            end
+        end)
+
+        if not ns._testPanel then BuildTestPanel(PP, fontPath, accentColor, s) end
+        ns._testPanel._redress(fontPath, accentColor)
+        ns._applyTestState()
     end
 
     ns.OpenTestMode = OpenTestMode
@@ -1460,7 +1546,8 @@ initFrame:SetScript("OnEvent", function(self)
         AbbreviateNumbers = AbbreviateNumbers, absorbStyleOrder = absorbStyleOrder,
         absorbStyleValues = absorbStyleValues, allGrowthOrder = allGrowthOrder,
         BuildPreviewModeRow = BuildPreviewModeRow, BuildVisualSections = BuildVisualSections,
-        db = db, floor = floor, growthValues = growthValues, hbtOrder = hbtOrder,
+        db = db, floor = floor, growthValues = growthValues, groupGrowthOrder = groupGrowthOrder,
+        groupGrowthValues = groupGrowthValues, hbtOrder = hbtOrder,
         hbtValues = hbtValues, healAbsorbStyleOrder = healAbsorbStyleOrder,
         healthColorOrder = healthColorOrder, healthColorValues = healthColorValues,
         healthTextOrder = healthTextOrder, healthTextValues = healthTextValues,
@@ -1468,7 +1555,8 @@ initFrame:SetScript("OnEvent", function(self)
         maxHealthStyleOrder = maxHealthStyleOrder, MissingGlowDesc = MissingGlowDesc,
         namePositionOrder = namePositionOrder, namePositionOrderName = namePositionOrderName,
         namePositionValues = namePositionValues, namePositionValuesName = namePositionValuesName,
-        optState = optState, PP = PP, ReloadAndUpdate = ReloadAndUpdate, SGet = SGet,
+        optState = optState, PP = PP, ReadGroupGrowth = ReadGroupGrowth,
+        ReloadAndUpdate = ReloadAndUpdate, SGet = SGet,
         SGetPx = SGetPx, SSet = SSet, SVal = SVal, SWrite = SWrite,
     }
 
@@ -1486,8 +1574,8 @@ initFrame:SetScript("OnEvent", function(self)
     -- Drops the BM / DM / CC roots (built on the shared scroll frame, not a
     -- page wrapper) except keepPage's. popups: true = also hide the Add New,
     -- DM add and BM2 editor/menu popups; "dm" = those DM/BM2 popups only when
-    -- the DM root drops. stripAlways: clear the CC spell strip (parented to
-    -- the panel, not the CC root) even with no CC root.
+    -- the DM root drops. stripAlways: hide the CC spell strip (parented to
+    -- the panel, not the CC root; kept for the next build) even with no CC root.
     local function DropManagerRoots(keepPage, popups, stripAlways)
         if popups == true and ns._addNewPopup then ns._addNewPopup:Hide() end
         if keepPage ~= PAGE_BUFFS and ns._bmRoot then
@@ -1510,8 +1598,15 @@ initFrame:SetScript("OnEvent", function(self)
             ns._ccRoot:Hide(); ns._ccRoot:SetParent(nil); ns._ccRoot = nil
         end
         if (dropCc or stripAlways) and ns._ccSpellStrip then
-            ns._ccSpellStrip:Hide(); ns._ccSpellStrip:SetParent(nil); ns._ccSpellStrip = nil
+            ns._ccSpellStrip:Hide()
         end
+    end
+
+    local function WithStack(err) return tostring(err) .. "\n" .. debugstack(2) end
+    local function RestorePartyCtx(saved, ok, ...)
+        optState._partyCtx = saved
+        if not ok then error((...), 0) end
+        return ...
     end
 
     EllesmereUI:RegisterModule("EllesmereUIRaidFrames", {
@@ -1524,14 +1619,13 @@ initFrame:SetScript("OnEvent", function(self)
             -- The cleanup/preview logic below acts on live state (BM/CC roots, raid/party preview overlays over the player's real frames) keyed only on the pageName being built, not what the player is actually looking at. An off-screen search pre-build cycles pageName through every page in `pages`, so NONE of it may run here.
             -- PAGE_BUFFS / PAGE_CLICKCAST go further: their builders (BuildBuffManagerPage -> ns.BM_BuildPage, ns.CC_BuildPage) bypass `parent` and build directly onto the live shared EllesmereUI._scrollFrame, so building them here would inject visible UI over whatever is on screen. Skip them; they index normally on the player's first live visit.
             --
-            -- _partyCtx (read by SGet/SSet/SVal in the value closures) is left
-            -- untouched: this hidden pass's widgets and closures are discarded
-            -- with the wrapper and never invoked, so only the live path needs it.
+            -- The pre-build must not leave the live page's _partyCtx changed.
             if EllesmereUI._prebuilding then
-                if pageName == PAGE_MAIN then
-                    return ns.RFO_BuildMainPage(pageName, parent, yOffset)
-                elseif pageName == PAGE_PARTY then
-                    return ns.RFO_BuildPartyPage(pageName, parent, yOffset)
+                if pageName == PAGE_MAIN or pageName == PAGE_PARTY then
+                    local saved = optState._partyCtx
+                    optState._partyCtx = (pageName == PAGE_PARTY)
+                    local build = (pageName == PAGE_PARTY) and ns.RFO_BuildPartyPage or ns.RFO_BuildMainPage
+                    return RestorePartyCtx(saved, xpcall(build, WithStack, pageName, parent, yOffset))
                 end
                 return
             end
@@ -1638,7 +1732,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- Clearing the first-install flag re-captures position on reload.
             if db.sv then db.sv._capturedOnce_RF = nil end
             db:ResetProfile()
-            -- No reload here: the footer Reset popup (reload = true) reloads after this returns.
+            -- No reload here: Reset EUI Module Settings reloads after this returns.
         end,
         -- Tears down all 6 Raid Frames preview mechanisms on cross-module
         -- switch (Real/Party/Size/HealthAnim/PowerAnim/HM previews).

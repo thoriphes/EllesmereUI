@@ -45,6 +45,7 @@ local function BuildDisplayBars(parent, y, ctx)
             for _, plate in pairs(plates) do
                 PP.Width(plate.health, v)
                 PP.Width(plate.absorb, v)
+                PP.Width(plate.absorbForward, v)
                 if classic then
                     ns.LayoutCastBar(plate, v, ns.GetCastBarHeight())
                 else
@@ -947,7 +948,8 @@ local function BuildDisplayBars(parent, y, ctx)
     end
 
     -- Eye icon to the left of the Target Glow Style dropdown to toggle glow on preview
-    do
+    -- (none in the search pre-build: it indexes nothing, and the row is a stand-in there)
+    if not EllesmereUI._prebuilding then
         local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
         local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
         local leftRgn = targetGlowRow._leftRegion
@@ -1760,12 +1762,16 @@ local function BuildDisplayBars(parent, y, ctx)
     end   -- close Class Resource hidden-while-disabled gate
 
     -- Invisible frame spanning the entire CLASS RESOURCE section for glow targeting
-    local classResourceSection = CreateFrame("Frame", nil, parent)
-    local crPad = EllesmereUI.CONTENT_PAD or 20
-    classResourceSection:SetPoint("TOPLEFT", parent, "TOPLEFT", crPad, classResourceSectionTop)
-    classResourceSection:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -crPad, classResourceSectionTop)
-    classResourceSection:SetHeight(math.abs(classResourceSectionTop - y))
-    classResourceSection._isSpacer = true  -- hide from search layout
+    -- (none in the search pre-build, which wires no click navigation)
+    local classResourceSection
+    if not EllesmereUI._prebuilding then
+        classResourceSection = CreateFrame("Frame", nil, parent)
+        local crPad = EllesmereUI.CONTENT_PAD or 20
+        classResourceSection:SetPoint("TOPLEFT", parent, "TOPLEFT", crPad, classResourceSectionTop)
+        classResourceSection:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -crPad, classResourceSectionTop)
+        classResourceSection:SetHeight(math.abs(classResourceSectionTop - y))
+        classResourceSection._isSpacer = true  -- hide from search layout
+    end
 
     _, h = W:Spacer(parent, y, 20);  y = y - h
 

@@ -207,13 +207,15 @@ initFrame:SetScript("OnEvent", function(self)
     EllesmereUI:RegisterOnShow(UpdatePreview)
 
     ---------------------------------------------------------------------------
-    --  Glow sites: the Dispel and Important Cast glows as shared glow
+    --  Glow sites: the Dispel, Pandemic and Important Cast glows as shared glow
     --  descriptors, used by the page rows and the Global Settings Glows page.
     ---------------------------------------------------------------------------
-    local npDispelGlowDesc, npImpCastGlowDesc
+    local npDispelGlowDesc, npImpCastGlowDesc, npPandemicGlowDesc
     do
         local GO = EllesmereUI.GlowOptions
-        local function RefreshDispel() RefreshAllAuras(); UpdatePreview() end
+        -- The aura glows (Dispel, Pandemic) share one refresh, so the Glows
+        -- page runs it once per Apply.
+        local function RefreshAuraGlows() RefreshAllAuras(); UpdatePreview() end
         -- Engine aura buttons (no Auto-Cast/Shape); an unset color is the
         -- suite default (gold).
         -- Blizzard Border: Blizzard's static stealable art, outside the view.
@@ -227,7 +229,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- Color by Type replaces the swatch color on every group.
             colorDisabled = function() return DBVal("dispelGlowUseTypeColor") == true end,
             colorDisabledTooltip = "Color by Type (Magic/Enrage)",
-            onChange = RefreshDispel,
+            onChange = RefreshAuraGlows,
             get = function(f)
                 local d = DB()
                 if f == "style" then return ns.GetDispelGlowStyle and ns.GetDispelGlowStyle() or 2
@@ -267,7 +269,7 @@ initFrame:SetScript("OnEvent", function(self)
                   get=function() return DBVal("dispelGlowUseTypeColor") or false end,
                   set=function(v)
                       DB().dispelGlowUseTypeColor = v
-                      RefreshDispel()
+                      RefreshAuraGlows()
                       EllesmereUI:RefreshPage()
                   end },
             },
@@ -301,9 +303,38 @@ initFrame:SetScript("OnEvent", function(self)
                 end
             end,
         }
+        -- Debuffs in their pandemic window (pandemicGlow* keys; the same mode
+        -- key the CDM pandemic sync writes). An unset color mode is Custom:
+        -- the swatch color this glow always drew (the profile merge fills it
+        -- with the default gold).
+        npPandemicGlowDesc = {
+            view = ns.NP_GLOW_VIEW, host = "engine",
+            caps = { mode = true, params = true, bg = true },
+            defaultColor = defaults.pandemicGlowColor,
+            isOff = function() return DBVal("pandemicGlow") ~= true end,
+            onChange = RefreshAuraGlows,
+            get = function(f)
+                local d = DB()
+                if f == "style" then return ns.GetPandemicGlowStyle()
+                elseif f == "mode" then return d.pandemicGlowMode or "custom"
+                end
+                return EllesmereUI.GlowOptions.FlatGet(d, "pandemicGlow", f, defaults)
+            end,
+            set = function(f, a, b2, c2)
+                local d = DB()
+                if f == "style" then
+                    if a == 0 then d.pandemicGlow = false else d.pandemicGlow = true; d.pandemicGlowStyle = a end
+                elseif f == "mode" then d.pandemicGlowMode = a
+                else EllesmereUI.GlowOptions.FlatSet(d, "pandemicGlow", f, a, b2, c2)
+                end
+            end,
+        }
         GO.RegisterSite({ id = "np_dispel", label = "Dispel Glow", group = "module",
             module = "EllesmereUINameplates", page = PAGE_GENERAL, section = SECTION_AURA,
             highlight = "Dispel Glow Style", desc = npDispelGlowDesc })
+        GO.RegisterSite({ id = "np_pandemic", label = "Pandemic Glow", group = "module",
+            module = "EllesmereUINameplates", page = PAGE_GENERAL, section = SECTION_AURA,
+            highlight = "Pandemic Glow Style", desc = npPandemicGlowDesc })
         GO.RegisterSite({ id = "np_importantcast", label = "Important Cast Glow", group = "module",
             module = "EllesmereUINameplates", page = PAGE_DISPLAY, section = SECTION_CASTBAR,
             highlight = "Important Cast Glow", desc = npImpCastGlowDesc })
@@ -618,9 +649,9 @@ initFrame:SetScript("OnEvent", function(self)
         local atFallback = DBVal("auraTextPosition") or defaults.auraTextPosition
         local asFallback = DBVal("auraStackTextPosition") or defaults.auraStackTextPosition
 
-        -- The sections live in Nameplates_Options\DisplayLayout_Options.lua and
-        -- DisplayBars_Options.lua; they return the rows the click navigation
-        -- below maps to.
+        -- The sections live in Nameplates_Options\DisplayLayout_Options.lua
+        -- (which calls CoreTextColoring_Options.lua) and DisplayBars_Options.lua;
+        -- they return the rows the click navigation below maps to.
         local ctx = {
             W = W, GetElementAtPosition = GetElementAtPosition, RefreshAllSlots = RefreshAllSlots,
             SetElementAtPosition = SetElementAtPosition,
@@ -629,10 +660,10 @@ initFrame:SetScript("OnEvent", function(self)
             LiveApplyStackPos = LiveApplyStackPos, LiveApplyTimerPos = LiveApplyTimerPos,
             timerPosOrder = timerPosOrder, timerPosValues = timerPosValues,
         }
-        local styleHeader, coreHeader, coreRow1, coreRow2, coreRow3, coreTextHeader, textRow1
-        local textRow2, textRow3
-        y, styleHeader, coreHeader, coreRow1, coreRow2, coreRow3, coreTextHeader, textRow1, textRow2,
-            textRow3, ctx.ShowCogPopup, ctx.CogPopupOpen,
+        local styleHeader, coreHeader, coreRow1, coreRow2, coreRow3, coreTextHeader, textSlotCells
+        local textFirstRow
+        y, styleHeader, coreHeader, coreRow1, coreRow2, coreRow3, coreTextHeader, textSlotCells,
+            textFirstRow, ctx.ShowCogPopup, ctx.CogPopupOpen,
             ctx.RefreshAllTextures = ns.NPO_BuildDisplayLayout(parent, y, ctx)
         local healthBarHeader, healthBarHeightRow, castBarHeightRow, showCastIconRow, castTimerRow
         local tfxHeader, targetGlowRow, classResourceHeader, classResourceSection, generalTextHeader
@@ -641,29 +672,19 @@ initFrame:SetScript("OnEvent", function(self)
             tfxHeader, targetGlowRow, classResourceHeader, classResourceSection, generalTextHeader,
             auraDurPosRow, auraTimerStackRow, spellNameRow = ns.NPO_BuildDisplayBars(parent, y, ctx)
 
+        -- The search pre-build indexes rows only. The click navigation below
+        -- rewires the live preview's hit overlays, which a hidden build of
+        -- this page must leave alone.
+        if EllesmereUI._prebuilding then return math.abs(y) end
+
         -----------------------------------------------------------------------
         --  CLICK NAVIGATION: glow, scroll, mapping, hit overlays
         -----------------------------------------------------------------------
         local PlaySettingGlow = EllesmereUI.MakeSettingGlow({ color = EllesmereUI.ELLESMERE_GREEN, thickness = function() return PP.Scale(2) end, noSnap = true })
 
-        -- Maps Core Position slot keys to their row/region
-        local corePosToRow = {
-            top      = { row = coreRow1, side = "_leftRegion" },
-            right    = { row = coreRow1, side = "_rightRegion" },
-            left     = { row = coreRow2, side = "_leftRegion" },
-            topright = { row = coreRow2, side = "_rightRegion" },
-            topleft  = { row = coreRow3, side = "_leftRegion" },
-        }
-
-        -- Maps Core Text Position slot keys to their row/region
-        local textSlotToRow = {
-            textSlotTop    = { row = textRow1, side = "_leftRegion" },
-            textSlotRight  = { row = textRow1, side = "_rightRegion" },
-            textSlotLeft   = { row = textRow2, side = "_leftRegion" },
-            textSlotCenter = { row = textRow2, side = "_rightRegion" },
-            textSlotBottomLeft  = { row = textRow3, side = "_leftRegion" },
-            textSlotBottomRight = { row = textRow3, side = "_rightRegion" },
-        }
+        -- Maps Core Text Position slot keys to their row/region (the cells of
+        -- the texts the list shows)
+        local textSlotToRow = textSlotCells
 
         -- Reverse lookup: find which Core Position slot holds a given element
         local function FindCorePosForElement(element)
@@ -688,9 +709,9 @@ initFrame:SetScript("OnEvent", function(self)
         local function ResolveCoreMapping(element)
             local pos = FindCorePosForElement(element)
             if not pos then return { section = coreHeader, target = coreRow1 } end
-            local info = corePosToRow[pos]
+            local info = ctx.corePosToRegion[pos]
             if not info then return { section = coreHeader, target = coreRow1 } end
-            return { section = coreHeader, target = info.row, slotSide = (info.side == "_leftRegion") and "left" or "right" }
+            return { section = coreHeader, target = info[1], slotSide = (info[2] == "_leftRegion") and "left" or "right" }
         end
 
         local clickMappings = {
@@ -737,16 +758,16 @@ initFrame:SetScript("OnEvent", function(self)
             enemyName    = function()
                 -- The name FontString renders whichever name-family variant is slotted; resolve the row for any of them.
                 local slot = FindTextSlotForElement("enemyName") or FindTextSlotForElement("levelName") or FindTextSlotForElement("nameLevel")
-                if not slot then return { section = coreTextHeader, target = textRow1 } end
+                if not slot then return { section = coreTextHeader, target = textFirstRow } end
                 local info = textSlotToRow[slot]
-                if not info then return { section = coreTextHeader, target = textRow1 } end
+                if not info then return { section = coreTextHeader, target = textFirstRow } end
                 return { section = coreTextHeader, target = info.row, slotSide = (info.side == "_leftRegion") and "left" or "right" }
             end,
             healthText   = function()
                 local slot = FindTextSlotForElement("healthPercent") or FindTextSlotForElement("healthPercentNoSign") or FindTextSlotForElement("healthPctNum") or FindTextSlotForElement("healthNumPct") or FindTextSlotForElement("healthPctNumDash") or FindTextSlotForElement("healthNumPctDash")
-                if not slot then return { section = coreTextHeader, target = textRow1 } end
+                if not slot then return { section = coreTextHeader, target = textFirstRow } end
                 local info = textSlotToRow[slot]
-                if not info then return { section = coreTextHeader, target = textRow1 } end
+                if not info then return { section = coreTextHeader, target = textFirstRow } end
                 return { section = coreTextHeader, target = info.row, slotSide = (info.side == "_leftRegion") and "left" or "right" }
             end,
         }
@@ -754,7 +775,7 @@ initFrame:SetScript("OnEvent", function(self)
         for mapKey, element in pairs({ healthNumber = "healthNumber", levelText = "level", targetOfTarget = "targetOfTarget" }) do
             dynamicMappings[mapKey] = function()
                 local info = textSlotToRow[FindTextSlotForElement(element) or ""]
-                if not info then return { section = coreTextHeader, target = textRow1 } end
+                if not info then return { section = coreTextHeader, target = textFirstRow } end
                 return { section = coreTextHeader, target = info.row, slotSide = (info.side == "_leftRegion") and "left" or "right" }
             end
         end
@@ -1105,6 +1126,7 @@ initFrame:SetScript("OnEvent", function(self)
             if _disabled and real._health then real._health:SetAlpha(0.3) end
             return real
         end
+        proxy.GetFrame = function() return EnsureBuilt() end
         proxy.UpdateColor = function()
             local r = EnsureBuilt()
             if r and r.UpdateColor then
@@ -1170,6 +1192,7 @@ initFrame:SetScript("OnEvent", function(self)
         LazyColorPreviewBar = LazyColorPreviewBar, NAME_RAID_MARKER_GAP = NAME_RAID_MARKER_GAP,
         NextCastFill = NextCastFill, NextCastIcon = NextCastIcon,
         npDispelGlowDesc = npDispelGlowDesc, npImpCastGlowDesc = npImpCastGlowDesc,
+        npPandemicGlowDesc = npPandemicGlowDesc,
         optState = optState, pairs = pairs, pcall = pcall, plates = plates, PP = PP,
         RandomizePreviewValues = RandomizePreviewValues, RefreshAllAuras = RefreshAllAuras,
         RefreshAllPlates = RefreshAllPlates, SECTION_AURA = SECTION_AURA,
@@ -1194,6 +1217,12 @@ initFrame:SetScript("OnEvent", function(self)
             C_Timer.After(0.2, function()
                 EllesmereUI:RefreshPage(true)
             end)
+        elseif EllesmereUI:GetActiveModule() == "EllesmereUINameplates"
+           and EllesmereUI:GetActivePage() == PAGE_DISPLAY then
+            -- Closed on the Display page: a spec preset can rewrite the texts, and
+            -- a reopen shows the cached page without a restore. RefreshPage only
+            -- flags a hidden panel, so the next open rebuilds this page once.
+            EllesmereUI:RefreshPage(true)
         end
     end)
 
@@ -1218,6 +1247,18 @@ initFrame:SetScript("OnEvent", function(self)
         end,
         onPageCacheRestore = function(pageName)
             if pageName == PAGE_DISPLAY then
+                -- Rebuild when the texts' structure changed behind the cached
+                -- page (a spec change while the panel was closed, a preset, a
+                -- Style swap), so Core Text Positions and Core Text Coloring
+                -- match the profile.
+                if optState._npTextFP and ns.NPO_TextStructureFP() ~= optState._npTextFP then
+                    C_Timer.After(0, function()
+                        if EllesmereUI:GetActiveModule() == "EllesmereUINameplates"
+                           and EllesmereUI:GetActivePage() == PAGE_DISPLAY then
+                            EllesmereUI:RefreshPage(true)
+                        end
+                    end)
+                end
                 -- Re-evaluate Set as Default button visibility (cache restore blanket-shows all children, which can ghost the button).
                 local pState = EllesmereUI._presetState and EllesmereUI._presetState[""]
                 if pState and pState.UpdateDefaultBtnState then pState.UpdateDefaultBtnState() end
