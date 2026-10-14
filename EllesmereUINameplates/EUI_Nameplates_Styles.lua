@@ -886,18 +886,27 @@ function ns.NP_SeedStock(prof)
     prof.healthBarTexture = "blizzard"
     prof.castBarTexture = "blizzard"
 end
--- The one-time WoW Forever seed: the level box shows the level, so the Left
--- Text slot's Forever default ("level") steps aside instead of showing it a
--- second time. Once per profile; a level the user put anywhere else stays,
--- and the slot is the user's afterwards. The Style page keeps the key in a
--- Forever-only slot (p._foreverStyleSlots): the other looks' value is banked
--- on the way into the variant and comes back on the way out.
+-- The one-time WoW Forever seeds, each under its own stamp: the level box
+-- shows the level, so the Left Text slot's Forever default ("level") steps
+-- aside instead of showing it a second time (a level the user put anywhere
+-- else stays), and the look's plates start without elite or rare marks (the
+-- Elite/Rare Indicator box unchecked; the Quest Indicator keeps its own).
+-- Once per profile; the settings are the user's afterwards. The Style page
+-- keeps the keys in a Forever-only slot (p._foreverStyleSlots): the other
+-- looks' values are banked on the way into the variant and come back on the
+-- way out.
 function ns.NP_SeedForever(prof)
-    if not prof or prof.foreverLevelSlotSeeded then return end
-    prof.foreverLevelSlotSeeded = true
-    local v = prof.textSlotLeft
-    if v == nil then v = defaults.textSlotLeft end
-    if v == "level" then prof.textSlotLeft = "none" end
+    if not prof then return end
+    if not prof.foreverLevelSlotSeeded then
+        prof.foreverLevelSlotSeeded = true
+        local v = prof.textSlotLeft
+        if v == nil then v = defaults.textSlotLeft end
+        if v == "level" then prof.textSlotLeft = "none" end
+    end
+    if not prof.foreverRareSeeded then
+        prof.foreverRareSeeded = true
+        prof.classificationHideRare = true
+    end
 end
 
 local function NoTintFlag(db, key)
@@ -930,12 +939,14 @@ ns.ApplyHealthBarTexture = ApplyHealthBarTexture
 -- is listed texture by texture: glows and arrows on the health bar reach past
 -- it and must stay unmasked. Re-run after every retexture (a path swap mints a
 -- new fill object). The custom border frame is the shape while it is on.
--- part: "health" or "cast" for one bar, nil for both. The opts tables are
--- reused (the kit reads them during the call only).
+-- part: "health" or "cast" for one bar, nil for both. cornersOnly: the cast
+-- bar's show / hide under Join Cast Bar, which moves only the health bar's
+-- bottom corners. The opts tables are reused (the kit reads them during the
+-- call only).
 local NO_ROOTS, HP_ROOTS, HP_TEX, CAST_TEX = {}, {}, {}, {}
 local HP_OPTS = { roots = HP_ROOTS, textures = HP_TEX }
 local CAST_OPTS = { roots = NO_ROOTS, textures = CAST_TEX }
-function ns.NP_ApplyRounding(plate, part)
+function ns.NP_ApplyRounding(plate, part, cornersOnly)
     local health = plate.health
     if not health then return end
     local radius = (not ns.NP_Blizz() and p and p.cornerRadius) or 0
@@ -943,6 +954,11 @@ function ns.NP_ApplyRounding(plate, part)
     local customOn = radius > 0 and ns.IsCustomBorderEnabled()
     local style = customOn and ((p and p.customBorderTexture) or defaults.customBorderTexture) or "solid"
     if not EllesmereUI.RoundedStyleOK(style) then radius = 0 end
+    -- Join Cast Bar: while a cast shows, the health bar and the cast bar under
+    -- it share one outline (the cast bar's show / hide re-rounds the health
+    -- bar, see the cast visibility hook).
+    local join = radius > 0 and p and p.cornerJoinCast or nil
+    plate._npJoinCast = join
     -- Off: free on every spawn unless this plate was rounded before.
     if radius <= 0 then
         if plate._npRounded then
@@ -959,6 +975,10 @@ function ns.NP_ApplyRounding(plate, part)
     if part ~= "cast" and (custom or not customOn) then
         local shape = custom or health
         HP_OPTS.rect, HP_OPTS.border, HP_OPTS.style = shape, shape, style
+        HP_OPTS.corners = p and p.cornerMask
+        if join and plate.cast and plate.cast:IsShown() then
+            HP_OPTS.corners = EllesmereUI.RoundedJoinCorners(HP_OPTS.corners)
+        end
         local ab, fw = plate.absorb, plate.absorbForward
         HP_TEX[1], HP_TEX[2], HP_TEX[3] = health:GetStatusBarTexture(), plate.healthBG, plate.hashLine
         HP_TEX[4], HP_TEX[5] = plate.highlight, plate.targetHighlight
@@ -969,11 +989,44 @@ function ns.NP_ApplyRounding(plate, part)
         HP_ROOTS[1], HP_ROOTS[2] = plate.targetClipFill, plate.targetClipBg
         HP_ROOTS[3], HP_ROOTS[4] = plate.focusClipFill, plate.focusClipBg
         HP_ROOTS[5], HP_ROOTS[6] = plate.hoverClipFill, plate.hoverClipBg
-        EllesmereUI.RoundCorners(plate, radius, HP_OPTS)
+        -- A cast show / hide moves the corners alone while every other input
+        -- of the plate's last full pass still holds (radius, style, shape,
+        -- each body texture and root): the kit then reshapes without walking
+        -- the body. Anything else, or a pass the kit will not shorten, runs
+        -- in full and records its inputs.
+        local last = plate._npHpRound
+        local same = cornersOnly and last and last.radius == radius
+            and last.style == style and last.shape == shape
+        if same then
+            local lt, lr = last.tex, last.roots
+            for i = 1, 7 do
+                if lt[i] ~= HP_TEX[i] then same = false; break end
+            end
+            if same then
+                for i = 1, 6 do
+                    if lr[i] ~= HP_ROOTS[i] then same = false; break end
+                end
+            end
+        end
+        if not (same and EllesmereUI.RoundedSetCorners(plate, HP_OPTS.corners)) then
+            EllesmereUI.RoundCorners(plate, radius, HP_OPTS)
+            if not last then
+                last = { tex = {}, roots = {} }
+                plate._npHpRound = last
+            end
+            last.radius, last.style, last.shape = radius, style, shape
+            local lt, lr = last.tex, last.roots
+            for i = 1, 7 do lt[i] = HP_TEX[i] end
+            for i = 1, 6 do lr[i] = HP_ROOTS[i] end
+        end
     end
     local cast = plate.cast
     if cast and part ~= "health" then
-        CAST_OPTS.border = cast
+        CAST_OPTS.border, CAST_OPTS.corners = cast, p and p.cornerMask
+        if join then
+            local _, lower = EllesmereUI.RoundedJoinCorners(CAST_OPTS.corners)
+            CAST_OPTS.corners = lower
+        end
         CAST_TEX[1], CAST_TEX[2], CAST_TEX[3] = cast:GetStatusBarTexture(), plate.castBG, plate.castBarOverlay
         EllesmereUI.RoundCorners(cast, radius, CAST_OPTS)
     end

@@ -241,7 +241,9 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
                 _, h = W:DualRow(parent, y, ocfgL, ocfgR);  y = y - h
             end
         end
-        do
+        -- Border color swatch on the size slider (right region); none in the
+        -- search pre-build (it indexes nothing, and the row is a stand-in there)
+        if not EllesmereUI._prebuilding then
             local rgn = bsRow._rightRegion
             local ctrl = rgn._control
             local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
@@ -265,11 +267,12 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
                     title = "Corner Radius", tip = "Corner Radius",
                     disabled = function() if stOff() then return true end; local p = DB(); return not EllesmereUI.RoundedStyleOK(p and p.swingTimer.borderTexture) end,
                     disabledTooltip = function() if stOff() then return ST_TIP end; return "This option requires the Solid, Glow or Shadow border style." end,
-                    rows = {
+                    rows = EllesmereUI.RoundedCornerRows({
                         { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
                           get = function() local p = DB(); return p and p.swingTimer.cornerRadius or 0 end,
                           set = function(v) local p = DB(); if not p then return end; p.swingTimer.cornerRadius = v; RefreshST() end },
-                    },
+                    }, function() local p = DB(); return p and p.swingTimer.cornerMask end,
+                       function(v) local p = DB(); if not p then return end; p.swingTimer.cornerMask = v; RefreshST() end),
                 })
             end
             local block = CreateFrame("Frame", nil, swatch)

@@ -188,6 +188,7 @@ ns._LayoutPartyFrames = function()
     -- Self button + header slot positioning ran above (ns._PositionPartySlots),
     -- before the attribute pass so a header Hide/Show re-process anchors the
     -- children against the already-correct header position and size.
+    ns.RF_SyncCompact(true)
 
     -- The friendly boss group attaches to this container (and to the growth axis derived above)
     -- while not in a raid, so every layout pass -- Horizontal Frames, Flip Growth, party size,
@@ -510,7 +511,7 @@ ns.ReloadPartyFrames = function(skipButtons)
             d.powerBg:SetColorTexture((raw.powerBgColor or {}).r or 0, (raw.powerBgColor or {}).g or 0, (raw.powerBgColor or {}).b or 0, (raw.powerBgDarkness or 70) / 100)
             d._pwBgTintType = nil
         end
-        if d.UpdatePowerBorder then d.UpdatePowerBorder() end
+        if d.UpdatePowerBorder then d.UpdatePowerBorder(true) end
 
         -- Name text
         if d.nameText then
