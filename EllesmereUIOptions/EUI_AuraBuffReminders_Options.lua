@@ -1534,9 +1534,9 @@ initFrame:SetScript("OnEvent", function(self)
 
         -----------------------------------------------------------------------
         --  WOW FOREVER section: on that client the rest of the page.
-        --  Camp Benefits | Well Fed, then the spell-ID entry that adds a custom
-        --  reminder followed by one slot per tracked spell; the retail sections
-        --  below never build.
+        --  Camp Benefits | Well Fed, Find Minerals / Herbs, then the spell-ID
+        --  entry that adds a custom reminder followed by one slot per tracked
+        --  spell; the retail sections below never build.
         -----------------------------------------------------------------------
         if FOREVER then
             _, h = W:SectionHeader(parent, SECTION_FOREVER, y);  y = y - h
@@ -1566,6 +1566,18 @@ initFrame:SetScript("OnEvent", function(self)
                       local f = FDB(); if not f then return end; f.wellFed = v
                       RefreshAll()
                   end }
+            );  y = y - h
+
+            -- Find Minerals / Herbs
+            _, h = W:DualRow(parent, y,
+                { type="toggle", text="Find Minerals / Herbs",
+                  tooltip="Reminds you when neither Find Minerals nor Find Herbs is active. Only one tracking runs at a time, so either one counts.\nClick casts the one you used last (Find Minerals first when you know both). Shown only while you know one of them, never in combat or in battlegrounds and arenas.",
+                  getValue=function() local f = FDB(); return f and f.gathering == true end,
+                  setValue=function(v)
+                      local f = FDB(); if not f then return end; f.gathering = v
+                      RefreshAll()
+                  end },
+                EllesmereUI.BlankRowCfg()
             );  y = y - h
 
             -- Add Custom Spell, paired with the tracked spells
