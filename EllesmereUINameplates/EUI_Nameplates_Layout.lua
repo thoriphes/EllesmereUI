@@ -77,12 +77,6 @@ ns.PANDEMIC_GLOW_STYLES = PANDEMIC_GLOW_STYLES
 -- never raw index: this list omits "Custom Shape Glow", so the same index differs per side.
 if EllesmereUI then EllesmereUI.NameplatePandemicGlowStyles = PANDEMIC_GLOW_STYLES end
 
--- The engine aura containers have no duration-driven texture alpha, so no
--- pandemic glow renders on nameplate auras (EUI_Nameplates_AuraContainers.lua,
--- V1 deferred). Gates the CDM pandemic sync.
-ns.NP_PandemicGlowRendered = false
-EllesmereUI.NameplatePandemicGlowRendered = ns.NP_PandemicGlowRendered
-
 -- PANDEMIC_GLOW_STYLES index -> shared EllesmereUI.Glows.STYLES index.
 ns.NP_TO_SHARED_GLOW = ns.NP_GLOW_VIEW.toShared
 
@@ -105,6 +99,26 @@ local function GetPandemicGlowSpeed()
     return (p and p.pandemicGlowSpeed) or defaults.pandemicGlowSpeed
 end
 ns.GetPandemicGlowSpeed = GetPandemicGlowSpeed
+function ns.GetPandemicGlow()
+    local v = p and p.pandemicGlow
+    if v == nil then v = defaults.pandemicGlow end
+    return v == true
+end
+-- Full render spec for the pandemic glow (live debuff glow and its preview).
+-- An unset color mode is Custom: the swatch color this glow always drew.
+function ns.GetPandemicGlowSpec(out)
+    out = out or {}
+    out.style = ns.NP_TO_SHARED_GLOW[GetPandemicGlowStyle()] or 1
+    local c = (p and p.pandemicGlowColor) or defaults.pandemicGlowColor
+    out.r, out.g, out.b = EllesmereUI.Glows.ResolveColor((p and p.pandemicGlowMode) or "custom", c.r, c.g, c.b)
+    out.lines = GetPandemicGlowLines()
+    out.thickness = GetPandemicGlowThickness()
+    out.speed = GetPandemicGlowSpeed()
+    local bgc = (p and p.pandemicGlowBackgroundColor) or defaults.pandemicGlowBackgroundColor
+    out.bg = (p and p.pandemicGlowBackground == true) or nil
+    out.bgR, out.bgG, out.bgB = bgc and bgc.r, bgc and bgc.g, bgc and bgc.b
+    return out
+end
 
 -- Offensive dispel capability: the shared parent detector (AuraKit), which
 -- asks what the PLAYER knows, never what an aura is, so it keeps working in
@@ -484,14 +498,17 @@ ns.FindSlotForElement = FindSlotForElement
 local COMBO_HEALTH_ELEMENTS = {
     healthPctNum     = true, healthNumPct     = true,
     healthPctNumDash = true, healthNumPctDash = true,
+    healthNumMax     = true,  -- current / max number; no percent
 }
 local function IsComboHealthText(element)
     return COMBO_HEALTH_ELEMENTS[element] == true
 end
 ns.IsComboHealthText = IsComboHealthText
 
-local function SetCombinedHealthText(fs, element, pctText, numText)
-    if element == "healthPctNum" then
+local function SetCombinedHealthText(fs, element, pctText, numText, maxText)
+    if element == "healthNumMax" then
+        fs:SetFormattedText("%s / %s", numText, maxText or "")
+    elseif element == "healthPctNum" then
         fs:SetFormattedText("%s | %s", pctText, numText)
     elseif element == "healthNumPct" then
         fs:SetFormattedText("%s | %s", numText, pctText)
@@ -683,6 +700,7 @@ local healthTextWidths = {
     healthNumPct  = 75,
     healthPctNumDash = 75,
     healthNumPctDash = 75,
+    healthNumMax  = 75,
     level = 24,   -- standalone level: "70" / "??"
     targetOfTarget = 60,
 }

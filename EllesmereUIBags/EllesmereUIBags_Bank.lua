@@ -279,7 +279,7 @@ bankSearch:SetScript("OnTextChanged", function(self)
     local text = self:GetText()
     searchPlaceholder:SetShown(text == "")
     searchClear:SetShown(text ~= "")
-    C_Container.SetItemSearch(text)
+    EUI_Bags.SetSearchText(text)
     if EUI_Bank:IsVisible() then EUI_Bank:RefreshBank() end
     if EUI_Bags and EUI_Bags:IsVisible() and EUI_Bags.RefreshInventory then
         EUI_Bags:RefreshInventory()
@@ -623,7 +623,6 @@ do
         if not C_Bank.CanWithdrawMoney(Enum.BankType.Account) then return end
         ShowMoneyPopup("Withdraw from Warbank", function(copper)
             C_Bank.WithdrawMoney(Enum.BankType.Account, copper)
-            if EUI_Bags and EUI_Bags.CaptureWarbandGold then EUI_Bags.CaptureWarbandGold() end
         end)
     end)
     depositMoneyBtn:SetScript("OnClick", function()
@@ -631,7 +630,6 @@ do
         if not C_Bank.CanDepositMoney(Enum.BankType.Account) then return end
         ShowMoneyPopup("Deposit to Warbank", function(copper)
             C_Bank.DepositMoney(Enum.BankType.Account, copper)
-            if EUI_Bags and EUI_Bags.CaptureWarbandGold then EUI_Bags.CaptureWarbandGold() end
         end)
     end)
 
@@ -663,10 +661,9 @@ do
     end)
 
     function EUI_Bank:UpdateFooterGold()
-        local pMoney = GetMoney and GetMoney() or 0
-        playerGold:SetText(FormatGold(pMoney))
-        local wMoney = C_Bank and C_Bank.FetchDepositedMoney and C_Bank.FetchDepositedMoney(Enum.BankType.Account) or 0
-        warbandGold:SetText(FormatGold(wMoney))
+        local GL = EUI.GetGoldLedger()
+        playerGold:SetText(FormatGold(GL.Money() or 0))
+        warbandGold:SetText(FormatGold(GL.WarbandMoney() or 0))
     end
 
     function EUI_Bank:UpdateDepositButton(isWarband)
@@ -2138,6 +2135,7 @@ function EUI_Bank:RefreshBank()
         if not hasSearch then return true end
         local info = C_Container.GetContainerItemInfo(bagID, slot)
         if not info then return false end
+        EUI_Bags.ApplyBindKeyword(info, bagID, slot)
         return not info.isFiltered
     end
 
@@ -2355,6 +2353,7 @@ function EUI_Bank:RefreshBank()
                 for slot = 1, tab.numSlots do
                     local info = C_Container.GetContainerItemInfo(tab.bagID, slot)
                     if info then used = used + 1 end
+                    EUI_Bags.ApplyBindKeyword(info, tab.bagID, slot)
                     -- use native search filter so type keywords work too
                     if not hasSearch or (info and not info.isFiltered) then
                         visibleSlots[#visibleSlots + 1] = { slot = slot, _cachedInfo = info }
@@ -2439,6 +2438,7 @@ function EUI_Bank:RefreshBank()
             for slot = 1, tab.numSlots do
                 local info = C_Container.GetContainerItemInfo(tab.bagID, slot)
                 if info then used = used + 1 end
+                EUI_Bags.ApplyBindKeyword(info, tab.bagID, slot)
                 allSlots[#allSlots + 1] = { slot = slot, _cachedInfo = info }
             end
             local visibleSlots = allSlots
@@ -2523,10 +2523,10 @@ function EUI_Bank:RefreshBank()
     -- Shared slot render: updates a single button with item or empty state
     -- One reused data table for third-party overlay painters (EUI_Bags.RunItemOverlays).
     local overlayData = {}
-    -- Junk Marker junk, and grey items while Desaturate Junk Items is on, grey
-    -- here as on the bank's list rows (read once per refresh)
+    -- Junk Item Visuals' Desaturate greys grey items and Junk Marker junk here
+    -- as on the bank's list rows (read once per refresh)
     local junkOn = _G.EUI_CategoryManager:IsJunkMarkerEnabled()
-    local desatGreys = BP().bagDesaturateJunkItems == true
+    local desatJunk = BP().bagDesaturateJunkItems == true
     local function RenderSlotContent(btn, bagID, slot, cachedInfo)
         if btn.ProfessionQualityOverlay then btn.ProfessionQualityOverlay:SetAlpha(0) end
         if btn.IconOverlay then btn.IconOverlay:SetAlpha(0); btn.IconOverlay:Hide() end
@@ -2552,8 +2552,8 @@ function EUI_Bank:RefreshBank()
             btn:SetItemButtonTexture(info.iconFileID)
             btn:SetItemButtonCount(info.stackCount)
             local quality = info.quality or 1
-            SetItemButtonDesaturated(btn, info.isLocked or (desatGreys and quality == 0)
-                or (junkOn and _G.EUI_CategoryManager:IsJunk(info.itemID, quality)))
+            SetItemButtonDesaturated(btn, info.isLocked or (desatJunk and (quality == 0
+                or (junkOn and _G.EUI_CategoryManager:IsJunk(info.itemID, quality)))) or false)
             local itemLink = C_Container.GetContainerItemLink(bagID, slot)
             if itemLink then btn:SetItemButtonQuality(quality, itemLink, false, false) end
             if btn.ProfessionQualityOverlay and btn.ProfessionQualityOverlay:IsShown() and btn._textOverlay then
@@ -2932,10 +2932,9 @@ function BuildBankSidebar()
         else
             -- Through the client icon map, like the bag window's sidebar: a
             -- default the Forever client cannot draw takes its stand-in there.
-            -- Our own art (a file path: the Junk coin) is drawn whole.
+            -- Cropped on every paint (a pooled row may last have drawn an atlas).
             btn._icon:SetTexture(EllesmereUI.ClientIcon(icon))
-            local c = type(icon) == "string" and 0 or 0.08
-            btn._icon:SetTexCoord(c, 1 - c, c, 1 - c)
+            btn._icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
         end
         btn._icon:SetAlpha(isSelected and 1 or 0.75)
 
@@ -3200,7 +3199,6 @@ eventFrame:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
 eventFrame:RegisterEvent("BANK_TABS_CHANGED")
 eventFrame:RegisterEvent("BANK_TAB_SETTINGS_UPDATED")
 eventFrame:RegisterEvent("PLAYER_ACCOUNT_BANK_TAB_SLOTS_CHANGED")
-eventFrame:RegisterEvent("PLAYER_MONEY")
 if EUI.IS_FOREVER then eventFrame:RegisterEvent("BAG_CONTAINER_UPDATE") end
 eventFrame:SetScript("OnEvent", function(_, event)
     if event == "BANKFRAME_OPENED" then
@@ -3269,7 +3267,8 @@ eventFrame:SetScript("OnEvent", function(_, event)
             EUI_Bank:RefreshBank()
             if RefreshBankBags then RefreshBankBags() end
             EUI_Bank:UpdateFooterGold()
-            if EUI_Bags and EUI_Bags.CaptureWarbandGold then EUI_Bags.CaptureWarbandGold() end
+            -- Money data is ready once the tabs are: the open event can land before it.
+            EUI.GetGoldLedger().RecordWarband()
         end)
 
     elseif event == "BANKFRAME_CLOSED" then
@@ -3337,10 +3336,6 @@ eventFrame:SetScript("OnEvent", function(_, event)
             ScheduleBankRefresh()
         end
 
-    elseif event == "PLAYER_MONEY" then
-        if EUI_Bank:IsVisible() then
-            EUI_Bank:UpdateFooterGold()
-        end
     end
 end)
 

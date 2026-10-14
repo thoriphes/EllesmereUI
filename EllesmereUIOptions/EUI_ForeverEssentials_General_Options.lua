@@ -8,13 +8,16 @@ if not (EllesmereUI and EllesmereUI.IS_FOREVER) then return end -- Forever Essen
 if not EllesmereUI._ModuleNS["EllesmereUIForeverEssentials"] then return end  -- module disabled: no options page
 
 -------------------------------------------------------------------------------
---  NAME FORMAT: one place for every Name Format in the suite. Each row is a
---  WRITE-THROUGH MIRROR, as on Global Settings > Textures: it reads and writes
---  the module's OWN keys and calls the module's own apply, so nothing is stored
---  here and each module's page shows the same setting. A row over several keys
---  (every unit frame text; raid and party) reads "Mixed" while they differ,
---  and a pick sets them all. A module that is off has no row; All Names (while
---  two or more rows exist) sets every row at once.
+--  NAME FORMAT: one place for every Name Format in the suite, as two checkbox
+--  dropdowns over the same module rows: a box shows that part of the name, so
+--  First Name alone = first names, Last Name alone = last names, both = First
+--  and Last. A name always shows, so a row's last checked box stays checked.
+--  Each row is a WRITE-THROUGH MIRROR, as on Global Settings > Textures: it
+--  reads and writes the module's OWN keys and calls the module's own apply, so
+--  nothing is stored here and each module's page shows the same setting. A row
+--  over several keys (every unit frame text; raid and party) reads checked in
+--  neither while they differ, and a click sets them all. A module that is off
+--  has no row.
 -------------------------------------------------------------------------------
 -- A saved Name Format as a row value ("full" = First and Last), and back (nil).
 local function ModeOf(v) return (v == nil or v == "full") and "full" or v end
@@ -37,7 +40,7 @@ local function NameFormatSources()
     local slots = uf and uf.db and uf.UF_NAME_FORMAT_SLOTS
     if slots then
         local hasName = uf.UF_HAS_NAME
-        list[#list + 1] = { text = "Unit Frame Names", tooltip = "Every unit frame text that shows a name.",
+        list[#list + 1] = { text = "Unit Frames", tooltip = "Every unit frame text that shows a name.",
             get = function()
                 local p, shown, all = uf.db.profile, nil, nil
                 for i = 1, #slots do
@@ -68,7 +71,7 @@ local function NameFormatSources()
     local rf = MNS("EllesmereUIRaidFrames")
     if rf and rf.db then
         local function partyOwn() return rf._IsPartySectionCustom("textDisplay") end
-        list[#list + 1] = { text = "Raid Frame Names", tooltip = "Raid and party frame names.",
+        list[#list + 1] = { text = "Raid Frames", tooltip = "Raid and party frame names.",
             get = function()
                 local p = rf.db.profile
                 local m = ModeOf(p.nameFormat)
@@ -93,7 +96,7 @@ local function NameFormatSources()
     if np and np.db then
         local slotKeys, formatKey = np.textSlotKeys, {}
         for _, slot in ipairs(slotKeys) do formatKey[slot] = slot .. "NameFormat" end
-        list[#list + 1] = { text = "Enemy Plate Names", tooltip = "Enemy nameplate names and their targets.",
+        list[#list + 1] = { text = "Enemy Nameplates", tooltip = "Enemy nameplate names and their targets.",
             get = function()
                 local p, m = np.db.profile, nil
                 local nameSlot, totSlot = np.FindNameSlot(), np._npToTSlot
@@ -109,7 +112,7 @@ local function NameFormatSources()
                 for i = 1, #slotKeys do p[formatKey[slotKeys[i]]] = mode end
                 np.RefreshAllSettings()
             end }
-        list[#list + 1] = { text = "Friendly Plate Names", tooltip = "Friendly player nameplates, in both modes.",
+        list[#list + 1] = { text = "Friendly Nameplates", tooltip = "Friendly player nameplates, in both modes.",
             disabled = function() return np.db.profile.showFriendlyPlayers == false end,
             disabledTooltip = "Show EUI Friendly Player Nameplates",
             get = function() return ModeOf(np.db.profile.friendlyNameFormat) end,
@@ -123,7 +126,7 @@ local function NameFormatSources()
     local dm = MNS("EllesmereUIDamageMeters")
     if dm and _G._EDM_DB then
         local DMCfg = dm.EDM.DB
-        list[#list + 1] = { text = "Damage Meter Names",
+        list[#list + 1] = { text = "Damage Meters",
             tooltip = "Player names on the meter bars.",
             get = function() return ModeOf(DMCfg().nameFormat) end,
             set = function(v)
@@ -134,7 +137,7 @@ local function NameFormatSources()
 
     -- The threat meter (this module; account-wide like its other settings).
     local TM = EllesmereUI._ThreatMeter
-    list[#list + 1] = { text = "Threat Meter Names",
+    list[#list + 1] = { text = "Threat Meter",
         tooltip = "Player names on the threat meter, for all your characters.",
         disabled = function() return not TM.Get("enabled") end, disabledTooltip = "Threat Meter",
         get = function() return ModeOf(TM.Get("nameFormat")) end,
@@ -142,25 +145,6 @@ local function NameFormatSources()
             TM.Cfg().nameFormat = Stored(v)
             TM.ApplyStyle()
         end }
-
-    -- All Names: every row at once. A row that is switched off does not count
-    -- toward what it reads, but it is still set.
-    if #list > 1 then
-        local rows = list
-        list = { { text = "All Names", tooltip = "Sets every name format below at once.",
-            get = function()
-                local m
-                for i = 1, #rows do
-                    local r = rows[i]
-                    if not (r.disabled and r.disabled()) then m = Merge(m, r.get()) end
-                end
-                return m or "full"
-            end,
-            set = function(v)
-                for i = 1, #rows do rows[i].set(v) end
-            end } }
-        for i = 1, #rows do list[#list + 1] = rows[i] end
-    end
     return list
 end
 
@@ -186,28 +170,230 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
     );  y = y - h
 
     ---------------------------------------------------------------------------
+    --  WORLD MAP (Reveal Unexplored Areas, its color in the cog)
+    ---------------------------------------------------------------------------
+    local MR = EllesmereUI._MapReveal
+    local function revealOff() return not MR.Get("enabled") end
+
+    _, h = W:Spacer(parent, y, 20);  y = y - h
+    _, h = W:SectionHeader(parent, "WORLD MAP", y);  y = y - h
+
+    local revealRow
+    revealRow, h = W:DualRow(parent, y,
+        { type = "toggle", text = "Reveal Unexplored Areas",
+          tooltip = "Shows the parts of the world map you have not explored yet. Use the cog to pick their color.",
+          getValue = function() return MR.Get("enabled") end,
+          setValue = function(v)
+              MR.Cfg().enabled = v
+              MR.Apply()
+              EllesmereUI:RefreshPage()  -- the cog's disabled state
+          end },
+        BLANK()
+    );  y = y - h
+    if not EllesmereUI._prebuilding then
+        EllesmereUI.BuildInlineCog(revealRow._leftRegion, {
+            title = "Reveal Unexplored Areas Settings",
+            rows = {
+                { type = "colorpicker", label = "Unexplored Color", hasAlpha = true,
+                  tooltip = "Tints the areas you have not explored yet. White shows them as they are.",
+                  get = function()
+                      local c = MR.Get("color")
+                      return c.r, c.g, c.b, c.a
+                  end,
+                  set = function(r, g, b, a)
+                      MR.Cfg().color = { r = r, g = g, b = b, a = a or 1 }
+                      MR.Apply()
+                  end },
+            },
+            disabled = revealOff, disabledTooltip = "Reveal Unexplored Areas",
+        })
+    end
+
+    ---------------------------------------------------------------------------
+    --  SIMPLIFIED STATS (item tooltips)
+    ---------------------------------------------------------------------------
+    local SS = EllesmereUI._SimplifiedStats
+    if SS then
+        local function Set(k, v)
+            SS.Cfg()[k] = v
+            EllesmereUI:RefreshPage()  -- update the dependent rows' disabled state
+        end
+        local function shortenOff() return not SS.Get("shorten") end
+        local function colorsOff() return not SS.Get("colors") end
+
+        _, h = W:Spacer(parent, y, 20);  y = y - h
+        _, h = W:SectionHeader(parent, "SIMPLIFIED STATS", y);  y = y - h
+
+        -- Shorten Equip Lines | Color Stats
+        _, h = W:DualRow(parent, y,
+            { type = "toggle", text = "Shorten Equip Lines",
+              tooltip = "Shortens Equip: and Set: stat lines on item tooltips to +X Stat.",
+              getValue = function() return SS.Get("shorten") end,
+              setValue = function(v) Set("shorten", v) end },
+            { type = "toggle", text = "Color Stats",
+              tooltip = "Colors each stat name on item tooltips, enchants included, and its number per Number Color.",
+              getValue = function() return SS.Get("colors") end,
+              setValue = function(v) Set("colors", v) end }
+        );  y = y - h
+
+        -- Merge Equal Spell Power | Number Color
+        _, h = W:DualRow(parent, y,
+            { type = "toggle", text = "Merge Equal Spell Power",
+              tooltip = "Shows equal spell damage and healing as one Spell Power line.",
+              disabled = shortenOff, disabledTooltip = "Shorten Equip Lines",
+              getValue = function() return SS.Get("merge") end,
+              setValue = function(v) Set("merge", v) end },
+            { type = "dropdown", text = "Number Color",
+              disabled = colorsOff, disabledTooltip = "Color Stats",
+              values = { signed = "Green / Red", stat = "Stat Color", line = "Line Color" },
+              order = { "signed", "stat", "line" },
+              getValue = function() return SS.Get("numColor") end,
+              setValue = function(v) SS.Cfg().numColor = (v ~= "signed") and v or nil end }
+        );  y = y - h
+    end
+
+    ---------------------------------------------------------------------------
     --  NAME FORMAT (while a module with a Name Format is on)
     ---------------------------------------------------------------------------
     local sources = NameFormatSources()
     if #sources > 0 then
         _, h = W:Spacer(parent, y, 20);  y = y - h
         _, h = W:SectionHeader(parent, "NAME FORMAT", y);  y = y - h
-        local values, order = EllesmereUI.NAME_FORMAT_VALUES, EllesmereUI.NAME_FORMAT_ORDER
-        local function Row(src)
-            return { type = "dropdown", text = src.text, tooltip = src.tooltip,
-                values = values, order = order,
-                disabled = src.disabled, disabledTooltip = src.disabledTooltip,
-                getValue = src.get,
-                setValue = function(v)
-                    src.set(v)
-                    -- All Names and the rows it covers read the new values.
-                    EllesmereUI:RefreshPage()
-                end }
+        -- Placeholder dropdowns keep the labels, tooltips and search entries; the
+        -- checkbox dropdowns replace them (DualRow only builds plain widgets).
+        local function Slot(text, tooltip)
+            return { type = "dropdown", text = text, tooltip = tooltip,
+                values = { __placeholder = "..." }, order = { "__placeholder" },
+                getValue = function() return "__placeholder" end,
+                setValue = function() end }
         end
-        for i = 1, #sources, 2 do
-            local b = sources[i + 1]
-            _, h = W:DualRow(parent, y, Row(sources[i]), b and Row(b) or BLANK());  y = y - h
+        local row
+        row, h = W:DualRow(parent, y,
+            Slot("First Name", "Checked modules show their first name. A module checked in both lists shows the full name."),
+            Slot("Last Name", "Checked modules show their last name. A module checked in both lists shows the full name."));  y = y - h
+        if not EllesmereUI._prebuilding then
+            local PP = EllesmereUI.PanelPP
+            -- A module that is switched off stays greyed out and out of "All".
+            local items = {}
+            for i = 1, #sources do
+                local src = sources[i]
+                items[i] = { key = i, label = src.text, tooltip = src.tooltip,
+                    lockedFn = src.disabled, excludeFromSummaryFn = src.disabled,
+                    lockedTooltip = src.disabled and function()
+                        return EllesmereUI.DisabledTooltip(src.disabledTooltip)
+                    end or nil }
+            end
+            -- Whether a row value shows that part of the name ("mixed" shows neither box).
+            local function Has(m, part) return m == part or m == "full" end
+            local function List(rgn, part)
+                local other = (part == "first") and "last" or "first"
+                if rgn._control then rgn._control:Hide() end
+                local dd, refresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    rgn, 210, rgn:GetFrameLevel() + 2, items,
+                    function(i) return Has(sources[i].get(), part) end,
+                    function(i, on)
+                        local theirs = Has(sources[i].get(), other)
+                        -- A name always shows: unchecking the last box keeps it.
+                        if not (on or theirs) then return end
+                        sources[i].set((on and theirs) and "full" or (on and part or other))
+                        -- The other list reads the new value too.
+                        EllesmereUI:RefreshPage()
+                    end)
+                PP.Point(dd, "RIGHT", rgn, "RIGHT", -20, 0)
+                rgn._control = dd
+                rgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(refresh)
+            end
+            List(row._leftRegion, "first")
+            List(row._rightRegion, "last")
         end
+    end
+
+    ---------------------------------------------------------------------------
+    --  JUNK ITEMS (the rows after the toggle are built while the window is
+    --  on; the toggle rebuilds the page)
+    ---------------------------------------------------------------------------
+    local JI = EllesmereUI._JunkItems
+    local function junkOff() return not JI.Get("enabled") end
+    -- Every write re-applies the window.
+    local function JunkSet(key, v)
+        JI.Cfg()[key] = v
+        JI.Apply()
+    end
+    local function ClearJunkExclusions()
+        EllesmereUI:ShowConfirmPopup({
+            title       = EllesmereUI.L("Clear Excluded Items"),
+            message     = EllesmereUI.L("Every item you middle-clicked away can show in the Junk Items window again."),
+            confirmText = EllesmereUI.L("Clear"),
+            cancelText  = CANCEL,
+            onConfirm   = JI.ClearExclusions,
+        })
+    end
+
+    _, h = W:Spacer(parent, y, 20);  y = y - h
+    _, h = W:SectionHeader(parent, "JUNK ITEMS", y);  y = y - h
+
+    _, h = EllesmereUI.BuildVisibilityRow(W, parent, y, {
+        leftCfg = { type = "toggle", text = "Enable Junk Items Window",
+            tooltip = "Shows your cheapest junk in a small window.",
+            getValue = function() return not junkOff() end,
+            setValue = EllesmereUI.SectionToggleSetValue(function(v) JunkSet("enabled", v) end) },
+        -- The window's table exists once it was turned on, and the row is
+        -- greyed out while it is off, so viewing the page saves nothing.
+        getStore = function() return junkOff() and JI.Read() or JI.Cfg() end,
+        legacyKey = "visibility",
+        caps = { partyIncludesRaid = false, luaDragonriding = true, noMouseover = true },
+        disabledFn = junkOff, disabledTooltip = "Junk Items Window",
+        onChanged = EllesmereUI.RequestVisibilityUpdate,
+        onOptionChanged = EllesmereUI.RequestVisibilityUpdate,
+    });  y = y - h
+
+    if not junkOff() then
+        _, h = W:DualRow(parent, y,
+            { type = "slider", text = "Items Shown",
+              min = 1, max = 6, step = 1, isPercent = false,
+              tooltip = "How many junk stacks the window lists.",
+              getValue = function() return JI.Get("itemCount") end,
+              setValue = function(v) JunkSet("itemCount", v) end },
+            { type = "toggle", text = "Include White Items",
+              tooltip = "Lists white stacks as well as gray ones.",
+              getValue = function() return JI.Get("includeWhite") == true end,
+              setValue = function(v) JunkSet("includeWhite", v) end }
+        );  y = y - h
+
+        _, h = W:DualRow(parent, y,
+            { type = "toggle", text = "Skip Confirmation for White Items",
+              tooltip = "White stacks delete on the first Ctrl + Left Click instead of the second.",
+              getValue = function() return JI.Get("skipWhiteConfirm") == true end,
+              setValue = function(v) JunkSet("skipWhiteConfirm", v) end },
+            { type = "labeledButton", text = "Excluded Items", buttonText = "Clear", width = 90,
+              tooltip = "Brings back items you middle-clicked away.",
+              onClick = ClearJunkExclusions }
+        );  y = y - h
+
+        _, h = W:DualRow(parent, y,
+            { type = "slider", text = "Icon Size",
+              min = 16, max = 64, step = 1, isPercent = false,
+              getValue = function() return JI.Get("iconSize") end,
+              setValue = function(v) JunkSet("iconSize", v) end },
+            { type = "slider", text = "Icon Spacing",
+              tooltip = "Prices that don't fit show only their largest coin.",
+              min = 0, max = 30, step = 1, isPercent = false,
+              getValue = function() return JI.Get("iconSpacing") end,
+              setValue = function(v) JunkSet("iconSpacing", v) end }
+        );  y = y - h
+
+        _, h = W:DualRow(parent, y,
+            { type = "dropdown", text = "Price Position",
+              values = { bottom = "Below Icon", top = "Above Icon" },
+              order = { "bottom", "top" },
+              getValue = function() return JI.Get("priceSide") end,
+              setValue = function(v) JunkSet("priceSide", v) end },
+            { type = "toggle", text = "Show Empty Bag Slots",
+              tooltip = "Shows free and total bag slots as the title.",
+              getValue = function() return JI.Get("showFreeSlots") == true end,
+              setValue = function(v) JunkSet("showFreeSlots", v) end }
+        );  y = y - h
     end
 
     return math.abs(y)

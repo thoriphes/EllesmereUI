@@ -296,7 +296,7 @@ initFrame:SetScript("OnEvent", function(self)
                   end }
             ); y = y - h
 
-            -- Inline cog for Show Pinned Items: "Show in OneBag"
+            -- Inline cog for Show Pinned Items
             if not EllesmereUI._prebuilding then
                 EllesmereUI.BuildInlineCog(pinRecRow._leftRegion, {
                     chain = false,
@@ -308,6 +308,13 @@ initFrame:SetScript("OnEvent", function(self)
                           get=function() return db.profile.bagPinnedInOneBag ~= false end,
                           set=function(v)
                               db.profile.bagPinnedInOneBag = v
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end },
+                        { type="toggle", label="Hide from Other Categories",
+                          tooltip="Pinned items show only in Pinned Items, not in their categories or Recent Items.",
+                          get=function() return db.profile.bagHidePinnedInCategories == true end,
+                          set=function(v)
+                              db.profile.bagHidePinnedInCategories = v
                               if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
                           end },
                     },
@@ -750,17 +757,11 @@ initFrame:SetScript("OnEvent", function(self)
                 })
             end
 
-            -- Desaturate Junk Items | Quality Item Border
-            _, h = W:DualRow(parent, y,
-                { type="toggle", text="Desaturate Junk Items",
-                  tooltip="Display junk items in a greyed-out style.",
-                  getValue=function() return db.profile.bagDesaturateJunkItems == true end,
-                  setValue=function(v)
-                      db.profile.bagDesaturateJunkItems = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                      local bank = _G.EUI_BankFrame
-                      if bank and bank.RefreshBank then bank:RefreshBank() end
-                  end },
+            -- Junk Item Visuals | Quality Item Border
+            local junkRow
+            junkRow, h = W:DualRow(parent, y,
+                { type="label", text="Junk Item Visuals",
+                  tooltip="Choose how junk items look in the bags and bank." },
                 { type="toggle", text="Quality Item Border",
                   tooltip="Draw a border in the item's quality color around item icons in the bags and bank. Round list icons have no border.",
                   getValue=function() return db.profile.bagQualityBorder ~= false end,
@@ -774,6 +775,34 @@ initFrame:SetScript("OnEvent", function(self)
                   end }
             ); y = y - h
 
+            -- Junk Item Visuals dropdown (left side). The coin badge is drawn
+            -- only by the bag window's Grid and Compact displays, so the List
+            -- display lists Desaturate alone.
+            if not EllesmereUI._prebuilding then
+                local JUNK_VISUALS = {
+                    { key = "bagDesaturateJunkItems", label = "Desaturate",
+                      tooltip = "Display junk items in a greyed-out style." },
+                }
+                if not bagList then
+                    JUNK_VISUALS[2] = { key = "bagShowJunkCoin", label = "Show Coin Icon",
+                      tooltip = "Show a coin on the corner of each junk item's icon." }
+                end
+                local junkRgn = junkRow._leftRegion
+                local junkDD, junkDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    junkRgn, 210, junkRgn:GetFrameLevel() + 2, JUNK_VISUALS,
+                    function(key) return db.profile[key] == true end,
+                    function(key, v)
+                        db.profile[key] = v and true or false
+                        if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                        local bank = _G.EUI_BankFrame
+                        if bank and bank.RefreshBank then bank:RefreshBank() end
+                    end, nil, 10)
+                PP.Point(junkDD, "RIGHT", junkRgn, "RIGHT", -20, 0)
+                junkRgn._control = junkDD
+                junkRgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(junkDDRefresh)
+            end
+
             -- Bag Top Bar Icons (+ inline cog: Sort to Bottom) | Gold Tracking and History
             local iconsRow
             iconsRow, h = W:DualRow(parent, y,
@@ -781,8 +810,8 @@ initFrame:SetScript("OnEvent", function(self)
                   tooltip="Choose which icons show in the bag window's top bar; the Junk Icon is the Junk Marker." },
                 { type="toggle", text="Gold Tracking and History",
                   tooltip="Track and display gold amounts from all your characters on hover.",
-                  getValue=function() return db.profile.enableGoldTracking ~= false end,
-                  setValue=function(v) db.profile.enableGoldTracking = v end }
+                  getValue=function() return EllesmereUI.GetGoldLedger().IsTracking() end,
+                  setValue=function(v) EllesmereUI.GetGoldLedger().SetTracking(v) end }
             ); y = y - h
 
             -- Bag Top Bar Icons dropdown (left side), its Sort Options cog to the left
@@ -790,6 +819,7 @@ initFrame:SetScript("OnEvent", function(self)
                 local TOP_BAR_ICONS = {
                     { key = "bagShowBagsIcon", label = "Bags Icon" },
                     { key = "bagShowJunkIcon", label = "Junk Icon" },
+                    { key = "bagShowQuickIcon", label = "Quick Actions Icon" },
                     { key = "bagShowSortIcon", label = "Sort Icon" },
                 }
                 local leftRgn = iconsRow._leftRegion
@@ -810,6 +840,8 @@ initFrame:SetScript("OnEvent", function(self)
                                 -- An open bank greys (or stops greying) its junk too
                                 local bank = _G.EUI_BankFrame
                                 if bank then bank:RefreshBank() end
+                                -- WoW Forever's Junk Items window lists marked items only while the marker is on
+                                _G.EUI_CategoryManager:OnJunkChanged()
                             else
                                 bags:SyncHeaderIcons()
                             end
@@ -1006,7 +1038,13 @@ initFrame:SetScript("OnEvent", function(self)
                   tooltip="Also use the split dialog with Auto Split in OneBag, MultiBag, the reagent bag, the bank and the guild bank, replacing Blizzard's split popup there. All Items and category views always use it.",
                   getValue=function() return db.profile.bagStackSplitter == true end,
                   setValue=function(v) db.profile.bagStackSplitter = v and true or false end },
-                EllesmereUI.BlankRowCfg()
+                { type="toggle", text="Open Bags with Character Window",
+                  tooltip="The bags automatically open when the character window is opened and close again when the character window is closed.",
+                  getValue=function() return db.profile.bagOpenWithCharacter == true end,
+                  setValue=function(v)
+                      db.profile.bagOpenWithCharacter = v and true or false
+                      BagsNS.ToggleBagsWithCharacterFrame()
+                  end }
             ); y = y - h
 
             _, h = W:Spacer(parent, y, 20); y = y - h
@@ -1033,7 +1071,9 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.bagPinnedItems = nil
                 EllesmereUIDB.bagItemAssignments = nil
                 EllesmereUIDB.bagJunkPrev = nil
+                -- Legacy gold stores: they stay on disk until a gold module loads and absorbs them.
                 EllesmereUIDB.characterGold = nil
+                EllesmereUIDB.dataBarsGold = nil
                 EllesmereUIDB.warbandGold = nil
                 EllesmereUIDB.bagCurrencyByChar = nil
             end
