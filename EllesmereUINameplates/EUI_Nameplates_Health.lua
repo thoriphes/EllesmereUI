@@ -215,7 +215,7 @@ function NameplateFrame:UpdateHealthValues()
         local anyNum = ca._anyNum
         if anyNum == nil then
             anyNum = false
-            local anyNoSign = false
+            local anyNoSign, anyMax = false, false
             for si = 1, ca._count do
                 local entry = ca[si]
                 local el = entry.element
@@ -225,9 +225,11 @@ function NameplateFrame:UpdateHealthValues()
                 entry.combo = IsComboHealthText(el) or false
                 if el == "healthNumber" or entry.combo then anyNum = true end
                 if el == "healthPercentNoSign" then anyNoSign = true end
+                if el == "healthNumMax" then anyMax = true end
             end
             ca._anyNum = anyNum
             ca._anyNoSign = anyNoSign
+            ca._anyMax = anyMax
         end
         local hpKey
         if not anyNum then
@@ -237,18 +239,27 @@ function NameplateFrame:UpdateHealthValues()
         elseif curHealth ~= nil and not (isSec and isSec(curHealth)) then
             hpKey = curHealth
         end
-        local skipText = pctKey ~= nil and hpKey ~= nil
-            and self._hpTxtPct == pctKey and self._hpTxtCur == hpKey
+        -- The max only gates the skip when a Number / Max slot renders it.
+        local maxKey
+        if not ca._anyMax then
+            maxKey = 0
+        elseif maxHealth ~= nil and not (isSec and isSec(maxHealth)) then
+            maxKey = maxHealth
+        end
+        local skipText = pctKey ~= nil and hpKey ~= nil and maxKey ~= nil
+            and self._hpTxtPct == pctKey and self._hpTxtCur == hpKey and self._hpTxtMax == maxKey
         if not skipText then
         self._hpTxtPct = pctKey
         self._hpTxtCur = hpKey
-        local pctText, pctNoSignText, numText
+        self._hpTxtMax = maxKey
+        local pctText, pctNoSignText, numText, maxText
         local pctTextDec, pctNoSignTextDec
         local anyDec = ca._anyDecimal
         if dead then
             pctText = "0%"
             pctNoSignText = "0"
             numText = "0"
+            maxText = "0"
             if anyDec then pctTextDec = "0.0%"; pctNoSignTextDec = "0.0" end
         elseif pctVal ~= nil then
             pctText = string.format("%d%%", pctVal)
@@ -256,7 +267,10 @@ function NameplateFrame:UpdateHealthValues()
             if ca._anyNoSign then pctNoSignText = string.format("%d", pctVal) end
             -- Number text only when a number/combo slot renders it (percent-only
             -- layouts were paying the abbreviation call + string every tick).
-            if anyNum then numText = ns.AbbreviateNumbers(curHealth) end
+            if anyNum then
+                numText = ns.AbbreviateNumbers(curHealth)
+                if ca._anyMax then maxText = ns.AbbreviateNumbers(maxHealth) end
+            end
             -- Decimal variants computed only when at least one slot opts in.
             if anyDec then
                 pctTextDec = string.format("%.1f%%", pctVal)
@@ -266,6 +280,7 @@ function NameplateFrame:UpdateHealthValues()
             pctText = ""
             pctNoSignText = ""
             numText = ""
+            maxText = ""
             if anyDec then pctTextDec = ""; pctNoSignTextDec = "" end
         end
         for si = 1, ca._count do
@@ -279,7 +294,7 @@ function NameplateFrame:UpdateHealthValues()
             elseif el == "healthNumber" then
                 fs:SetText(numText)
             elseif entry.combo then
-                SetCombinedHealthText(fs, el, entry.pctDecimal and pctTextDec or pctText, numText)
+                SetCombinedHealthText(fs, el, entry.pctDecimal and pctTextDec or pctText, numText, maxText)
             end
         end
         end -- skipText
@@ -324,20 +339,15 @@ function NameplateFrame:UpdateHealthColor()
     -- path verified non-secret). Threat events fire constantly with an unchanged result, so
     -- compare against the last applied values and skip the setter. Cache nil'd in ClearUnit.
     local hr, hg, hb = GetReactionColor(unit)
-    -- Enemy player whose class token was redacted (instanced PvP): paint the bar from
-    -- Blizzard's plate instead. A secret cannot go through the skip-if-unchanged compare, so
-    -- this re-reads and re-applies every pass rather than latching -- a latch would freeze the
-    -- bar on a stale colour when Blizzard's changes (a disconnect greys it, the CVar is
-    -- toggled mid-match). Two C calls against the dozen GetReactionColor already spent, on
-    -- the few plates that take this path. hr/hg/hb stay the plain fallback for the tints below.
+    -- Enemy player whose class token was redacted (instanced PvP): the token still keys
+    -- C_ClassColor, Blizzard's palette as step 6 paints a readable token. The colour may be
+    -- secret, so it skips the skip-if-unchanged compare, goes straight to the setter and is
+    -- re-applied every pass. hr/hg/hb stay the plain fallback for the tints below.
     local mirrored, mr, mg, mb = false
     if ns._reactionMirrorClass then
-        mirrored, mr, mg, mb = ns.GetBlizzardBarColor(self)
-        -- Wanted to mirror but Blizzard's plate was not on this unit yet: the deferred
-        -- setup pass retries. Only ever set on the plates that take this path.
-        self._mirrorPending = not mirrored or nil
-    else
-        self._mirrorPending = nil
+        local _, tok = UnitClass(unit)
+        local c = C_ClassColor.GetClassColor(tok)
+        if c then mirrored, mr, mg, mb = true, c:GetRGB() end
     end
     -- Off-tank fold: same shape as mirror -- the folded components can be
     -- SECRET, so they bypass the value compare, never enter the caches, and

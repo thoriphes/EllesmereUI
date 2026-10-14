@@ -68,6 +68,7 @@ function ns.UFO_BuildCastBarSection(parent, y, ctx)
         -- click-throughs to Resource & Cast Bars > Cast Bar (accent "click here").
         local hintRow
         hintRow, h = W:DualRow(parent, y, { type = "label", text = hintText }, nil)  -- eui-style: allow dualrow-nil
+        if not EllesmereUI._prebuilding then
         -- Labels are single-line by default; wrap this hint inside the full-width
         -- row so "click here" stays on screen.
         local lbl = hintRow._leftRegion and hintRow._leftRegion._label
@@ -78,7 +79,6 @@ function ns.UFO_BuildCastBarSection(parent, y, ctx)
             if not rw or rw < 80 then rw = 300 end
             lbl:SetWidth(rw - 40)
         end
-        if not EllesmereUI._prebuilding then
         local clickRgn = hintRow._leftRegion or hintRow
         local linkBtn = CreateFrame("Button", nil, clickRgn)
         linkBtn:SetAllPoints(clickRgn)
@@ -1079,12 +1079,79 @@ function ns.UFO_BuildCastBarSection(parent, y, ctx)
     return y, sharedCastHeader, sharedCastRow1, castRow2, castTextRow, castTargetRow
 end
 
+-- Aura cog rows a frame's buff and debuff rows share (target, focus, player
+-- and the pet). kind = "buff" or "debuff"; get(key, default) reads the frame's
+-- own value (default while unset), set(key, v) writes it and applies.
+-- Settings (the Location cog): Growth Direction, Max Count, afterMax (an
+-- optional row placed right after Max Count), Max Per Row (unset follows Max
+-- Count) and Cropped Icons.
+function ns.UFO_AuraSettingsRows(kind, get, set, maxMax, maxDefault, afterMax)
+    local env = ns._UFO_OptEnv
+    local growthKey, perRowKey, cropKey = kind .. "Growth", kind .. "MaxPerRow", kind .. "CropIcons"
+    local maxKey = (kind == "buff") and "maxBuffs" or "maxDebuffs"
+    local rows = {
+        { type="dropdown", label="Growth Direction", values=env.buffGrowthValues, order=env.buffGrowthOrder,
+          get=function() return get(growthKey, "auto") end,
+          set=function(v) set(growthKey, v) end },
+        { type="slider", label="Max Count", min=1, max=maxMax, step=1,
+          get=function() return get(maxKey, maxDefault) end,
+          set=function(v) set(maxKey, v) end },
+    }
+    if afterMax then rows[#rows + 1] = afterMax end
+    rows[#rows + 1] = { type="slider", label="Max Per Row", min=1, max=maxMax, step=1,
+        get=function() return get(perRowKey, nil) or get(maxKey, maxDefault) end,
+        set=function(v) set(perRowKey, v) end }
+    rows[#rows + 1] = { type="toggle", label="Cropped Icons",
+        get=function() return get(cropKey, false) end,
+        set=function(v) set(cropKey, v) end }
+    return rows
+end
+
+-- Max Important (target, focus and boss debuffs): Important or Own caps your
+-- debuffs with Max Count and the important ones from others with this, each
+-- group on its own (the engine has no shared cap, and auras are secret in
+-- combat). Unset follows Max Count. getS returns the frame's settings, apply
+-- applies.
+function ns.UFO_MaxImportantRow(getS, apply, maxMax, maxDefault)
+    return { type="slider", label="Max Important", min=1, max=maxMax, step=1,
+        tooltip="Limits important debuffs not cast by you.",
+        disabled=function() return ns.UF_DebuffFilterMode(getS()) ~= "importantOrOwn" end,
+        disabledTooltip="Debuff Filter: Important or Own",
+        get=function()
+            local s = getS()
+            return s.maxImportantDebuffs or s.maxDebuffs or maxDefault
+        end,
+        set=function(v) getS().maxImportantDebuffs = v; apply() end }
+end
+
+-- Position (the Size cog): Offset X / Y and the physical-pixel-perfect gaps
+-- between icons (Spacing X = columns, Spacing Y = rows).
+function ns.UFO_AuraPositionRows(kind, get, set)
+    local offXKey, offYKey = kind .. "OffsetX", kind .. "OffsetY"
+    local spXKey, spYKey = kind .. "SpacingX", kind .. "SpacingY"
+    return {
+        { type="slider", label="Offset X", min=-1500, max=1500, step=1,
+          get=function() return get(offXKey, 0) end,
+          set=function(v) set(offXKey, v) end },
+        { type="slider", label="Offset Y", min=-1500, max=1500, step=1,
+          get=function() return get(offYKey, 0) end,
+          set=function(v) set(offYKey, v) end },
+        { type="slider", pixel=true, label="Spacing X", min=-1, max=10, step=1,
+          get=function() return get(spXKey, 1) end,
+          set=function(v) set(spXKey, v) end },
+        { type="slider", pixel=true, label="Spacing Y", min=-1, max=10, step=1,
+          get=function() return get(spYKey, 1) end,
+          set=function(v) set(spYKey, v) end },
+    }
+end
+
 function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
     local env = ns._UFO_OptEnv
     local AttachDebuffModeWarn, DebuffModeDropdownCfg, GROUP_UNIT_ORDER, PP = env.AttachDebuffModeWarn, env.DebuffModeDropdownCfg, env.GROUP_UNIT_ORDER, env.PP
     local RegisterWidgetRefresh, ReloadAndUpdate, SHORT_LABELS, SwapAuraSlot = env.RegisterWidgetRefresh, env.ReloadAndUpdate, env.SHORT_LABELS, env.SwapAuraSlot
     local UF_PurgeGlowDesc, UNIT_DB_MAP, UNIT_LABELS_SUP, UpdatePreview = env.UF_PurgeGlowDesc, env.UNIT_DB_MAP, env.UNIT_LABELS_SUP, env.UpdatePreview
-    local buffAnchorOrder, buffAnchorValues, buffGrowthOrder, buffGrowthValues = env.buffAnchorOrder, env.buffAnchorValues, env.buffGrowthOrder, env.buffGrowthValues
+    local HideExhaustionRow = env.HideExhaustionRow
+    local buffAnchorOrder, buffAnchorValues = env.buffAnchorOrder, env.buffAnchorValues
     local db, frames, optState = env.db, env.frames, env.optState
     local W, SApplySupport, SDB, SGet = ctx.W, ctx.SApplySupport, ctx.SDB, ctx.SGet
     local SSetSupported, SVal, SValSupported = ctx.SSetSupported, ctx.SVal, ctx.SValSupported
@@ -1228,63 +1295,38 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
             },
         })
     end
-    -- Cog on Buffs Location (Growth + Max Count)
+    -- Cog on Buffs Location: the shared settings rows, then Icon Zoom and
+    -- Dispel Type Borders
     if not EllesmereUI._prebuilding then
         local leftRgn = sharedAddRow2._leftRegion
+        local buffCogRows = ns.UFO_AuraSettingsRows("buff", SValSupported, SSetSupported, 40, 4)
+        buffCogRows[#buffCogRows + 1] = { type="slider", label="Icon Zoom", min=0, max=0.20, step=0.01,
+              -- The stock styles draw the whole icon (zoom 0); the active
+              -- style's name is the requirement noun the widget wraps.
+              disabled=function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
+              disabledTooltip=function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
+              requireState="disabled",
+              get=function() return SValSupported("buffIconZoom", 0.07) end,
+              set=function(v) SSetSupported("buffIconZoom", v) end }
+        buffCogRows[#buffCogRows + 1] = { type="toggle", label="Dispel Type Borders",
+              disabled=function() return optState.selectedUnit == "player" or EllesmereUI.BlizzStyle.Get("unitframes") end,
+              disabledTooltip=function()
+                  if optState.selectedUnit == "player" then return "This option is not available on the player frame" end
+                  return "This option requires Blizzard Style to be disabled"
+              end,
+              get=function() return optState.selectedUnit ~= "player" and SValSupported("buffDispelBorder", false) == true end,
+              set=function(v) SSetSupported("buffDispelBorder", v) end }
         EllesmereUI.BuildInlineCog(leftRgn, { disabled = BuffDisabled, disabledTooltip = "Buff Display",
             title = "Buff Settings",
-            rows = {
-                { type="dropdown", label="Growth Direction", values=buffGrowthValues, order=buffGrowthOrder,
-                  get=function() return SValSupported("buffGrowth", "auto") end,
-                  set=function(v) SSetSupported("buffGrowth", v) end },
-                { type="slider", label="Max Count", min=1, max=40, step=1,
-                  get=function() return SValSupported("maxBuffs", 4) end,
-                  set=function(v) SSetSupported("maxBuffs", v) end },
-                { type="slider", label="Max Per Row", min=1, max=40, step=1,
-                  get=function() return SValSupported("buffMaxPerRow", nil) or SValSupported("maxBuffs", 4) end,
-                  set=function(v) SSetSupported("buffMaxPerRow", v) end },
-                { type="toggle", label="Cropped Icons",
-                  get=function() return SValSupported("buffCropIcons", false) end,
-                  set=function(v) SSetSupported("buffCropIcons", v) end },
-                { type="slider", label="Icon Zoom", min=0, max=0.20, step=0.01,
-                  -- The stock styles draw the whole icon (zoom 0); the active
-                  -- style's name is the requirement noun the widget wraps.
-                  disabled=function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
-                  disabledTooltip=function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
-                  requireState="disabled",
-                  get=function() return SValSupported("buffIconZoom", 0.07) end,
-                  set=function(v) SSetSupported("buffIconZoom", v) end },
-                { type="toggle", label="Dispel Type Borders",
-                  disabled=function() return optState.selectedUnit == "player" or EllesmereUI.BlizzStyle.Get("unitframes") end,
-                  disabledTooltip=function()
-                      if optState.selectedUnit == "player" then return "This option is not available on the player frame" end
-                      return "This option requires Blizzard Style to be disabled"
-                  end,
-                  get=function() return optState.selectedUnit ~= "player" and SValSupported("buffDispelBorder", false) == true end,
-                  set=function(v) SSetSupported("buffDispelBorder", v) end },
-            },
+            rows = buffCogRows,
         })
     end
-    -- Directions cog on Buff Icon Size (X/Y offsets)
+    -- Directions cog on Buff Icon Size (X/Y offsets, spacing)
     if not EllesmereUI._prebuilding then
         local rightRgn = sharedAddRow2._rightRegion
         EllesmereUI.BuildInlineCog(rightRgn, { icon = EllesmereUI.DIRECTIONS_ICON, disabled = BuffDisabled, disabledTooltip = "Buff Display",
             title = "Buff Position",
-            rows = {
-                { type="slider", label="Offset X", min=-1500, max=1500, step=1,
-                  get=function() return SValSupported("buffOffsetX", 0) end,
-                  set=function(v) SSetSupported("buffOffsetX", v) end },
-                { type="slider", label="Offset Y", min=-1500, max=1500, step=1,
-                  get=function() return SValSupported("buffOffsetY", 0) end,
-                  set=function(v) SSetSupported("buffOffsetY", v) end },
-                -- Physical-pixel-perfect gaps between buff icons (X = columns, Y = rows).
-                { type="slider", pixel=true, label="Spacing X", min=-1, max=10, step=1,
-                  get=function() return SValSupported("buffSpacingX", 1) end,
-                  set=function(v) SSetSupported("buffSpacingX", v) end },
-                { type="slider", pixel=true, label="Spacing Y", min=-1, max=10, step=1,
-                  get=function() return SValSupported("buffSpacingY", 1) end,
-                  set=function(v) SSetSupported("buffSpacingY", v) end },
-            },
+            rows = ns.UFO_AuraPositionRows("buff", SValSupported, SSetSupported),
         })
     end
 
@@ -1373,38 +1415,31 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
           disabled=DebuffDisabled, disabledTooltip="Debuff Display",
           getValue=function() return SValSupported("debuffSize", 22) end,
           setValue=function(v) SSetSupported("debuffSize", v) end });  y = y - h
-    -- Cog on Debuffs Location (Growth + Max Count)
+    -- Cog on Debuffs Location: the shared settings rows, then Icon Zoom,
+    -- Dispel Type Borders and (player) Use Dispel Colors
     if not EllesmereUI._prebuilding then
         local leftRgn = sharedAddRow3._leftRegion
-        local debuffCogRows = {
-                { type="dropdown", label="Growth Direction", values=buffGrowthValues, order=buffGrowthOrder,
-                  get=function() return SValSupported("debuffGrowth", "auto") end,
-                  set=function(v) SSetSupported("debuffGrowth", v) end },
-                { type="slider", label="Max Count", min=1, max=20, step=1,
-                  get=function() return SValSupported("maxDebuffs", 20) end,
-                  set=function(v) SSetSupported("maxDebuffs", v) end },
-                { type="slider", label="Max Per Row", min=1, max=20, step=1,
-                  get=function() return SValSupported("debuffMaxPerRow", nil) or SValSupported("maxDebuffs", 20) end,
-                  set=function(v) SSetSupported("debuffMaxPerRow", v) end },
-                { type="toggle", label="Cropped Icons",
-                  get=function() return SValSupported("debuffCropIcons", false) end,
-                  set=function(v) SSetSupported("debuffCropIcons", v) end },
-                { type="slider", label="Icon Zoom", min=0, max=0.20, step=0.01,
-                  -- The stock styles draw the whole icon (zoom 0); the active
-                  -- style's name is the requirement noun the widget wraps.
-                  disabled=function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
-                  disabledTooltip=function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
-                  requireState="disabled",
-                  get=function() return SValSupported("debuffIconZoom", 0.07) end,
-                  set=function(v) SSetSupported("debuffIconZoom", v) end },
-                { type="toggle", label="Dispel Type Borders",
-                  -- The stock styles always paint the stock per-type border.
-                  disabled=function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
-                  disabledTooltip=function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
-                  requireState="disabled",
-                  get=function() return SValSupported("debuffDispelBorder", false) end,
-                  set=function(v) SSetSupported("debuffDispelBorder", v) end },
-        }
+        local maxImpRow
+        if optState.selectedUnit ~= "player" then
+            maxImpRow = ns.UFO_MaxImportantRow(SDB,
+                function() ReloadAndUpdate(); UpdatePreview() end, 20, 20)
+        end
+        local debuffCogRows = ns.UFO_AuraSettingsRows("debuff", SValSupported, SSetSupported, 20, 20, maxImpRow)
+        debuffCogRows[#debuffCogRows + 1] = { type="slider", label="Icon Zoom", min=0, max=0.20, step=0.01,
+              -- The stock styles draw the whole icon (zoom 0); the active
+              -- style's name is the requirement noun the widget wraps.
+              disabled=function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
+              disabledTooltip=function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
+              requireState="disabled",
+              get=function() return SValSupported("debuffIconZoom", 0.07) end,
+              set=function(v) SSetSupported("debuffIconZoom", v) end }
+        debuffCogRows[#debuffCogRows + 1] = { type="toggle", label="Dispel Type Borders",
+              -- The stock styles always paint the stock per-type border.
+              disabled=function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
+              disabledTooltip=function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
+              requireState="disabled",
+              get=function() return SValSupported("debuffDispelBorder", false) end,
+              set=function(v) SSetSupported("debuffDispelBorder", v) end }
         -- Player only: the Dispel Colors palette (the Dispel Overlay row's
         -- swatches) tints the player's dispel type borders.
         if optState.selectedUnit == "player" then
@@ -1430,26 +1465,12 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
             rows = debuffCogRows,
         })
     end
-    -- Directions cog on Debuff Icon Size (X/Y offsets)
+    -- Directions cog on Debuff Icon Size (X/Y offsets, spacing)
     if not EllesmereUI._prebuilding then
         local rightRgn = sharedAddRow3._rightRegion
         EllesmereUI.BuildInlineCog(rightRgn, { icon = EllesmereUI.DIRECTIONS_ICON, disabled = DebuffDisabled, disabledTooltip = "Debuff Display",
             title = "Debuff Position",
-            rows = {
-                { type="slider", label="Offset X", min=-1500, max=1500, step=1,
-                  get=function() return SValSupported("debuffOffsetX", 0) end,
-                  set=function(v) SSetSupported("debuffOffsetX", v) end },
-                { type="slider", label="Offset Y", min=-1500, max=1500, step=1,
-                  get=function() return SValSupported("debuffOffsetY", 0) end,
-                  set=function(v) SSetSupported("debuffOffsetY", v) end },
-                -- Physical-pixel-perfect gaps between debuff icons (X = columns, Y = rows).
-                { type="slider", pixel=true, label="Spacing X", min=-1, max=10, step=1,
-                  get=function() return SValSupported("debuffSpacingX", 1) end,
-                  set=function(v) SSetSupported("debuffSpacingX", v) end },
-                { type="slider", pixel=true, label="Spacing Y", min=-1, max=10, step=1,
-                  get=function() return SValSupported("debuffSpacingY", 1) end,
-                  set=function(v) SSetSupported("debuffSpacingY", v) end },
-            },
+            rows = ns.UFO_AuraPositionRows("debuff", SValSupported, SSetSupported),
         })
     end
 
@@ -1941,6 +1962,7 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
             do
                 local ps = UNIT_DB_MAP[optState.selectedUnit]()
                 local ALL_KEY, DUR_KEY = "__allDebuffs", "__debuffHasDuration"
+                local HIDE_EXH_KEY = "__hideExhaustion"
                 local function AllOn() return ps.debuffShowAll ~= false end
                 -- Hovering a dimmed Show box explains the dim (the lane is inert
                 -- while All Debuffs already shows everything), same wording as
@@ -1971,6 +1993,12 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
                           tooltip = "Show every debuff. Use the Hide lane below to remove specific filters." },
                         { key = DUR_KEY, label = "Has Duration",
                           tooltip = "Only show debuffs that have a duration, excluding permanent ones. Combines with the filters below; checked alone it shows every timed debuff." },
+                        -- Hide Exhaustion (ps.debuffHideExhaustion, nil = on), as in
+                        -- the Player Aura Bars and Raid Frames Filters; kept out of
+                        -- the summary.
+                        { key = HIDE_EXH_KEY, label = "Hide Exhaustion",
+                          tooltip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
+                          excludeFromSummaryFn = function() return true end },
                         { isHeader = true, label = "Match Mode" },
                         { key = "__matchAny", label = EllesmereUI.L("Match Any Filter"), isModifier = true,
                           lockedFn = AllOn, lockedTooltip = matchLockTip,
@@ -2011,6 +2039,7 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
                     function(k, neg)
                         if k == ALL_KEY then return AllOn() end
                         if k == DUR_KEY then return ps.debuffHasDuration == true end
+                        if k == HIDE_EXH_KEY then return ps.debuffHideExhaustion ~= false end
                         if k == "__matchAny" or k == "__matchAll" then
                             return (k == "__matchAll") == (ps.debuffFilterMatch == "all")
                         end
@@ -2021,6 +2050,12 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
                         return ps["debuff" .. k] == true
                     end,
                     function(k, v, neg)
+                        if k == HIDE_EXH_KEY then
+                            ps.debuffHideExhaustion = (not v) and false or nil
+                            ReloadAndUpdate()
+                            EllesmereUI:RefreshPage()
+                            return
+                        end
                         if k == "__matchAny" or k == "__matchAll" then
                             -- Radio: the clicked row wins whatever its checked
                             -- state was (re-clicking the active row keeps it).
@@ -2119,6 +2154,7 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
                           SDB().debuffHasDuration = v or nil
                           ReloadAndUpdate()
                       end },
+                    HideExhaustionRow(SDB, ReloadAndUpdate),
                 },
             })
         end
@@ -2141,12 +2177,16 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
             UpdatePreview()
         end
         -- Palette edits: the overlay and border copies (DispelRefresh), and
-        -- with Use Dispel Colors on also the player debuff rings, whose
+        -- with Use Dispel Colors on also the player debuff rings and the
+        -- pet's (while it copies the player frame's aura look), whose
         -- restyle is fingerprint-gated on the palette.
         local function PaletteRefresh()
             DispelRefresh()
-            if db.profile.player.debuffDispelUsePalette == true and frames.player then
-                ns.UF_ReloadAuraContainers(frames.player, "player")
+            if db.profile.player.debuffDispelUsePalette == true then
+                if frames.player then ns.UF_ReloadAuraContainers(frames.player, "player") end
+                if frames.pet and ns.UF_MiniAuraSourceKey("pet") == "player" then
+                    ns.UF_ReloadAuraContainers(frames.pet, "pet")
+                end
             end
         end
         -- Color Custom Borders copies the player frame's own border, so it
@@ -2240,10 +2280,6 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
                     { type="slider", label="Overlay Opacity", min=5, max=100, step=1,
                       get=function() return db.profile.dispelOverlayOpacity or 100 end,
                       set=function(v) db.profile.dispelOverlayOpacity = v; DispelRefresh() end },
-                    { type="toggle", label="Only Dispellable by You",
-                      tooltip="Shows the overlay only for debuffs you can currently dispel.",
-                      get=function() return db.profile.dispelOverlayByMe == true end,
-                      set=function(v) db.profile.dispelOverlayByMe = v and true or false; DispelRefresh() end },
                     { type="toggle", label="Color Custom Borders",
                       tooltip="Recolors the frame border, portrait outer ring and enabled power and portrait separators in the dispel type color while a debuff of that type is shown.",
                       -- Copies the frame's own border: only over a custom border (CustomBorderOff).
@@ -2256,6 +2292,56 @@ function ns.UFO_BuildBuffsDebuffsSection(parent, y, ctx)
                           db.profile.dispelCustomBorder = v and true or false
                           DispelRefresh(); EllesmereUI:RefreshPage()
                       end },
+                },
+            })
+        end
+
+        -- Type Icon Position (Raid Frames parity: the dispel type's icon on a
+        -- corner of the health bar, its size and offsets in the cog) | Only
+        -- Dispellable by You, out of the overlay cog since it narrows the
+        -- overlay, the icon and the border copies alike.
+        local iconPosOrder = { "none" }
+        for i, k in ipairs(EllesmereUI.POSITION_GRID_ORDER) do iconPosOrder[i + 1] = k end
+        local iconRow
+        iconRow, h = W:DualRow(parent, y,
+            { type="dropdown", text="Type Icon Position",
+              values=EllesmereUI.POSITION_GRID_VALUES_NONE, order=iconPosOrder,
+              getValue=function()
+                  local p = db.profile
+                  if p.showDispelIcons ~= true then return "none" end
+                  return p.dispelIconPosition or "right"
+              end,
+              setValue=function(v)
+                  local p = db.profile
+                  if v == "none" then
+                      p.showDispelIcons = false
+                  else
+                      p.showDispelIcons = true
+                      p.dispelIconPosition = v
+                  end
+                  -- RefreshPage (fast path) so the cog's disabled state follows.
+                  DispelRefresh(); EllesmereUI:RefreshPage()
+              end },
+            { type="toggle", text="Only Dispellable by You",
+              tooltip="Shows the overlay, type icon and border colors only for debuffs you can currently dispel.",
+              getValue=function() return db.profile.dispelOverlayByMe == true end,
+              setValue=function(v) db.profile.dispelOverlayByMe = v and true or false; DispelRefresh() end });  y = y - h
+        if not EllesmereUI._prebuilding then
+            EllesmereUI.BuildInlineCog(iconRow._leftRegion, {
+                icon = EllesmereUI.RESIZE_ICON,
+                disabled = function() return db.profile.showDispelIcons ~= true end,
+                disabledTooltip = "This option requires a Type Icon Position other than None",
+                title = "Dispel Icon",
+                rows = {
+                    { type="slider", label="Icon Size", min=8, max=48, step=1,
+                      get=function() return db.profile.dispelIconSize or 16 end,
+                      set=function(v) db.profile.dispelIconSize = v; DispelRefresh() end },
+                    { type="slider", label="Offset X", min=-50, max=50, step=1,
+                      get=function() return db.profile.dispelIconOffsetX or 0 end,
+                      set=function(v) db.profile.dispelIconOffsetX = v; DispelRefresh() end },
+                    { type="slider", label="Offset Y", min=-50, max=50, step=1,
+                      get=function() return db.profile.dispelIconOffsetY or 0 end,
+                      set=function(v) db.profile.dispelIconOffsetY = v; DispelRefresh() end },
                 },
             })
         end

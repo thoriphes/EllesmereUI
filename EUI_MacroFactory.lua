@@ -627,38 +627,20 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
         return "INV_MISC_QUESTIONMARK"
     end
 
-    local pendingMacroUpdates = {}
-
     local function UpdateMacro(def, db)
         local idx = GetMacroIndexByName(def.name)
         if idx ~= 0 then
             if InCombatLockdown() then
-                pendingMacroUpdates[def.name] = true
+                EllesmereUI.CombatQueue.Defer("MacroFactory:" .. def.name, function()
+                    local i = GetMacroIndexByName(def.name)
+                    if i == 0 then return end
+                    local body = BuildMacroBody(def, GetMacroDB(def.name))
+                    if body then EditMacro(i, nil, nil, body) end
+                end)
             else
                 local body = BuildMacroBody(def, db)
                 if body then EditMacro(idx, nil, nil, body) end
             end
-        end
-    end
-
-    local function ProcessPendingMacroUpdates()
-        for macroName in pairs(pendingMacroUpdates) do
-            local mdef = nil
-            for _, def in ipairs(GENERAL_DEFS) do
-                if def.name == macroName then
-                    mdef = def
-                    break
-                end
-            end
-            if mdef then
-                local idx = GetMacroIndexByName(mdef.name)
-                if idx ~= 0 then
-                    local db = GetMacroDB(mdef.name)
-                    local body = BuildMacroBody(mdef, db)
-                    if body then EditMacro(idx, nil, nil, body) end
-                end
-            end
-            pendingMacroUpdates[macroName] = nil
         end
     end
 
@@ -905,7 +887,6 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                             if not InCombatLockdown() then ShowMacroFrame() end
                         end)
                     end
-                    C_Timer.After(0.1, function() RefreshState(); RefAct() end)
                 end)
                 mY = mY - MH
 
@@ -1288,7 +1269,6 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 CreateMacro(def.name, ResolveMacroIcon(def), body, nil)
                 lastAvailableItems[def.name] = GetMacroInventoryKey(def, db)
                 self._playFlash()
-                C_Timer.After(0.1, RefreshState)
                 C_Timer.After(0.15, function()
                     if not InCombatLockdown() then ShowMacroFrame() end
                 end)
@@ -1333,25 +1313,17 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
         end
     end
 
-    -- Poll for macro state changes (2s interval)
-    local pollFrame = CreateFrame("Frame", nil, container)
-    local elapsed = 0
-    pollFrame:SetScript("OnUpdate", function(self, dt)
-        elapsed = elapsed + dt
-        if elapsed < 2 then return end
-        elapsed = 0
+    -- Macro state follows UPDATE_MACROS while the section is shown: the event
+    -- registers on show (with one pass for changes made while hidden), goes on
+    -- hide, and a burst becomes one pass on the next frame.
+    local function SyncMacroStates()
         for _, btn in ipairs(allMacroButtons) do
             local mdef = btn._def
             if mdef and btn._tex then
                 local ex = GetMacroIndexByName(mdef.name) ~= 0
-                local wasCreated = btn._isGray
-                if wasCreated and not ex then
-                    btn._tex:SetDesaturated(false)
-                    btn._isGray = false
-                    if btn._refreshIcon then btn._refreshIcon() end
-                elseif not wasCreated and ex then
-                    btn._tex:SetDesaturated(true)
-                    btn._isGray = true
+                if ex ~= (btn._isGray == true) then
+                    btn._tex:SetDesaturated(ex)
+                    btn._isGray = ex
                     if btn._refreshIcon then btn._refreshIcon() end
                 end
                 if btn._cogPopup and btn._cogPopup:IsShown() and btn._cogPopup._refreshAction then
@@ -1359,7 +1331,25 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 end
             end
         end
+    end
+    local macroWatch = CreateFrame("Frame", nil, container)
+    local syncPending
+    local function SyncNow()
+        syncPending = nil
+        if macroWatch:IsVisible() then SyncMacroStates() end
+    end
+    macroWatch:SetScript("OnEvent", function()
+        if syncPending then return end
+        syncPending = true
+        C_Timer.After(0, SyncNow)
     end)
+    macroWatch:SetScript("OnShow", function(self)
+        self:RegisterEvent("UPDATE_MACROS")
+        SyncMacroStates()
+    end)
+    macroWatch:SetScript("OnHide", function(self) self:UnregisterEvent("UPDATE_MACROS") end)
+    -- Built while shown: the buttons were just painted, so only listen.
+    if macroWatch:IsVisible() then macroWatch:RegisterEvent("UPDATE_MACROS") end
 
     -- Update macros when bag changes (throttled), spec changes, login, or combat ends
     local eventFrame = CreateFrame("Frame", nil, container)
@@ -1372,7 +1362,6 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
     eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
     eventFrame:SetScript("OnEvent", function(self, event)
         if event == "PLAYER_REGEN_ENABLED" then
-            ProcessPendingMacroUpdates()
             UpdateInventoryDependentMacros()
         elseif event == "PLAYER_ENTERING_WORLD" then
             C_Timer.After(1, UpdateInventoryDependentMacros)

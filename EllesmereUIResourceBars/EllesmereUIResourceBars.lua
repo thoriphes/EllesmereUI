@@ -6,7 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  animations, combat fade, low-resource alerts, class-colored bars
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.SetFrameScale) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Call Totem Bar scales its Edit Mode system through the parent's SetFrameScale)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 local ERB = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 ns.ERB = ERB
@@ -136,10 +136,12 @@ local CHANNEL_TICK_DATA = {
     [15407]   = { ticks = 6 },                                     -- Mind Flay
     [48045]   = { ticks = 6 },                                     -- Mind Sear
     [64843]   = { ticks = 4 },                                     -- Divine Hymn
-    [47757]   = { ticks = 3 },                                     -- Penance (Heal)
-    [47758]   = { ticks = 3 },                                     -- Penance (DPS)
-    [373129]  = { ticks = 3 },                                     -- Penance / Dark Reprimand (DPS)
-    [400171]  = { ticks = 3 },                                     -- Penance / Dark Reprimand (Heal)
+    -- Penance hits 3 times over 2s with the first at the cast (ticks = 2);
+    -- Castigation (193134) adds a hit (ticks = 3).
+    [47757]   = { ticks = 2, modSpell = 193134, modTicks = 3 },    -- Penance (Heal)
+    [47758]   = { ticks = 2, modSpell = 193134, modTicks = 3 },    -- Penance (DPS)
+    [373129]  = { ticks = 2, modSpell = 193134, modTicks = 3 },    -- Penance / Dark Reprimand (DPS)
+    [400171]  = { ticks = 2, modSpell = 193134, modTicks = 3 },    -- Penance / Dark Reprimand (Heal)
     -- Mage
     -- Arcane Missiles: 5 missiles, fenceposted (see the missiles model
     -- above), so only 3 interior marks base. Amplification (236628) adds 2
@@ -170,6 +172,25 @@ local CHANNEL_TICK_DATA = {
     -- Racial
     [291944]  = { ticks = 6 },                                     -- Regeneratin (Zandalari)
 }
+
+-- WoW Forever: every rank is its own spell ID. Mind Flay channels for 3s and
+-- ticks every second, none at the cast (ticks = 3). Penance channels for 2s and
+-- fires a bolt at the cast and every second after (ticks = 2), as on retail;
+-- the cast bar shows the damage or heal channel the cast triggers, so each rank
+-- lists both, plus its channeled cast spell.
+if EllesmereUI.IS_FOREVER then
+    for _, id in ipairs({ 15407, 17311, 17312, 17313, 17314, 18807 }) do
+        CHANNEL_TICK_DATA[id] = { ticks = 3 }                      -- Mind Flay
+    end
+    for _, id in ipairs({
+        402261, 402277, 402174,                                    -- Penance rank 1: damage, heal, cast
+        1240734, 1240732, 1240720,                                 -- rank 2
+        1240736, 1240733, 1240721,                                 -- rank 3
+        1316994, 1316992, 1316995,                                 -- rank 4
+    }) do
+        CHANNEL_TICK_DATA[id] = { ticks = 2 }                      -- Penance
+    end
+end
 
 
 -------------------------------------------------------------------------------
@@ -707,8 +728,10 @@ end
 -- Resolve the active thresholdSpecs entry for the current spec, or nil. Priority:
 -- 1) spec match + active talent gate  2) spec match, no gate  3) All Specs
 -- (specID 0) + active gate  4) All Specs, no gate. Entries with an inactive
--- talent gate are skipped. Druid "form specific" power-bar mode (advanced only):
--- entries keyed by the form's power type via entry.formKey. Wrapped in a do-block
+-- talent gate are skipped. A druid Power Bar still saved in the retired
+-- "form specific" mode (thresholdFormMode, entries keyed by the form's power
+-- type via entry.formKey) takes the form's entry in that form and the scan
+-- above in any form without one. Wrapped in a do-block
 -- so cache state/helpers free main-chunk local slots (200-local cap); only
 -- ResolveThresholdSpecEntry stays a main-chunk local, others reached via
 -- ns.InvalidateThresholdCaches / _G._ERB_ResolveSpecIDCached.
@@ -811,18 +834,19 @@ ResolveThresholdSpecEntry = function(sp)
     local entries = sp.thresholdSpecs
     if not entries or #entries == 0 then return nil end
 
-    -- Form-specific mode (druid power bar): pick the entry matching the current
-    -- form. Moonkin (31/35) is checked directly by form ID since it shares
+    -- Form-specific mode (druid power bar): the entry matching the current
+    -- form wins. Moonkin (31/35) is checked directly by form ID since it shares
     -- Mana with Caster on GetPrimaryPowerType() and would otherwise collide
-    -- with the "mana" bucket.
+    -- with the "mana" bucket. A form with no entry falls through to the spec
+    -- scan (form entries carry no specIDs, so the scan never picks one).
     if sp.thresholdFormMode then
         local form = GetShapeshiftFormID()
         local key = (form == 31 or form == 35) and "moonkin" or FORM_THRESHOLD_KEY[GetPrimaryPowerType()]
-        if not key then return nil end
-        for _, entry in ipairs(entries) do
-            if entry.formKey == key then return entry end
+        if key then
+            for _, entry in ipairs(entries) do
+                if entry.formKey == key then return entry end
+            end
         end
-        return nil
     end
 
     local specID = ResolveSpecIDCached()
@@ -1142,7 +1166,7 @@ local DEFAULTS = {
             fillR       = CUSTOM_FILL_DEFAULT[1], fillG = CUSTOM_FILL_DEFAULT[2], fillB = CUSTOM_FILL_DEFAULT[3], fillA = 1,
             fillOpacity = 100,  -- 0-100; below 100 the world shows through the fill
             bgR         = 0x11/255, bgG = 0x11/255, bgB = 0x11/255, bgA = 0.75,
-            textFormat  = "none",  -- "none","both","curhpshort","perhp"
+            textFormat  = "none",  -- "none","both","curhpshort","curmaxhp","perhp"
             textSize    = 11,
             textXOffset = 0,
             textYOffset = 0,
@@ -1207,7 +1231,7 @@ local DEFAULTS = {
             fillR       = CUSTOM_FILL_DEFAULT[1], fillG = CUSTOM_FILL_DEFAULT[2], fillB = CUSTOM_FILL_DEFAULT[3], fillA = 1,
             fillOpacity = 100,  -- 0-100; below 100 the world shows through the fill
             bgR         = 0x11/255, bgG = 0x11/255, bgB = 0x11/255, bgA = 0.75,
-            textFormat  = "perpp",  -- "none","smart","curpp","perpp","both"
+            textFormat  = "perpp",  -- "none","smart","curpp","curmaxpp","perpp","both"
             showPercent = true,
             textSize    = 10,
             textXOffset = 0,
@@ -1268,7 +1292,7 @@ local DEFAULTS = {
                 height      = 6,
                 offsetX     = 0,
                 offsetY     = 0,
-                textFormat  = "none",   -- "none","smart","curpp","perpp","both"
+                textFormat  = "none",   -- "none","smart","curpp","curmaxpp","perpp","both"
                 showPercent = true,
                 textSize    = 8,
                 textXOffset = 0,
@@ -1407,6 +1431,7 @@ local DEFAULTS = {
             timerSide     = "right",  -- "left" | "right" (duration position; "None" = showTimer false)
             timerR = 1, timerG = 1, timerB = 1, timerA = 1,  -- Duration Text colour (white = untinted)
             showSpellText = true,
+            showSpellRank = false,
             spellTextSize = 11,
             spellTextX    = 0,
             spellTextY    = 0,
@@ -1585,11 +1610,6 @@ local _totemOrigStrata
 -- there bills the parent forever; born in this main chunk it stamps to
 -- ResourceBars. Handlers/event registrations can attach later anywhere.
 local _erbEventFrame = CreateFrame("Frame")   -- event entry; events registered in OnEnable
-
--- Native fill easing: SetValue(v, ns.EASE) lets the engine animate toward the
--- new value instead of a per-frame Lua lerp. Secret values and deliberate snaps
--- use plain SetValue.
-ns.EASE = Enum and Enum.StatusBarInterpolation and Enum.StatusBarInterpolation.ExponentialEaseOut
 
 -- Shell pool for runtime handler hosts (the combat queue below, and up to three
 -- mouse-follow anchors): born HERE so their work bills ResourceBars (attribution
@@ -2040,13 +2060,14 @@ local function CreateStatusBar(parent, name, w, h, borderSize, borderR, borderG,
 
     -- Forward StatusBar methods to the inner bar so callers don't change
     bar.SetMinMaxValues = function(_, ...) sb:SetMinMaxValues(...) end
-    bar.SetValue = function(_, ...)
+    bar.SetValue = function(_, v)
         -- Native interpolation (opt-in "Smooth Bars"): _smoothing is set only on
-        -- bars whose toggle is on; nil elsewhere, so this is a plain SetValue.
+        -- bars whose toggle is on; nil elsewhere, so every write lands at once.
+        -- The toggle alone decides: callers pass the value only.
         if bar._smoothing then
-            sb:SetValue((...), bar._smoothing)
+            sb:SetValue(v, bar._smoothing)
         else
-            sb:SetValue(...)
+            sb:SetValue(v)
         end
     end
     bar.GetValue = function(_) return sb:GetValue() end
@@ -2353,6 +2374,42 @@ local function IsPowerBarHidden()
     return false
 end
 
+-- Per-bar rects of the player's resource stack for the current spec and form, in
+-- physical pixels: one { l, r, t, b } entry per bar in the layout, or nil when there
+-- is none. A bar counts by its layout predicate (Power: not IsPowerBarHidden; Class
+-- Resource: the structural part of UpdateVisibility, without the transient
+-- ShouldShowBar; the Forever shapeshift mana bar: ns._FDMStackBottomFrame, its host
+-- only while shown for the form) and by not being hidden, never by its alpha: the
+-- combat/target/group visibility modes only fade a bar that keeps its place, so the
+-- footprint holds still through them. The unused class resource container is hidden
+-- and keeps its old rect, so it never counts. The unit frame auras walk the chain of
+-- these bars docked under the player frame (EUI_UnitFrames_AuraContainers.lua,
+-- ResourceStackBelowFrame), so a bar placed elsewhere is never reserved.
+function EllesmereUI.ERB_PlayerStackBars()
+    local p = ERB and ERB.db and ERB.db.profile
+    if not p then return nil end
+    local bars, n = nil, 0
+    local function add(f)
+        if not (f and f:IsShown()) then return end
+        local fb, ft = f:GetBottom(), f:GetTop()
+        if not (fb and ft) then return end
+        local s = f:GetEffectiveScale() or 1
+        bars = bars or {}
+        n = n + 1
+        bars[n] = { l = (f:GetLeft() or 0) * s, r = (f:GetRight() or 0) * s,
+                    t = ft * s, b = fb * s }
+    end
+    if not IsPowerBarHidden() then add(primaryBar) end
+    local sp = p.secondary
+    if sp and sp.enabled ~= false and not IsSpecDisabled(sp)
+        and not _G._ERB_BarHiddenByForm(sp, true) and cachedSecondary then
+        add(secondaryFrame)
+        add(secondaryBar)
+    end
+    if ns._FDMStackBottomFrame then add(ns._FDMStackBottomFrame()) end
+    return bars
+end
+
 -- Unlock mode: register with shared EllesmereUI unlock system
 local function RegisterUnlockElements()
     if not EllesmereUI or not EllesmereUI.RegisterUnlockElements then return end
@@ -2519,6 +2576,10 @@ local function RegisterUnlockElements()
                 local w, h = OrientedSize(s.width or 214, s.height or 14, ori)
                 return ns.ERB_ClassicMatchPad(w, h, IsVerticalOrientation(ori), ns.ERB_BarFrameK(s))
             end,
+            -- WoW Forever druid: the mover wraps the Mana Bar while Shapeshifted
+            -- shown below the bar (EUI_ResourceBars_ForeverDruidMana.lua); nil
+            -- on every other client and class.
+            getBottomExtra = ns.FDM_BottomExtra,
             setWidth = function(_, w)
                 local s, g = SS(), ERB.db.profile.general
                 if IsVerticalOrientation(s.orientation or (g and g.orientation)) then
@@ -3258,15 +3319,22 @@ end
 
 -- Value mode needs a readable max: getMaxFn returns the current max; if it is
 -- secret, fall back to the last-known-good value cached on the bar frame.
+-- Source: the active threshold entry when it has its own hash lines, else the
+-- bar-wide hashEnabled/hashValues (which conditional overrides can set).
 function ns.ApplyHashLines(sb, cfg, getMaxFn)
     if not sb then return end
     local tickCache = sb._userHashTicks
-    if not (cfg and cfg.hashEnabled) then
-        if tickCache then for i = 1, #tickCache do tickCache[i]:Hide() end end
+    local ent = cfg and ResolveThresholdSpecEntry(cfg)
+    if not (ent and ent.hashValues and ent.hashValues ~= "") then
+        ent = cfg and cfg.hashEnabled and cfg or nil
+    end
+    local hashStr = ent and ent.hashValues
+    if not hashStr or hashStr == "" then
+        if tickCache then HideResourceBarTicks(tickCache, sb) end
         return
     end
     if not tickCache then tickCache = {}; sb._userHashTicks = tickCache end
-    local isPercent = (cfg.hashMode or "percent") == "percent"
+    local isPercent = (ent.hashMode or "percent") == "percent"
     local maxVal
     if isPercent then
         maxVal = 100
@@ -3289,8 +3357,8 @@ function ns.ApplyHashLines(sb, cfg, getMaxFn)
         hbs = EllesmereUI.BorderPx(cfg.borderSizePx, hbs, htex) or hbs
     end
     local vInset = hbs * ((PP and PP.mult) or 1)
-    ApplyResourceBarTicks(sb, maxVal, cfg.hashValues, tickCache,
-        cfg.hashWidth, cfg.hashColorR, cfg.hashColorG, cfg.hashColorB, cfg.hashColorA,
+    ApplyResourceBarTicks(sb, maxVal, hashStr, tickCache,
+        ent.hashWidth, ent.hashColorR, ent.hashColorG, ent.hashColorB, ent.hashColorA,
         isPercent, nil, vInset)
 end
 
@@ -3308,6 +3376,62 @@ local function EnsureIronfurOverlay(sb)
 end
 
 -- BuildBars -- applies per-element scale, border, colors, text positioning
+-- Rounded corners (EllesmereUI_RoundedCorners.lua; nothing at radius 0 or
+-- under the stock styles, which shape the bars with their own masks).
+-- Health / power: the outer frame is the shape, the clipping inner bar the body.
+function ns.ERB_RoundBar(bar, cfg)
+    if not bar then return end
+    local radius = (not ns.ERB_BarsBlizz() and cfg.cornerRadius) or 0
+    if radius <= 0 then EllesmereUI.RoundCorners(bar, 0); return end
+    EllesmereUI.RoundCorners(bar, radius, {
+        roots = { bar._sb }, clip = bar._sb,
+        border = bar._border and bar._border._frame, style = cfg.borderTexture or "solid",
+        corners = cfg.cornerMask,
+    })
+end
+-- Class resource: the whole row rounds its outline; with Border on Pips each
+-- shown pip (or rune) also rounds inside its own border (pips only show from
+-- BuildBars, before this runs). The pip loop runs only while pips are rounded
+-- or were rounded before.
+do
+    local pipsRounded = false
+    local function RoundPipList(list, radius, style, corners)
+        for i = 1, #list do
+            local pip = list[i]
+            if radius <= 0 then
+                EllesmereUI.RoundCorners(pip, 0)
+            elseif pip:IsShown() then
+                EllesmereUI.RoundCorners(pip, radius, {
+                    style = style, border = pip._border and pip._border._frame,
+                    corners = corners,
+                })
+            end
+        end
+    end
+    function ns.ERB_RoundSecondary(sp, isBarType)
+        local radius = (not ns.ERB_BarsBlizz() and sp.cornerRadius) or 0
+        local style = sp.borderTexture or "solid"
+        local onPips = sp.borderOnPips and not isBarType
+        local rowBorder = secondaryFrame._barBorder
+        if radius > 0 then
+            EllesmereUI.RoundCorners(secondaryFrame, radius, {
+                style = style,
+                border = not onPips and rowBorder and rowBorder._frame or nil,
+                clip = isBarType and secondaryBar and secondaryBar._sb or nil,
+                corners = sp.cornerMask,
+            })
+        else
+            EllesmereUI.RoundCorners(secondaryFrame, 0)
+        end
+        local pipRadius = onPips and radius or 0
+        if pipRadius > 0 or pipsRounded then
+            RoundPipList(pips, pipRadius, style, sp.cornerMask)
+            RoundPipList(runeFrames, pipRadius, style, sp.cornerMask)
+            pipsRounded = pipRadius > 0
+        end
+    end
+end
+
 local function BuildBars()
     -- Frames are being recreated, so every value/config cache keyed on the previous
     -- ones is stale. Bumping the generation invalidates them all at once; without
@@ -3490,6 +3614,10 @@ local function BuildBars()
         -- Absorb / heal absorb / max health reduction overlays
         -- (EUI_ResourceBars_HealthIndicators.lua): settings pass only.
         ns.HealthIndicatorsApply(healthBar, (not IsSpecDisabled(hp)) and hp or nil, hpOri)
+        -- Rounded corners (EllesmereUI_RoundedCorners.lua), after the retexture
+        -- and the overlays, so overlays built by this pass join the body:
+        -- nothing at radius 0 or under the stock styles.
+        ns.ERB_RoundBar(healthBar, hp)
         end
     end
 
@@ -3628,6 +3756,7 @@ local function BuildBars()
         -- Bar texture (must be applied before colors since SetStatusBarTexture resets vertex color).
         -- Same per-bar rule as health: power's own key only while splitTex is on.
         ApplyBarTexture(primaryBar, (p.splitTex == true and pp.barTexture) or g.barTexture or "none")
+        ns.ERB_RoundBar(primaryBar, pp)
 
         -- Colors: custom colored > power type color. Gradient is additive: when on
         -- it fills from the resolved custom/power base to the gradient end color.
@@ -4249,6 +4378,7 @@ local function BuildBars()
         else
             secondaryFrame._barBg:SetColorTexture(sp.barBgR or 0, sp.barBgG or 0, sp.barBgB or 0, sp.barBgA or 0.5)
         end
+        ns.ERB_RoundSecondary(sp, isBarType)
 
         if sp.showText then
             if not secondaryFrame._countText then
@@ -4392,6 +4522,12 @@ local function BuildBars()
     -- WoW Forever druid mana bar (EUI_ResourceBars_ForeverDruidMana.lua):
     -- restyled after every Power Bar build; nil on every other client/class.
     if ns.FDM_Apply then ns.FDM_Apply(primaryBar, pp, g) end
+
+    -- The stack layout just settled (build, spec, form, expand, shift and options all
+    -- end here): ask Unit Frames to re-anchor its bottom-anchored player auras to the
+    -- new footprint. This only arms its one-shot re-anchor for the next frame (no
+    -- geometry is read here), and does nothing unless the player bottom-anchors auras.
+    if EllesmereUI.UF_RequestResourceReanchor then EllesmereUI.UF_RequestResourceReanchor() end
 end
 
 
@@ -4502,13 +4638,9 @@ local function UpdateHealthBar()
         end
     end
 
-    -- Fill: eased SetValue -- the engine animates toward the new value, so a health
-    -- change costs zero per-frame Lua. Secrets use the plain SetValue path.
-    if not curTainted then
-        healthBar:SetValue(cur, ns.EASE)
-    else
-        healthBar:SetValue(cur)
-    end
+    -- Fill: the bar's Smooth Bars item decides whether the engine eases toward
+    -- the new value (CreateStatusBar's SetValue wrapper), at zero per-frame Lua.
+    healthBar:SetValue(cur)
 
     if hp.textFormat ~= "none" and not _G._ERB_TextHiddenByForm(hp) then
         local fmt = hp.textFormat
@@ -4519,6 +4651,8 @@ local function UpdateHealthBar()
             txt = curStr .. " | " .. pctStr .. "%"
         elseif fmt == "curhpshort" then
             txt = curStr
+        elseif fmt == "curmaxhp" then
+            txt = curStr .. " / " .. ns.AbbreviateNumbers(mx)
         elseif fmt == "perhp" then
             txt = pctStr .. "%"
         elseif fmt == "perhpnosign" then
@@ -4800,13 +4934,9 @@ local function UpdatePrimaryBar()
         end
     end
 
-    -- Fill: eased SetValue (see the health handler note); secrets use plain.
-    local tainted = issecretvalue and issecretvalue(cur)
-    if not tainted then
-        primaryBar:SetValue(cur, ns.EASE)
-    else
-        primaryBar:SetValue(cur)
-    end
+    -- Fill: eased only while the bar's Smooth Bars item is on (see the health
+    -- handler note).
+    primaryBar:SetValue(cur)
 
     if pp.textFormat ~= "none" and not _G._ERB_TextHiddenByForm(pp) then
         -- Stamped only when the text is actually written, so a form-hidden
@@ -4828,6 +4958,8 @@ local function UpdatePrimaryBar()
                 txt = ns.AbbreviateNumbers(cur) .. " | " .. percentText
             elseif fmt == "curpp" then
                 txt = ns.AbbreviateNumbers(cur)
+            elseif fmt == "curmaxpp" then
+                txt = ns.AbbreviateNumbers(cur) .. " / " .. ns.AbbreviateNumbers(mx)
             elseif fmt == "perpp" then
                 txt = percentText
             else
@@ -6217,14 +6349,10 @@ local function UpdateSecondaryResource()
                     end
                 end
             end
-            -- Secret-aware update: secrets go straight to the StatusBar (the C
-            -- widget handles them natively); clean values get the eased SetValue.
+            -- Fill: eased only while the bar's Smooth Bars item is on (see the
+            -- health handler note); a secret goes straight to the StatusBar too.
+            secondaryBar:SetValue(cur)
             local tainted = issecretvalue and issecretvalue(cur)
-            if tainted then
-                secondaryBar:SetValue(cur)
-            else
-                secondaryBar:SetValue(cur, ns.EASE)
-            end
             if sp.showText and secondaryFrame._countText then
                 local ct = secondaryFrame._countText
                 local percentSuffix = (sp.showPercent == false) and "" or "%"
@@ -7026,7 +7154,8 @@ end
 
 -- Subsystem tickers. There is NO frame-rate OnUpdate multiplexer:
 --  * Value fills (health/primary/secondary) are EVENT-DRIVEN -- handlers call
---    SetValue(v, ns.EASE) and the engine animates the ease, zero per-frame Lua.
+--    SetValue(v) and, while the bar's Smooth Bars item is on, the engine
+--    animates the ease (ERB:ApplySmoothing), zero per-frame Lua.
 --    Threshold/band coloring rides the same events; never add a color poll.
 --  * Genuinely time-based jobs each ride their own fixed-rate anim ticker
 --    (EllesmereUI.Tick.NewAnimTicker): the C engine fires OnLoop at the
@@ -7039,13 +7168,14 @@ end
 -- bills the work to ResourceBars (frame-birth attribution rule).
 
 -- Ebon Might drain (Aug Evoker; the engine slot owns the countdown when present).
--- 20 Hz drain + text; the eased SetValue keeps the fill continuous between fires.
+-- 20 Hz drain + text; with the Power Bar's Smooth Bars item on, the engine eases
+-- the fill between fires.
 -- Re-armed by UNIT_AURA via ns.ArmTick.
 ns.EMTick = EllesmereUI.Tick.NewAnimTicker(CreateFrame("Frame"), function()    if ns.EMB121_Owns then return end
     if cachedPrimary ~= "EBON_MIGHT" then return end
     if not (primaryBar and primaryBar:IsShown() and primaryBar:GetAlpha() > 0) then return end
     local remaining = (_ebonMightExpiry > 0) and max(0, _ebonMightExpiry - GetTime()) or 0
-    primaryBar:SetValue(remaining, ns.EASE)
+    primaryBar:SetValue(remaining)
     local pp = _G._ERB_ResolvePowerCfg()
     if pp and pp.textFormat and pp.textFormat ~= "none" then
         local fmt = pp.textFormat
@@ -10144,6 +10274,17 @@ function ns.ActivateCastBar()
     EllesmereUI.SetElementVisibility(castBarFrame, true)
 end
 
+-- Spell name plus its rank subtext ("Name (Rank 2)") when Show Spell Rank is on.
+-- Spell ranks exist only on WoW Forever (retail's subtext is "Racial" and the
+-- like), so the option and this read are Forever-only.
+function ns.CastDisplayName(cb, name, spellID)
+    if cb.showSpellRank and spellID and EllesmereUI.IS_FOREVER then
+        local rank = C_Spell.GetSpellSubtext(spellID)
+        if rank and rank ~= "" then return name .. " (" .. rank .. ")" end
+    end
+    return name
+end
+
 OnCastStart = function()
     if not castBarFrame then return end
     local cb = ERB.db.profile.castBar
@@ -10161,7 +10302,7 @@ OnCastStart = function()
     castBarFrame._spellName = name
     castBarFrame._spellID = spellID
     castBarFrame._totalDurSuffix = " / " .. format("%.1f", (endTimeMS - startTimeMS) / 1000)
-    castBarFrame._nameText:SetText(name)
+    castBarFrame._nameText:SetText(ns.CastDisplayName(cb, name, spellID))
     ns.ERB_SetBlizzCastFill("cast")
     if not ns.ApplyCastTimer("cast") then
         local castDur = endTimeMS - startTimeMS
@@ -10220,7 +10361,7 @@ OnChannelStart = function()
     castBarFrame._spellName = name
     castBarFrame._spellID = spellID
     castBarFrame._totalDurSuffix = " / " .. format("%.1f", (endTimeMS - startTimeMS) / 1000)
-    castBarFrame._nameText:SetText(name)
+    castBarFrame._nameText:SetText(ns.CastDisplayName(cb, name, spellID))
     ns.ERB_SetBlizzCastFill("channel")
     if not ns.ApplyCastTimer("channel") then
         local chanDur = endTimeMS - startTimeMS
@@ -10506,7 +10647,7 @@ OnEmpowerStart = function()
     castBarFrame._spellID = spellID
     castBarFrame._totalDurSuffix = " / " .. format("%.1f", (endTimeMS - startTimeMS) / 1000)
     HideLatencyOverlay()
-    castBarFrame._nameText:SetText(name)
+    castBarFrame._nameText:SetText(ns.CastDisplayName(cb, name, spellID))
     ns.ERB_SetBlizzCastFill("cast")
     if not ns.ApplyCastTimer("empower") then
         local empDur = endTimeMS - startTimeMS
@@ -10770,6 +10911,9 @@ BuildGCDBar = function()
                 -- skips an already-finished GCD.
                 if (dur - elapsed) > 0.05 and ((not self._gcdActualStart) or actualStart > (self._gcdActualStart + 0.05)) then
                     self._gcdActualStart = actualStart
+                    -- Readable length: the window is exact, so the isActive
+                    -- end check (secret windows only) stands down.
+                    self._gcdUnread = nil
                     -- Lifecycle window for the tick (end detection + fade):
                     -- the engine timer owns the drawn fill when available;
                     -- the Lua fill only draws when it is not.
@@ -10788,7 +10932,8 @@ BuildGCDBar = function()
                 -- the exact trap the action bar swipe work documented --
                 -- push the object through. The engine renders the true
                 -- fill; the lifecycle window is a conservative GCD
-                -- ceiling, cut short by the next arm.
+                -- ceiling, cut short by the next arm or once the cooldown
+                -- reports isActive false (UpdateGCDBar).
                 if windowOnly then
                     -- Cooldown chatter may only refresh the fill of an open
                     -- window (armNative keeps the engine honest); it never
@@ -10796,10 +10941,14 @@ BuildGCDBar = function()
                     if self._gcdStart then armNativeGCD(bar, gc.depleteFill) end
                     return
                 end
+                -- A GCD that is already over (a hard cast's SUCCEEDED, an
+                -- off-GCD spell) opens nothing; isActive is never secret.
+                if not cd.isActive then return end
                 if armNativeGCD(bar, gc.depleteFill) then
                     self._nativeGCD = true
                     self._gcdStart = GetTime()
                     self._gcdDur = 1.6
+                    self._gcdUnread = true
                     self._gcdActualStart = nil
                     ns.GCDTick.Start()
                     UpdateGCDBar()
@@ -11109,7 +11258,9 @@ UpdateGCDBar = function(_dt)
     end
 
     -- Animate from the start/duration captured at the cast event (set in the
-    -- OnEvent handler). No per-frame cooldown polling.
+    -- OnEvent handler). The cooldown is polled only while a secret-value window
+    -- is open (the isActive check below, at the GCD ticker's 20 Hz): that
+    -- window's length is only a ceiling, and the poll ends it with the GCD.
     local startT, dur = gcdBarFrame._gcdStart, gcdBarFrame._gcdDur
     local active = startT and dur
     local elapsed
@@ -11119,6 +11270,20 @@ UpdateGCDBar = function(_dt)
             gcdBarFrame._gcdStart = nil
             gcdBarFrame._gcdDur = nil
             gcdBarFrame._gcdActualStart = nil
+            active = false
+        end
+    end
+
+    -- Secret values: the real length is unreadable, so the window above is only a ceiling.
+    -- The cooldown's isActive stays a plain boolean; end the window when the GCD is over.
+    if active and gcdBarFrame._gcdUnread then
+        local cd = C_Spell.GetSpellCooldown(EllesmereUI.GCD_SPELL)
+        local act = cd and cd.isActive
+        if not (issecretvalue and issecretvalue(act)) and act == false then
+            gcdBarFrame._gcdStart = nil
+            gcdBarFrame._gcdDur = nil
+            gcdBarFrame._gcdActualStart = nil
+            gcdBarFrame._gcdUnread = nil
             active = false
         end
     end
@@ -11506,10 +11671,9 @@ end
 -- interpolation mode on the bar and let the CreateStatusBar SetValue wrapper
 -- pass it to Blizzard's C-side interpolation. nil = no interpolation = zero
 -- added cost (plain SetValue). Only the three main bars are toggled here (pips
--- never smooth). The cast bar never smooths: its fill is recomputed from
--- GetTime() every frame (already smooth), and
--- easing toward that moving target made the fill trail real progress so the
--- bar looked cut off at cast end. The GCD bar keeps its own bar._castInterp.
+-- never smooth; the WoW Forever druid mana bar follows the Power Bar's). The
+-- cast bar has its own Smooth Bar Animation (castBar.smoothFill) and the GCD
+-- bar its own bar._castInterp.
 function ERB:ApplySmoothing()
     local interp = Enum and Enum.StatusBarInterpolation and Enum.StatusBarInterpolation.ExponentialEaseOut
     local p = ERB.db and ERB.db.profile
@@ -11876,11 +12040,11 @@ local function OnEvent(self, event, ...)
     elseif event == "PLAYER_REGEN_ENABLED" then
         isInCombat = false
         UpdateVisibility()
-    elseif event == "PLAYER_TARGET_CHANGED" then
-        UpdateVisibility()
-        -- WoW Forever: combo points belong to the target, so a target swap
-        -- changes the count with no power event behind it. Skipped while the
-        -- Class Resource is off.
+    elseif event == "PLAYER_TARGET_CHANGED" or event == "COMBO_TARGET_CHANGED" then
+        if event == "PLAYER_TARGET_CHANGED" then UpdateVisibility() end
+        -- WoW Forever: combo points belong to the target, so a target swap, or
+        -- the points moving to a new target, changes the count with no power
+        -- event behind it. Skipped while the Class Resource is off.
         if cachedSecondary and cachedSecondary.onTarget then
             local sp = ERB.db and ERB.db.profile and ERB.db.profile.secondary
             if sp and sp.enabled ~= false and not IsSpecDisabled(sp) then UpdateSecondaryResource() end
@@ -12184,6 +12348,11 @@ function ERB:OnEnable()
     eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
     eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
     eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+    -- WoW Forever: combo points moving to a new target fire no power event
+    -- (only a rogue or druid ever raises it; the handler acts for onTarget).
+    if EllesmereUI.IS_FOREVER == true then
+        eventFrame:RegisterEvent("COMBO_TARGET_CHANGED")
+    end
     eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
     eventFrame:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
     eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")

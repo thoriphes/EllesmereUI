@@ -1,8 +1,8 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 16001
+## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
 ## Title: |cff0cd29fEllesmereUI|r
 ## Notes: Shared framework for the EllesmereUI addon suite
 ## Author: Ellesmere
-## Version: 9.3.9
+## Version: 9.5.4
 ## SavedVariables: EllesmereUIDB
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 ## X-Curse-Project-ID: 1477613
@@ -42,6 +42,8 @@ EllesmereUI_Migration.lua
 # Early startup -- applies engine-cached settings before PLAYER_LOGIN
 EllesmereUI_Startup.lua
 
+EllesmereUI_GoldLedger.lua
+
 # Shared EllesmereUI Files
 EllesmereUI_PixelPerfect.lua
 EllesmereUI.lua
@@ -73,12 +75,16 @@ EUI_UnlockMode_Tools.lua
 EUI_UnlockMode_Movers.lua
 EUI_UnlockMode_Session.lua
 EllesmereUI_Glows.lua
+EllesmereUI_RoundedCorners.lua
 EllesmereUI_ClassicArt.lua
 EllesmereUI_Range.lua
 EllesmereUI_AuraKit.lua
 EllesmereUI_WarriorCharges.lua
 EllesmereUI_ManaRegenSpark.lua
 EllesmereUI_SpellCostPrediction.lua
+# Friends list kit: realm regions, the 12.1 Social UI tiles and invite auto-accept,
+# shared by the Friends List module (retail) and Blizzard Skins+ (WoW Forever)
+EllesmereUI_FriendsKit.lua
 EllesmereUI_FirstInstall.lua
 EllesmereUI_RaidFramesPopup.lua
 EllesmereUI_PatchNotesPopup.lua

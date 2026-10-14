@@ -112,7 +112,8 @@ end
 local IS_FOREVER = EllesmereUI.IS_FOREVER == true
 
 -- The WoW Forever variant is Blizzard Style everywhere a base style is
--- asked for (module seeds, the whole-UI font and window slots, Active()).
+-- asked for (module seeds, the whole-UI font slots, Active()); the window
+-- slots are the exception, where it is a look of its own.
 local function BaseKey(styleKey)
     if styleKey == "forever" then return "blizzard" end
     return styleKey
@@ -252,11 +253,25 @@ Register("minimap",      "EllesmereUIMinimap",         "Minimap",
     -- Either stock style, at each switch (the controls stay the user's
     -- afterwards): the Omnium Folio on the ring's bottom right spot (WoW
     -- Forever builds no folio), and the clock inside the map at the top,
-    -- 10px down. Classic WoW UI also centres the zone text in the banner's
-    -- text slot (its X/Y offsets back to 0).
-    function(p, styleKey)
+    -- 10px down, or, on a square (the WoW Forever look's Forever Square or
+    -- Blizzard Style's Square on the Forever client, each its Border Style
+    -- default there), at the map's bottom with no offset, its title bar
+    -- holding the zone name up top. The Border Style rows move the clock the
+    -- same way when a pick changes. Classic WoW UI also centres the zone text
+    -- in the banner's text slot (its X/Y offsets back to 0).
+    function(p, styleKey, isForever)
         if not EllesmereUI.IS_FOREVER then p.omniumFolioCorner = "BOTTOMRIGHT" end
-        p.clockMode, p.clockPosition, p.clockOffsetY = "inside", "top", -10
+        local square
+        if isForever then
+            square = p.foreverBorder ~= "circle" and EllesmereUI.ForeverHeavyOK()
+        else
+            square = styleKey == "blizzard" and EllesmereUI.IS_FOREVER and p.blizzBorder ~= "circle"
+        end
+        if square then
+            p.clockMode, p.clockPosition, p.clockOffsetY = "inside", "bottom", 0
+        else
+            p.clockMode, p.clockPosition, p.clockOffsetY = "inside", "top", -10
+        end
         if styleKey == "classic" then p.locationOffsetX, p.locationOffsetY = 0, 0 end
     end)
 Register("damagemeters", "EllesmereUIDamageMeters",    "Damage Meters",
@@ -438,7 +453,8 @@ if EllesmereUI.IS_FOREVER then
         end }
 end
 -- WoW Forever's own seeds (the Nameplates Left Text its level box stands in
--- for, the Unit Frames class resource its combo point arc takes) swap only
+-- for and the Elite/Rare Indicator box it starts unchecked, the Unit Frames
+-- class resource its combo point arc takes) swap only
 -- across the variant (foreverOnly), in a spec of their own (m.fvSlots) kept
 -- apart from the module's slots above (store): the other looks share one
 -- "eui" slot for them, banked on the way in and restored on the way out, and
@@ -447,8 +463,12 @@ end
 -- store at enable for a profile that arrives already switched.
 if IS_FOREVER then
     local FOREVER_SLOT_KEYS = {
-        nameplates = { keys = { "textSlotLeft" }, stamps = { "foreverLevelSlotSeeded" },
-                       seededBy = function() return "foreverLevelSlotSeeded" end,
+        nameplates = { keys = { "textSlotLeft", "classificationHideRare" },
+                       stamps = { "foreverLevelSlotSeeded", "foreverRareSeeded" },
+                       seededBy = function(key)
+                           if key == "classificationHideRare" then return "foreverRareSeeded" end
+                           return "foreverLevelSlotSeeded"
+                       end,
                        seed = function(p)
                            local n = NS("EllesmereUINameplates")
                            if n and n.NP_SeedForever then n.NP_SeedForever(p) end
@@ -629,8 +649,8 @@ end
 
 -- The stock style most loaded modules use ("blizzard" on a tie or none):
 -- names the look a font or window record from before the slots belongs to.
--- WoW Forever counts as Blizzard Style (it shares that look's font and
--- window slots).
+-- WoW Forever counts as Blizzard Style (it shares that look's font slot, and
+-- such records predate its own window slot).
 local function InferredStockStyle()
     local b, c = 0, 0
     for i = 1, #MODULES do
@@ -753,15 +773,15 @@ end
 -- UI Enhanced module has no swapper and is left
 -- alone. The look is the active PROFILE's (profile-root windowSkinLook), so
 -- the account's windows swap back to each profile's look on a profile switch
--- (EllesmereUI.ReconcileWindowSkinLook). WoW Forever shares Blizzard Style's
--- window slot: both hand the windows back to Blizzard, whose windows on that
--- client are the Forever ones.
+-- (EllesmereUI.ReconcileWindowSkinLook). WoW Forever has a window slot of
+-- its own, whose first visit skins every window as the EllesmereUI look's
+-- does but the micro menu and the bag bar (Blizz Default); a window look
+-- recorded before that slot existed stays as it is.
 local function WholeUIWindowsPending(styleKey)
     local swap = EllesmereUI.SwapWindowSkinStyle
-    return swap ~= nil and swap(BaseKey(styleKey), true, InferredStockStyle())
+    return swap ~= nil and swap(styleKey, true, InferredStockStyle())
 end
 local function ApplyWholeUIWindows(styleKey, legacy)
-    styleKey = BaseKey(styleKey)
     local swap = EllesmereUI.SwapWindowSkinStyle
     if not swap then return end
     swap(styleKey, false, legacy or InferredStockStyle())
@@ -852,6 +872,8 @@ end
 -- blocks clicks with the standard requirement tooltip while a stock style is
 -- active for the module. No-op otherwise, so existing pages are untouched.
 function BlizzStyle.BlockInline(key, widget, dimAlpha)
+    -- The search prebuild only indexes rows: no blocker (the widget is a stand-in there).
+    if EllesmereUI._prebuilding then return false end
     if not widget or not BlizzStyle.Get(key) then return false end
     widget:SetAlpha(dimAlpha or 0.3)
     local block = CreateFrame("Frame", nil, widget)
@@ -968,7 +990,7 @@ function _G._EUI_BuildStylePage(pageName, parent, yOffset)
     -- Sized host + single TOPLEFT point per the search framework's geometry
     -- contract; the search prebuild only needs the y advance.
     local CARDS_TOP = 140
-    local DD_GAP, DD_H, BTN_GAP, BTN_W, BTN_H = 14, 30, 26, 280, 50
+    local DD_GAP, DD_H, BTN_GAP, BTN_W, BTN_H = 14, 30, 26, 252, 45
     local DD_TOP = CARDS_TOP + (EllesmereUI.STYLE_CARD_H or 296) + DD_GAP
     local BTN_TOP = DD_TOP + DD_H + BTN_GAP
     local HERO_H = BTN_TOP + BTN_H + 4
@@ -1003,6 +1025,9 @@ function _G._EUI_BuildStylePage(pageName, parent, yOffset)
 
         local cards = EllesmereUI.BuildStyleCards(host, -CARDS_TOP, {
             buttonText = "Apply to All",
+            -- The card in use fades to half; its larger badge stays whole.
+            inUseAlpha = 0.5,
+            badgeSize = 13,
             onPick = function(styleKey)
                 PromptStyleChanges(StyleChangesFor(styleKey), styleKey)
             end,
@@ -1087,7 +1112,7 @@ function _G._EUI_BuildStylePage(pageName, parent, yOffset)
             applyBtn:SetFrameLevel(host:GetFrameLevel() + 3)
             PP.Size(applyBtn, BTN_W, BTN_H)
             PP.Point(applyBtn, "TOP", host, "TOP", 0, -BTN_TOP)
-            EllesmereUI.MakeStyledButton(applyBtn, "Apply Styles", 18, EllesmereUI.WB_COLOURS, function()
+            EllesmereUI.MakeStyledButton(applyBtn, "Apply Styles", 16, EllesmereUI.WB_COLOURS, function()
                 local changes = {}
                 for i = 1, #MODULES do
                     local m = MODULES[i]

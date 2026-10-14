@@ -616,6 +616,7 @@ local function BuildBaseDetailDM(frame, fontPath)
         if rgn._control then rgn._control:Hide() end
         local DM_ALL_KEY = "__all"
         local DM_DUR_KEY = "__hasDuration"
+        local DM_HIDE_EXH = "__hideExhaustion"
         local DM_MATCH_ANY = "__matchAny"
         local DM_MATCH_ALL = "__matchAll"
         local function AllOn() return dm.all ~= false end
@@ -625,6 +626,12 @@ local function BuildBaseDetailDM(frame, fontPath)
               tooltip = "Show every debuff. Use the Hide lane below to remove specific filters." },
             { key = DM_DUR_KEY, label = "Has Duration",
               tooltip = "Only show debuffs that have a duration, excluding permanent ones. Combines with the filters below; checked alone it shows every timed debuff." },
+            -- Hide Exhaustion: a view over the profile's hideLustDebuff (on by
+            -- default), which every raid and party debuff display reads. Kept out
+            -- of the summary, so the default reads as before.
+            { key = DM_HIDE_EXH, label = "Hide Exhaustion",
+              tooltip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
+              excludeFromSummaryFn = function() return true end },
             -- Match Mode: modifier rows (out of the summary and the count), a
             -- radio pair over dm.match (nil = Match Any = the union). Locked
             -- while All Debuffs shows everything; the setting is kept.
@@ -760,6 +767,7 @@ local function BuildBaseDetailDM(frame, fontPath)
             function(k, neg)
                 if k == DM_ALL_KEY then return AllOn() end
                 if k == DM_DUR_KEY then return dm.hasDuration == true end
+                if k == DM_HIDE_EXH then return p.hideLustDebuff ~= false end
                 if k == DM_MATCH_ALL then return dm.match == "all" end
                 if k == DM_MATCH_ANY then return dm.match ~= "all" end
                 if k == "dispel_you" then
@@ -791,6 +799,12 @@ local function BuildBaseDetailDM(frame, fontPath)
                     -- AND-modifier: combines with All Debuffs or any show-lane
                     -- selection; checked alone it acts as the timed catch-all.
                     dm.hasDuration = v or nil
+                    DmApply()
+                    EllesmereUI:RefreshPage()
+                    return
+                end
+                if k == DM_HIDE_EXH then
+                    p.hideLustDebuff = v and true or false
                     DmApply()
                     EllesmereUI:RefreshPage()
                     return
@@ -2836,10 +2850,19 @@ local fdScrollPos = 0 -- preserved spell-list scroll across editor rebuilds
 -- standard input popup + delete via the standard confirm popup); left =
 -- the selected filter's spells as checkbox rows using the checkbox-
 -- dropdown widget's exact visuals, grouped by class.
-function ns.BMP_ShowFilterEditor()
+-- show / hide: the opening dropdown's Show and Hide picks (id -> true). The
+-- editor opens on the first picked filter in list order; with none picked it
+-- keeps the last one viewed.
+function ns.BMP_ShowFilterEditor(show, hide)
     if ns._bm2FilterEditor then ns._bm2FilterEditor:Hide(); ns._bm2FilterEditor = nil end
     local filters = ns.BM2_Filters and ns.BM2_Filters()
     if not filters then return end
+    if show or hide then
+        for i = 1, #filters do
+            local id = filters[i].id
+            if (show and show[id]) or (hide and hide[id]) then fdSel = id; break end
+        end
+    end
     local fontPath = (EllesmereUI.GetFontPath("options"))
         or (EllesmereUI.GetFontPath("raidFrames"))
         or "Fonts\\FRIZQT__.TTF"
@@ -2900,6 +2923,23 @@ function ns.BMP_ShowFilterEditor()
         close:SetScript("OnClick", function()
             dimmer:Hide()
             ns._bm2FilterEditor = nil
+        end)
+    end
+
+    -- Escape closes the editor alone: the key is swallowed here, so it never
+    -- reaches the Escape proxy that would close the options window too.
+    -- SetPropagateKeyboardInput is protected in combat, so the editor takes
+    -- the keyboard only when built out of combat and stands aside in it.
+    if not InCombatLockdown() then
+        popup:EnableKeyboard(true)
+        popup:SetPropagateKeyboardInput(true)
+        popup:SetScript("OnKeyDown", function(self, key)
+            if InCombatLockdown() then return end
+            self:SetPropagateKeyboardInput(key ~= "ESCAPE")
+            if key == "ESCAPE" then
+                dimmer:Hide()
+                ns._bm2FilterEditor = nil
+            end
         end)
     end
 
@@ -3307,9 +3347,13 @@ function ns.BMP_ShowFilterEditor()
             or (C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(id))
         local lr, lg2, lb2 = 1, 1, 1
         if classColor then lr, lg2, lb2 = classColor.r, classColor.g, classColor.b end
+        -- A user-added id the preset has since curated keeps its custom mark
+        -- (it stays if the curation is ever dropped) but is a curated row now:
+        -- no remove control.
+        local removable = sel.custom[id] and not (curated and curated[id])
         local lbl = EllesmereUI.MakeFont(srow, 13, nil, lr, lg2, lb2)
         lbl:SetPoint("LEFT", ico, "RIGHT", 6, 0)
-        lbl:SetPoint("RIGHT", srow, "RIGHT", sel.custom[id] and -24 or -6, 0)
+        lbl:SetPoint("RIGHT", srow, "RIGHT", removable and -24 or -6, 0)
         lbl:SetJustifyH("LEFT")
         lbl:SetWordWrap(false)
         lbl:SetText(name or ("Spell " .. tostring(id)))
@@ -3337,7 +3381,7 @@ function ns.BMP_ShowFilterEditor()
             Apply()
             UpdateRow()
         end)
-        if sel.custom[id] then
+        if removable then
             local del = CreateFrame("Button", nil, srow)
             del:SetSize(14, 14)
             del:SetPoint("RIGHT", srow, "RIGHT", -6, 0)
@@ -3443,7 +3487,7 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
             local filters = (ns.BM2_Filters and ns.BM2_Filters()) or {}
             local items = {
                 { isTopAction = true, label = "Edit Filters", onClick = function()
-                    ns.BMP_ShowFilterEditor()
+                    ns.BMP_ShowFilterEditor(ind.filters, ind.negFilters)
                 end },
                 { isHeader = true, label = "Show", rightLabel = "Hide" },
             }
@@ -3477,7 +3521,14 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
                     end
                 end
                 if ns.BM2_Invalidate then ns.BM2_Invalidate() end
-                if ns.ReloadFrames then ns.ReloadFrames() end
+                -- Frames and preview now, then the selected tile's icon and
+                -- spell list (a widget refresh keeps this menu open).
+                if ns._bmReloadAndUpdate then
+                    ns._bmReloadAndUpdate()
+                elseif ns.ReloadFrames then
+                    ns.ReloadFrames()
+                end
+                EllesmereUI:RefreshPage()
             end,
             nil, 12)
         PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
