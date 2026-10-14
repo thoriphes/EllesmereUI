@@ -15,6 +15,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
     local env = ns._NPO_OptEnv
     local DB, DBVal, defaults, FOCUS_LETTER_ANCHOR_ORDER = env.DB, env.DBVal, env.defaults, env.FOCUS_LETTER_ANCHOR_ORDER
     local FOCUS_LETTER_ANCHORS, GetFocusLetterAnchor, GetNPOptOutline, npDispelGlowDesc = env.FOCUS_LETTER_ANCHORS, env.GetFocusLetterAnchor, env.GetNPOptOutline, env.npDispelGlowDesc
+    local npPandemicGlowDesc = env.npPandemicGlowDesc
     local pairs, pcall, plates, PP = env.pairs, env.pcall, env.plates, env.PP
     local RefreshAllAuras, RefreshAllPlates, SECTION_AURA, SECTION_ENEMY_NP = env.RefreshAllAuras, env.RefreshAllPlates, env.SECTION_AURA, env.SECTION_ENEMY_NP
     local SECTION_FRIENDLY, SECTION_MISC, UpdatePreview = env.SECTION_FRIENDLY, env.SECTION_MISC, env.UpdatePreview
@@ -49,7 +50,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           getValue=function() return DBVal("showFriendlyPlayers") ~= false end,
           setValue=function(v)
             DB().showFriendlyPlayers = v
-            if SetCVar then
+            do
                 if v then
                     -- Enabling: re-assert every friendly-player CVar that SetupAuraCVars sets on load (it skips these while the toggle is off) -- runtime is the only restore path short of /reload.
                     local p = DB()
@@ -59,10 +60,10 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                     if ns.ForceFriendlyPlayerCVarsOn then
                         ns.ForceFriendlyPlayerCVarsOn()
                     end
-                    pcall(SetCVar, "UnitNameFriendlyPlayerName", 1)
-                    pcall(SetCVar, "nameplateShowOnlyNameForFriendlyPlayerUnits", nameOnly and 1 or 0)
-                    pcall(SetCVar, "ShowClassColorInFriendlyNameplate", classColor and 1 or 0)
-                    pcall(SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(p))
+                    pcall(EllesmereUI.SetCVar, "UnitNameFriendlyPlayerName", 1, "EllesmereUINameplates")
+                    pcall(EllesmereUI.SetCVar, "nameplateShowOnlyNameForFriendlyPlayerUnits", nameOnly and 1 or 0, "EllesmereUINameplates")
+                    pcall(EllesmereUI.SetCVar, "ShowClassColorInFriendlyNameplate", classColor and 1 or 0, "EllesmereUINameplates")
+                    pcall(EllesmereUI.SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(p), "EllesmereUINameplates")
                 else
                     -- Disabling: reset the three CVars EUI uniquely manages (name-only override + class color) to Blizzard defaults for a clean slate; visibility CVars stay untouched so Blizzard's panel keeps the user's values.
                     if GetCVarDefault then
@@ -72,7 +73,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                             "nameplateUseClassColorForFriendlyPlayerUnitNames",
                         }) do
                             local d = GetCVarDefault(cvar)
-                            if d ~= nil then pcall(SetCVar, cvar, d) end
+                            if d ~= nil then pcall(EllesmereUI.SetCVar, cvar, d, "EllesmereUINameplates") end
                         end
                     end
                 end
@@ -87,7 +88,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           getValue=function() return DBVal("friendlyNameOnly") ~= false end,
           setValue=function(v)
             DB().friendlyNameOnly = v
-            if SetCVar then pcall(SetCVar, "nameplateShowOnlyNameForFriendlyPlayerUnits", v and 1 or 0) end
+            pcall(EllesmereUI.SetCVar, "nameplateShowOnlyNameForFriendlyPlayerUnits", v and 1 or 0, "EllesmereUINameplates")
             -- Turning name-only ON means the user wants to SEE friendly plates -- the second sanctioned force-visible point.
             if v and ns.ForceFriendlyPlayerCVarsOn then
                 ns.ForceFriendlyPlayerCVarsOn()
@@ -132,7 +133,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                     DB().classColorFriendly = v and true or false
                     -- Blizzard's instance plates colour their names by this CVar.
                     if not InCombatLockdown() then
-                        pcall(SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(DB()))
+                        pcall(EllesmereUI.SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(DB()), "EllesmereUINameplates")
                     end
                     ns.RefreshAllSettings()
                   end },
@@ -141,7 +142,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                   set = function(v)
                     DB().friendlyNameClassColor = v and true or false
                     if not InCombatLockdown() then
-                        pcall(SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(DB()))
+                        pcall(EllesmereUI.SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(DB()), "EllesmereUINameplates")
                     end
                     ns.RefreshFriendlyColors()
                   end },
@@ -189,10 +190,8 @@ local function BuildGeneralPage(pageName, parent, yOffset)
         end
         local function ApplyClassColored(useClass)
             DB().classColorFriendly = useClass and true or false
-            if SetCVar then
-                pcall(SetCVar, "ShowClassColorInFriendlyNameplate", useClass and 1 or 0)
-                pcall(SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(DB()))
-            end
+            pcall(EllesmereUI.SetCVar, "ShowClassColorInFriendlyNameplate", useClass and 1 or 0, "EllesmereUINameplates")
+            pcall(EllesmereUI.SetCVar, "nameplateUseClassColorForFriendlyPlayerUnitNames", ns.FriendlyNameClassCVar(DB()), "EllesmereUINameplates")
             if ns.RefreshAllSettings then ns.RefreshAllSettings() end
             refreshNameSwatches()
         end
@@ -299,9 +298,19 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           rawTooltip=function() return not friendlyPlayersOff() end,
           swatches = MakeGuildColorSwatches() });  y = y - h
 
-    -- Subtitle Text inline cog (guild bracket toggle)
+    -- Subtitle Text inline cog (guild bracket toggle). WoW Forever retitles it
+    -- Name Text Settings and heads it with the friendly Name Format (a friendly
+    -- player's first or last name, in both modes), so there the cog opens
+    -- whenever friendly players show and the guild row carries the guild
+    -- requirement itself.
     if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineCog(subtitleRow._leftRegion, {
+        local guildRow = { type = "toggle", label = "Show <> Around Guild",
+            get = function() return DBVal("friendlyBelowNameGuildBrackets") ~= false end,
+            set = function(v)
+              DB().friendlyBelowNameGuildBrackets = v and true or false
+              if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
+            end }
+        local cog = {
             chain = false,
             disabled = subtitleGuildOff,
             -- Same requirement as the Guild Text Color swatch beside it; the
@@ -312,15 +321,23 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             end,
             rawTooltip = function() return not friendlyPlayersOff() end,
             title = "Subtitle Text Settings",
-            rows = {
-                { type = "toggle", label = "Show <> Around Guild",
-                  get = function() return DBVal("friendlyBelowNameGuildBrackets") ~= false end,
-                  set = function(v)
-                    DB().friendlyBelowNameGuildBrackets = v and true or false
-                    if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
-                  end },
-            },
-        })
+            rows = { guildRow },
+        }
+        if EllesmereUI.IS_FOREVER then
+            cog.title = "Name Text Settings"
+            cog.disabled, cog.disabledTooltip, cog.rawTooltip =
+                friendlyPlayersOff, "Show EUI Friendly Player Nameplates", nil
+            guildRow.disabled = subtitleGuildOff
+            guildRow.disabledTooltip = "This option requires Subtitle Text to include the Guild Name"
+            guildRow.rawTooltip = true
+            table.insert(cog.rows, 1, EllesmereUI.NameFormatCogRow(
+                function() return DBVal("friendlyNameFormat") end,
+                function(v)
+                    DB().friendlyNameFormat = v
+                    ns.NP_SyncFriendlyNameFormat()
+                end))
+        end
+        EllesmereUI.BuildInlineCog(subtitleRow._leftRegion, cog)
     end
 
     local npcRow
@@ -329,10 +346,8 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           getValue=function() return DBVal("showFriendlyNPCs") == true end,
           setValue=function(v)
             DB().showFriendlyNPCs = v
-            if SetCVar then
-                pcall(SetCVar, "nameplateShowFriendlyNPCs", v and 1 or 0)
-                pcall(SetCVar, "nameplateShowFriendlyNpcs", v and 1 or 0)
-            end
+            pcall(EllesmereUI.SetCVar, "nameplateShowFriendlyNPCs", v and 1 or 0, "EllesmereUINameplates")
+            pcall(EllesmereUI.SetCVar, "nameplateShowFriendlyNpcs", v and 1 or 0, "EllesmereUINameplates")
             if ns.UpdateFriendlyNameplateSystem then ns.UpdateFriendlyNameplateSystem() end
             EllesmereUI:RefreshPage()
           end },
@@ -455,7 +470,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           getValue=function() return DBVal("showEnemyPets") == true end,
           setValue=function(v)
             DB().showEnemyPets = v
-            if SetCVar then pcall(SetCVar, "nameplateShowEnemyPets", v and 1 or 0) end
+            pcall(EllesmereUI.SetCVar, "nameplateShowEnemyPets", v and 1 or 0, "EllesmereUINameplates")
           end,
           tooltip="Toggle visibility of enemy pet nameplates." });  y = y - h
 
@@ -549,8 +564,8 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end,
           tooltip="Increases the clickable hitbox height of enemy nameplates. 100% = matches bar height. Increase to make nameplates easier to click." });  y = y - h
 
-    -- Eyeball toggle on Hitbox Size X: translucent overlay on real enemy nameplates marking the clickable area, for visual slider tuning; runtime-only, auto-hides when the panel closes.
-    do
+    -- Eyeball toggle on Hitbox Size X: translucent overlay on real enemy nameplates marking the clickable area, for visual slider tuning; runtime-only, auto-hides when the panel closes. None in the search pre-build: it indexes nothing, and the row is a stand-in there.
+    if not EllesmereUI._prebuilding then
         local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
         local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
         local leftRgn = hitboxRow._leftRegion
@@ -586,6 +601,52 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                     ns.SetHitboxOverlayShown(false)
                 end
             end)
+        end
+    end
+
+    -- Stacking Speed | Top Screen Inset: CVars Blizzard restored in 12.1.5,
+    -- so each slider exists only on a client that has its CVar. Pure CVar
+    -- passthrough like Line of Sight Opacity: nothing stored, nothing written
+    -- until a slider moves. Speed reads as a percent of the client's own
+    -- default; the inset as a percent of the screen's height (raw values if
+    -- the client's default is not a fraction).
+    do
+        local function CVarDefault(name) return tonumber(C_CVar.GetCVarDefault(name)) end
+        local cvarRows = {}
+        if C_CVar.GetCVarInfo("nameplateMotionSpeed") then
+            cvarRows[#cvarRows + 1] = { type="slider", text="Stacking Speed",
+                min=25, max=400, step=5,
+                getValue=function()
+                    local def, cur = CVarDefault("nameplateMotionSpeed"), tonumber(GetCVar("nameplateMotionSpeed"))
+                    if not (def and def > 0 and cur) then return 100 end
+                    return math.floor(cur / def * 100 + 0.5)
+                end,
+                setValue=function(v)
+                    if InCombatLockdown() then return end
+                    local def = CVarDefault("nameplateMotionSpeed")
+                    if not (def and def > 0) then return end
+                    EllesmereUI.SetCVar("nameplateMotionSpeed", def * v / 100, "EllesmereUINameplates")
+                end,
+                tooltip="How fast stacked nameplates slide into place. 100% is Blizzard's default." }
+        end
+        if C_CVar.GetCVarInfo("nameplateTopInset") then
+            local def = CVarDefault("nameplateTopInset")
+            local frac = not def or def <= 1
+            cvarRows[#cvarRows + 1] = { type="slider", text="Top Screen Inset",
+                min=0, max=frac and 50 or math.max(100, math.ceil((def or 0) * 4)), step=1,
+                getValue=function()
+                    local cur = tonumber(GetCVar("nameplateTopInset")) or 0
+                    if frac then return math.floor(cur * 100 + 0.5) end
+                    return cur
+                end,
+                setValue=function(v)
+                    if InCombatLockdown() then return end
+                    EllesmereUI.SetCVar("nameplateTopInset", frac and v / 100 or v, "EllesmereUINameplates")
+                end,
+                tooltip="How far from the top of the screen nameplates stop. 0 lets them reach the edge." }
+        end
+        for i = 1, #cvarRows, 2 do
+            _, h = W:DualRow(parent, y, cvarRows[i], cvarRows[i + 1] or EllesmereUI.BlankRowCfg());  y = y - h
         end
     end
 
@@ -627,10 +688,71 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end,
           tooltip="Maximum number of debuff icons shown on enemy nameplates." }
     local debuffRow1
-        debuffRow1, h = W:DualRow(parent, y, maxDbfCfg, { type="label", text="" });  y = y - h
+        debuffRow1, h = W:DualRow(parent, y, maxDbfCfg,
+        { type="toggle", text="Show Buff / Debuff Tooltips",
+          tooltip="Show the spell tooltip when you hover a buff or debuff icon on a nameplate.\n\nWhile the cursor is over an icon, the plate behind it will not highlight or take mouseover targeting.",
+          getValue=function() return DBVal("showAuraTooltips") == true end,
+          setValue=function(v)
+            DB().showAuraTooltips = v
+            if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
+          end });  y = y - h
+
+    local GO = EllesmereUI.GlowOptions
+
+    -- --- Pandemic Glow -------------------------------------------------
+    -- Style with its color swatches and cog, the preview in the right half.
+    local panDesc = npPandemicGlowDesc
+    local panRow
+    panRow, h = W:DualRow(parent, y,
+        GO.DropdownSpec(panDesc, "Pandemic Glow Style",
+            "Show a glow on your debuffs while they can be refreshed without losing any duration."),
+        { type="label", text="Pandemic Glow Preview" });  y = y - h
+    GO.AttachInline(panRow._leftRegion, panDesc)
+
+    if not EllesmereUI._prebuilding then
+        -- A pandemic debuff of the player's class (Rip, Moonfire, Festering
+        -- Wound, Vampiric Touch / Shadow Word: Pain, Agony, Rupture), any of
+        -- them otherwise; the first the client knows from a random start.
+        local BY_CLASS = {
+            DRUID = { 1079, 8921 }, DEATHKNIGHT = { 194310 }, PRIEST = { 34914, 589 },
+            WARLOCK = { 980 }, ROGUE = { 1943 },
+        }
+        local pool = BY_CLASS[select(2, UnitClass("player"))] or { 1079, 8921, 194310, 34914, 980, 1943 }
+        local icon = 136197
+        local start = math.random(#pool)
+        for i = 0, #pool - 1 do
+            local info = C_Spell.GetSpellInfo(pool[(start + i - 1) % #pool + 1])
+            if info and info.iconID then icon = info.iconID; break end
+        end
+        local rightRgn = panRow._rightRegion
+        GO.BuildPreview(rightRgn, panDesc, { anchor = rightRgn, point = "RIGHT", relPoint = "RIGHT", x = -20, icon = icon })
+        -- The preview's label dims with it while no glow is picked.
+        local previewLabel = rightRgn._label
+        local function DimPreviewLabel()
+            previewLabel:SetAlpha(GO.Renders(panDesc) and 1 or 0.3)
+        end
+        EllesmereUI.RegisterWidgetRefresh(DimPreviewLabel)
+        DimPreviewLabel()
+
+        -- Apply to all: the CDM pandemic sync (only while that module is loaded).
+        if EllesmereUI.ApplyPandemicGlowToAll then
+            EllesmereUI.BuildSyncIcon({
+                region = panRow._leftRegion,
+                tooltip = "Apply this pandemic glow to all CDM bars and tracking bars. A surface that can't show a style uses its closest match.",
+                isSynced = function()
+                    return EllesmereUI.IsPandemicGlowSyncedToAll(
+                        EllesmereUI.PandemicPayloadFromNameplate(DB()), { skipNameplates = true })
+                end,
+                onClick = function()
+                    EllesmereUI.ApplyPandemicGlowToAll(
+                        EllesmereUI.PandemicPayloadFromNameplate(DB()), { skipNameplates = true })
+                    C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
+                end,
+            })
+        end
+    end
 
     -- --- Dispellable Buff Glow ----------------------------------------
-    local GO = EllesmereUI.GlowOptions
     local dispelDesc = npDispelGlowDesc
     local dispelGlowDropdown = GO.DropdownSpec(dispelDesc, "Dispel Glow Style")
     -- Enemy Buff Filter (replaces the retired Show All Enemy Buffs toggle;
@@ -905,7 +1027,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
     local tfRangeOff = function() return DBVal("rangeTextEnabled") ~= true end
     local tfRangeRow
     tfRangeRow, h = W:DualRow(parent, y,
-        { type="toggle", text="Distance to Target Text",
+        { type="toggle", text="Distance to Target Text (Range)",
           tooltip="Shows the approximate distance to your current target on its nameplate as a range bracket, e.g. 15+ when the target is 15-20 yards away.",
           getValue=function() return DBVal("rangeTextEnabled") == true end,
           setValue=function(v)
@@ -915,13 +1037,36 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end },
         { type="label", text="" }
     );  y = y - h
-    -- RESIZE cog: text size + X/Y offsets (mirrors the raid-marker cog)
+    -- Inline color swatch (default light orange), beside the toggle
+    if not EllesmereUI._prebuilding then
+        local rgn = tfRangeRow._leftRegion
+        local rangeColorGet = function()
+            local c = (DB() and DB().rangeTextColor) or defaults.rangeTextColor
+            return c.r, c.g, c.b
+        end
+        local rangeColorSet = function(r, g, b)
+            DB().rangeTextColor = { r = r, g = g, b = b }
+            if ns.RangeText_Refresh then ns.RangeText_Refresh() end
+        end
+        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, rangeColorGet, rangeColorSet, nil, 20)
+        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        EllesmereUI.RegisterWidgetRefresh(function()
+            local off = tfRangeOff()
+            swatch:SetAlpha(off and 0.15 or 1)
+            swatch:EnableMouse(not off)
+            updateSwatch()
+        end)
+        swatch:SetAlpha(tfRangeOff() and 0.15 or 1)
+        swatch:EnableMouse(not tfRangeOff())
+    end
+    -- RESIZE cog: text size + X/Y offsets (mirrors the raid-marker cog), left of the swatch
     if not EllesmereUI._prebuilding then
         local rgn = tfRangeRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
             icon = EllesmereUI.RESIZE_ICON,
             disabled = tfRangeOff,
-            disabledTooltip = "Distance to Target Text",
+            disabledTooltip = "Distance to Target Text (Range)",
             title = "Distance Text",
             rows = {
                 { type="slider", label="Text Size", min=6, max=32, step=1,
@@ -944,29 +1089,6 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                   end },
             },
         })
-    end
-    -- Inline color swatch (default light orange), left of the cog
-    if not EllesmereUI._prebuilding then
-        local rgn = tfRangeRow._leftRegion
-        local rangeColorGet = function()
-            local c = (DB() and DB().rangeTextColor) or defaults.rangeTextColor
-            return c.r, c.g, c.b
-        end
-        local rangeColorSet = function(r, g, b)
-            DB().rangeTextColor = { r = r, g = g, b = b }
-            if ns.RangeText_Refresh then ns.RangeText_Refresh() end
-        end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, rangeColorGet, rangeColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = tfRangeOff()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end)
-        swatch:SetAlpha(tfRangeOff() and 0.15 or 1)
-        swatch:EnableMouse(not tfRangeOff())
     end
 
     _, h = W:Spacer(parent, y, 20);  y = y - h
@@ -1078,7 +1200,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           getValue=function() return tonumber(GetCVar("nameplateOccludedAlphaMult")) or 0 end,
           setValue=function(v)
             if InCombatLockdown() then return end
-            SetCVar("nameplateOccludedAlphaMult", v)
+            EllesmereUI.SetCVar("nameplateOccludedAlphaMult", v, "EllesmereUINameplates")
           end });  y = y - h
 
     -- Inline cog on the quest toggle: objective text size

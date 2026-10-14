@@ -339,11 +339,20 @@ local function BuildMainPage(pageName, parent, yOffset)
     local env = ns._RFO_OptEnv
     local allGrowthOrder, BuildPreviewModeRow, BuildVisualSections, db = env.allGrowthOrder, env.BuildPreviewModeRow, env.BuildVisualSections, env.db
     local growthValues, KeepGrowthPerpendicular, PP, ReloadAndUpdate = env.growthValues, env.KeepGrowthPerpendicular, env.PP, env.ReloadAndUpdate
+    local groupGrowthValues, groupGrowthOrder, ReadGroupGrowth = env.groupGrowthValues, env.groupGrowthOrder, env.ReadGroupGrowth
     local SGet, SGetPx, SSet, SVal = env.SGet, env.SGetPx, env.SSet, env.SVal
-    local SWrite = env.SWrite
+    local SWrite, optState = env.SWrite, env.optState
     local W = EllesmereUI.Widgets
     local _, h
     local row
+
+    -- Both Group Growth menus grey out the grid flow while groups are merged,
+    -- where it would render as Right (ReadGroupGrowth).
+    local function GridFlowOff(v)
+        if v == "DOWNRIGHT" and SVal("mergeGroups", false) then
+            return EllesmereUI.DisabledTooltip("Merge Groups", "disabled")
+        end
+    end
 
     parent._showRowDivider = true
     local y = yOffset
@@ -571,10 +580,13 @@ local function BuildMainPage(pageName, parent, yOffset)
                                   ReloadAndUpdate()
                               end },
                             { type="dropdown", label="Group Growth",
-                              values=growthValues, order=allGrowthOrder,
+                              values=groupGrowthValues, order=groupGrowthOrder,
+                              itemDisabled=GridFlowOff,
                               get=function()
                                   local ov = db.profile.raidSizeOverrides
-                                  return ov and ov[tier] and ov[tier].groupGrowth or db.profile.groupGrowth or "RIGHT"
+                                  return ReadGroupGrowth(
+                                      ov and ov[tier] and ov[tier].groupGrowth
+                                      or db.profile.groupGrowth or "RIGHT")
                               end,
                               set=function(v)
                                   -- Separated groups allow every combination (see
@@ -717,13 +729,55 @@ local function BuildMainPage(pageName, parent, yOffset)
         return cfg
     end
 
-    _, h = W:DualRow(parent, y,
-        { type="slider", pixel=true, text="Frame Spacing", min=-1, max=15, step=1,
+    -- Compact Mode (Frame Spacing cog) and Grid Mode (Group Spacing cog) use one
+    -- pixel, so the slider each replaces greys out while it is in effect; the saved
+    -- value comes back when it is off.
+    local spacingRow
+    spacingRow, h = W:DualRow(parent, y,
+        { type="slider", pixel=true, text="Frame Spacing", min=-5, max=15, step=1,
+          disabled=function() return ns.RF_CompactOn(db.profile, false) end,
+          disabledTooltip="Compact Mode", requireState="disabled",
           getValue=function() return SVal("cellSpacing", 2) end,
           setValue=function(v) SSet("cellSpacing", v) end },
-        { type="slider", pixel=true, text="Group Spacing", min=-1, max=15, step=1,
+        { type="slider", pixel=true, text="Group Spacing", min=-5, max=15, step=1,
+          disabled=function() return ns.RF_GridOn(db.profile) end,
+          disabledTooltip="Grid Mode", requireState="disabled",
           getValue=function() return SVal("groupSpacing", 8) end,
           setValue=function(v) SSet("groupSpacing", v) end });  y = y - h
+    if not EllesmereUI._prebuilding then
+        -- A mode that is on stays reachable, so it can always be turned off.
+        local COMPACT_TIP = "This option requires a Pixels or Pixels Textured border above size 0 on the EllesmereUI look."
+        local function CompactBlocked()
+            return not db.profile.raidCompactMode and not ns.RF_CompactEligible(db.profile)
+        end
+        local function GridBlocked()
+            return not db.profile.raidGridMode and not ns.RF_CompactOn(db.profile, false)
+        end
+        EllesmereUI.BuildInlineCog(spacingRow._leftRegion, { title = "Frame Spacing",
+            disabled = CompactBlocked, disabledTooltip = COMPACT_TIP, rows = {
+            { type="toggle", label="Compact Mode",
+              tooltip="Joins each group's frames into one bordered block.",
+              get=function() return db.profile.raidCompactMode == true end,
+              set=function(v)
+                  if v and not ns.RF_CompactEligible(db.profile) then return end
+                  db.profile.raidCompactMode = v
+                  ReloadAndUpdate(); EllesmereUI:RefreshPage()
+              end,
+              disabled=CompactBlocked, disabledTooltip=COMPACT_TIP },
+        } })
+        EllesmereUI.BuildInlineCog(spacingRow._rightRegion, { title = "Group Spacing",
+            disabled = GridBlocked, disabledTooltip = "Compact Mode", rows = {
+            { type="toggle", label="Grid Mode",
+              tooltip="Joins the raid groups into one grid.",
+              get=function() return db.profile.raidGridMode == true end,
+              set=function(v)
+                  if v and not ns.RF_CompactOn(db.profile, false) then return end
+                  db.profile.raidGridMode = v
+                  ReloadAndUpdate(); EllesmereUI:RefreshPage()
+              end,
+              disabled=GridBlocked, disabledTooltip="Compact Mode" },
+        } })
+    end
 
     -- Border Style (+ options cog) | Border Size (+ Border swatch). Mirrors Unit Frames: ONE border recolored by state (hover/target), full SharedMedia support. Hover/Target swatches live on the row below.
     local bdrTexValues, bdrTexOrder = EllesmereUI.GetBorderTextureDropdown()
@@ -804,6 +858,18 @@ local function BuildMainPage(pageName, parent, yOffset)
         borderSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(borderSwatch, "Border") end)
         borderSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         EllesmereUI.RegisterWidgetRefresh(function() updBorder() end)
+        -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog left
+        -- of the Border swatch.
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Corner Radius", tip = "Corner Radius",
+            disabled = function() return not EllesmereUI.RoundedStyleOK(SGet("borderTexture")) end,
+            disabledTooltip = "This option requires the Solid, Glow or Shadow border style.",
+            rows = EllesmereUI.RoundedCornerRows({
+                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+                  get = function() return SVal("cornerRadius", 0) end,
+                  set = function(v) SSet("cornerRadius", v) end },
+            }, function() return SGet("cornerMask") end, function(v) SSet("cornerMask", v) end),
+        })
     end
 
     -- Width Offset | Height Offset: the textured edge's outward offsets as their
@@ -921,13 +987,13 @@ local function BuildMainPage(pageName, parent, yOffset)
         local targetBlocked = EllesmereUI.BlizzStyle
             and EllesmereUI.BlizzStyle.BlockInline("raidframes", targetSwatch) or false
 
-        -- Highlight thickness. Shown only while the frame is borderless (Border Size 0):
-        -- with a border drawn the highlight recolors THAT and these sizes do nothing.
+        -- Highlight thickness when borderless or compact; a drawn individual border is recolored.
         -- Exact pixel sizes (hover/targetBorderSizePx beside the steps) in the frame's
         -- border style; under a stock style the hover border draws solid, so the
         -- slider reads and writes against Solid there. The floor stays at 1.
         local function HlTex()
-            if ns.RF_Stock and ns.RF_Stock() then return "solid" end
+            if (ns.RF_Stock and ns.RF_Stock())
+                or ns.RF_CompactOnTab(optState._partyCtx) then return "solid" end
             return SGet("borderTexture") or "solid"
         end
         local hoverPx = EllesmereUI.BorderPxSliderCfg({
@@ -963,7 +1029,9 @@ local function BuildMainPage(pageName, parent, yOffset)
             -- Under a stock style the EllesmereUI border is stood down, so
             -- the hover border draws on its own at this size.
             local bs = (ns.RF_Stock and ns.RF_Stock()) and 0 or SVal("borderSize", 1)
-            if bs > 0 then hlCog:Hide() else hlCog:Show() end
+            if bs > 0 and not ns.RF_CompactOnTab(optState._partyCtx) then
+                hlCog:Hide()
+            else hlCog:Show() end
         end
         EllesmereUI.RegisterWidgetRefresh(UpdateHLCogVis)
         UpdateHLCogVis()
@@ -982,10 +1050,13 @@ local function BuildMainPage(pageName, parent, yOffset)
     -------------------------------------------------------------------
     _, h = W:SectionHeader(parent, "LAYOUT", y); y = y - h
 
-    -- Group Growth | Unit Growth: separated groups (Merge Groups off) support all
-    -- 16 combinations, but merged mode's single Blizzard flat header can only make
-    -- its column direction perpendicular to Unit Growth, so a same-axis pair there
-    -- gets silently reinterpreted (see the colAnchor comment in EllesmereUIRaidFrames.lua)
+    -- Group Growth | Unit Growth: separated groups (Merge Groups off) support every
+    -- combination of the two axes (5 Group Growth values x 4 Unit Growth ones), but
+    -- merged mode's single Blizzard flat header can only make its column direction
+    -- perpendicular to Unit Growth, so a same-axis pair -- and the two-axis grid
+    -- flow, which it renders as a plain RIGHT run (see ReadGroupGrowth in
+    -- EUI_RaidFrames_Options.lua) -- gets silently reinterpreted (see the colAnchor
+    -- comment in EUI_RaidFrames_Layout.lua)
     -- -- KeepGrowthPerpendicular bumps the other axis instead. A base edit can also
     -- leave a per-tier override same-axis (an override that only set one axis
     -- inherits the other from base), so fix those up too.
@@ -1002,8 +1073,9 @@ local function BuildMainPage(pageName, parent, yOffset)
     end
 
     _, h = W:DualRow(parent, y,
-        { type="dropdown", text="Group Growth", values=growthValues, order=allGrowthOrder,
-          getValue=function() return SVal("groupGrowth", "RIGHT") end,
+        { type="dropdown", text="Group Growth", values=groupGrowthValues, order=groupGrowthOrder,
+          disabledValues=GridFlowOff,
+          getValue=function() return ReadGroupGrowth(SVal("groupGrowth", "RIGHT")) end,
           setValue=function(v)
               db.profile.groupGrowth = v
               if SVal("mergeGroups", false) then
@@ -1539,8 +1611,18 @@ local function BuildPartyPage(pageName, parent, yOffset)
     local pSortRow
     pSortRow, h = W:DualRow(parent, y,
         { type="toggle", text="Horizontal Frames",
+          disabled=function()
+              local p = db.profile
+              return p.partyCompactMode and p.partyShowTargets
+                  and ns.PT_PositionAlongStack(p.partyTargetPosition, not p.partyHorizontal)
+          end,
+          disabledTooltip="Move Party Targets beside the frame stack or turn off Compact Mode.", rawTooltip=true,
           getValue=function() return db.profile.partyHorizontal end,
-          setValue=function(v) db.profile.partyHorizontal = v; PartyReloadAndUpdate(); EllesmereUI:RefreshPage() end },
+          setValue=function(v)
+              local p = db.profile
+              if p.partyCompactMode and p.partyShowTargets and ns.PT_PositionAlongStack(p.partyTargetPosition, v) then return end
+              p.partyHorizontal = v; PartyReloadAndUpdate(); EllesmereUI:RefreshPage()
+          end },
         { type="dropdown", text="Sort By",
           values={ __placeholder = "Group" }, order={ "__placeholder" },
           getValue=function() return "__placeholder" end,
@@ -1624,7 +1706,10 @@ local function BuildPartyPage(pageName, parent, yOffset)
         -- (The Party Frames kit keeps its own spacing, set in its Frame
         -- Scale cog, so the Raid Frames layout's value survives a switch
         -- between the two.)
-        ns.RF_PartyKitGate({ type="slider", pixel=true, text="Frame Spacing", min=-1, max=50, step=1,
+        ns.RF_PartyKitGate({ type="slider", pixel=true, text="Frame Spacing", min=-5, max=50, step=1,
+          -- Compact Mode (this slot's cog) uses one pixel instead.
+          disabled=function() return ns.RF_CompactOn(db.profile, true) end,
+          disabledTooltip="Compact Mode", requireState="disabled",
           getValue=function()
               if ns.RF_PartyKit() then return db.profile.partyKitSpacing or ns.RF_KIT_SPACING or 6 end
               return SVal("partyCellSpacing", db.profile.cellSpacing or 2)
@@ -1632,6 +1717,24 @@ local function BuildPartyPage(pageName, parent, yOffset)
           setValue=function(v) PSSet(ns.RF_PartyKit() and "partyKitSpacing" or "partyCellSpacing", v) end }));  y = y - h
     -- Auto Resize Icons sits in the LEFT slot here; same conversion pattern as the Frames tab.
     if not EllesmereUI._prebuilding then
+        -- Off while the party border is not a Pixels style or Party Targets sit along the
+        -- frame stack; a mode that is on stays reachable, so it can always be turned off.
+        local function PartyCompactBlocked()
+            return not db.profile.partyCompactMode and (not ns.RF_CompactEligible(ns._partyProxy)
+                or ns.PT_AlongStack(db.profile, db.profile.partyShowTargets == true))
+        end
+        local PARTY_COMPACT_TIP = "This option requires a Pixels or Pixels Textured border above size 0 on the EllesmereUI look, with Party Targets off or beside the frame stack."
+        EllesmereUI.BuildInlineCog(partyAutoResizeRow._rightRegion, { title = "Frame Spacing",
+            disabled = PartyCompactBlocked, disabledTooltip = PARTY_COMPACT_TIP, rows = {
+            { type="toggle", label="Compact Mode",
+              tooltip="Joins the party frames into one bordered block.",
+              get=function() return db.profile.partyCompactMode == true end,
+              set=function(v)
+                  if v and PartyCompactBlocked() then return end
+                  PSSet("partyCompactMode", v); EllesmereUI:RefreshPage()
+              end,
+              disabled=PartyCompactBlocked, disabledTooltip=PARTY_COMPACT_TIP },
+        } })
         local leftRgn = partyAutoResizeRow._leftRegion
         if leftRgn._control then leftRgn._control:Hide() end
         local arKeyMap = { indicators = "partyAutoResizeIndicators", trackedBuffs = "partyAutoResizeTrackedBuffs" }
@@ -1703,6 +1806,8 @@ local function BuildPartyPage(pageName, parent, yOffset)
     ns._syncOverlays = syncOverlays
 
     local function SyncOverlay(sectionKey, startY, endY)
+        -- None in the search pre-build: the overlays index nothing, and that page is never shown.
+        if EllesmereUI._prebuilding then return end
         local hdrH = 40  -- SectionHeader height
         local contentStart = startY - hdrH
         local ov = CreateFrame("Frame", nil, parent)
@@ -1714,7 +1819,7 @@ local function BuildPartyPage(pageName, parent, yOffset)
         ov:EnableMouse(true)
         local bg = ov:CreateTexture(nil, "OVERLAY")
         bg:SetAllPoints()
-        bg:SetColorTexture(13/255, 17/255, 25/255, 0.98)
+        bg:SetColorTexture(17/255, 15/255, 12/255, 0.98)
         local label = ov:CreateFontString(nil, "OVERLAY")
         label:SetFont(FONT, 13, "")
         label:SetPoint("CENTER", ov, "CENTER", 0, 0)

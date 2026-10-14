@@ -140,7 +140,7 @@ end
 --  build; the canon lookup covers a decoded payload's canonical keys.
 -------------------------------------------------------------------------------
 local PRIVATE_ADDON_KEYS = {
-    ["EllesmereUIDataBars"] = { "characters" },  -- gold ledger -> EllesmereUIDB.dataBarsGold
+    ["EllesmereUIDataBars"] = { "characters" },  -- gold record -> EllesmereUIDB.goldLedger
     ["EllesmereUIQoL"]      = { "chars" },       -- upgrade calc -> EllesmereUIDB.qolUpgradeCalcChars
 }
 
@@ -219,8 +219,8 @@ EllesmereUI.ResolveKeyToFolder = ResolveKeyToFolder
 -- Set of folders that have NO import/export checkbox (not in ADDON_DB_MAP), so
 -- their anchor/match edges are never exported -- the element keeps its own saved
 -- absolute position on import (decision: always export them unanchored): the
--- Dragon Riding cluster (EllesmereUIBlizzardSkin) and the Forever Essentials
--- elements (flight timer, threat meter; their settings are all account-wide).
+-- Dragon Riding cluster (EllesmereUIBlizzardSkin) and every Forever Essentials
+-- element (their settings are all account-wide).
 local NO_CHECKBOX_FOLDER = {}
 do
     local has = {}
@@ -899,14 +899,14 @@ local function RepointAllDBs(profileName)
         -- The fonts DB was just rewritten in place; drop the resolution cache.
         EllesmereUI.InvalidateFontCache()
     end
-    -- Custom colors: with "Apply to All Profiles" ON (default) the shared palette
-    -- doesn't change with the active profile, so nothing to re-apply on switch.
-    -- In per-profile mode (toggle OFF) the colours DO change with the active
-    -- profile, so re-apply them. GetCustomColorsDB() resolves the right table
-    -- LIVE (edits write straight to the profile's own customColors -- never a
-    -- wipe/restore, which is what once let a combat-end spec switch reset colours).
-    -- ApplyColorsToOUF self-guards combat on its action-bar branch.
-    if EllesmereUIDB and EllesmereUIDB.colorsApplyToAllProfiles == false and EllesmereUI.ApplyColorsToOUF then
+    -- Custom colors: a section with "Apply to All Profiles" ON (default) keeps its
+    -- shared palette whatever the active profile, so nothing to re-apply on switch.
+    -- A per-profile section (toggle OFF) DOES change with the active profile, so
+    -- re-apply when any section is per-profile. GetCustomColorsDB() resolves the
+    -- right tables LIVE (edits write straight to the profiles' own customColors --
+    -- never a wipe/restore, which is what once let a combat-end spec switch reset
+    -- colours). ApplyColorsToOUF self-guards combat on its action-bar branch.
+    if EllesmereUIDB and EllesmereUI.AnyColorSectionPerProfile() and EllesmereUI.ApplyColorsToOUF then
         EllesmereUI.ApplyColorsToOUF()
     end
     -- Dark Mode settings are ALWAYS per-profile, so the active profile's dark
@@ -1368,20 +1368,28 @@ local REFRESH_ADDON_STEPS = {
             if _G._ECME_Apply then _G._ECME_Apply() end
         end
     end,
-    -- Cursor (style + position), Crosshair, and the QoL extras (FPS counter +
-    -- Secondary Stats -- one call for both: the FPS readout may be drawn by
-    -- the Secondary Stats block, so the two owners re-evaluate together).
+    -- Cursor (style + position), Crosshair, Self Combat Text, and the QoL
+    -- extras (FPS counter + Secondary Stats -- one call for both: the FPS
+    -- readout may be drawn by the Secondary Stats block, so the two owners
+    -- re-evaluate together).
     function()
         if _G._ECL_Apply then _G._ECL_Apply() end
         if _G._ECL_ApplyTrail then _G._ECL_ApplyTrail() end
         if _G._ECL_ApplyGCDCircle then _G._ECL_ApplyGCDCircle() end
         if _G._ECL_ApplyCastCircle then _G._ECL_ApplyCastCircle() end
         if EllesmereUI._applyCrosshair then EllesmereUI._applyCrosshair() end
+        if EllesmereUI._applySelfCombatText then EllesmereUI._applySelfCombatText() end
         if EllesmereUI._applyFPSDisplay then
             EllesmereUI._applyFPSDisplay()
         elseif EllesmereUI._applySecondaryStats then
             EllesmereUI._applySecondaryStats()
         end
+    end,
+    -- QoL Battle Res and Bloodlust (enable state, visibility, position;
+    -- neither exists on WoW Forever)
+    function()
+        if _G._EUI_BattleRes_Apply then _G._EUI_BattleRes_Apply() end
+        if _G._EUI_Bloodlust_Apply then _G._EUI_Bloodlust_Apply() end
     end,
     -- AuraBuffReminders (style + refresh + position)
     function()
@@ -1403,11 +1411,15 @@ local REFRESH_ADDON_STEPS = {
     function() if _G._EQT_RefreshAll then _G._EQT_RefreshAll() end end,
     -- Chat (sidebar icons, borders, fonts, visibility)
     function() if _G._ECHAT_RefreshAll then _G._ECHAT_RefreshAll() end end,
-    -- Bags (window order follows the selected profile immediately)
+    -- Chat Bubbles (Blizz UI Enhanced; settings on the profile root)
+    function() if _G._EBS_RefreshChatBubbles then _G._EBS_RefreshChatBubbles() end end,
+    -- Bags (window order, categories and the Junk Marker follow the selected
+    -- profile immediately)
     function()
         if _G.EUI_Bags and _G.EUI_Bags.ApplyWindowLayering then
             _G.EUI_Bags:ApplyWindowLayering()
         end
+        if _G.EUI_Bags and _G.EUI_Bags.OnProfileApplied then _G.EUI_Bags:OnProfileApplied() end
     end,
     -- Friends List + Mythic Timer
     function()
@@ -1768,13 +1780,13 @@ local STYLE_FLAGS = {
       forever = "useForeverStyle", foreverActive = "ERB_CastForever" },
     { folder = "EllesmereUIResourceBars",    key = "useBlizzardStyleBars", classic = "useClassicStyleBars", active = "ERB_BarsStyle" },
     { folder = "EllesmereUIMinimap",         key = "useBlizzardStyle",     classic = "useClassicStyle",     sub = "minimap", active = "MinimapStyle",
-      forever = "useForeverStyle", foreverActive = "MinimapForever" },
+      forever = "useForeverStyle", foreverActive = "MinimapForever", extra = "MinimapFvBorderChanged" },
     { folder = "EllesmereUIDamageMeters",    key = "useBlizzardStyle",     classic = "useClassicStyle",     sub = "dm",      active = "DMStyle",
-      forever = "useForeverStyle", foreverActive = "DMForever" },
+      forever = "useForeverStyle", foreverActive = "DMForever", extra = "DMFvBorderChanged" },
     { folder = "EllesmereUIQuestTracker",    key = "useBlizzardStyle",     classic = "useClassicStyle",     sub = "questTracker", active = "QT_Style" },
     { folder = "EllesmereUIFriends",         key = "useBlizzardStyle",     classic = "useClassicStyle",     sub = "friends", active = "FR_Style" },
     { folder = "EllesmereUIChat",            key = "useBlizzardStyle",     classic = "useClassicStyle",     sub = "chat",    active = "ChatStyle",
-      forever = "useForeverStyle", foreverActive = "ChatForeverFlag" },
+      forever = "useForeverStyle", foreverActive = "ChatForeverFlag", extra = "ChatFvBorderChanged" },
     { folder = "EllesmereUIRaidFrames",      key = "useBlizzardStyle",     classic = "useClassicStyle",     active = "RF_Style", extra = "RF_PartyKitChanged" },
     { folder = "EllesmereUIBlizzardSkin",    key = "useBlizzardStyle",     classic = "useClassicStyle",     data = "EllesmereUIDragonRiding", retailOnly = true, active = "EDR_Style" },
 }
@@ -2043,6 +2055,8 @@ do
         "tooltipHealthStripTexture", "tooltipHealthStripHeight",
         "tooltipAnchorCursor", "tooltipCursorPosition",
         "tooltipCursorOffsetX", "tooltipCursorOffsetY",
+        "tooltipShowBuffs", "tooltipBuffPosition", "tooltipBuffSize",
+        "tooltipBuffsPerRow", "tooltipBuffOffsetX", "tooltipBuffOffsetY",
         "tooltipBgColor", "tooltipBgOpacity", "tooltipBorderSize",
         "showSpellID", "spellIDModifier", "showIconID", "showItemID",
         "showItemMaxStacks", "itemStackModifier",
@@ -2098,18 +2112,23 @@ do
         "showEnchants", "showPvpItemLevel", "charSheetSocketPanel", "charSheetSeasonPanel", "charSheetSeasonVault",
         "charSheetHideSlotFlyoutArrows",
         "charSheetIconZoom", "charSheetEnchantNames", "charSheetEnchantSize",
-        "flyoutItemLevels", "showCharSheetDurability", "charSheetDurabilityLocation",
+        "flyoutItemLevels", "flyoutItemStats", "charSheetItemStats",
+        "flyoutItemStatsTertiary", "charSheetItemStatsTertiary", "charSheetSocketPanelStats",
+        "showCharSheetDurability", "charSheetDurabilityLocation",
         "charSheetDurabilityShowLabel", "showSecondaryRaw", "showSecondaryBoth",
         "showTertiaryRaw", "showTertiaryBoth", "showAdjustedStats",
-        "showManaStat",
+        "showManaStat", "highlightSecondaryItems", "highlightTertiaryItems",
         -- Character Sheet stock styles' "Blizzard UI Color" (the style itself
         -- is per profile, on the profile root, and rides the profile)
         "charSheetBlizzColors",
         -- Inspect card
-        "inspectShowEnchants", "inspectShowItemLevel", "inspectShowUpgradeTrack",
+        "inspectShowEnchants", "inspectEnchantNames", "inspectEnchantSize",
+        "inspectShowItemLevel", "inspectShowUpgradeTrack",
         -- LFG / Merchant cards
         "lfgRememberRoles",
         "merchantShowAsList", "merchantListRowHeight", "merchantShowItemLevel",
+        -- Friends List card (WoW Forever: the friend tiles and auto-accept)
+        "friendsListCard",
     })
 end
 
@@ -2363,15 +2382,32 @@ end
 --  automatically instead of being silently missed.
 --
 --  Excluded by design -- per-character data that is nobody else's:
---    dataBarsGold         cross-character gold ledger
+--    goldLedger           cross-character and warband gold record
 --    qolUpgradeCalcChars  Upgrade Calculator per-character cache
---  (The same two blobs PRIVATE_ADDON_KEYS strips from normal strings, at
---  their current top-level homes.)
+--    xpBarChars           XP bar session clock, XP rate and time this level
+--  (The upgrade-calc and gold blobs are what PRIVATE_ADDON_KEYS strips from
+--  normal strings, at their current top-level homes. The three legacy gold
+--  keys stay listed: until Bags or DataBars loads and absorbs them they are
+--  still on disk.) And the game settings this client had
+--  before EllesmereUI, which Uninstall EUI puts back, with the values modules
+--  hand back to this client's CVars later:
+--    restoreOnUninstall     (EllesmereUI_Uninstall.lua)
+--    gfxBackup              Optimize My FPS and Graphics' Restore values
+--    friendlyPlateVisSaved  friendly plates hidden in a follower dungeon
+--    chatTellMuted          the whisper sound Chat muted
 -------------------------------------------------------------------------------
 local FULL_EXPORT_TYPE = "fullaccount"
 local FULL_EXPORT_EXCLUDED = {
-    dataBarsGold        = true,
-    qolUpgradeCalcChars = true,
+    goldLedger            = true,
+    dataBarsGold          = true,
+    characterGold         = true,
+    warbandGold           = true,
+    qolUpgradeCalcChars   = true,
+    xpBarChars            = true,
+    restoreOnUninstall    = true,
+    gfxBackup             = true,
+    friendlyPlateVisSaved = true,
+    chatTellMuted         = true,
 }
 
 --- Builds a full-account export string, or nil.
@@ -3560,16 +3596,15 @@ function EllesmereUI.ImportProfile(importStr, profileName)
         -- apply of any later session; value harvests are never suppressed.
         db.profiles[profileName]._importEstablishPending = true
         EllesmereUI._importGuardArmedNow = true
-        -- Custom colours resolve live via GetCustomColorsDB. In GLOBAL colour mode the
-        -- shared palette comes from colorsPullFrom (or the first profile); a recipient
-        -- who pinned a specific source would store the imported palette but keep seeing
-        -- their own. When the import actually carries colours, point the global source
-        -- at the imported profile so its palette is what shows. Getter-redirect only --
-        -- never wipes or restores a live colour table (that is banned). Per-profile
-        -- mode reads the active (now imported) profile already, so it needs no change.
-        if imported.customColors and EllesmereUIDB
-           and EllesmereUIDB.colorsApplyToAllProfiles ~= false then
-            EllesmereUIDB.colorsPullFrom = profileName
+        -- Custom colours resolve live via GetCustomColorsDB. A GLOBAL-mode colour
+        -- section takes its palette from its Pull Colors From (or the first profile); a
+        -- recipient who pinned a specific source would store the imported palette but
+        -- keep seeing their own. When the import actually carries colours, point every
+        -- global-mode section at the imported profile so its palette is what shows.
+        -- Getter-redirect only -- never wipes or restores a live colour table (that is
+        -- banned). Per-profile sections read the active (now imported) profile already.
+        if imported.customColors and EllesmereUIDB then
+            EllesmereUI.PointColorSectionsAt(profileName)
         end
         -- Apply imported data into the live db.profile tables. We MUST pass
         -- payload.data here (a SEPARATE table) and NOT merged: RepointAllDBs already
@@ -3739,12 +3774,11 @@ function EllesmereUI.DeleteProfile(name)
             end
         end
     end
-    -- Global colour source: deleting the source profile must not leave a
-    -- dangling pointer (the stale name showed in Pull Colors From, the shared
-    -- palette silently fell back, and colour editing locked because the user
-    -- could never be "on" the deleted source). nil = default (first profile).
-    if EllesmereUIDB.colorsPullFrom == name then
-        EllesmereUIDB.colorsPullFrom = nil
+    -- Colour sources: deleting a source profile must not leave a dangling pointer
+    -- (the stale name showed in Pull Colors From, the shared palette silently fell
+    -- back, and colour editing locked because the user could never be "on" the
+    -- deleted source). nil = default (first profile), per section too.
+    if EllesmereUI.ColorSourcesProfileRemoved(name) then
         EllesmereUI.ApplyColorsToOUF()
     end
     -- Clean up keybind
@@ -3794,11 +3828,9 @@ function EllesmereUI.RenameProfile(oldName, newName)
             end
         end
     end
-    -- Keep the global colour source following the renamed profile (same
-    -- palette table, so no colour refresh is needed).
-    if EllesmereUIDB.colorsPullFrom == oldName then
-        EllesmereUIDB.colorsPullFrom = newName
-    end
+    -- Keep every colour source following the renamed profile (same palette
+    -- tables, so no colour refresh is needed).
+    EllesmereUI.ColorSourcesProfileRenamed(oldName, newName)
     if db.activeProfile == oldName then
         -- Rename repoints the SAME profile table: unlockLayout rides it, so
         -- the stamp is a no-op unless the table never had one.
@@ -4445,7 +4477,7 @@ local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLab
     popup:EnableMouse(true)
     local bg = popup:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
-    bg:SetColorTexture(0.06, 0.08, 0.10, 1)
+    bg:SetColorTexture(0.077, 0.068, 0.058, 1)
     EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PanelPP)
 
     -- Title
@@ -4657,7 +4689,6 @@ function EllesmereUI.ApplyPresetEditMode(layoutString, layoutName)
     -- Edit Mode account settings populate on EDIT_MODE_LAYOUTS_UPDATED (login);
     -- once present, C_EditMode.GetLayouts is usable without opening the UI.
     if not (mgr and mgr.accountSettings) then return false end
-    if not (EditModePresetLayoutManager and EditModePresetLayoutManager.GetCopyOfPresetLayouts) then return false end
 
     local imported = C_EditMode.ConvertStringToLayoutInfo(layoutString)
     if not imported then return false end  -- malformed or version-incompatible string
@@ -4674,20 +4705,15 @@ function EllesmereUI.ApplyPresetEditMode(layoutString, layoutName)
         mgr:ReconcileWithModern(imported)
     end
 
-    local info = C_EditMode.GetLayouts()
-    if not (info and info.layouts) then return false end
-    if mgr.ReconcileWithModern then
-        for _, l in ipairs(info.layouts) do mgr:ReconcileWithModern(l) end
-    end
-
     -- C_EditMode.GetLayouts returns only the saved layouts; the live game keeps
     -- Blizzard's built-in presets ahead of them, and SaveLayouts / SetActiveLayout
-    -- index into that combined view. Rebuild it -- presets first, then the saved
-    -- layouts -- so the active index we hand back lines up with what the game uses.
-    local layouts = EditModePresetLayoutManager:GetCopyOfPresetLayouts()
-    local presetCount = #layouts
-    for _, l in ipairs(info.layouts) do
-        layouts[#layouts + 1] = l
+    -- index into that combined view: presets first, then the saved layouts, so
+    -- the active index we hand back lines up with what the game uses.
+    local info, presetCount = EllesmereUI.EditModeLayoutsForSave()
+    if not info then return false end
+    local layouts = info.layouts
+    if mgr.ReconcileWithModern then
+        for i = presetCount + 1, #layouts do mgr:ReconcileWithModern(layouts[i]) end
     end
 
     -- Re-importing a preset should refresh, not duplicate: drop any earlier copy of
