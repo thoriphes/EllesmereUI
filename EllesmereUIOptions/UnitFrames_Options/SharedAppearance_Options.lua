@@ -530,11 +530,20 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                 local oy = SGet("borderTextureOffsetY")
                 local sx = SGet("borderTextureShiftX")
                 local sy = SGet("borderTextureShiftY")
-                local cr = SVal("cornerRadius", 0)
+                local cr, cm, cj = SVal("cornerRadius", 0), SGet("cornerMask"), SGet("cornerJoinPower") == true
                 for _, key in ipairs(GROUP_UNIT_ORDER) do
                     if key ~= optState.selectedUnit then
                         UNIT_DB_MAP[key]().borderSize = bs
                         UNIT_DB_MAP[key]().cornerRadius = cr
+                        do
+                            -- All corners clears a set mask with 15, and Join off
+                            -- is false (nil would not travel through mirror sync).
+                            local t = UNIT_DB_MAP[key]()
+                            local m = cm
+                            if m == nil and t.cornerMask ~= nil then m = 15 end
+                            t.cornerMask = m
+                            t.cornerJoinPower = cj
+                        end
                         -- Verbatim (string / false / nil): the value only counts beside the same step and texture.
                         do
                             -- A source with no exact size clears a set one with
@@ -560,7 +569,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
             isSynced = function()
                 local bs = SVal("borderSize", 1)
                 local bt = SGet("borderTexture") or "solid"
-                local cr = SVal("cornerRadius", 0)
+                local cr, cm, cj = SVal("cornerRadius", 0), SGet("cornerMask"), SGet("cornerJoinPower")
                 -- Exact sizes compare as rendered (a cleared or stale value equals none).
                 local bpx = EllesmereUI.BorderPx(SGet("borderSizePx"), bs, bt)
                 for _, key in ipairs(GROUP_UNIT_ORDER) do
@@ -568,6 +577,8 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                     if (UNIT_DB_MAP[key]().borderTexture or "solid") ~= bt then return false end
                     if EllesmereUI.BorderPx(UNIT_DB_MAP[key]().borderSizePx, bs, bt) ~= bpx then return false end
                     if (UNIT_DB_MAP[key]().cornerRadius or 0) ~= cr then return false end
+                    if (UNIT_DB_MAP[key]().cornerMask or 15) ~= (cm or 15) then return false end
+                    if (UNIT_DB_MAP[key]().cornerJoinPower == true) ~= (cj == true) then return false end
                 end
                 return true
             end,
@@ -588,10 +599,19 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                     local oy = SGet("borderTextureOffsetY")
                     local sx = SGet("borderTextureShiftX")
                     local sy = SGet("borderTextureShiftY")
-                    local cr = SVal("cornerRadius", 0)
+                    local cr, cm, cj = SVal("cornerRadius", 0), SGet("cornerMask"), SGet("cornerJoinPower") == true
                     for _, key in ipairs(checkedKeys) do
                         UNIT_DB_MAP[key]().borderSize = bs
                         UNIT_DB_MAP[key]().cornerRadius = cr
+                        do
+                            -- All corners clears a set mask with 15, and Join off
+                            -- is false (nil would not travel through mirror sync).
+                            local t = UNIT_DB_MAP[key]()
+                            local m = cm
+                            if m == nil and t.cornerMask ~= nil then m = 15 end
+                            t.cornerMask = m
+                            t.cornerJoinPower = cj
+                        end
                         do
                             -- A source with no exact size clears a set one with
                             -- false (nil would not travel through mirror sync).
@@ -644,11 +664,15 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                 title = "Corner Radius", tip = "Corner Radius",
                 disabled = function() return not EllesmereUI.RoundedStyleOK(SGet("borderTexture")) end,
                 disabledTooltip = "This option requires the Solid, Glow or Shadow border style.",
-                rows = {
+                rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
                     { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
                       get = function() return SVal("cornerRadius", 0) end,
                       set = function(v) SSet("cornerRadius", v) end },
-                },
+                }, function() return SGet("cornerMask") end, function(v) SSet("cornerMask", v) end),
+                    "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
+                    function() return SGet("cornerJoinPower") end, function(v) SSet("cornerJoinPower", v) end,
+                    function() local pos = SGet("powerPosition") or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
+                    "Detached Power Bar"),
             })
         end
         borderSwatch:SetScript("OnEnter", function()
@@ -1028,8 +1052,8 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                       get=function() return db.profile.threatPctColorByThreat end,
                       set=function(v) PctSet("threatPctColorByThreat", v) end },
                     PctSlider("threatPctSize", "Size", 6, 20),
-                    PctSlider("threatPctXOffset", "X Offset", -100, 100),
-                    PctSlider("threatPctYOffset", "Y Offset", -100, 100),
+                    PctSlider("threatPctXOffset", "X Offset", -300, 300),
+                    PctSlider("threatPctYOffset", "Y Offset", -300, 300),
                 },
             })
         end
@@ -2211,10 +2235,10 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
                 { type="slider", label="Size", min=8, max=100, step=1,
                   get=function() return SVal("btbLeftSize", 11) end,
                   set=function(v) SSet("btbLeftSize", v); UpdatePreview() end },
-                { type="slider", label="X Offset", min=-50, max=50, step=1,
+                { type="slider", label="X Offset", min=-100, max=100, step=1,
                   get=function() return SVal("btbLeftX", 0) end,
                   set=function(v) SSet("btbLeftX", v); UpdatePreview() end },
-                { type="slider", label="Y Offset", min=-30, max=30, step=1,
+                { type="slider", label="Y Offset", min=-60, max=60, step=1,
                   get=function() return SVal("btbLeftY", 0) end,
                   set=function(v) SSet("btbLeftY", v); UpdatePreview() end },
                 { type="slider", label="Width %", min=20, max=200, step=5,
@@ -2344,10 +2368,10 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
                 { type="slider", label="Size", min=8, max=100, step=1,
                   get=function() return SVal("btbRightSize", 11) end,
                   set=function(v) SSet("btbRightSize", v); UpdatePreview() end },
-                { type="slider", label="X Offset", min=-50, max=50, step=1,
+                { type="slider", label="X Offset", min=-100, max=100, step=1,
                   get=function() return SVal("btbRightX", 0) end,
                   set=function(v) SSet("btbRightX", v); UpdatePreview() end },
-                { type="slider", label="Y Offset", min=-30, max=30, step=1,
+                { type="slider", label="Y Offset", min=-60, max=60, step=1,
                   get=function() return SVal("btbRightY", 0) end,
                   set=function(v) SSet("btbRightY", v); UpdatePreview() end },
                 { type="slider", label="Width %", min=20, max=200, step=5,
@@ -2558,10 +2582,10 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
                 { type="slider", label="Size", min=8, max=100, step=1,
                   get=function() return SVal("btbCenterSize", 11) end,
                   set=function(v) SSet("btbCenterSize", v); UpdatePreview() end },
-                { type="slider", label="X Offset", min=-50, max=50, step=1,
+                { type="slider", label="X Offset", min=-100, max=100, step=1,
                   get=function() return SVal("btbCenterX", 0) end,
                   set=function(v) SSet("btbCenterX", v); UpdatePreview() end },
-                { type="slider", label="Y Offset", min=-30, max=30, step=1,
+                { type="slider", label="Y Offset", min=-60, max=60, step=1,
                   get=function() return SVal("btbCenterY", 0) end,
                   set=function(v) SSet("btbCenterY", v); UpdatePreview() end },
                 { type="slider", label="Width %", min=20, max=200, step=5,

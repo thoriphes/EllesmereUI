@@ -18,6 +18,11 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
     local SSetColor, SUpdatePreview, SUpdatePreviewAndResize, SVal = ctx.SSetColor, ctx.SUpdatePreview, ctx.SUpdatePreviewAndResize, ctx.SVal
     local visOnly = ctx.visOnly
     local W = ctx.W
+    -- Visibility updates do not run ApplyAll. Recompile page-cycle macros when
+    -- the set of reserved action pages changes (never/always etc.).
+    local function RefreshPageCycle()
+        ns.RefreshPagingCycleMacros()
+    end
     local _, h
     local row
     -- Declared out here, not in the `do` block that builds it: the Toggle Action Bar
@@ -90,6 +95,7 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                   EAB:RefreshRuntimeVisibility()
                   EAB:RefreshMouseover()
                   EAB:ApplyCombatVisibility()
+                  RefreshPageCycle()
               end,
               -- Option axes recompile the secure driver through the same chain the
               -- old Visibility Options dropdown used. The gate refresh first: a lane
@@ -121,6 +127,7 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                     EAB:RefreshRuntimeVisibility()
                     EAB:RefreshMouseover()
                     EAB:ApplyCombatVisibility()
+                    RefreshPageCycle()
                     EllesmereUI:RefreshPage()
                 end,
                 isSynced = function()
@@ -143,6 +150,7 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                         EAB:RefreshRuntimeVisibility()
                         EAB:RefreshMouseover()
                         EAB:ApplyCombatVisibility()
+                        RefreshPageCycle()
                         EllesmereUI:RefreshPage()
                     end,
                 },
@@ -159,17 +167,21 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
             end
             local function SpellbookRow()
                 -- Available in EVERY visibility mode (unlike Show During
-                -- Drag, whose behavior IS the default outside Never).
+                -- Drag, whose behavior IS the default outside Never). It
+                -- greys out while WoW Forever's Gamepad interface style is
+                -- on, and while the runtime has stood it down for the
+                -- session (EAB._sbOff).
                 return { type="toggle", label="Show When Spellbook Is Open",
                   tooltip="While the spellbook or macro panel is open, this bar appears so you can drag abilities onto it.",
+                  disabled=function() return EAB._sbOff == true or EllesmereUI.PadGamepadUI() end,
+                  disabledTooltip="This option does not work with the Gamepad interface style (after switching away from it, reload to use it).",
+                  rawTooltip=true,
                   get=function() return SB().spellbookShow == true end,
                   set=function(v)
                       SB().spellbookShow = v or nil
                       -- Resync drops/replants the override live (covers
                       -- toggling while the spellbook is already open).
-                      if EAB._UpdateSpellbookNeverBars then
-                          EAB._UpdateSpellbookNeverBars(true)
-                      end
+                      EAB._UpdateSpellbookNeverBars(true)
                   end }
             end
             local function DragRow()

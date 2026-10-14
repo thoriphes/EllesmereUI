@@ -1391,6 +1391,10 @@ local function CreatePreviewFrame(index, party)
         -- tier-scaled, so the effective overlay may shadow them safely.
         local s = ns._previewSettingsOverride or (ns._partyPvActive and ns._scaledPartyProxy)
             or ns._pvOverlayProxy or ns._scaledProfile
+        if ns.RF_ButtonCompact(f, s) then
+            ns.RF_CompactHighlight(bdrFrame, f, s, f)
+            return
+        end
         if f.kit then
             ns.RF_KitHighlight(f, bdrFrame, s, f._hovered and s.hoverBorderEnabled ~= false,
                 f._isTarget and s.targetBorderEnabled ~= false)
@@ -1458,6 +1462,12 @@ local function CreatePreviewFrame(index, party)
         if hlSize then r, g, b = ns.RF_VisibleHighlight(s, r, g, b) end
         bdrFrame._hlBorderSize = nil
         EllesmereUI.SetBorderStyleColor(bdrFrame, r, g, b, a)
+        if s.powerBorderMatchColor == true and f._powerBorder and f._powerBorder._powerArtMode == "divider" then
+            ns.RF_ColorPowerDivider(f._powerBorder, r, g, b, a)
+        end
+        if s.topNameBarDividerMatchColor == true and f._topNameBar and f._topNameBar._divider then
+            ns.RF_ColorPowerDivider(f._topNameBar._divider, r, g, b, a)
+        end
     end
     f._ApplyBorderColor = PvApplyBorderColor
 
@@ -1971,6 +1981,7 @@ local function ApplyPreviewData(f, index)
     -- _previewSettingsOverride. The real-preview effective overlay (when active) resolves
     -- captured keys to panel-closed values and is NOT tier-scaled, so this holds.
     local s = ns._previewSettingsOverride or ns._pvOverlayProxy or db.profile
+    local compact = ns.RF_ButtonCompact(f, s)
     local classToken = previewClassTokens[index] or ns._PV_CLASS_TOKENS[((index - 1) % #ns._PV_CLASS_TOKENS) + 1]
     local playerSlot = previewRoles._playerSlot or 1
     local name
@@ -1999,7 +2010,7 @@ local function ApplyPreviewData(f, index)
 
     -- Health bar height/anchor + Top Name Bar (helper re-anchors health top to
     -- -topBarH; the per-unit power block below re-sets only the height)
-    LayoutTopNameBar(s, h, powerH, f._health, f._topNameBar, f._topNameBarBg, f._topNameBarText, f._power)
+    LayoutTopNameBar(s, h, powerH, f._health, f._topNameBar, f._topNameBarBg, f._topNameBarText, f._power, true)
 
     -- Health bar
     if f._health then
@@ -2189,7 +2200,7 @@ local function ApplyPreviewData(f, index)
                 if bfFill then
                     bfFill:SetDrawLayer("ARTWORK", 1)
                     bfFill:SetHorizTile(false); bfFill:SetVertTile(false)
-                    if mask then bfFill:AddMaskTexture(mask) end
+                    if mask then ns.RF_AddMaskOnce(bfFill, mask) end
                 end
             else
                 ns.HideModernAbsorbBase(f._absorbBar)
@@ -2203,7 +2214,7 @@ local function ApplyPreviewData(f, index)
                     bfFill:SetDrawLayer("ARTWORK", 1)
                     bfFill:SetHorizTile(tiled)
                     bfFill:SetVertTile(tiled)
-                    if mask then bfFill:AddMaskTexture(mask) end
+                    if mask then ns.RF_AddMaskOnce(bfFill, mask) end
                 end
 
                 -- Apply style to forward bar
@@ -2215,7 +2226,7 @@ local function ApplyPreviewData(f, index)
                         fwFill:SetDrawLayer("ARTWORK", 1)
                         fwFill:SetHorizTile(tiled)
                         fwFill:SetVertTile(tiled)
-                        if mask then fwFill:AddMaskTexture(mask) end
+                        if mask then ns.RF_AddMaskOnce(fwFill, mask) end
                     end
                 end
             end
@@ -2490,7 +2501,7 @@ local function ApplyPreviewData(f, index)
                 haFillPv:SetDrawLayer("ARTWORK", 2)
                 haFillPv:SetHorizTile(tiled)
                 haFillPv:SetVertTile(tiled)
-                if mask then haFillPv:AddMaskTexture(mask) end
+                if mask then ns.RF_AddMaskOnce(haFillPv, mask) end
             end
             f._healAbsorbBar:SetMinMaxValues(0, 100)
             f._healAbsorbBar:SetValue(haAmt)
@@ -2693,8 +2704,10 @@ local function ApplyPreviewData(f, index)
     -- the frame border below)
     if f._powerBorder and PP then
         if hidePower or f.stockDiv or f.kitG then
+            if f._powerBorder._powerArtKey then ns.RF_ClearPowerBorderArt(f._powerBorder) end
             f._powerBorder:Hide()
-        else
+        elseif not ((s.powerBorderMatchFrame == true or f._powerBorder._powerArtKey)
+            and ns.RF_ApplyPowerBorderArt(f._powerBorder, s, true, true)) then
             local pbStyle = s.powerBorderStyle or "eui"
             if pbStyle == "eui" then
                 PP.UpdateBorder(f._powerBorder, 1, 1, 1, 1, 0.2)
@@ -2748,6 +2761,9 @@ local function ApplyPreviewData(f, index)
         ns.RF_StockSeat(f)
         if f.stockDiv and f._power and f._power:IsShown() then ns.RF_StockDivider(f) end
         if f._ApplyBorderColor then f._ApplyBorderColor() end
+    elseif f._border and PP and compact then
+        EllesmereUI.ApplyBorderStyle(f._border, 0, 0, 0, 0, 0, "solid")
+        if f._ApplyBorderColor then f._ApplyBorderColor() end
     elseif f._border and PP then
         local bs = s.borderSize or 1
         local bc = s.borderColor or { r = 0, g = 0, b = 0 }
@@ -2761,12 +2777,13 @@ local function ApplyPreviewData(f, index)
     end
     -- Rounded corners, as on the live cells (stock styles stay square).
     if f._border then
-        local radius = (f.kit or f.stockEdge) and 0 or (s.cornerRadius or 0)
+        local radius = (f.kit or f.stockEdge or compact) and 0 or (s.cornerRadius or 0)
         if radius > 0 then
             EllesmereUI.RoundCorners(f, radius, {
                 roots = { f._health, f._power, f._topNameBar, f._powerBorder },
                 textures = { f._bg },
                 border = f._border, style = s.borderTexture or "solid",
+                corners = s.cornerMask,
             })
         else
             EllesmereUI.RoundCorners(f, 0)
@@ -2781,7 +2798,7 @@ local function ApplyPreviewData(f, index)
     -- (PvApplyBorderColor), so the slider size does not gate it.
     if f._threatFrame and PP then
         local bs = s.threatBorderSize or 0
-        local rc = s.threatCustomBorder == true and ns.RF_CustomBorderOn(s)
+        local rc = not compact and s.threatCustomBorder == true and ns.RF_CustomBorderOn(s)
         local wantThreat = bs > 0 or rc
         if ns._testMode and ns._testThreat ~= nil then wantThreat = ns._testThreat end
         local showThreat = wantThreat and (ns._testMode or ns._healthAnimActive) and previewRoles._threatIndex == index
@@ -2812,7 +2829,7 @@ local function ApplyPreviewData(f, index)
     -- frames; a change repaints it, the border pass above ran first.
     do
         local bdrC = dispVis and dispelDC and s.dispelCustomBorder == true
-            and (dispelDC.a or 1) > 0 and ns.RF_CustomBorderOn(s) and dispelDC or nil
+            and not compact and (dispelDC.a or 1) > 0 and ns.RF_CustomBorderOn(s) and dispelDC or nil
         if f._pvDispelBdrC ~= bdrC then
             f._pvDispelBdrC = bdrC
             if f._ApplyBorderColor then f._ApplyBorderColor() end
@@ -3355,25 +3372,27 @@ local function ApplyPreviewData(f, index)
 
     -- Role icon (not affected by indicators toggle)
     if f._roleIcon then
+        if f._roleIcon._roleText then f._roleIcon._roleText:Hide() end
         local style = s.roleIconStyle or "modern"
-        if style ~= "none" then
+        if s.roleText or style ~= "none" then
             local role = previewRoles[index] or "DAMAGER"
             local showForRole = (role == "TANK" and s.showRoleForTank)
                 or (role == "HEALER" and s.showRoleForHealer)
                 or (role == "DAMAGER" and s.showRoleForDPS)
-            if showForRole ~= false and ApplyRoleIcon(f._roleIcon, role, style) then
+            if showForRole ~= false and (s.roleText or ApplyRoleIcon(f._roleIcon, role, style)) then
                 local riSz = PixelSnap(s.roleIconSize or 14)
                 f._roleIcon:SetSize(riSz, riSz)
                 -- Mirror the live carrier's "Show Behind Border" level (see AnchorRoleIcon).
                 local rc = f._roleIcon:GetParent()
                 if rc then
                     rc:SetFrameLevel(f:GetFrameLevel()
-                        + (s.roleIconBehindBorder and (ns.LVL_RAISE - 1) or (ns.LVL_AURA - 1)))
+                        + (s.roleIconBehindBorder and ns.LVL_ROLE_BEHIND or (ns.LVL_AURA - 1)))
                 end
                 f._roleIcon:ClearAllPoints()
                 local pos = (s.roleIconPosition or "bottomleft"):upper()
                 f._roleIcon:SetPoint(pos, ns.RF_AnchorHost(f._health, s), pos, s.roleIconOffsetX or 0, s.roleIconOffsetY or 0)
                 f._roleIcon:Show()
+                if s.roleText then ns.ApplyRoleText(f._roleIcon, role, s) end
             else
                 f._roleIcon:Hide()
             end
@@ -3555,8 +3574,8 @@ local function RefreshPreview()
     unitGrowth, groupGrowth = ns._RFEffectiveGrowth(unitGrowth, groupGrowth, s.mergeGroups)
     local bw = PixelSnap(s.frameWidth or 72)
     local bh = PixelSnap(s.frameHeight or 46)
-    local cs = PixelSnap(s.cellSpacing or 2)
-    local gs = PixelSnap(s.groupSpacing or 8)
+    local cs = ns.RF_CellSpacing(s)
+    local gs = ns.RF_GroupSpacing(s)
 
     -- Group bounding box
     local groupW, groupH
@@ -3794,6 +3813,7 @@ local function RefreshPreview()
         end
         overlayContainer:Show()
     end
+    ns.RF_PreviewCompact(previewFrames, s, false, unitGrowth)
 end
 
 -- Mouse-blocking overlays + alpha-based real-frame hide for the options preview.
@@ -3941,6 +3961,7 @@ end
 -- for one frame first. Panel close restores explicitly.
 local function HidePreview(skipRestore)
     if not previewActive then return end
+    ns.RF_PreviewCompact(nil, nil, false)
     previewActive = false
     ns._previewInitialized = false
     previewRoles._randomized = nil  -- re-randomize on next preview open
@@ -4078,8 +4099,8 @@ ns._ShowSizePreview = function(tier)
     local ov = overrides[tier]
     local bw = PixelSnap(ov.width or s.frameWidth or 125)
     local bh = PixelSnap(ov.height or s.frameHeight or 60)
-    local cs = PixelSnap(s.cellSpacing or 2)
-    local gs = PixelSnap(s.groupSpacing or 8)
+    local cs = ns.RF_CellSpacing(s)
+    local gs = ns.RF_GroupSpacing(s)
     local unitGrowth, groupGrowth = ns._RFEffectiveGrowth(
         ov.unitGrowth or s.unitGrowth or "DOWN", ov.groupGrowth or s.groupGrowth or "RIGHT", s.mergeGroups)
     local frameCount  = tier
@@ -4258,7 +4279,10 @@ ns._ShowSizePreview = function(tier)
         f._bg:SetColorTexture(0.09, 0.09, 0.11, 1)
         if f._power then f._power:Hide() end
         if f._topNameBar then f._topNameBar:Hide() end
-        if f._roleIcon then f._roleIcon:Hide() end
+        if f._roleIcon then
+            f._roleIcon:Hide()
+            if f._roleIcon._roleText then f._roleIcon._roleText:Hide() end
+        end
 
         -- Thin neutral outline so each block and the spacing between them reads clearly.
         if f._border and PP then
@@ -4520,6 +4544,7 @@ end
 local function GetOrCreatePartyPvFrame(index)
     if ns._partyPvFrames[index] then return ns._partyPvFrames[index] end
     local f = CreatePreviewFrame(index, true)
+    f._isParty = true
     -- Reparent from raid preview container to party overlay container
     if ns._partyOC then f:SetParent(ns._partyOC) end
     ns._partyPvFrames[index] = f
@@ -4851,6 +4876,7 @@ local function RefreshPartyPreview()
         end
     end
 
+    ns.RF_PreviewCompact(ns._partyPvFrames, ns._scaledPartyProxy, true, unitGrowth)
 end
 
 local function ShowPartyPreview()
@@ -4890,6 +4916,7 @@ end
 -- the deferred ShowPreview re-hides them. Panel close restores explicitly.
 local function HidePartyPreview(skipRestore)
     if not ns._partyPvActive then return end
+    ns.RF_PreviewCompact(nil, nil, true)
     -- Stop the aura ticker while still party-active so it clears the party aura
     -- icons (PvFrames resolves to the party set here), then deactivate.
     StopPvAuraTicker()

@@ -8,19 +8,23 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Mark of the Wild and Thorns (druid), a paladin blessing -- i.e. a trained
 --  rank or the group version is in the player's spellbook. On the member
 --  every rank and the group version count (looked up by name). A member gets
---  at most one blessing, and none while they carry one of the player's (a
---  paladin keeps one blessing per target, so another would replace it): the
---  first of their class list (BlessingList; Salvation first for non-tanks in
---  a PvE raid) the player can cast and no other paladin has given them.
---  Solo, only Kings is reminded, on the player. Thorns Only on Tank keeps Thorns to the
---  group's tanks, and to the player while solo or in a group without one.
---  A left click on an icon casts that buff on the member (out of combat; see
---  Click to cast).
+--  at most one blessing: the first of the priority list their assigned role
+--  takes (Tank / Healer / DPS Blessing; empty = no reminder; no role assigned
+--  = the DPS list) that the player can cast and the member lacks. Solo, only
+--  Kings is reminded, on the player, whatever the role. Thorns Only on Tank
+--  keeps Thorns to the group's tanks, and to the player while solo or in a
+--  group without one. A left click on an icon casts that buff on the member
+--  (out of combat; see Click to cast).
 --  Settings (Indicators section, same shape as the raid marker):
 --  showMissingBuffs, missingBuffsPosition, missingBuffsSize,
 --  missingBuffsOffsetX/Y, one switch per buff (missingBuffsFort/Mark/Spirit/
 --  Thorns, the cog's checkbox list, nil = on), missingBuffsThornsTank (nil =
---  off), missingBuffsBlessing (the paladin blessings, nil = on), and the icons' glow on the
+--  off), missingBuffsBlessingTank/Healer/DPS (a list of blessing keys in
+--  priority order, or the older single key / "none"; unset = Might / Wisdom /
+--  Salvation, or none for all three while the retired single switch
+--  missingBuffsBlessing reads false), missingBuffsBlessingExTank/Healer/DPS
+--  (class token -> blessing list, replacing the role's list for members of
+--  that class; no entry = the role's list), and the icons' glow on the
 --  shared prefix schema (missingBuffsGlow*, EllesmereUI.Glows.PrefixKeys);
 --  Forever-only defaults in the main file.
 --
@@ -91,18 +95,60 @@ for i = 1, NUM_FAMILIES do
     fam.names, fam.ranks, fam.ids, fam.single = names, ranks, ids, single
 end
 local FAMILY_BY_ID = {}  -- spell id -> family index
-local BLESSINGS, BLESS_INDEX = {}, {}  -- blessing family indices; key -> index
+local BLESS_INDEX = {}  -- blessing key -> family index
 for i = 1, NUM_FAMILIES do
     for _, id in ipairs(FAMILIES[i].ids) do FAMILY_BY_ID[id] = i end
-    if FAMILIES[i].blessing then
-        BLESSINGS[#BLESSINGS + 1] = i
-        BLESS_INDEX[FAMILIES[i].key] = i
-    end
+    if FAMILIES[i].blessing then BLESS_INDEX[FAMILIES[i].key] = i end
 end
 
--- The paladin blessings are on in a settings table unless switched off.
+-- The blessings a role (TANK, HEALER or DAMAGER) takes in a settings table
+-- (raw reads, nil = unset): a priority list of blessing keys, first = most
+-- wanted (empty = none). A saved value is a list, or the older single key /
+-- "none". Unset takes the role's default, or none while the retired single
+-- Paladin Blessings switch reads false (its users had turned blessings off).
+-- The options page reads through the same function.
+local BLESS_KEY = { TANK = "missingBuffsBlessingTank", HEALER = "missingBuffsBlessingHealer",
+    DAMAGER = "missingBuffsBlessingDPS" }
+local BLESS_DEFAULT = { TANK = "might", HEALER = "wisdom", DAMAGER = "salvation" }
+-- Class exceptions: per role, a table of class token -> blessing list that
+-- replaces the role's list for members of that class (an empty list = no
+-- blessing for them; no entry = the role's list).
+local EX_KEY = { TANK = "missingBuffsBlessingExTank", HEALER = "missingBuffsBlessingExHealer",
+    DAMAGER = "missingBuffsBlessingExDPS" }
+local NO_BLESSINGS = {}
+local OLD_SINGLE = {}  -- the older single-key form, one cached list per key
+local function Choice(s, role, class)
+    local key = BLESS_KEY[role]
+    if class then
+        local ex = s[EX_KEY[role]]
+        local own = type(ex) == "table" and ex[class]
+        if type(own) == "table" then return own end
+    end
+    local v = s[key]
+    if v == nil then
+        v = (s.missingBuffsBlessing == false) and "none" or BLESS_DEFAULT[role]
+    end
+    if type(v) == "table" then return v end
+    if not BLESS_INDEX[v] then return NO_BLESSINGS end
+    local one = OLD_SINGLE[v]
+    if not one then one = { v }; OLD_SINGLE[v] = one end
+    return one
+end
+ns.RF_FvBlessingChoice, ns.RF_FvBlessingKey, ns.RF_FvBlessingExKey = Choice, BLESS_KEY, EX_KEY
+
+-- Blessings are on in a settings table while any role takes one, or any
+-- class exception does.
 local function BlessingsOn(s)
-    return s.missingBuffsBlessing ~= false
+    if #Choice(s, "TANK") > 0 or #Choice(s, "HEALER") > 0 or #Choice(s, "DAMAGER") > 0 then return true end
+    for _, key in pairs(EX_KEY) do
+        local ex = s[key]
+        if type(ex) == "table" then
+            for _, list in pairs(ex) do
+                if type(list) == "table" and #list > 0 then return true end
+            end
+        end
+    end
+    return false
 end
 
 -- Only a priest, a druid or a paladin can ever cast one of these: every other
@@ -118,10 +164,9 @@ end
 local state, inst = {}, {}
 local provider = {}      -- key -> the player can cast it (a rank in the spellbook)
 local castID = {}        -- family index -> the spell a click casts (highest known single-target rank)
-local blessCaster = false  -- the player can cast any blessing (every blessing is then read)
+local blessCaster = false  -- the player can cast any blessing (the role lists then apply)
 local groupTank = false  -- a group member has the tank role (full passes)
 local solo = true        -- not in a group (full passes)
-local pveRaid = false    -- inside a raid instance (full passes)
 local wantFam = {}       -- key -> switched on where the indicator shows (raid, party or Extra Frames)
 local enabled = false
 local trusted = {}       -- key -> readable right now (Trusted rebuilds it once per frame)
@@ -186,13 +231,11 @@ local function FamOn(s, fam)
     return s[fam.setting] ~= false
 end
 
--- Worth reading: the player can cast it and it is switched on somewhere.
--- Every blessing is read while the player casts any: the pick skips the ones
--- other paladins gave.
+-- Worth reading: the player can cast it and it is switched on somewhere. A
+-- blessing the player cannot cast never shows and can never be theirs.
 local function Tracked(i)
-    local fam = FAMILIES[i]
-    local can = fam.blessing and blessCaster or provider[fam.key]
-    return can and wantFam[fam.key]
+    local key = FAMILIES[i].key
+    return provider[key] and wantFam[key]
 end
 
 -- The member's assigned role ("TANK", "HEALER", "DAMAGER", "NONE"), or nil
@@ -211,14 +254,12 @@ local function ThornsHere(s, unit)
     return UnitIsUnit(unit, "player")
 end
 
--- Solo or not, inside a raid instance or not, and whether a group member
--- has the tank role (one roster walk per full pass).
+-- Solo or not, and whether a group member has the tank role (one roster
+-- walk per full pass).
 local TOKENS
 local function ScanTank()
     groupTank = false
     solo = not IsInGroup()
-    local _, itype = IsInInstance()
-    pveRaid = itype == "raid"
     if solo then return end
     for t = 1, #TOKENS do
         local u = TOKENS[t]
@@ -226,74 +267,34 @@ local function ScanTank()
     end
 end
 
--- Blessing priority per member, four blessings each. Forever has one spec
--- per class, so hybrids (Paladin, Shaman, Druid) go by assigned role: Damage,
--- and a Druid tank, take the melee list, Healer the healer list, the rest
--- (a Paladin tank, no role) the caster list. Pure casters and healers rank
--- Salvation over Might; a tank list never does.
-local BLESS_LISTS = {
-    melee   = { "might", "wisdom", "kings", "salvation" },  -- Ret, Enhancement, Feral
-    healer  = { "wisdom", "kings", "salvation", "might" },  -- Holy, Restoration
-    caster  = { "wisdom", "kings", "might", "salvation" },  -- Prot Paladin, no role
-    pure    = { "wisdom", "kings", "salvation", "might" },  -- Mage, Priest
-    phys    = { "might", "kings", "salvation", "light" },   -- Warrior, Rogue (no mana: Light, not Wisdom)
-    hunter  = { "kings", "wisdom", "might", "salvation" },
-    warlock = { "kings", "wisdom", "salvation", "might" },
-}
-local raidList = {}  -- scratch: a list with Salvation moved first
-local function BlessingList(unit, role)
-    local _, class = UnitClass(unit)
-    if not class or issecretvalue(class) then return nil end
-    local list
-    if class == "HUNTER" then
-        list = BLESS_LISTS.hunter
-    elseif class == "WARLOCK" then
-        list = BLESS_LISTS.warlock
-    elseif class == "MAGE" or class == "PRIEST" then
-        list = BLESS_LISTS.pure
-    elseif class == "WARRIOR" or class == "ROGUE" then
-        list = BLESS_LISTS.phys
-    elseif (class == "PALADIN" or class == "SHAMAN" or class == "DRUID")
-       and (role == "DAMAGER" or (role == "TANK" and class == "DRUID")) then
-        list = BLESS_LISTS.melee
-    elseif (class == "PALADIN" or class == "SHAMAN" or class == "DRUID") and role == "HEALER" then
-        list = BLESS_LISTS.healer
-    else
-        list = BLESS_LISTS.caster
-    end
-    -- PvE raid: Salvation first for everyone but the tanks.
-    if pveRaid and role ~= "TANK" then
-        wipe(raidList)
-        raidList[1] = "salvation"
-        for k = 1, #list do
-            if list[k] ~= "salvation" then raidList[#raidList + 1] = list[k] end
-        end
-        return raidList
-    end
-    return list
-end
-
--- The blessing icon a member shows (a family index) or nil. Never while the
--- member carries one of the player's blessings, or that is unknown
--- (st.ownBless, see Evaluate): it would be replaced. Solo, Kings on the
--- player; in a group, the first blessing of the member's list the player can
--- cast and the member lacks (one they have is another paladin's). Any
--- blessing of the list unread = no icon, never a false alarm.
+-- The blessing icon a member shows (a family index) or nil. None once the
+-- member has a blessing of the player's (a paladin keeps one per target) or
+-- while that is unknown. Otherwise: solo, Kings on the player whatever the
+-- role (one reminder, no role picks); in a group, the first blessing of their
+-- role's priority list (no role assigned: the DPS list, since many groups
+-- never assign roles) that the player can cast and the member lacks, so one
+-- another paladin gave moves the pick down the list (one the player cannot
+-- cast is skipped; one the member reads unknown for stops the walk).
 local function MissingBlessing(s, st, unit)
-    if st.ownBless ~= false then return nil end
+    if st.mine ~= false then return nil end
     if solo then
         if provider.kings and st.kings == false and UnitIsUnit(unit, "player") then return BLESS_INDEX.kings end
         return nil
     end
     local role = RoleOf(unit)
     if not role then return nil end
-    local list = BlessingList(unit, role)
-    if not list then return nil end
-    for k = 1, #list do
-        local key = list[k]
-        local has = st[key]
-        if has == nil then return nil end
-        if has == false and provider[key] then return BLESS_INDEX[key] end
+    if not BLESS_KEY[role] then role = "DAMAGER" end
+    local _, class = UnitClass(unit)
+    if issecretvalue(class) then class = nil end
+    local want = Choice(s, role, class)
+    for w = 1, #want do
+        local key = want[w]
+        local i = BLESS_INDEX[key]
+        if i and provider[key] then
+            local has = st[key]
+            if has == nil then return nil end
+            if has == false then return i end
+        end
     end
     return nil
 end
@@ -307,6 +308,9 @@ local function Evaluate(unit, restricted)
     local found = inst[unit]
     if found then wipe(found) else found = {}; inst[unit] = found end
     local known = UnitExists(unit) and UnitIsConnected(unit) and UnitIsVisible(unit)
+    -- st.mine: the member has a blessing the player cast (a paladin keeps one
+    -- blessing per target, so theirs is then done); nil while unknown.
+    local mine = false
     for i = 1, NUM_FAMILIES do
         local key = FAMILIES[i].key
         local value
@@ -321,6 +325,12 @@ local function Evaluate(unit, restricted)
                     if not ok or issecretvalue(aura) then value = nil; break end
                     if aura then
                         value = true
+                        -- The caster, not isFromPlayerOrPlayerPet: that is
+                        -- true for any player's aura, another paladin's too.
+                        if FAMILIES[i].blessing and mine ~= true then
+                            local src = aura.sourceUnit
+                            if issecretvalue(src) then mine = nil elseif src == "player" then mine = true end
+                        end
                         local iid = aura.auraInstanceID
                         if iid and not issecretvalue(iid) then found[iid] = true end
                         break
@@ -329,29 +339,9 @@ local function Evaluate(unit, restricted)
             end
         end
         st[key] = value
+        if value == nil and mine == false and FAMILIES[i].blessing and Tracked(i) then mine = nil end
     end
-    -- Whether a blessing on the member is the player's: true, false, or nil
-    -- while unknown (a blessing unread, or a secret read). Only blessings the
-    -- member carries are looked up again, by the player-cast filter.
-    local own
-    if known and blessCaster then
-        own = false
-        for b = 1, #BLESSINGS do
-            local bi = BLESSINGS[b]
-            local has = st[FAMILIES[bi].key]
-            if has == nil then own = nil; break end
-            if has then
-                local list = FamilyNames(bi)
-                for n = 1, #list do
-                    local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, unit, list[n], "HELPFUL|PLAYER")
-                    if not ok or issecretvalue(aura) then own = nil; break end
-                    if aura then own = true; break end
-                end
-                if own ~= false then break end
-            end
-        end
-    end
-    st.ownBless = own
+    st.mine = mine
 end
 
 -- A buff counts only while the player can cast it: their class casts it and
@@ -609,7 +599,7 @@ local function PaintButton(btn, d)
                 paintList[n] = i
             end
         end
-        -- One blessing at most, last: the member's class list picks it.
+        -- One blessing at most, last: the member's role picks it.
         if blessCaster and BlessingsOn(s) then
             local bi = MissingBlessing(s, st, unit)
             if bi then
@@ -910,13 +900,17 @@ end
 
 -- Options preview: a fixed spread of missing buffs while the indicators
 -- preview (the Indicators eye) is on, minus the buffs switched off. "B" is
--- the blessing slot (Might, while the blessings are on).
+-- the blessing slot: the top pick of the first role with any (DPS first).
 local PREVIEW = {
     [2] = { 1 }, [4] = { 1, 2 }, [7] = { 3, "B" }, [9] = { 1, 2, 3, 4, "B" },
     [12] = { 2, 4 }, [15] = { 1, 3 }, [18] = { 4, "B" },
 }
+local PREVIEW_ROLES = { "DAMAGER", "HEALER", "TANK" }
 local function PreviewBlessing(s)
-    if BlessingsOn(s) then return BLESS_INDEX.might end
+    for r = 1, #PREVIEW_ROLES do
+        local c = Choice(s, PREVIEW_ROLES[r])
+        if c[1] then return BLESS_INDEX[c[1]] end
+    end
 end
 local previewList = {}
 function ns.RF_FvMissingPreview(f, index, s, indVis)
