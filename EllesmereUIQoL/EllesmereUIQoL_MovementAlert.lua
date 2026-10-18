@@ -10,7 +10,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --       "spell activation overlay glow" on a spell we're tracking). A second,
 --       CDM-bar based implementation of the same proc also exists as the
 --       "timespiral" Tracked Buff Bar preset in
---       EllesmereUICooldownManager\EllesmereUICdmBuffBars.lua (~line 3590,
+--       EllesmereUICooldownManager\EUI_CDM_BuffBarPresets.lua (
 --       TIME_SPIRAL_TRIGGERS/TIME_SPIRAL_GLOW_FILTERS) for users who run CDM
 --       bars. The two are intentionally independent (this one needs no CDM
 --       bar at all), but they track the same spell/talent-filter lists --
@@ -39,7 +39,7 @@ local playerClassToken = select(2, UnitClass("player")) -- class never changes: 
 --  live client before shipping and keep an eye on the in-options "Tracked
 --  Spells" add/override list, which lets users self-correct gaps without an
 --  addon update. The `filter` sub-table (Time Spiral cast filtering) mirrors
---  EllesmereUICdmBuffBars.lua's TIME_SPIRAL_GLOW_FILTERS -- keep both in sync.
+--  EUI_CDM_BuffBarPresets.lua's TIME_SPIRAL_GLOW_FILTERS -- keep both in sync.
 -------------------------------------------------------------------------------
 local MOVEMENT_ABILITIES = {
     DEATHKNIGHT = {[250] = {48265, 212552}, [251] = {48265, 212552}, [252] = {48265, 444010, 444347, 212552}},
@@ -529,12 +529,11 @@ local function StyleSlot(slot)
     local frameH, frameW = movementFrame:GetHeight(), movementFrame:GetWidth()
     local fontSize = math.max(8, math.min(72, ma.textSize or 24))
     local tR, tG, tB = ResolveAlertColor("textColor", "textColorUseClass")
+    local showIcon = ma.barShowIcon ~= false
+    local texPath = (EllesmereUI.ResolveTexturePath(BAR_TEXTURES, ma.barTexture or "none", "Interface\\Buttons\\WHITE8x8"))
+        or "Interface\\Buttons\\WHITE8x8"
+    local iconSz = math.max(16, math.min(128, ma.iconSize or 40))
 
-    if not slot.text:SetFont(fontPath, fontSize, outline) then
-        slot.text:SetFont(FALLBACK_FONT, fontSize, outline)
-    end
-    slot.text:SetTextColor(tR, tG, tB)
-    slot.icon.timeText:SetTextColor(tR, tG, tB)
     -- Pin the engine's countdown FontString to the same font object and colour
     -- every pass: left alone it sizes itself against its host frame rather than
     -- the user's Text Size.
@@ -543,8 +542,26 @@ local function StyleSlot(slot)
         slot.cdNumText:SetTextColor(tR, tG, tB)
     end
 
+    -- The rest only when one of its inputs moved: every poll tick (10 per second
+    -- while an alert shows) re-shows each slot.
+    local st = slot._style
+    if not st then st = {}; slot._style = st end
+    if st.font == fontPath and st.outline == outline and st.size == fontSize
+       and st.r == tR and st.g == tG and st.b == tB and st.w == frameW and st.h == frameH
+       and st.icon == showIcon and st.tex == texPath and st.iconSz == iconSz then
+        return
+    end
+    st.font, st.outline, st.size, st.r, st.g, st.b = fontPath, outline, fontSize, tR, tG, tB
+    st.w, st.h, st.icon, st.tex, st.iconSz = frameW, frameH, showIcon, texPath, iconSz
+
+    if not slot.text:SetFont(fontPath, fontSize, outline) then
+        slot.text:SetFont(FALLBACK_FONT, fontSize, outline)
+    end
+    slot.text:SetTextColor(tR, tG, tB)
+    slot.icon.timeText:SetTextColor(tR, tG, tB)
+
     local barH = math.max(12, math.floor(frameH * 0.5))
-    local barW = frameW - (ma.barShowIcon ~= false and (barH + 8) or 0) - 10
+    local barW = frameW - (showIcon and (barH + 8) or 0) - 10
     slot.bar:SetSize(math.max(50, barW), barH)
     slot.bar.icon:SetSize(barH, barH)
     -- Text Size drives every mode's text: the free text, the bar's number,
@@ -562,15 +579,11 @@ local function StyleSlot(slot)
     -- user's Text Colour.
     movementCdFont:SetTextColor(tR, tG, tB)
 
-    -- Bar texture (change-guarded: StyleSlot runs on every poll tick)
-    local texPath = (EllesmereUI.ResolveTexturePath(BAR_TEXTURES, ma.barTexture or "none", "Interface\\Buttons\\WHITE8x8"))
-        or "Interface\\Buttons\\WHITE8x8"
     if slot.bar._lastTexPath ~= texPath then
         slot.bar:SetStatusBarTexture(texPath)
         slot.bar._lastTexPath = texPath
     end
 
-    local iconSz = math.max(16, math.min(128, ma.iconSize or 40))
     slot.icon:SetSize(iconSz, iconSz)
 end
 
@@ -800,7 +813,12 @@ local spellWasCast = {}
 local spellCastTime = {}
 local trackedSpellSet = {}
 local cacheResetTime = 0
-local movementCountdownTimer = nil
+-- The 100ms countdown repaint (CheckMovementCooldown): a deadline on a frame
+-- shown only while an alert is up, so no timer object is made per tick. Its
+-- OnUpdate is set where the check funnel is defined.
+local movementRepaintAt = 0
+local movementRepaintFrame = CreateFrame("Frame")
+movementRepaintFrame:Hide()
 local movementPreviewTicker = nil -- options-panel preview loop (nil = off)
 local CheckMovementCooldown
 local CancelAllRechargeTimers
@@ -1116,7 +1134,7 @@ end
 --  Movement bar rendering
 -------------------------------------------------------------------------------
 local function CancelMovementCountdown()
-    if movementCountdownTimer then movementCountdownTimer:Cancel(); movementCountdownTimer = nil end
+    movementRepaintFrame:Hide()
 end
 
 -- buffActive engine-lane handles (declared here so HideMovementDisplay -- the
@@ -1138,6 +1156,9 @@ local function HideMovementDisplay(keepBuffLane)
     CancelMovementCountdown()
 end
 
+-- The countdown number's format per precision (0 or 1 decimal).
+local PREC_FMT = { [0] = "%.0f", [1] = "%.1f" }
+
 local function ShowMovementSlot(index, cdInfo, spellEntry, duration)
     local ma = MA()
     local slot = GetDisplaySlot(index)
@@ -1145,26 +1166,33 @@ local function ShowMovementSlot(index, cdInfo, spellEntry, duration)
     local displayMode = ma.displayMode or "text"
     -- Clamp to a clean 0/1 (matches the binary Show Decimal toggle). A legacy
     -- numeric-input value could be a string ("1") or a stored -0; feeding -0 to
-    -- the format below builds an invalid "%.-0f". This local drives all three
-    -- format sites (precFmt and the two bar-text SetFormattedText calls).
+    -- the format below builds an invalid "%.-0f". This local drives every
+    -- format site (PREC_FMT).
     local precision   = ((tonumber(ma.precision) or 1) > 0) and 1 or 0
     local spellName   = spellEntry.customText or spellEntry.spellName or "Movement"
     local spellIcon   = spellEntry.spellIcon
-    local precFmt     = "%." .. precision .. "f"
-    -- spellName is free-form user text (per-spell Custom Text); escape
-    -- literal "%" so SetFormattedText cannot misread it as a format
-    -- directive expecting arguments it never gets.
-    local escapedName = (spellName:gsub("%%", "%%%%"))
-    -- Three fixed text arrangements: two read as "No <ability>" (the alert
-    -- shows while the spell is unavailable), text_d is the bare number; the
-    -- legacy "text" value keeps the old default's duration-first order.
-    local fmtStr
-    if displayMode == "text_nd" then
-        fmtStr = "No " .. escapedName .. " " .. precFmt
-    elseif displayMode == "text_d" then
-        fmtStr = precFmt
-    else
-        fmtStr = precFmt .. " No " .. escapedName
+    -- The text format follows the mode, the precision and the name only, so it
+    -- is built when one of them changes, not on every poll tick.
+    local fmtStr = spellEntry._maFmt
+    if spellEntry._maFmtMode ~= displayMode or spellEntry._maFmtPrec ~= precision
+       or spellEntry._maFmtName ~= spellName then
+        local precFmt = PREC_FMT[precision]
+        -- spellName is free-form user text (per-spell Custom Text); escape
+        -- literal "%" so SetFormattedText cannot misread it as a format
+        -- directive expecting arguments it never gets.
+        local escapedName = (spellName:gsub("%%", "%%%%"))
+        -- Three fixed text arrangements: two read as "No <ability>" (the alert
+        -- shows while the spell is unavailable), text_d is the bare number; the
+        -- legacy "text" value keeps the old default's duration-first order.
+        if displayMode == "text_nd" then
+            fmtStr = "No " .. escapedName .. " " .. precFmt
+        elseif displayMode == "text_d" then
+            fmtStr = precFmt
+        else
+            fmtStr = precFmt .. " No " .. escapedName
+        end
+        spellEntry._maFmt, spellEntry._maFmtMode = fmtStr, displayMode
+        spellEntry._maFmtPrec, spellEntry._maFmtName = precision, spellName
     end
 
     slot.text:Hide(); slot.icon:Hide(); slot.bar:Hide()
@@ -1191,7 +1219,7 @@ local function ShowMovementSlot(index, cdInfo, spellEntry, duration)
                 slot.icon.cooldown:Clear()
             end
             slot.icon.cooldown:SetHideCountdownNumbers(true)
-            slot.icon.timeText:SetFormattedText("%." .. precision .. "f", recov)
+            slot.icon.timeText:SetFormattedText(PREC_FMT[precision], recov)
             slot.icon:Show()
         elseif displayMode == "bar" then
             local rechDur = spellEntry.rechargeDuration or 0
@@ -1201,7 +1229,7 @@ local function ShowMovementSlot(index, cdInfo, spellEntry, duration)
             slot.bar:SetStatusBarColor(r, g, b)
             slot.bar.text:SetShown(ma.barShowDuration ~= false)
             if ma.barShowDuration ~= false then
-                slot.bar.text:SetFormattedText("%." .. precision .. "f", recov)
+                slot.bar.text:SetFormattedText(PREC_FMT[precision], recov)
             end
             if ma.barShowIcon ~= false and spellIcon then slot.bar.icon:SetTexture(spellIcon); slot.bar.icon:Show() else slot.bar.icon:Hide() end
             slot.bar:Show()
@@ -1289,7 +1317,7 @@ local function ShowMovementSlot(index, cdInfo, spellEntry, duration)
                 -- the poll every tick; the engine numbers are suppressed here
                 -- and serve only the secret branch.
                 slot.icon.cooldown:SetHideCountdownNumbers(true)
-                slot.icon.timeText:SetFormattedText("%." .. precision .. "f", cdRemaining)
+                slot.icon.timeText:SetFormattedText(PREC_FMT[precision], cdRemaining)
             end
             slot.icon:Show()
         else
@@ -1326,7 +1354,7 @@ local function ShowMovementSlot(index, cdInfo, spellEntry, duration)
             slot.bar.text:SetShown(false)
         elseif showRemaining then
             slot.bar.text:SetShown(true)
-            slot.bar.text:SetFormattedText("%." .. precision .. "f", cdRemaining)
+            slot.bar.text:SetFormattedText(PREC_FMT[precision], cdRemaining)
         else
             slot.bar.text:SetShown(false)
             if fromDuration then ShowEngineCountdownCentred(slot, slot.bar, duration) end
@@ -1652,6 +1680,12 @@ local function RequestMovementCheckWithCharges()
     movementCheckCharges = true
     movementCheckFrame:Show()
 end
+movementRepaintFrame:SetScript("OnUpdate", function(self)
+    if GetTime() >= movementRepaintAt then
+        self:Hide()
+        RequestMovementCheck()
+    end
+end)
 
 CheckMovementCooldown = function()
     -- The options-panel preview owns the display while it runs; the real
@@ -1738,9 +1772,10 @@ CheckMovementCooldown = function()
         activeSlotCount = count
         LayoutDisplaySlots(count)
         movementFrame:Show()
-        CancelMovementCountdown()
-        -- Fixed 100ms display refresh (smooth 1-decimal countdown).
-        movementCountdownTimer = C_Timer.NewTimer(0.1, RequestMovementCheck)
+        -- Fixed 100ms display refresh (smooth 1-decimal countdown): every check
+        -- moves the deadline, as a fresh one-shot timer did.
+        movementRepaintAt = GetTime() + 0.1
+        movementRepaintFrame:Show()
     else
         activeSlotCount = 0
         -- EnsureBuffAlertLane just showed/parked the host for this pass; leave
@@ -1860,8 +1895,8 @@ end
 --  Time Spiral -- flashes when a tracked mobility spell's cooldown is
 --  proc-reset (generic spell-activation-overlay glow on a tracked spell).
 --  A second, CDM-bar based implementation of this same proc exists in
---  EllesmereUICooldownManager\EllesmereUICdmBuffBars.lua's "timespiral"
---  Tracked Buff Bar preset (~line 3590). The two are independent (this one
+--  EllesmereUICooldownManager\EUI_CDM_BuffBarPresets.lua's "timespiral"
+--  Tracked Buff Bar preset. The two are independent (this one
 --  works without any CDM bar) but share the same spell/talent-filter lists --
 --  keep MOVEMENT_ABILITIES[...].filter above in sync with that file's
 --  TIME_SPIRAL_GLOW_FILTERS if either changes. Enabling both trackers at

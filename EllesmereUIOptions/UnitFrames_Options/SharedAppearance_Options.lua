@@ -9,12 +9,19 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUIUnitFrames"]
 if not ns then return end  -- module disabled: no options page
 
+-- Page reuse: the frames this file builds under a kept page go through the
+-- options frame pool (EllesmereUI_FramePool.lua), which hands the next build
+-- the previous build's frames reset to new; on any other parent it is the
+-- plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 function ns.UFO_BuildDisplaySection(parent, y, ctx)
     local env = ns._UFO_OptEnv
     local AttachFrameSourceCog, BuildBarTexDropdown, BuildInactiveNotice, CLASS_FULL_COORDS = env.AttachFrameSourceCog, env.BuildBarTexDropdown, env.BuildInactiveNotice, env.CLASS_FULL_COORDS
     local CLASS_FULL_SPRITE_BASE, GROUP_UNIT_ORDER, PP, PromptReloadIfUnspawned = env.CLASS_FULL_SPRITE_BASE, env.GROUP_UNIT_ORDER, env.PP, env.PromptReloadIfUnspawned
     local ReloadAndUpdate, SHORT_LABELS, UNIT_DB_MAP, UpdatePreview = env.ReloadAndUpdate, env.SHORT_LABELS, env.UNIT_DB_MAP, env.UpdatePreview
     local db, frames, optState, portraitArtValues = env.db, env.frames, env.optState, env.portraitArtValues
+    local TexBgRowCfg = env.TexBgRowCfg
     local W, SDB, SGet, SSet = ctx.W, ctx.SDB, ctx.SGet, ctx.SSet
     local SVal = ctx.SVal
     local _, h
@@ -316,6 +323,11 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                 getCurrentKey = function() return optState.selectedUnit end,
                 onApply       = function(checkedKeys) ApplyTexTo(checkedKeys) end,
             },
+        })
+        -- Textured Background cog (same region, after the sync icon).
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Texture Settings",
+            rows = { TexBgRowCfg(function() return UNIT_DB_MAP[optState.selectedUnit]() end, ReloadAndUpdate) },
         })
     end
 

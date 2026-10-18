@@ -399,7 +399,7 @@ local function StyleFullFrame(frame, unit)
 
     CreateUnifiedBorder(frame, unit)
     UpdateBordersForScale(frame, unit)
-    ReparentBarsToClip(frame, settings.powerPosition, settings)
+    ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
     -- Raid target marker icon -- oUF's RaidTargetIndicator element manages
     -- visibility via RAID_TARGET_UPDATE. We only assign the element when
@@ -672,7 +672,7 @@ local function StyleFocusFrame(frame, unit)
 
     CreateUnifiedBorder(frame, unit)
     UpdateBordersForScale(frame, unit)
-    ReparentBarsToClip(frame, settings.powerPosition, settings)
+    ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
     -- Raid target marker icon
     do
@@ -967,7 +967,7 @@ local function StyleSimpleFrame(frame, unit)
 
     CreateUnifiedBorder(frame, unit)
     UpdateBordersForScale(frame, unit)
-    ReparentBarsToClip(frame, settings.powerPosition, settings)
+    ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
     -- Text overlay frame (parented to frame, not health, to avoid clipping)
     local textOverlay = CreateFrame("Frame", nil, frame)
@@ -1135,7 +1135,7 @@ local function StyleBossFrame(frame, unit)
 
     CreateUnifiedBorder(frame, unit)
     UpdateBordersForScale(frame, unit)
-    ReparentBarsToClip(frame, settings.powerPosition, settings)
+    ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
     -- Raid target marker icon (boss frames) -- anchored outside the LEFT edge
     do
