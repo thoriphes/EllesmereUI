@@ -22,6 +22,9 @@ local _, ns = ...
 local EllesmereUI = _G.EllesmereUI
 
 ns.NPC_OwnsAuras = true
+-- Born in this module's main chunk, so the aura containers it builds bill this
+-- module (AuraKit's shared build scheduler).
+local AKWorker = EllesmereUI.AuraKit.NewBuildWorker()
 
 local AK
 -- Warm-cache size only, no longer a hard ceiling: container creation is
@@ -261,7 +264,8 @@ local NPB = {
 
 -- The split costs an extra engine group per plate, so take it only when the
 -- halves must differ: one dispel type known and not the other, or both known
--- with per-type colors on. AND ONLY UNRESTRICTED: candidate filters read
+-- with per-type colors on (never for Blizzard Pandemic Border, which takes no
+-- color). AND ONLY UNRESTRICTED: candidate filters read
 -- auraData.dispelName, and enemy aura data is REDACTED in restricted content
 -- (the documented isStealable incident above BuffCand) -- there the
 -- include-Magic candidate matches nothing and every buff would fall into the
@@ -273,6 +277,7 @@ function NPB.Split()
     if AK and AK.AurasRestricted and AK.AurasRestricted() then return false end
     local magic, enrage = ns.GetOffensiveDispelTypes()
     if magic ~= enrage then return true end
+    if ns.GetDispelGlowStyle() == EllesmereUI.Glows.PANDEMIC_BORDER then return false end
     return (ns.GetDispelGlowUseTypeColor and ns.GetDispelGlowUseTypeColor()) or false
 end
 
@@ -287,89 +292,93 @@ function NPB.GroupGlow(idx)
     return magic == true, "magic"
 end
 
+-- The glow host of an engine aura button in d[key], made on first use (in the
+-- button's creation window, or by a restyle out of restriction): a child of
+-- the engine button (cross-tree anchoring TO engine buttons is disallowed --
+-- the dependent would inherit their forbidden aspects) covering it. Just above
+-- the border, below the duration/stack text: the text carrier sits one level
+-- over the border host, so slot in at carrier-1 (equal level with the border
+-- host still draws the glow on top of the border, created later). Bound to
+-- the button (EllesmereUI.Glows.BindEngineHost): the button itself plays the
+-- glow's animations while it shows an aura and stops them whenever it has
+-- none, so the hosts on hidden pooled buttons cost nothing. No prewarm:
+-- StartSpecGlow makes the regions of the style it draws, so a default host
+-- holds just the static border, and a later style makes its own.
+local function NPGlowHost(button, d, key)
+    local host = d[key]
+    if host then return host end
+    host = CreateFrame("Frame", nil, button)
+    host:SetAllPoints(button)
+    if d.stackCarrier then
+        host:SetFrameLevel(d.stackCarrier:GetFrameLevel() - 1)
+    else
+        host:SetFrameLevel(button:GetFrameLevel() + 1)
+    end
+    host:EnableMouse(false)
+    d[key] = host
+    -- NPB.bound: some button plays a glow itself, so a pooled bundle's
+    -- buttons are worth releasing (NPB.ReleaseGlowButtons).
+    if EllesmereUI.Glows.BindEngineHost(host, button, d) then NPB.bound = true end
+    return host
+end
+
+-- Draws spec on the glow host, sized to the icon (the height follows cropped
+-- icons); unchanged, StartSpecGlow returns at once. A bound host always draws:
+-- its button decides when the animations play. An unbound one (a client whose
+-- buttons cannot run animations themselves) plays on its own, so it draws only
+-- on the buttons that can ever show an aura (AuraKit.ButtonCanShow; the others
+-- are dressed again when their group's cap grows).
+local function NPStartGlow(button, host, spec, style)
+    local Glows = EllesmereUI.Glows
+    host:SetAlpha(1)
+    if Glows.IsEngineHostBound(host) or EllesmereUI.AuraKit.ButtonCanShow(button) then
+        local sz = style.width or 24
+        Glows.StartSpecGlow(host, spec, sz, style.height or sz, "engine")
+    elseif host._euiGlowActive then
+        Glows.StopGlow(host)
+    end
+end
+
+-- Dispel Glow on the buff row: every buff in the glow group is dispellable (the
+-- group filter says so), so the glow rides the button's own visibility -- no
+-- readback of per-aura state. purgeSpec is the dispel glow's full spec
+-- (ns.GetDispelGlowSpec), built once per style pass. The static Blizzard
+-- Border and Blizzard Pandemic Border render through the same call.
 local function ApplyNPBuffExtra(button, d, style)
     ApplyNPText(button, d, style)
-    local Glows = EllesmereUI.Glows
     if style.purgeGlow and style.purgeSpec then
-        local sz = style.width or 24
-        local host = d.npGlowHost
-        if not host then
-            -- Child of the engine button (cross-tree anchoring TO engine
-            -- buttons is disallowed -- the dependent would inherit their
-            -- forbidden aspects). Visibility therefore rides the button:
-            -- the shared Glows driver skips hidden pool buttons for free, and under
-            -- restriction (secret visibility) it skips the ticks too -- the glow
-            -- renders statically there, same accepted degrade as the RF CC glow.
-            host = CreateFrame("Frame", nil, button)
-            host:SetAllPoints(button)
-            -- Just above the border, below the duration/stack text: the
-            -- text carrier sits one level over the border host, so slot in
-            -- at carrier-1. Equal level with the border host still draws
-            -- the glow on top of the border (created later).
-            if d.stackCarrier then
-                host:SetFrameLevel(d.stackCarrier:GetFrameLevel() - 1)
-            else
-                host:SetFrameLevel(button:GetFrameLevel() + 1)
-            end
-            host:EnableMouse(false)
-            d.npGlowHost = host
-            -- nil need: every family (Pixel, the flipbooks and Blizzard Border).
-            Glows.PrewarmEngineHost(host, sz, style.height or sz, nil)
-        end
-        -- Every buff in this row is dispellable (the group filter says so), so the glow
-        -- rides the button's own visibility -- no readback of per-aura state.
-        host:SetAlpha(1)
-        -- C-side animations only: identical in and out of restricted content.
-        -- purgeSpec is the dispel glow's full spec (ns.GetDispelGlowSpec), built
-        -- once per style pass; the height follows cropped icons. Blizzard
-        -- Border (static stealable art) renders through the same call.
-        Glows.StartSpecGlow(host, style.purgeSpec, sz, style.height or sz, "engine")
+        NPStartGlow(button, NPGlowHost(button, d, "npGlowHost"), style.purgeSpec, style)
     elseif d.npGlowHost then
-        if d.npGlowHost._euiGlowActive then Glows.StopGlow(d.npGlowHost) end
-        d.npGlowHost:SetAlpha(0)
+        local host = d.npGlowHost
+        if host._euiGlowActive then EllesmereUI.Glows.StopGlow(host) end
+        host:SetAlpha(0)
     end
 end
 
 -- Pandemic Glow on debuff icons. The glow host is a PANDEMIC REGION of the
 -- engine button: the client shows it only while the aura is in its pandemic
--- window (12.1.0 checks the window every frame while one exists, 12.1.5 on a
--- timer), also under restriction, and its shown state is secret -- nothing
--- here reads it. The glow inside runs C-side only (StartSpecGlow "engine").
--- Off, the region is cleared, so the button no longer checks the window.
--- Blizzard's aura code runs in its own environment (no global mixin to
--- test), so the button's own method is the one capability check.
+-- window, also under restriction, and its shown state is secret -- nothing
+-- here reads it. Its animations run while the button shows an aura (the host
+-- binding above) and are seen only inside the window. Off, the region is
+-- cleared, so the button no longer checks the window. Blizzard's aura code
+-- runs in its own environment (no global mixin to test), so the button's own
+-- method is the one capability check.
 local function ApplyNPDebuffExtra(button, d, style)
     ApplyNPText(button, d, style)
-    local Glows = EllesmereUI.Glows
     local host = d.npPanHost
     if style.pandemicGlow and style.pandemicSpec and button.AddPandemicRegion then
-        local sz = style.width or 24
-        if not host then
-            host = CreateFrame("Frame", nil, button)
-            host:SetAllPoints(button)
-            -- Same slot as the buff row's purge glow: above the border, below
-            -- the duration/stack text.
-            if d.stackCarrier then
-                host:SetFrameLevel(d.stackCarrier:GetFrameLevel() - 1)
-            else
-                host:SetFrameLevel(button:GetFrameLevel() + 1)
-            end
-            host:EnableMouse(false)
-            d.npPanHost = host
-            Glows.PrewarmEngineHost(host, sz, style.height or sz, nil)
-        end
+        host = NPGlowHost(button, d, "npPanHost")
         if not d.npPanRegion then
             button:AddPandemicRegion(host)
             d.npPanRegion = true
         end
-        host:SetAlpha(1)
-        Glows.StartSpecGlow(host, style.pandemicSpec, sz, style.height or sz, "engine")
+        NPStartGlow(button, host, style.pandemicSpec, style)
     elseif host then
         if d.npPanRegion then
             button:ClearPandemicRegions()
             d.npPanRegion = nil
         end
-        if host._euiGlowActive then Glows.StopGlow(host) end
+        if host._euiGlowActive then EllesmereUI.Glows.StopGlow(host) end
         host:SetAlpha(0)
     end
 end
@@ -1105,7 +1114,7 @@ end
 
 -- Declares or parks the non-Magic glow group to match the current split, on
 -- containers that already existed when capability / restriction / the type
--- color option changed.
+-- color option / the dispel glow style changed.
 function NPB.Apply(container)
     if not container then return end
     local split = NPB.Split()
@@ -1649,6 +1658,52 @@ function ns.NPC_AttachPlate(plate, unit)
     ReanchorArrows(plate)
 end
 
+-- True while a built glow spec plays animations: everything but the static
+-- Blizzard Pandemic Border and Blizzard Border.
+function NPB.Animated(on, spec)
+    if not (on and spec) then return false end
+    local G = EllesmereUI.Glows
+    return spec.style ~= G.PANDEMIC_BORDER and spec.style ~= G.STEALABLE_BORDER
+end
+
+-- Switches an enabled group off and straight back on: off releases its buttons
+-- at once (each clears its aura and stops the animations it plays), on keeps
+-- the group live for the next attach. A group already off is left alone.
+function NPB.CycleGroup(c, key)
+    local ok, on = pcall(c.IsAuraGroupEnabled, c, key)
+    if ok and on == true and pcall(c.SetAuraGroupEnabled, c, key, false) then
+        pcall(c.SetAuraGroupEnabled, c, key, true)
+    end
+end
+
+-- A pooled bundle's holder is hidden, and a hidden container runs no aura
+-- pass: its unit "none" re-parse waits for the next attach, so every button
+-- that showed an aura at detach keeps it, and a bound glow on it keeps
+-- playing. Released here instead, after the hide (the group switches then
+-- register no events), only for the groups whose style draws an animated
+-- glow, and only once a host is bound: default (static) plates pay nothing.
+-- force: the style pass (NPC_ReloadAll), whose restyle may bind the hosts.
+function NPB.ReleaseGlowButtons(b, force)
+    if not ((force or NPB.bound) and AK and AK.styles) then return end
+    local st = AK.styles
+    local c = b.containers.debuffs
+    local s = st["np:debuffs"]
+    if c and s and NPB.Animated(s.pandemicGlow, s.pandemicSpec) then
+        NPB.CycleGroup(c, "np")
+        if c._npfGroups then
+            for key in pairs(c._npfGroups) do NPB.CycleGroup(c, key) end
+        end
+    end
+    c = b.containers.buffs
+    if not c then return end
+    s = st["np:buffs"]
+    if s and NPB.Animated(s.purgeGlow, s.purgeSpec) then NPB.CycleGroup(c, "np") end
+    s = st["np:buffs2"]
+    if c._npbSplit and s and NPB.Animated(s.purgeGlow, s.purgeSpec) then
+        NPB.CycleGroup(c, "np2")
+    end
+end
+
 function ns.NPC_DetachPlate(plate)
     waiting[plate] = nil
     if lastTargetPlate == plate then lastTargetPlate = nil end
@@ -1664,6 +1719,7 @@ function ns.NPC_DetachPlate(plate)
         end
     end
     b.holder:Hide()
+    NPB.ReleaseGlowButtons(b)
     b.holder:SetParent(UIParent)
     b.holder:ClearAllPoints()
     b.holder:SetPoint("CENTER", UIParent, "BOTTOMLEFT", -200, -200)
@@ -1698,14 +1754,6 @@ local function StyleFPFor(kind, idx)
         if sp then
             purge = FP(idx or 1, glow, sp.style, sp.r, sp.g, sp.b, sp.lines, sp.thickness,
                 sp.speed, sp.bg, sp.bgR, sp.bgG, sp.bgB)
-            -- Class mode: the print holds the palette colour; keep it for the
-            -- colours-changed hook below NPC_ReloadAll. The mode is one profile
-            -- value, so any other mode clears it (no reload on later edits).
-            if PVal("dispelGlowColorMode") ~= "class" then
-                NPB.ccR = nil
-            elseif glow then
-                NPB.ccR, NPB.ccG, NPB.ccB = EllesmereUI.Glows.ResolveColor("class")
-            end
         end
     end
     -- Pandemic Glow (debuffs): every input of BuildNPStyle's pandemic fields,
@@ -1814,7 +1862,7 @@ end
 local function QueueBundleEnsure(b)
     if b.npcEnsurePending then return end
     b.npcEnsurePending = true
-    AK.QueueBuildJob(function()
+    AKWorker:Queue(function()
         local ds, bs, cs = ns.GetAuraSlots()
         -- Combat-legal since 68914: AddBundle* consume a pre-born shell when
         -- one exists and create fresh otherwise, in any combat state.
@@ -1834,6 +1882,22 @@ local function QueueBundleEnsure(b)
         NpEnsureWireSoon()
         b.npcEnsurePending = nil
     end, "np:ensure")
+end
+
+-- Class mode on an aura glow (Dispel or Pandemic) that takes a color: the style
+-- prints hold the palette colour, kept here for the colours-changed hook below
+-- NPC_ReloadAll. Any other state clears it, so later colour edits never reload.
+function NPB.SnapClassColor()
+    local PB = EllesmereUI.Glows.PANDEMIC_BORDER
+    local class = (PurgeGlowActive() and PVal("dispelGlowColorMode") == "class"
+            and ns.GetDispelGlowStyle() ~= PB)
+        or (ns.GetPandemicGlow() and PVal("pandemicGlowMode") == "class"
+            and ns.GetPandemicGlowStyle() ~= PB)
+    if class then
+        NPB.ccR, NPB.ccG, NPB.ccB = EllesmereUI.Glows.ResolveColor("class")
+    else
+        NPB.ccR = nil
+    end
 end
 
 function ns.NPC_ReloadAll()
@@ -1860,6 +1924,7 @@ function ns.NPC_ReloadAll()
 
     local v = StyleFPFor("debuffs") .. ";" .. StyleFPFor("buffs") .. ";"
         .. StyleFPFor("buffs", 2) .. ";" .. StyleFPFor("cc")
+    NPB.SnapClassColor()
     if npFP.style ~= v then
         npFP.style = v
         for i = 1, #KINDS do
@@ -1873,6 +1938,10 @@ function ns.NPC_ReloadAll()
         AK.RestyleSoon("np:buffs2")
         AK.styles["np:buffsplain"] = BuildNPStyle("buffs", "plain")
         AK.RestyleSoon("np:buffsplain")
+        -- A bundle pooled while its glow was static (or off) kept the auras
+        -- it showed; release those buttons before the restyle above hands
+        -- them an animated glow, or it would play on the pooled bundle.
+        for i = 1, #pool do NPB.ReleaseGlowButtons(pool[i], true) end
     end
 
     v = CfgFP()
@@ -1945,8 +2014,8 @@ function ns.NPC_ReloadAll()
 end
 
 -- Colors page edits (swatches, darken, resets, profile switches) all end in
--- ApplyColorsToOUF. Once a Class-mode dispel glow was printed, a changed class
--- colour re-runs the reload; the purge print carries the colour, so only the
+-- ApplyColorsToOUF. Once a Class-mode aura glow was printed, a changed class
+-- colour re-runs the reload; the glow prints carry the colour, so only the
 -- glow styles restyle. Calls in one frame (a profile switch can make two)
 -- collapse into one check on the next frame: the flush frame stays hidden
 -- until a call and hides itself before working.
@@ -1987,13 +2056,13 @@ function QueueBundleBuild() -- forward-declared local (pool growth + login build
         local nb
         -- Fully combat-legal since 68914 (skeleton creation included), so
         -- after an in-combat /reload the whole pool builds WHILE fighting.
-        AK.QueueBuildJob(function()
+        AKWorker:Queue(function()
             nb = table.remove(skeletons)
             if not nb then nb = CreateBundleSkeleton() end
             local ds = ns.GetAuraSlots()
             if ds and ds ~= "none" then AddBundleDebuffs(nb) end
         end, "np:debuffs")
-        AK.QueueBuildJob(function()
+        AKWorker:Queue(function()
             if not nb then return end -- bundle lost to a hard error upstream
             local _, bs = ns.GetAuraSlots()
             if bs and bs ~= "none" then AddBundleBuffs(nb) end
@@ -2003,7 +2072,7 @@ function QueueBundleBuild() -- forward-declared local (pool growth + login build
         -- cost to its third strike). "again" front-requeues, so the attach still
         -- follows its own bundle before any newer work.
         local pooled = false
-        AK.QueueBuildJob(function()
+        AKWorker:Queue(function()
             if not nb then return end -- bundle lost to a hard error upstream
             if not pooled then
                 local _, _, cs = ns.GetAuraSlots()
