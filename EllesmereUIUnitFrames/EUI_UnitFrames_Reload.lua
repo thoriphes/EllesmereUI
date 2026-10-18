@@ -110,7 +110,7 @@ ReloadFramesBody = function()
             -- can end up behind the frame's own border, however "Detached Power Bar" strata is configured.
             if frame.Power then
                 local us2 = GetSettingsForUnit(unitKey)
-                local ppPos = us2 and us2.powerPosition or "below"
+                local ppPos = ns.UF_PowerPos(us2)
                 if ppPos == "detached_top" or ppPos == "detached_bottom" then
                     if profile.enableCustomBarStratas then
                         frame.Power:SetFrameStrata(profile.detachedPowerStrata or "HIGH")
@@ -348,7 +348,7 @@ ReloadFramesBody = function()
             end
 
             if unit == "player" or unit == "target" then
-                local ppPos = settings.powerPosition or "below"
+                local ppPos = ns.UF_PowerPos(settings)
                 local ppIsAtt = (ppPos == "below" or ppPos == "above")
                 local ppExtra = ppIsAtt and settings.powerHeight or 0
                 local playerTargetHeight = settings.healthHeight + ppExtra
@@ -702,7 +702,7 @@ ReloadFramesBody = function()
                     end
 
                     UpdateBordersForScale(frame, unit)
-                    ReparentBarsToClip(frame, settings.powerPosition, settings)
+                    ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
                 elseif unit == "target" then
                     local pSide = settings.portraitSide or "right"
@@ -984,13 +984,13 @@ ReloadFramesBody = function()
                     end
 
                     UpdateBordersForScale(frame, unit)
-                    ReparentBarsToClip(frame, settings.powerPosition, settings)
+                    ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
                 end
 
                 -- (health tag re-tagging now handled by _applyTextTags above)
 
             elseif unit == "focus" then
-                local fPpPos = settings.powerPosition or "below"
+                local fPpPos = ns.UF_PowerPos(settings)
                 local fPpIsAtt = (fPpPos == "below" or fPpPos == "above")
                 local powerHeight = fPpIsAtt and (settings.powerHeight or 6) or 0
                 local focusBarHeight = settings.healthHeight + powerHeight
@@ -1265,7 +1265,7 @@ ReloadFramesBody = function()
                 end
 
                 UpdateBordersForScale(frame, unit)
-                ReparentBarsToClip(frame, settings.powerPosition, settings)
+                ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
             elseif unit == "pet" or unit == "targettarget" or unit == "focustarget" then
                 -- Pet, ToT and FoT all share the same simple-frame layout:
@@ -1338,7 +1338,7 @@ ReloadFramesBody = function()
                 end
 
                 UpdateBordersForScale(frame, unit)
-                ReparentBarsToClip(frame, settings.powerPosition, settings)
+                ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
             elseif unit:match("^boss%d$") then
                 local bPpPos = settings.powerPosition or "below"
@@ -1544,7 +1544,7 @@ ReloadFramesBody = function()
                 end
 
                 UpdateBordersForScale(frame, unit)
-                ReparentBarsToClip(frame, settings.powerPosition, settings)
+                ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
             end
 
             -- Determine if this is a mini frame that inherits border/texture/font
@@ -1896,9 +1896,64 @@ ReloadFramesBody = function()
             end
         end
     end
-    -- WoW Forever: the combo point arc round the target portrait, placed on
-    -- the geometry the sweep just settled (returns at once everywhere else).
+    -- WoW Forever: the combo point arc round its host frame's portrait, placed
+    -- on the geometry the sweep just settled (returns at once everywhere else).
     ns.UF_ApplyForeverComboArc()
+
+    -- Rounded corners (EllesmereUI_RoundedCorners.lua), on the settled
+    -- geometry. The radius rides with the border source, like the border; a
+    -- detached power bar rounds on its own with the same radius. An attached
+    -- portrait joins with its own art only: the dragons on it reach past the
+    -- frame and stay whole.
+    for unit, frame in pairs(frames) do
+        if type(unit) == "string" and type(frame) == "table" and frame.unifiedBorder then
+            local isMini = (unit == "pet" or unit == "targettarget" or unit == "focustarget")
+            local isBoss = unit:match("^boss%d$") and true or false
+            local src = isBoss and ns.UF_BossBorderSettings()
+                or (isMini and GetMiniDonorSettings(unit)) or GetSettingsForUnit(unit)
+            local us = GetSettingsForUnit(unit)
+            local radius = (not frame._blizzArtFrame and src and src.cornerRadius) or 0
+            local corners = src and src.cornerMask
+            local power = frame.Power
+            local pp = ns.UF_PowerPos(us)
+            local det = pp == "detached_top" or pp == "detached_bottom"
+            -- Join Power Bar: a detached bar right above or below the frame
+            -- shares its outline (the frame keeps the far corners).
+            local pCorners = corners
+            if det and us.cornerJoinPower then
+                local upper, lower = EllesmereUI.RoundedJoinCorners(corners)
+                if pp == "detached_bottom" then corners, pCorners = upper, lower
+                else corners, pCorners = lower, upper end
+            end
+            if radius > 0 then
+                local ps = us and us.portraitStyle or profile.portraitStyle or "attached"
+                local attached = ps == "attached" or ((isMini or isBoss) and ps == "detached")
+                local bd = frame.Portrait and frame.Portrait.backdrop
+                if not (attached and bd and bd:IsShown()) then bd = nil end
+                local btb = frame.BottomTextBar
+                EllesmereUI.RoundCorners(frame, radius, {
+                    roots = { frame._barClip, btb and not btb._isDetached and btb or nil },
+                    textures = { bd and bd._bg, bd and bd._2d, bd and bd._class },
+                    border = frame.unifiedBorder,
+                    clip = frame._barClip,
+                    style = src.borderTexture or "solid",
+                    corners = corners,
+                })
+            else
+                EllesmereUI.RoundCorners(frame, 0)
+            end
+            if power then
+                if det and radius > 0 then
+                    EllesmereUI.RoundCorners(power, radius, {
+                        border = power._pbBorder, style = us.powerBorderStyle or "solid",
+                        corners = pCorners,
+                    })
+                else
+                    EllesmereUI.RoundCorners(power, 0)
+                end
+            end
+        end
+    end
 
     -- Player Aura Bars resolve font path and outline flag at style-build time; every
     -- settings path landing here (fonts, profiles, options) forces one explicit

@@ -1,14 +1,18 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
 --  EllesmereUI_Widgets_RowAddons.lua
---  Row add-ons: inline toggle, cog and button, the less-common expander,
---  inline swatches, the section gates and the cursor anchor row. Reads
---  BuildCogPopup and BuildColorSwatch, so it loads after
---  EllesmereUI_Widgets_CogPopup.lua.
+--  Row add-ons: inline toggle, cog and button, the row-label and button
+--  menus, the less-common expander, inline swatches, the section gates and
+--  the cursor anchor row. Reads BuildCogPopup and BuildColorSwatch, so it
+--  loads after EllesmereUI_Widgets_CogPopup.lua.
 --  DEFERRED: body runs on first EllesmereUI:EnsureLoaded() call, not at load.
 -------------------------------------------------------------------------------
 local EllesmereUI = _G.EllesmereUI
 EllesmereUI._deferredInits[#EllesmereUI._deferredInits + 1] = function()
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host are reset and dressed again by the next build instead of made anew;
+-- elsewhere this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
 local PP = EllesmereUI.PanelPP
 local RegisterWidgetRefresh = EllesmereUI.RegisterWidgetRefresh
 local MakeStyledButton = EllesmereUI.MakeStyledButton
@@ -19,6 +23,8 @@ local ResolveDisabledTip = EllesmereUI.ResolveDisabledTip
 local BuildToggleControl = EllesmereUI.BuildToggleControl
 local BuildColorSwatch = EllesmereUI.BuildColorSwatch
 local BuildCogPopup = EllesmereUI.BuildCogPopup
+local BuildDropdownMenu = EllesmereUI.BuildDropdownMenu
+local WireDropdownScripts = EllesmereUI.WireDropdownScripts
 
 -- Inline toggle: a small toggle placed inline inside a DualRow half-region,
 -- chaining left of the control (slider/dropdown) like the sync icon / cog. Used
@@ -43,6 +49,7 @@ end
 
 -- Inline cog button on a DualRow half-region, left of its control (or of the last inline item). Returns cogBtn, showFn; nil during the search prebuild.
 -- opts: BuildCogPopup's own opts (title, rows, captureRegion, minWidth, ...) or show(btn) + optional isOpen(btn) for a custom popup; icon, size (26), gap (8), anchorTo,
+--   relPoint (the anchor's side the cog's right edge sits on, LEFT; a host that is not a DualRow half passes anchorTo = itself, relPoint = "RIGHT", gap = 0),
 --   chain (default true: anchors to and becomes region._lastInline), tip, disabled + disabledTooltip/rawTooltip/requireState (as ResolveDisabledTip; default: the host control's).
 -- Alpha: 0.15 disabled, 0.4 idle, 0.7 hovered or while its popup is open. Disabled blocks the click and shows the requirement tooltip.
 local function BuildInlineCog(rgn, opts)
@@ -56,7 +63,7 @@ local function BuildInlineCog(rgn, opts)
     local size = opts.size or 26
     local btn = CreateFrame("Button", nil, rgn)
     btn:SetSize(size, size)
-    PP.Point(btn, "RIGHT", opts.anchorTo or (opts.chain ~= false and rgn._lastInline) or rgn._control or rgn, "LEFT", -(opts.gap or 8), 0)
+    PP.Point(btn, "RIGHT", opts.anchorTo or (opts.chain ~= false and rgn._lastInline) or rgn._control or rgn, opts.relPoint or "LEFT", -(opts.gap or 8), 0)
     if opts.chain ~= false then rgn._lastInline = btn end
     btn:SetFrameLevel(rgn:GetFrameLevel() + 5)
     local tex = btn:CreateTexture(nil, "OVERLAY")
@@ -102,10 +109,11 @@ end
 -- Inline text button on a DualRow half-region, left of its last inline item or
 -- control (or at the half's right edge when it has neither, e.g. a label half).
 -- opts: width (110), height (24), gap (8), chain (default true: becomes
--- region._lastInline), disabled + disabledTooltip/rawTooltip/requireState (as
--- ResolveDisabledTip): greyed, click-blocked and explaining itself while
--- disabled, re-checked with the page's widgets. Returns the button; nil during
--- the search prebuild.
+-- region._lastInline), tip (a string, or a function returning one: the hover
+-- tooltip while enabled), disabled + disabledTooltip/rawTooltip/requireState
+-- (as ResolveDisabledTip): greyed, click-blocked, without hover colours and
+-- explaining itself on hover while disabled, re-checked with the page's
+-- widgets. Returns the button; nil during the search prebuild.
 function EllesmereUI.BuildInlineButton(rgn, text, onClick, opts)
     if EllesmereUI._prebuilding then return end
     opts = opts or {}
@@ -120,23 +128,186 @@ function EllesmereUI.BuildInlineButton(rgn, text, onClick, opts)
     if opts.chain ~= false then rgn._lastInline = btn end
     btn:SetFrameLevel(rgn:GetFrameLevel() + 5)
     MakeStyledButton(btn, text, 11, WB_COLOURS, onClick)
-    if opts.disabled then
+    local tip, disabled = opts.tip, opts.disabled
+    if not (tip or disabled) then return btn end
+    -- The styled button's hover scripts paint its hover colours; these wrap
+    -- them so a disabled button keeps its resting colours.
+    local hoverOn, hoverOff = btn:GetScript("OnEnter"), btn:GetScript("OnLeave")
+    -- A state with no text hides the other state's tooltip (a flip replays this).
+    local function OnEnter(self)
+        if disabled and disabled() then
+            hoverOff(self)
+            local t = ResolveDisabledTip(opts)
+            if t then ShowWidgetTooltip(self, t) else HideWidgetTooltip() end
+            return
+        end
+        hoverOn(self)
+        local t = tip
+        if type(t) == "function" then t = t() end
+        if t then ShowWidgetTooltip(self, t) else HideWidgetTooltip() end
+    end
+    btn:SetScript("OnEnter", OnEnter)
+    btn:SetScript("OnLeave", function(self)
+        hoverOff(self)
+        HideWidgetTooltip()
+    end)
+    if disabled then
+        -- Motion scripts keep running while disabled, so hover explains the lock.
+        btn:SetMotionScriptsWhileDisabled(true)
+        local shownOff
         local function State()
-            local off = opts.disabled() and true or false
+            local off = disabled() and true or false
+            if off == shownOff then return end
+            local flipped = shownOff ~= nil
+            shownOff = off
             btn:SetEnabled(not off)
             btn:SetAlpha(off and 0.35 or 1)
+            -- A flip while it holds the mouse repaints and re-explains for the
+            -- new state (a menu open over it keeps the focus instead).
+            if flipped and GetMouseFoci()[1] == btn then OnEnter(btn) end
         end
-        -- A disabled button still gets hover: show why it is locked.
-        btn:HookScript("OnEnter", function(self)
-            if not opts.disabled() then return end
-            local tip = ResolveDisabledTip(opts)
-            if tip then ShowWidgetTooltip(self, tip) end
-        end)
-        btn:HookScript("OnLeave", function() HideWidgetTooltip() end)
         State()
         RegisterWidgetRefresh(State)
     end
     return btn
+end
+
+-------------------------------------------------------------------------------
+--  Row-Label and Button Menus
+--  The standard dropdown list opened from something that is not a dropdown
+--  control: a DualRow half's own label (BuildRowLabelMenu) or a button
+--  (AttachButtonMenu). The list is built on first open, takes the standard
+--  open/close behaviour and closes when its button hides. A pick writes its
+--  caption into a hidden stand-in, never over the label or the button's text.
+-------------------------------------------------------------------------------
+local ROW_MENU_ARROW = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-down3.png"
+-- WireDropdownScripts paints a dropdown button's border and background; these
+-- buttons keep their own look.
+local NO_PAINT = { SetColor = function() end, SetColorTexture = function() end }
+local function NoSelection() return nil end
+
+-- The accent, or a darker white when the accent itself is near white.
+local function RowMenuLitColor()
+    local ac = EllesmereUI.ELLESMERE_GREEN
+    if ac.r > 0.9 and ac.g > 0.9 and ac.b > 0.9 then return 0.72, 0.72, 0.72 end
+    return ac.r, ac.g, ac.b
+end
+
+-- A button over the half's label, with a chevron after the label: label and
+-- chevron white at rest, in the accent while hovered or while the list is open.
+-- opts: order, values, getValue(), setValue(v), itemDisabled(v) (nil, true or a
+--   tooltip string, as BuildDropdownMenu's disabledValuesFn), tooltip (on hover
+--   while the list is closed), menuWidth (170); optional locked() + lockTip() +
+--   rawLockTip (as ResolveDisabledTip's rawTooltip): while locked the chevron
+--   hides, clicks do nothing and hover explains the lock, re-checked with the
+--   page's widgets. Never touches region._lastInline or region._control.
+-- Returns the button; nil during the search prebuild.
+local function BuildRowLabelMenu(rgn, opts)
+    if EllesmereUI._prebuilding then return end
+    local label = rgn._label
+    if not label then return end
+    local locked = opts.locked
+    local lockCfg = locked and { disabledTooltip = opts.lockTip, rawTooltip = opts.rawLockTip }
+    local btn = CreateFrame("Button", nil, rgn)
+    btn:SetFrameLevel(rgn:GetFrameLevel() + 12)
+    local arrow = btn:CreateTexture(nil, "ARTWORK")
+    arrow:SetTexture(ROW_MENU_ARROW)
+    arrow:SetSize(17, 17)
+    arrow:SetPoint("LEFT", label, "LEFT", math.ceil(label:GetStringWidth()) + 6, -1)
+    btn:SetPoint("TOPLEFT", label, "TOPLEFT", -4, 5)
+    btn:SetPoint("BOTTOMRIGHT", arrow, "BOTTOMRIGHT", 2, -2)
+    local menu
+    local function Lit(on)
+        if on then
+            local r, g, b = RowMenuLitColor()
+            arrow:SetVertexColor(r, g, b)
+            label:SetTextColor(r, g, b)
+        else
+            arrow:SetVertexColor(1, 1, 1)
+            label:SetTextColor(EllesmereUI.TEXT_WHITE_R, EllesmereUI.TEXT_WHITE_G, EllesmereUI.TEXT_WHITE_B)
+        end
+    end
+    local function OnEnter()
+        if locked and locked() then
+            local tip = ResolveDisabledTip(lockCfg)
+            if tip then ShowWidgetTooltip(btn, tip) end
+            return
+        end
+        Lit(true)
+        if opts.tooltip and not (menu and menu:IsShown()) then ShowWidgetTooltip(btn, opts.tooltip) end
+    end
+    local function OnLeave()
+        if not (menu and menu:IsShown()) then Lit(false) end
+        HideWidgetTooltip()
+    end
+    btn:SetScript("OnEnter", OnEnter)
+    btn:SetScript("OnLeave", OnLeave)
+    local proxyLbl = EllesmereUI.MakeFont(btn, 12, nil, 1, 1, 1)
+    proxyLbl:Hide()
+    local function EnsureMenu()
+        if menu then return menu end
+        local m, _, refresh = BuildDropdownMenu(btn, opts.menuWidth or 170, opts.order, opts.values,
+            opts.getValue or NoSelection, opts.setValue, proxyLbl, "regular", opts.itemDisabled)
+        menu = m
+        -- The wiring takes the button's hover scripts: its own run again after.
+        WireDropdownScripts(btn, proxyLbl, NO_PAINT, NO_PAINT, menu, refresh, EllesmereUI.RD_DD_COLOURS, true)
+        btn:HookScript("OnEnter", OnEnter)
+        btn:HookScript("OnLeave", OnLeave)
+        menu:HookScript("OnShow", function() Lit(true) end)
+        menu:HookScript("OnHide", function() Lit(btn:IsMouseOver()) end)
+        return menu
+    end
+    btn:SetScript("OnClick", function()
+        if locked and locked() then return end
+        HideWidgetTooltip()
+        local m = EnsureMenu()
+        if m:IsShown() then m:Hide() else m:Show() end
+    end)
+    btn:HookScript("OnHide", function() if menu then menu:Hide() end end)
+    Lit(false)
+    if locked then
+        -- Disabled while locked, still hovered to explain the lock.
+        btn:SetMotionScriptsWhileDisabled(true)
+        local function SyncLock()
+            local off = locked() and true or false
+            arrow:SetShown(not off)
+            btn:SetEnabled(not off)
+        end
+        SyncLock()
+        RegisterWidgetRefresh(SyncLock)
+    end
+    return btn
+end
+
+-- The list hangs off the button, as wide as the button unless opts.width says
+-- otherwise; the button keeps its own hover look, held while the list shows.
+-- opts: width, order, values, getValue() (default: nothing selected),
+--   setValue(v), itemDisabled(v) (as BuildRowLabelMenu). Returns the toggle the
+--   button's click calls; nil during the search prebuild.
+local function AttachButtonMenu(btn, opts)
+    if EllesmereUI._prebuilding then return end
+    local enter, leave = btn:GetScript("OnEnter"), btn:GetScript("OnLeave")
+    local proxyLbl = EllesmereUI.MakeFont(btn, 12, nil, 1, 1, 1)
+    proxyLbl:Hide()
+    local menu
+    local function EnsureMenu()
+        if menu then return menu end
+        local m, _, refresh = BuildDropdownMenu(btn, opts.width or btn:GetWidth(), opts.order, opts.values,
+            opts.getValue or NoSelection, opts.setValue, proxyLbl, "regular", opts.itemDisabled)
+        menu = m
+        WireDropdownScripts(btn, proxyLbl, NO_PAINT, NO_PAINT, menu, refresh, EllesmereUI.RD_DD_COLOURS, true)
+        if enter then btn:HookScript("OnEnter", enter) end
+        if leave then
+            btn:HookScript("OnLeave", function(self) if not menu:IsShown() then leave(self) end end)
+            menu:HookScript("OnHide", function() if not btn:IsMouseOver() then leave(btn) end end)
+        end
+        return menu
+    end
+    btn:HookScript("OnHide", function() if menu then menu:Hide() end end)
+    return function()
+        local m = EnsureMenu()
+        if m:IsShown() then m:Hide() else m:Show() end
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -150,10 +321,9 @@ end
 --      end
 --      y = EllesmereUI.FinishLessCommonExpander(parent, y,
 --          "rfIndicators", "Show Less Common Indicator Options")
---  Expansion is session-only per sectionKey (never saved). The global "Auto Expand Less Common Settings" toggle
---  (EllesmereUIDB.autoExpandLessCommon, Global Settings -> General -> Display) renders everything expanded and
---  suppresses the links entirely. Clicking the link forces RefreshPage(true) to re-run the page builder -- the
---  no-arg fast path only re-reads values and would never reveal the collapsed rows.
+--  Sections start collapsed; expansion is session-only per sectionKey (never saved). Clicking the link forces
+--  RefreshPage(true) to re-run the page builder -- the no-arg fast path only re-reads values and would never
+--  reveal the collapsed rows.
 -------------------------------------------------------------------------------
 local LESS_COMMON_ARROW_DOWN = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-down3.png"
 local LESS_COMMON_ARROW_UP   = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-up3.png"
@@ -168,7 +338,6 @@ local function BuildLessCommonLink(parent, y, sectionKey, label, expanded)
     btn:SetHeight(22)
     btn:SetPoint("TOP", parent, "TOP", 0, y - 12)
     btn:SetFrameLevel(parent:GetFrameLevel() + 5)
-    btn:RegisterForClicks("LeftButtonUp", "MiddleButtonUp")
 
     local arrowTex = expanded and LESS_COMMON_ARROW_UP or LESS_COMMON_ARROW_DOWN
     local text = expanded and (label:gsub("^Show", "Hide", 1)) or label
@@ -193,29 +362,17 @@ local function BuildLessCommonLink(parent, y, sectionKey, label, expanded)
     btn:SetWidth(math.max((fs:GetStringWidth() or 0) + 2 * (ARROW_SZ + ARROW_GAP) + 8, 120))
 
     local EG = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
-    btn:SetScript("OnEnter", function(self)
+    btn:SetScript("OnEnter", function()
         fs:SetTextColor(EG.r, EG.g, EG.b); fs:SetAlpha(1)
         leftArrow:SetVertexColor(EG.r, EG.g, EG.b); leftArrow:SetAlpha(1)
         rightArrow:SetVertexColor(EG.r, EG.g, EG.b); rightArrow:SetAlpha(1)
-        ShowWidgetTooltip(self, "Shift+Middle Click to always show all settings")
     end)
     btn:SetScript("OnLeave", function()
         fs:SetTextColor(1, 1, 1); fs:SetAlpha(0.7)
         leftArrow:SetVertexColor(1, 1, 1); leftArrow:SetAlpha(0.7)
         rightArrow:SetVertexColor(1, 1, 1); rightArrow:SetAlpha(0.7)
-        HideWidgetTooltip()
     end)
-    btn:SetScript("OnClick", function(_, button)
-        if button == "MiddleButton" then
-            -- Shift+Middle Click = enable the global Auto Expand Less Common Settings toggle (Global Settings -> General -> Display). Cached pages were built collapsed, so drop them all before rebuilding.
-            if not IsShiftKeyDown() then return end
-            if not EllesmereUIDB then EllesmereUIDB = {} end
-            EllesmereUIDB.autoExpandLessCommon = true
-            HideWidgetTooltip()
-            EllesmereUI:InvalidatePageCache()
-            EllesmereUI:RefreshPage(true)
-            return
-        end
+    btn:SetScript("OnClick", function()
         local sess = EllesmereUI._lessCommonExpanded
         if not sess then sess = {}; EllesmereUI._lessCommonExpanded = sess end
         sess[sectionKey] = (not expanded) and true or nil
@@ -228,7 +385,8 @@ end
 local function BuildLessCommonExpander(parent, y, sectionKey, label)
     -- Hidden search pre-build: always build the wrapped rows so they register in the global search index; no link (the page is never shown).
     if EllesmereUI._prebuilding then return true, y end
-    if EllesmereUIDB and EllesmereUIDB.autoExpandLessCommon then return true, y end
+    -- This page reads the search flag: a search transition rebuilds it (SetLessCommonSearchActive).
+    EllesmereUI._passReadSearchFlag = true
     -- Active search (either box): sections render force-expanded with NO link line at all; clearing the search collapses them back. Transient flag -- the session Show/Hide state below is untouched and restores afterwards (see SetLessCommonSearchActive).
     if EllesmereUI._lessCommonSearchActive then return true, y end
     local sess = EllesmereUI._lessCommonExpanded
@@ -238,25 +396,24 @@ local function BuildLessCommonExpander(parent, y, sectionKey, label)
     return false, BuildLessCommonLink(parent, y, sectionKey, label, false)
 end
 
--- Call after the wrapped rows (safe to call unconditionally: no-ops while the section is collapsed, during the search pre-build, during an active search, or when the global auto-expand toggle is on).
+-- Call after the wrapped rows (safe to call unconditionally: no-ops while the section is collapsed, during the search pre-build or during an active search).
 local function FinishLessCommonExpander(parent, y, sectionKey, label)
     if EllesmereUI._prebuilding then return y end
-    if EllesmereUIDB and EllesmereUIDB.autoExpandLessCommon then return y end
+    EllesmereUI._passReadSearchFlag = true
     if EllesmereUI._lessCommonSearchActive then return y end
     local sess = EllesmereUI._lessCommonExpanded
     if not (sess and sess[sectionKey]) then return y end
     return BuildLessCommonLink(parent, y, sectionKey, label, true)
 end
 
--- Search-driven expansion (both the sidebar global box and the top-bar module box call this with query ~= ""). While active, every less-common section renders expanded with no link; on clear, sections fall back to their session Show/Hide state. Idempotent -- only transitions rebuild, dropping every cache and rebuilding the active page in place.
+-- Search-driven expansion (both the sidebar global box and the top-bar module box call this with query ~= ""). While active, every less-common section renders expanded with no link; on clear, sections fall back to their session Show/Hide state. Idempotent -- only transitions act, and only on the pages whose last build read the flag (the expanders above, Bar Glows): those go (or are marked for a rebuild), and the active one is rebuilt in place, unless a page switch is clearing the box (the page being left is rebuilt on its next visit).
 local function SetLessCommonSearchActive(active)
     active = active and true or false
     if (EllesmereUI._lessCommonSearchActive or false) == active then return end
     EllesmereUI._lessCommonSearchActive = active
-    -- With the global auto-expand toggle on, links never render and sections are always expanded: track the flag but skip the rebuild churn.
-    if EllesmereUIDB and EllesmereUIDB.autoExpandLessCommon then return end
-    EllesmereUI:InvalidatePageCache()
-    EllesmereUI:RefreshPage(true)
+    if EllesmereUI._InvalidateSearchSensitive() and not EllesmereUI._selectingPage then
+        EllesmereUI:RefreshPage(true)
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -268,6 +425,8 @@ end
 --  opts.size: the swatch size (nil = BuildColorSwatch's default 24).
 -------------------------------------------------------------------------------
 local function BuildInlineSwatches(region, swatches, opts)
+    -- Hidden search pre-build: swatches index nothing and the pre-built page is never shown, so none are built (its regions are stand-ins with no frame to build on).
+    if EllesmereUI._prebuilding then return end
     opts = opts or {}
     local level = region:GetFrameLevel() + 3
     local anchorTo = region._lastInline or region._control
@@ -374,6 +533,8 @@ end
 
 EllesmereUI.BuildInlineToggle    = BuildInlineToggle
 EllesmereUI.BuildInlineCog       = BuildInlineCog
+EllesmereUI.BuildRowLabelMenu    = BuildRowLabelMenu
+EllesmereUI.AttachButtonMenu     = AttachButtonMenu
 EllesmereUI.BuildLessCommonExpander   = BuildLessCommonExpander
 EllesmereUI.FinishLessCommonExpander  = FinishLessCommonExpander
 EllesmereUI.SetLessCommonSearchActive = SetLessCommonSearchActive

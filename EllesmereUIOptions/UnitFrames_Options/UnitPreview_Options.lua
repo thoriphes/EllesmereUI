@@ -9,6 +9,16 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUIUnitFrames"]
 if not ns then return end  -- module disabled: no options page
 
+-- Page reuse: the frames this file builds under a kept header root go through
+-- the options frame pool (EllesmereUI_FramePool.lua), which hands the next
+-- build the previous build's frames reset to new; on any other parent it
+-- is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+-- The pool's other calls this file makes, read once here as CreateFrame is:
+-- the page path never calls the pool through its public slot, which
+-- another addon could replace.
+local PoolOwned = EllesmereUI._Pool.Owned
+
 function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     local env = ns._UFO_OptEnv
     local ApplyClassIconTexture_Preview, ApplyPreviewPortraitShape, BlizzPreviewScale, CLASS_FULL_COORDS = env.ApplyClassIconTexture_Preview, env.ApplyPreviewPortraitShape, env.BlizzPreviewScale, env.CLASS_FULL_COORDS
@@ -50,13 +60,14 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
 
     side = side or "left"
 
-    -- Mini frames (ToT/FoT/Pet) render no power bar, debuffs or castbar at
-    -- runtime, so the preview must match. WoW Forever's pet has power: its
-    -- bar draws here in the EUI look (the stock styles paint their own).
+    -- Mini frames (ToT/FoT/Pet) have no power bar, cast bar or auras at
+    -- runtime, so the preview draws none, except the pet's opt-in buffs and
+    -- debuffs (drawn while their Location is set) and, on WoW Forever, the
+    -- pet's power bar in the EUI look (the stock styles paint their own).
     local isMiniPreview = (unitKey == "targettarget" or unitKey == "focustarget" or unitKey == "pet")
     local noPowerPreview = isMiniPreview
         and not (unitKey == "pet" and ns.UF_PetHasPower and not ResolveBlizzPreview(unitKey, settings))
-    local noDebuffPreview = isMiniPreview
+    local noDebuffPreview = isMiniPreview and unitKey ~= "pet"
     local noCastbarPreview = isMiniPreview
 
     local hasPortraitSupport = (settings.showPortrait ~= nil or settings.portraitMode ~= nil)
@@ -67,7 +78,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     local frameW = settings.frameWidth or 181
     local healthH = settings.healthHeight or 46
     local powerH = noPowerPreview and 0 or (settings.powerHeight or 6)
-    local initPpPos = noPowerPreview and "none" or (settings.powerPosition or "below")
+    local initPpPos = noPowerPreview and "none" or ns.UF_PowerPos(settings)
     local initPpIsAtt = (initPpPos == "below" or initPpPos == "above")
     local initPpExtra = initPpIsAtt and powerH or 0
     -- Castbar gate: player = showPlayerCastbar (always locked to the frame),
@@ -140,6 +151,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     end
 
     local pf = CreateFrame("Frame", nil, parent)
+    -- The unit this dress shows: a kept header root hands the same frame to the
+    -- next unit, so an allPreviews entry whose frame now shows another unit is stale.
+    pf._pvUnit = unitKey
     -- Real frames render at UIParent's effective scale vs. the panel's smaller one;
     -- this ratio makes every pixel value match the real frames' physical size.
     local previewScale = UIParent:GetEffectiveScale() / parent:GetEffectiveScale()
@@ -517,11 +531,13 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             if content == "level" then return lvl
             elseif content == "levelname" then return lvl .. " | " .. _pvName()
             else return _pvName() .. " | " .. lvl end
-        elseif content == "both" or content == "bothdash" or content == "curhpshort" or content == "perhp" or content == "perhpnosign" or content == "perhpnum" or content == "perhpnumdash" then
+        elseif content == "both" or content == "bothdash" or content == "curhpshort" or content == "healthshort" or content == "curmaxhp" or content == "perhp" or content == "perhpnosign" or content == "perhpnum" or content == "perhpnumdash" then
             local maxHP = UnitHealthMax("player") or 1
             local pct = optState._previewHealthPct or 0.70
             local curHP = math.floor(maxHP * pct)
-            if content == "curhpshort" then return _pvAbbrev(curHP)
+            if content == "healthshort" then return ns.AbbreviateShortHealth(curHP)
+            elseif content == "curhpshort" then return _pvAbbrev(curHP)
+            elseif content == "curmaxhp" then return _pvAbbrev(curHP) .. " / " .. _pvAbbrev(maxHP)
             elseif content == "perhp" then return _pvPct(pct) .. "%"
             elseif content == "perhpnosign" then return _pvPct(pct)
             elseif content == "perhpnum" then return _pvPct(pct) .. "% | " .. _pvAbbrev(curHP)
@@ -535,6 +551,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local maxPP = UnitPowerMax("player") or 100
             local ppPct = optState._previewPowerPct or 0.85
             return ns.AbbreviateNumbers(math.floor(maxPP * ppPct))
+        elseif content == "curmaxpp" then
+            local maxPP = UnitPowerMax("player") or 100
+            local ppPct = optState._previewPowerPct or 0.85
+            return ns.AbbreviateNumbers(math.floor(maxPP * ppPct)) .. " / " .. ns.AbbreviateNumbers(maxPP)
         elseif content == "curhp_curpp" then
             local maxHP = UnitHealthMax("player") or 1
             local pct = optState._previewHealthPct or 0.70
@@ -586,7 +606,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     -- Power color override for preview (takes priority over class color for power-related text)
     local function PreviewPowerColor(fs, contentKey, usePowerColor)
         if not fs or not usePowerColor then return end
-        if contentKey == "perpp" or contentKey == "curpp" or contentKey == "curhp_curpp" or contentKey == "perhp_perpp" then
+        if contentKey == "perpp" or contentKey == "curpp" or contentKey == "curmaxpp" or contentKey == "curhp_curpp" or contentKey == "perhp_perpp" then
             local pcR, pcG, pcB = EllesmereUI.ResolveUnitPowerColor("player")
             local info = pcR and { r = pcR, g = pcG, b = pcB }
             if info then fs:SetTextColor(info.r, info.g, info.b)
@@ -660,7 +680,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local barW = s.frameWidth or 181
             if rc ~= "none" then
                 local UF_TEXT_PADDING = 10
-                local ufTW = { both = 75, curhpshort = 38, perhp = 38, perpp = 38, curpp = 38, curhp_curpp = 75, perhp_perpp = 75, level = 24 }
+                local ufTW = { both = 75, curhpshort = 38, healthshort = 38, curmaxhp = 75, curmaxpp = 75, perhp = 38, perpp = 38, curpp = 38, curhp_curpp = 75, perhp_perpp = 75, level = 24 }
                 local rightUsed = (ufTW[rc] or 0) + UF_TEXT_PADDING
                 PP.Width(leftFS, math.max(barW - rightUsed - 10, 20))
             else
@@ -1474,8 +1494,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     end
 
     -- Disabled overlay: parented to UIParent (pf's strata would clamp it) so it
-    -- renders above ALL other child frames.
-    local disabledOverlay = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    -- renders above ALL other child frames. Owned by pf: the next dress of the
+    -- same preview frame gets the same overlay back (hidden at pf's reset).
+    local disabledOverlay = PoolOwned(pf, "disabled", "Frame", UIParent, "BackdropTemplate")
     disabledOverlay:SetFrameStrata("FULLSCREEN_DIALOG")
     disabledOverlay:SetBackdrop(SOLID_BACKDROP)
     disabledOverlay:SetBackdropColor(0, 0, 0, 0.6)
@@ -1560,6 +1581,13 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         local pct = optState._previewHealthPct or 0.70
         local ppct = optState._previewPowerPct or 0.85
         local isMini = G.small and true or false
+        -- Hide Power Bar: a main frame's health bar takes the power track too,
+        -- as live (with the cut art where the art draws over the bars).
+        local merged = (not isMini) and G.power ~= nil and ns.UF_IsMainSettings(s)
+            and ns.UF_StockHidesPower(s)
+        local HB = merged and ns.UF_MergedHealth(G) or G.health
+        barArea._blizzMerged = merged or nil
+        barArea._blizzMergeCut = (merged and G.merge) or nil
 
         -- Art box: the stock box, hung so its transparent top rows sit above
         -- pf (pf spans only the visible art, plus the cast bar strip below).
@@ -1586,8 +1614,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         barArea._blizzMirror = mirror
         -- The boss preview wears the classic kit's whole-frame boss art.
         local artEntry = (extras and unitKey == "boss" and G.artByClass and G.artByClass.boss) or G.art
-        if af._artAtlas ~= artEntry or af._artMirror ~= mirror then
-            af._artAtlas, af._artMirror = artEntry, mirror
+        -- Hide Power Bar repaints it too: the stock atlas art's cut has no kit spec.
+        local cut, mergedArt = barArea._blizzMergeCut, merged or nil
+        if af._artAtlas ~= artEntry or af._artMirror ~= mirror or af._artCutSpec ~= cut
+           or af._artMerged ~= mergedArt then
+            af._artAtlas, af._artMirror, af._artCutSpec, af._artMerged = artEntry, mirror, cut, mergedArt
             ns.UF_PaintBlizzArt(barArea, artEntry)
         end
         -- The dark plaque behind the name and bars (classic kit), under the art.
@@ -1703,8 +1734,8 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         -- Health bar at the stock spot; horizontal fill (the stock track has
         -- no vertical variant); colours, texture, gradient, opacity as set.
         health:ClearAllPoints()
-        ns.UF_BlizzPoint(health, "TOPLEFT", barArea, "TOPLEFT", G.health.x, -G.health.y, mirror)
-        health:SetSize(G.health.w, G.health.h)
+        ns.UF_BlizzPoint(health, "TOPLEFT", barArea, "TOPLEFT", HB.x, -HB.y, mirror)
+        health:SetSize(HB.w, HB.h)
         health:SetFrameLevel(lvl + 3)
         local absClip = absorbBar and absorbBar:GetParent()
         if absClip and absClip ~= health then absClip:SetFrameLevel(lvl + 4) end
@@ -1712,7 +1743,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         if healAbsorbBar then healAbsorbBar:SetFrameLevel(lvl + 4) end
         if absorbTopBar then absorbTopBar:SetFrameLevel(lvl + 4) end
         if healAbsorbTopBar then healAbsorbTopBar:SetFrameLevel(lvl + 4) end
-        local hpW = math.floor(G.health.w * pct + 0.5)
+        local hpW = math.floor(HB.w * pct + 0.5)
         healthFill:ClearAllPoints()
         healthBgColor:ClearAllPoints()
         if s.healthReverseFill then
@@ -1727,8 +1758,8 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             healthBgColor:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", 0, 0)
         end
         healthFill:SetWidth(hpW)
-        if absorbBar then absorbBar:SetSize(G.health.w, G.health.h) end
-        if healAbsorbBar then healAbsorbBar:SetSize(G.health.w, G.health.h) end
+        if absorbBar then absorbBar:SetSize(HB.w, HB.h) end
+        if healAbsorbBar then healAbsorbBar:SetSize(HB.w, HB.h) end
         -- Stock rounded mask on everything in the track (a mirrored small
         -- frame runs unmasked: masks cannot flip), then the bar's own bevel.
         local hm = health._blizzMask
@@ -1741,6 +1772,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         hTex[#hTex + 1] = healthFill
         hTex[#hTex + 1] = healthBg
         hTex[#hTex + 1] = healthBgColor
+        if health._euiBgTex then hTex[#hTex + 1] = health._euiBgTex end  -- Textured Background layer
         if dispelOverlayPreview then hTex[#hTex + 1] = dispelOverlayPreview end
         if absorbBar and absorbBar:GetStatusBarTexture() then hTex[#hTex + 1] = absorbBar:GetStatusBarTexture() end
         if healAbsorbBar then
@@ -1752,14 +1784,12 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 hm = health:CreateMaskTexture()
                 health._blizzMask = hm
             end
-            hm:SetAtlas(G.health.mask, true)
-            hm:ClearAllPoints()
-            hm:SetPoint("TOPLEFT", health, "TOPLEFT", G.health.mx, G.health.my)
+            ns.UF_SeatBarMask(hm, health, HB)
             for i = 1, #hTex do ns.UF_SetMask(hTex[i], hm) end
         elseif hm then
             for i = 1, #hTex do pcall(hTex[i].RemoveMaskTexture, hTex[i], hm) end
         end
-        ns.UF_BlizzBarShadow(health, hMaskOK and hm or nil, G.health.h)
+        ns.UF_BlizzBarShadow(health, hMaskOK and hm or nil, HB.h)
 
         -- Power: the small frames carry the stock bar (the mock builds none,
         -- so a plain one is built here once); a main frame's attached bar
@@ -1785,13 +1815,23 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local _, pToken = UnitPowerType("player")
             local pc = EllesmereUI.GetPowerColor(pToken or "MANA")
             PV_FillColor(pw._fill, texPath, pc.r, pc.g, pc.b, nil, nil, nil, 1)
+            -- Textured Background, as live.
+            local _, mpTex = ns.UF_TexBgPaths(unitKey, s, texKey)
+            ns.UF_TexBgPaint(pw._bg, mpTex, 17/255, 17/255, 17/255, 1)
         end
-        local pPos = s.powerPosition or "below"
+        local pPos = ns.UF_PowerPos(s)
         local inTrack = pw and (isMini or pPos == "below" or pPos == "above")
         if inTrack then
+            -- A mirrored small frame's bar runs unmasked, so it stops where
+            -- the health bar does (as live, UF_ApplyBlizzardLayout).
+            local px, pwid = G.power.x, G.power.w
+            if isMini and mirror and px < HB.x then
+                pwid = pwid - (HB.x - px)
+                px = HB.x
+            end
             pw:ClearAllPoints()
-            ns.UF_BlizzPoint(pw, "TOPLEFT", barArea, "TOPLEFT", G.power.x, -G.power.y, mirror)
-            pw:SetSize(G.power.w, G.power.h)
+            ns.UF_BlizzPoint(pw, "TOPLEFT", barArea, "TOPLEFT", px, -G.power.y, mirror)
+            pw:SetSize(pwid, G.power.h)
             pw:SetFrameLevel(lvl + 3)
             local fill = pw._fill or pf._powerFill
             local bg = pw._bg or pf._powerBg
@@ -1804,7 +1844,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     fill:SetPoint("TOPLEFT", pw, "TOPLEFT", 0, 0)
                     fill:SetPoint("BOTTOMLEFT", pw, "BOTTOMLEFT", 0, 0)
                 end
-                fill:SetWidth(math.floor(G.power.w * ppct + 0.5))
+                fill:SetWidth(math.floor(pwid * ppct + 0.5))
             end
             local pm = pw._blizzMask
             local pMaskOK = not mirror and ns.UF_AtlasOK(G.power.mask)
@@ -1813,9 +1853,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     pm = pw:CreateMaskTexture()
                     pw._blizzMask = pm
                 end
-                pm:SetAtlas(G.power.mask, true)
-                pm:ClearAllPoints()
-                pm:SetPoint("TOPLEFT", pw, "TOPLEFT", G.power.mx, G.power.my)
+                ns.UF_SeatBarMask(pm, pw, G.power)
                 ns.UF_SetMask(fill, pm)
                 ns.UF_SetMask(bg, pm)
                 ns.UF_SetMask(pf._pvCostSeg, pm)
@@ -1836,6 +1874,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 for i = 1, 4 do pw._blizzShadow[i]:Hide() end
             end
         end
+        -- Hide Power Bar: the bar stays down, and so does its text (its own
+        -- frame, with its click overlay).
+        if merged and pw then pw:Hide() end
+        local ppOv = ppPreviewFS and ppPreviewFS:GetParent()
+        if ppOv then ppOv:SetShown(not merged) end
 
         -- Portrait: always on, stock spot and size, stock mask, under the
         -- art; 3D cannot be masked, so 2D art stands in as on the live frame.
@@ -1879,7 +1922,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                         m:SetAllPoints(portraitFrame)
                         portraitFrame._blizzMask = m
                     end
-                    m:SetAtlas(G.portrait.mask)
+                    ns.UF_StockMask(m, G.portrait.mask)
                     m:Show()
                     ns.UF_SetMask(tex, m)
                 end
@@ -2051,7 +2094,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     function pf:Update()
         -- Skip while stashed (hidden on tab switch): updating re-anchors the
         -- preview to _chStash via GetParent() and breaks its restored position.
-        if not pf:IsShown() then
+        -- Visible, not shown: a kept header root keeps its preview's own shown
+        -- flag while the root itself is hidden on another page.
+        if not pf:IsVisible() then
             if disabledOverlay then disabledOverlay:Hide() end
             return
         end
@@ -2071,15 +2116,21 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         pf._previewScale = (pf._previewBaseScale or pf._previewScale or 1)
             * (blizzG and pf._blizzScale(s) or 1)
 
+        -- The aura settings the live containers read: the pet's through its
+        -- Copy Auras From view (its own size, crop and placement, the source
+        -- frame's look), every other unit's own table.
+        local as = s
+        if unitKey == "pet" then as = ns.UF_AuraSettings("pet") or s end
+
         -- Aura preview: mirror the live shared aura border style.
-        if unitKey == "player" or unitKey == "target" or unitKey == "focus" or unitKey == "boss" then
+        if unitKey == "player" or unitKey == "target" or unitKey == "focus" or unitKey == "boss" or unitKey == "pet" then
             -- Blizzard Style: the live frames draw no custom aura border, so
             -- the preview keeps the plain 1px edge and hides it too.
             local blizzAura = blizzG ~= nil
             local function ApplyPreviewAuraBorder(icon)
                 if icon._iconTex then
                     icon._iconTex:ClearAllPoints()
-                    local inset = (blizzAura or (s.auraBorderSize or 1) > 0) and 1 or 0
+                    local inset = (blizzAura or (as.auraBorderSize or 1) > 0) and 1 or 0
                     PP.Point(icon._iconTex, "TOPLEFT", icon, "TOPLEFT", inset, -inset)
                     PP.Point(icon._iconTex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -inset, inset)
                 end
@@ -2095,25 +2146,25 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     icon._euiAuraBorder = border
                 end
                 local aboveEffects = unitKey == "boss" and ns.UF_BossAuraBorderAboveEffects(s)
-                if s.auraBorderBehindUnitFrame then
+                if as.auraBorderBehindUnitFrame then
                     border:SetFrameLevel(0)
                 elseif aboveEffects then
                     border:SetFrameLevel(icon:GetFrameLevel() + 20)
                 else
-                    border:SetFrameLevel(s.auraBorderBehind
+                    border:SetFrameLevel(as.auraBorderBehind
                         and math.max(0, icon:GetFrameLevel() - 1) or (icon:GetFrameLevel() + 1))
                 end
                 if icon._durText and (aboveEffects or icon._borderAboveEffects) then
                     icon._durText:GetParent():SetFrameLevel(icon:GetFrameLevel() + (aboveEffects and 25 or 2))
                     icon._borderAboveEffects = aboveEffects or nil
                 end
-                EllesmereUI.ApplyBorderStyle(border, s.auraBorderSize or 1,
-                    s.auraBorderR or 0, s.auraBorderG or 0, s.auraBorderB or 0, s.auraBorderA or 1,
-                    s.auraBorderTexture or "solid",
-                    s.auraBorderTextureOffset, s.auraBorderTextureOffsetY,
-                    s.auraBorderTextureShiftX, s.auraBorderTextureShiftY,
-                    "unitframes", s.auraBorderSize or 1, nil,
-                    EllesmereUI.BorderPx(s.auraBorderSizePx, s.auraBorderSize or 1, s.auraBorderTexture or "solid"))
+                EllesmereUI.ApplyBorderStyle(border, as.auraBorderSize or 1,
+                    as.auraBorderR or 0, as.auraBorderG or 0, as.auraBorderB or 0, as.auraBorderA or 1,
+                    as.auraBorderTexture or "solid",
+                    as.auraBorderTextureOffset, as.auraBorderTextureOffsetY,
+                    as.auraBorderTextureShiftX, as.auraBorderTextureShiftY,
+                    "unitframes", as.auraBorderSize or 1, nil,
+                    EllesmereUI.BorderPx(as.auraBorderSizePx, as.auraBorderSize or 1, as.auraBorderTexture or "solid"))
             end
             for i = 1, #buffIcons do ApplyPreviewAuraBorder(buffIcons[i]) end
             for i = 1, #debuffIcons do ApplyPreviewAuraBorder(debuffIcons[i]) end
@@ -2153,7 +2204,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         local fw = s.frameWidth or 181
         local hh = s.healthHeight or 46
         local ph = noPowerPreview and 0 or (s.powerHeight or 6)
-        local pvPpPos = noPowerPreview and "none" or (s.powerPosition or "below")
+        local pvPpPos = noPowerPreview and "none" or ns.UF_PowerPos(s)
         local pvPpIsAtt = (pvPpPos == "below" or pvPpPos == "above")
         local pvPpExtra = pvPpIsAtt and ph or 0
         local ch = (unitKey == "player") and (s.showPlayerCastbar and (s.playerCastbarHeight and s.playerCastbarHeight > 0 and s.playerCastbarHeight or 14) or 0) or ((s.showCastbar ~= false) and (s.castbarHeight or 14) or 0)
@@ -2176,8 +2227,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         local bh = hh + pvPpExtra
         -- Class power "above" position adds height above health bar ("top" floats outside)
         local cpStyle = (unitKey == "player") and (s.classPowerStyle or "none") or "none"
-        -- The style that builds (WoW Forever reads a saved "blizzard" as modern).
-        if ns.UF_ForeverCPStyle then cpStyle = ns.UF_ForeverCPStyle(cpStyle) end
+        -- The style that builds (WoW Forever reads a saved "blizzard" as modern,
+        -- and a rogue's own style); only the player frame has a class resource.
+        if unitKey == "player" and ns.UF_ForeverCPStyle then cpStyle = ns.UF_ForeverCPStyle(cpStyle) end
         local cpPos = (cpStyle == "modern") and (s.classPowerPosition or "top") or "none"
         local cpAboveH = 0
         if cpStyle == "modern" and cpPos == "above" and cpPips then
@@ -2431,6 +2483,15 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             end
             if healthFill then healthFill:SetAlpha(hFillA) end
             if healthBgColor then healthBgColor:SetAlpha(hBgA) end
+            -- Textured Background, as live: a fixed full-size layer while the fill is opaque.
+            local tbPath = ns.UF_TexBgPaths(unitKey, s, ns.ResolveHealthBarTextureKey(s, isMini and ds or nil))
+            if tbPath then
+                local tb = ns.UF_TexBgLayer(health, tbPath, s.healthVerticalFill and not blizzG)
+                tb:SetVertexColor(uBgR, uBgG, uBgB, 1)
+                tb:SetAlpha(hBgA)
+            elseif health._euiBgTex then
+                health._euiBgTex:Hide()
+            end
         end
 
         -- Text sizes deliberately NOT donor-sourced (see the function):
@@ -2539,7 +2600,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 -- keep it at 1 there to avoid double-dimming (as the real frame does).
                 pf._powerFill:SetAlpha(s.powerGradientEnabled and 1 or pOpacity)
             end
-            if pf._powerBg then pf._powerBg:SetColorTexture(pvPbR, pvPbG, pvPbB, 1) end
+            if pf._powerBg then
+                -- Textured Background, as live.
+                local _, tp = ns.UF_TexBgPaths(unitKey, s, s.healthBarTexture or db.profile.healthBarTexture or "none")
+                ns.UF_TexBgPaint(pf._powerBg, tp, pvPbR, pvPbG, pvPbB, 1)
+            end
             -- Spell Cost Prediction eyeball (player, WoW Forever): the last
             -- third of the fill in the prediction color, as during a cast.
             -- Mana only, as live.
@@ -2623,6 +2688,8 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     ppTxt = ppPctRaw .. ppSuffix  -- preview always shows percent for smart
                 elseif ppFmt == "curpp" then
                     ppTxt = ppCurFake
+                elseif ppFmt == "curmaxpp" then
+                    ppTxt = ppCurFake .. " / " .. ns.AbbreviateNumbers(22000)
                 elseif ppFmt == "both" then
                     ppTxt = ppCurFake .. " | " .. ppPctRaw .. ppSuffix
                 else  -- "perpp"
@@ -2751,7 +2818,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 -- Re-apply bg color/alpha so Bar Background updates live.
                 if castbar._previewBgTex then
                     local cbgC = s.castBgColor
-                    castbar._previewBgTex:SetColorTexture(cbgC and cbgC.r or 0, cbgC and cbgC.g or 0, cbgC and cbgC.b or 0, s.castBgAlpha or 0.5)
+                    -- Textured Background, as live (never over the stock cast art).
+                    local cbPath = ns.UF_TexBgCastPath(s, s.healthBarTexture or db.profile.healthBarTexture or "none",
+                        EllesmereUI.BlizzStyle.Active("unitframes") == "blizzard")
+                    ns.UF_TexBgPaint(castbar._previewBgTex, cbPath, cbgC and cbgC.r or 0, cbgC and cbgC.g or 0,
+                        cbgC and cbgC.b or 0, s.castBgAlpha or 0.5)
                 end
                 if castFill then
                     castFill:ClearAllPoints()
@@ -3214,6 +3285,29 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             elseif cbPv then
                 cbPv:Hide()
             end
+            -- Type Icon Position: the eye also shows the Magic type icon on its
+            -- corner of the health bar, over the border (runtime twin:
+            -- ApplyDispelSlotStyle). Built on first use.
+            local tiPv = pf._pvDispelIcon
+            local dp = db.profile
+            if optState.showDispelOverlayPreview and dp.showDispelIcons == true then
+                if not tiPv then
+                    tiPv = CreateFrame("Frame", nil, pf)
+                    local tex = tiPv:CreateTexture(nil, "ARTWORK")
+                    tex:SetAllPoints(tiPv)
+                    tex:SetAtlas("RaidFrame-Icon-DebuffMagic")
+                    pf._pvDispelIcon = tiPv
+                end
+                local sz = dp.dispelIconSize or 16
+                local corner = (dp.dispelIconPosition or "right"):upper()
+                tiPv:SetFrameLevel(border:GetFrameLevel() + 2)
+                tiPv:SetSize(sz, sz)
+                tiPv:ClearAllPoints()
+                tiPv:SetPoint(corner, health, corner, dp.dispelIconOffsetX or 0, dp.dispelIconOffsetY or 0)
+                tiPv:Show()
+            elseif tiPv then
+                tiPv:Hide()
+            end
         end
 
         -- Buff icons -- reposition based on anchor/growth/size/offset settings
@@ -3245,7 +3339,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     buffSize = (s.healthHeight or 34) + pvPowerH
                 end
                 -- Crop never applies in simple mode (runtime parity).
-                local buffCrop = (not simpleBuffOn) and (s.buffCropIcons or false) or false
+                local buffCrop = (not simpleBuffOn) and (as.buffCropIcons or false) or false
                 local buffH = ns.GetAuraCropHeight(buffCrop, buffSize)
                 -- Boss spacing from its slider (simple display has its own key);
                 -- other units keep the 1px schematic gap.
@@ -3340,7 +3434,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                         if bf._iconTex then
                             bf._iconTex:SetTexture(_previewBuffIcons[i] or 135932)
                             -- SetTexture resets texcoord, so re-apply the crop each update.
-                            ns.SetAuraIconCrop(bf._iconTex, buffCrop, buffSize, buffH, s.buffIconZoom or 0.07)
+                            ns.SetAuraIconCrop(bf._iconTex, buffCrop, buffSize, buffH, as.buffIconZoom or 0.07)
                         end
                         if i == 1 then ns.UFOpt_PreviewPurgeGlow(bf, unitKey, s, buffSize, buffH) end
                     else
@@ -3399,7 +3493,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 local debuffSize = effectiveDebuffSize
                 -- Crop never applies in simple boss mode (runtime passes nil crop
                 -- and frame-height-matches those icons).
-                local debuffCrop = (not simpleOn) and (s.debuffCropIcons or false) or false
+                local debuffCrop = (not simpleOn) and (as.debuffCropIcons or false) or false
                 local debuffH = ns.GetAuraCropHeight(debuffCrop, debuffSize)
                 -- Boss spacing from its slider (simple display has its own key);
                 -- other units keep the 1px schematic gap.
@@ -3460,12 +3554,12 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 local simpleIconPt   = (simpleMode == "right") and "TOPLEFT"  or "TOPRIGHT"
                 local simpleParentPt = (simpleMode == "right") and "TOPRIGHT" or "TOPLEFT"
                 local simpleEdgeSign = (simpleMode == "right") and 1 or -1
-                local anchorKey = justH .. am.pt .. am.ox .. am.oy .. dx .. dy .. debuffSize .. debuffH .. (useSimpleBossAnchor and "S" or "N") .. simpleMode .. dOffX .. "gx" .. debuffGapX .. "gy" .. debuffGapY .. "z" .. (s.debuffIconZoom or 0.07)
+                local anchorKey = justH .. am.pt .. am.ox .. am.oy .. dx .. dy .. debuffSize .. debuffH .. (useSimpleBossAnchor and "S" or "N") .. simpleMode .. dOffX .. "gx" .. debuffGapX .. "gy" .. debuffGapY .. "z" .. (as.debuffIconZoom or 0.07)
                 for i, df in ipairs(debuffIcons) do
                     if i <= visibleDebuffCount then
                         if df._anchorKey ~= anchorKey then
                             PP.Size(df, debuffSize, debuffH)
-                            if df._iconTex then ns.SetAuraIconCrop(df._iconTex, debuffCrop, debuffSize, debuffH, s.debuffIconZoom or 0.07) end
+                            if df._iconTex then ns.SetAuraIconCrop(df._iconTex, debuffCrop, debuffSize, debuffH, as.debuffIconZoom or 0.07) end
                             df:ClearAllPoints()
                             if i == 1 then
                                 if useSimpleBossAnchor then
@@ -3620,6 +3714,41 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local bTex2 = bds.borderTexture or "solid"
             EllesmereUI.ApplyBorderStyle(border, bs2, (bds.borderColor or {r=0,g=0,b=0}).r, (bds.borderColor or {r=0,g=0,b=0}).g, (bds.borderColor or {r=0,g=0,b=0}).b, bds.borderAlpha or 1, bTex2, bds.borderTextureOffset, bds.borderTextureOffsetY, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs2, nil,
                 EllesmereUI.BorderPx((not s.borderSizeOverride) and bds.borderSizePx, bs2, bTex2))
+        end
+        -- Rounded corners, as on the live frame: the border frame is the shape
+        -- (health + power + attached portrait and text bar); the fill sits on
+        -- pf, under the bars. The portrait joins with its own art only.
+        do
+            local radius = (not ResolveBlizzPreview(unitKey, s) and bds.cornerRadius) or 0
+            local det = pvPpPos == "detached_top" or pvPpPos == "detached_bottom"
+            local corners, pCorners = bds.cornerMask, bds.cornerMask
+            if det and s.cornerJoinPower then
+                local upper, lower = EllesmereUI.RoundedJoinCorners(corners)
+                if pvPpPos == "detached_bottom" then corners, pCorners = upper, lower
+                else corners, pCorners = lower, upper end
+            end
+            if radius > 0 then
+                local port = sp and isAttached and portraitFrame and portraitFrame:IsShown() and portraitFrame or nil
+                EllesmereUI.RoundCorners(pf, radius, {
+                    roots = { health, (pvPpPos == "below" or pvPpPos == "above") and power or nil,
+                        s.bottomTextBar and btbIsAtt and btbFrame or nil },
+                    textures = { port and port._previewBg, port and port._previewTex },
+                    border = border, rect = border, style = bds.borderTexture or "solid",
+                    corners = corners,
+                })
+            else
+                EllesmereUI.RoundCorners(pf, 0)
+            end
+            if power then
+                if det and radius > 0 then
+                    EllesmereUI.RoundCorners(power, radius, {
+                        border = power._pbBorder, style = s.powerBorderStyle or "solid",
+                        corners = pCorners,
+                    })
+                else
+                    EllesmereUI.RoundCorners(power, 0)
+                end
+            end
         end
         if castbar then
             if PP.GetBorders(castbar) then PP.SetBorderSize(castbar, 1) end
@@ -3832,8 +3961,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         pf._detTopExtra = detTopExtra
         local parentTH = th * combinedScale
         local cpBottomScaled = cpBottomH * combinedScale
+        -- The preview hint belongs to the Main Frames header, which parents it to
+        -- its own preview: only that preview's header makes room for it.
         local hintH = 0
-        if optState._ufPreviewHintFS_display and optState._ufPreviewHintFS_display:IsShown() then hintH = 29 end
+        if optState._ufPreviewHintFS_display and optState._ufPreviewHintFS_display:IsShown()
+            and optState._ufPreviewHintFS_display:GetParent() == pf then hintH = 29 end
         local fixedH = pf._headerFixedH or 0
         if fixedH > 0 then
             -- The preview slid down by auraTopOv, so the section must grow by it
@@ -4066,6 +4198,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     pf._nameFS = leftFS
     pf._hpFS = rightFS
     pf._centerFS = centerFS
+    pf._extraFS = extraFS
     pf._portraitFrame = portraitFrame
     pf._buffIcons = buffIcons
     pf._debuffIcons = debuffIcons
@@ -4086,13 +4219,17 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
 
     pf._disabledOverlay = disabledOverlay
     -- Clean up any orphaned preview for this unit key before storing the new one
+    -- (a frame dressed again for another unit keeps its overlay for that unit)
     local oldPv = allPreviews[unitKey]
-    if oldPv and oldPv ~= pf then
+    if oldPv and oldPv ~= pf and oldPv._pvUnit == unitKey then
         if oldPv._disabledOverlay then oldPv._disabledOverlay:Hide() end
     end
     -- Also purge any orphaned previews (parent set to nil by ClearContentHeaderInner)
+    -- and every entry whose frame was dressed again for another unit (this one included)
     for k, pv in pairs(allPreviews) do
-        if pv and pv ~= pf and not pv:GetParent() then
+        if pv and pv._pvUnit ~= k then
+            allPreviews[k] = nil
+        elseif pv and pv ~= pf and not pv:GetParent() then
             if pv._disabledOverlay then pv._disabledOverlay:Hide() end
             allPreviews[k] = nil
         end

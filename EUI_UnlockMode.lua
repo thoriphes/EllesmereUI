@@ -103,6 +103,7 @@ if not EllesmereUI.ReapplyOwnAnchor then
 
         local elems = EllesmereUI._unlockRegisteredElements
         local childElem = elems and elems[key]
+        if childElem and childElem.ownsPosition then return end
         local targetElem = elems and elems[info.target]
         local childBar = childElem and childElem.getFrame and childElem.getFrame(key)
         local targetBar = targetElem and targetElem.getFrame and targetElem.getFrame(info.target)
@@ -162,8 +163,8 @@ if not EllesmereUI.ReapplyOwnAnchor then
 
         -- No explicit snap: center came from pixel-aligned target edges/dims; snapping here adds 1px drift from float dust.
         pcall(function()
-            childBar:ClearAllPoints()
-            childBar:SetPoint("CENTER", UIParent, "CENTER", centerX, centerY)
+            EllesmereUI.ClearFramePoints(childBar)
+            EllesmereUI.SetFramePoint(childBar, "CENTER", UIParent, "CENTER", centerX, centerY)
         end)
     end
 end
@@ -239,8 +240,8 @@ if not EllesmereUI.NotifyElementResized then
 
         -- No explicit snap: cx +/- dim/2 reproduces the pixel-aligned edge within float epsilon; snapping can round the wrong way (1px drift/reload).
         pcall(function()
-            frame:ClearAllPoints()
-            frame:SetPoint(anchor, UIParent, "CENTER", adjX, adjY)
+            EllesmereUI.ClearFramePoints(frame)
+            EllesmereUI.SetFramePoint(frame, anchor, UIParent, "CENTER", adjX, adjY)
         end)
     end
 end
@@ -423,8 +424,8 @@ function EllesmereUI.RepositionBarToMover(barKey)
     -- converted into the bar's own scale (SetPoint offsets use the bar's scale).
     local ratio = m:GetEffectiveScale() / barScale
     pcall(function()
-        bar:ClearAllPoints()
-        bar:SetPoint("CENTER", UIParent, "BOTTOMLEFT", mX * ratio, mY * ratio)
+        EllesmereUI.ClearFramePoints(bar)
+        EllesmereUI.SetFramePoint(bar, "CENTER", UIParent, "BOTTOMLEFT", mX * ratio, mY * ratio)
     end)
 end
 
@@ -506,6 +507,7 @@ local snapshotGrowDirs = {}   -- original growth directions captured when unlock
 -- banking is a wholesale harvest at CommitPositions.
 UM.hasChanges = false         -- true if user dragged anything this session
 local combatSuspended = false  -- true if unlock mode was auto-closed by combat
+local preCombatChanges = false -- the session's change mark when combat hid it
 UM.objTrackerWasVisible = false     -- track objective tracker state for restore
 
 -- Grid mode helpers
@@ -633,8 +635,12 @@ EllesmereUI._ELEMENT_SETTINGS_MAP = {
     ["EUI_SecondaryStats"] = { module = "EllesmereUIQoL", page = "QoL", sectionName = "EXTRAS", highlightText = "Secondary Stat Display" },
 
     -- Battle Res + Bloodlust (bottom of the Quality of Life page)
+    ["EUI_CombatAlert"]    = { module = "EllesmereUIQoL",             page = "QoL",   sectionName = "ALERTS",            highlightText = "Combat Alert" },
     ["EUI_BattleRes"]      = { module = "EllesmereUIQoL",             page = "QoL",   sectionName = "BATTLE RES",        highlightText = "Enable BattleRes Icon" },
     ["EUI_Bloodlust"]      = { module = "EllesmereUIQoL",             page = "QoL",   sectionName = "BLOODLUST TRACKER", highlightText = "Enable Bloodlust Icon" },
+
+    -- Forever Essentials (WoW Forever only): Junk Items sits on the General page
+    ["EUI_JunkList"]       = { module = "EllesmereUIForeverEssentials", page = "General", sectionName = "JUNK ITEMS", highlightText = "Enable Junk Items Window" },
 
     -- Mythic+ Tools
     ["EMT_MythicTimer"]    = { module = "EllesmereUIMythicTimer",     page = "Mythic+ Timer",     sectionName = "DISPLAY",           highlightText = "Scale" },
@@ -643,7 +649,7 @@ EllesmereUI._ELEMENT_SETTINGS_MAP = {
     ["EMT_FocusCastBar"]   = { module = "EllesmereUIMythicTimer",     page = "Target/Focus Bars", sectionName = "FOCUS CAST BAR",    highlightText = "Enable Focus Cast Bar" },
 
     -- Dragon Riding HUD (Blizz UI Enhanced > Dragon Riding page)
-    ["EDR_Cluster"]        = { module = "EllesmereUIBlizzardSkin",    page = "Dragon Riding",     sectionName = "GENERAL",           highlightText = "Enable Dragon Riding Bar" },
+    ["EDR_Cluster"]        = { module = "EllesmereUIBlizzardSkin",    page = "Dragon Riding",     sectionName = "GENERAL",           highlightText = "Enable Skyriding Bar" },
 
     -- Fixed-position tooltip anchor (Blizz UI Enhanced > Tooltips, Menus & Popups)
     ["EUI_TooltipAnchor"]  = { module = "EllesmereUIBlizzardSkin",    page = "Tooltips, Menus & Popups", sectionName = "BLIZZARD TOOLTIP", highlightText = "Anchor to Cursor" },
@@ -778,6 +784,7 @@ end
 local function SuspendForCombat()
     if not UM.isUnlocked then return end
     combatSuspended = true
+    preCombatChanges = UM.hasChanges and true or false
     if EllesmereUI._HideFallbackGhosts then EllesmereUI._HideFallbackGhosts() end
     if EllesmereUI._HideOverrideGhosts then EllesmereUI._HideOverrideGhosts() end
 
@@ -843,6 +850,11 @@ local function ResumeAfterCombat()
     if not combatSuspended then return end
     combatSuspended = false
     if InCombatLockdown() then return end  -- safety check
+
+    -- Nothing can be edited while the session is hidden: whatever moved during
+    -- the fight (bars rebuilding, anchored elements following them) is not a
+    -- change of the user's, so the session keeps the mark it had before.
+    UM.hasChanges = preCombatChanges
 
     -- Re-enter unlock mode but skip snapshot/reset since we preserved state
     UM.isUnlocked = true

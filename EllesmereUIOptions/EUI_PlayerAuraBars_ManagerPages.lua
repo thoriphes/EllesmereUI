@@ -8,8 +8,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  model-specific) / CORE / DISPLAY sections (RaidFrames layout pattern) --
 --  default and custom bars share the same field-building helpers since both
 --  are just cfg tables with the same shape (see
---  EllesmereUIUnitFrames_PlayerAuraBars.lua's DefaultBuffsCfg/
---  DefaultDebuffsCfg and the custom-bar CRUD section).
+--  EUI_PlayerAuraBars_Config.lua's DefaultBuffsCfg/DefaultDebuffsCfg and
+--  the custom-bar CRUD in EUI_PlayerAuraBars_Filters.lua).
 --
 -- redesign: default Buffs bar unified onto the same BM2/filters
 --  model custom buff bars already used (Filters dropdown + Extra Spells
@@ -24,6 +24,20 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 
 local ns = EllesmereUI._ModuleNS["EllesmereUIUnitFrames"]  -- module namespace (published by the module at its load)
 if not ns then return end  -- module disabled: no options page
+
+-- Page reuse: the manager root and the Filter Editor are kept for the session
+-- (Pool.Kept below) and every frame this file builds under them goes through
+-- the options frame pool (EllesmereUI_FramePool.lua), which hands the next
+-- render the previous render's frames reset to new; on any other parent it
+-- is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+-- The pool's other calls this file makes, read once here as CreateFrame is:
+-- the page path never calls the pool through its public slot, which
+-- another addon could replace.
+local PoolKept = EllesmereUI._Pool.Kept
+local PoolOwned = EllesmereUI._Pool.Owned
+-- The root's render, for the refresh callbacks it registers (_BeginRootRender).
+local PAB_RENDER_KEY = "EllesmereUIUnitFrames::Player Aura Bars::root"
 
 local floor, max = math.floor, math.max
 
@@ -245,7 +259,7 @@ end
 -- applied to both the Filters assignment dropdown (via DedupedFilterItems below) and
 -- the Filter Editor's own sidebar (ns.PABMP_ShowFilterEditor). Always returns a FRESH
 -- copy -- ns.PAB_Filters() hands back the live persisted list
--- (EllesmereUIUnitFrames_PlayerAuraBars.lua's ns.PAB_Filters, `store.list` directly),
+-- (EUI_PlayerAuraBars_Filters.lua's ns.PAB_Filters, `store.list` directly),
 -- so sorting in place would silently reorder SavedVariables every time the editor is
 -- opened. Rank is matched by NAME, not the preset flag, so filters copied from the
 -- Buff Manager order identically on both sides.
@@ -299,7 +313,7 @@ local function TruncateFilterName(name)
     return (name or ""):sub(1, 3) .. "..."
 end
 
--- Defined in EllesmereUIUnitFrames_PlayerAuraBars.lua next to the cfg it
+-- Defined in EUI_PlayerAuraBars_Config.lua next to the cfg it
 -- reads, so this page and the unlock-mode mover label cannot drift apart. The
 -- module returns the raw English key; only the options page translates it.
 local function DefaultBuffBarName(cfg)
@@ -386,7 +400,7 @@ end
 --  cfg is whatever table the caller wants read/written: DefaultBuffsCfg(s),
 --  DefaultDebuffsCfg(s), or a custom bar object itself (custom bar objects
 --  carry the same field names directly on themselves, see the CRUD comment
---  in EllesmereUIUnitFrames_PlayerAuraBars.lua). apply() is called after
+--  in EUI_PlayerAuraBars_Filters.lua). apply() is called after
 --  every field edit; callers decide what that means for them (Restyle()+
 --  ApplyLiveConfig() for default bars, PAB_ReloadCustomBuffBar/DebuffBar
 --  for custom bars).
@@ -400,7 +414,7 @@ end
 -- anything never warns.
 
 -- "Assigned Buffs": Filters checkbox dropdown (references the shared PAB Filters
--- registry, EllesmereUIUnitFrames_PlayerAuraBars.lua) + Extra Spells checkbox
+-- registry, EUI_PlayerAuraBars_Filters.lua) + Extra Spells checkbox
 -- dropdown (direct SpellIDs, cfg.spells). Mirrors ns.BMP_BuildAssignedFilters
 -- (EUI_RaidFrames_ManagerPages.lua) 1:1 in widget structure. Deliberately NOT a full
 -- port: PAB has no curated preset-spell universe (see PAB_Filters' doc comment), so
@@ -745,6 +759,7 @@ local function BuildAssignedDebuffsFields(frame, fontPath, sy, cfg, apply)
         if rgn._control then rgn._control:Hide() end
         local PAB_ALL_DEBUFFS_KEY = "__allDebuffs"
         local PAB_DEBUFF_HAS_DUR_KEY = "__debuffHasDuration"
+        local PAB_HIDE_EXH_KEY = "__hideExhaustion"
         local PAB_MATCH_ANY_KEY = "__matchAny"
         local PAB_MATCH_ALL_KEY = "__matchAll"
         local function AllOn() return cfg.showAllDebuffs ~= false end
@@ -759,6 +774,12 @@ local function BuildAssignedDebuffsFields(frame, fontPath, sy, cfg, apply)
                   tooltip = "Show every debuff. Use the Hide lane below to remove specific filters." },
                 { key = PAB_DEBUFF_HAS_DUR_KEY, label = "Has Duration",
                   tooltip = "Only show debuffs that have a duration, excluding permanent ones. Combines with the filters below; checked alone it shows every timed debuff." },
+                -- Hide Exhaustion (cfg.hideExhaustion, off by default): the
+                -- Bloodlust lockouts leave the bar (DebuffCandidateExtras). Kept out
+                -- of the summary, like the Raid Frames row.
+                { key = PAB_HIDE_EXH_KEY, label = "Hide Exhaustion",
+                  tooltip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
+                  excludeFromSummaryFn = function() return true end },
                 -- Modifiers, not filters: how the Show picks combine (engine side:
                 -- DebuffChainFor). A radio pair over cfg.debuffMatch (nil = Match
                 -- Any, the union), kept out of the summary; locked while All
@@ -809,6 +830,7 @@ local function BuildAssignedDebuffsFields(frame, fontPath, sy, cfg, apply)
             function(k, neg)
                 if k == PAB_ALL_DEBUFFS_KEY then return AllOn() end
                 if k == PAB_DEBUFF_HAS_DUR_KEY then return cfg.hasDuration == true end
+                if k == PAB_HIDE_EXH_KEY then return cfg.hideExhaustion == true end
                 if k == PAB_MATCH_ANY_KEY or k == PAB_MATCH_ALL_KEY then
                     return (k == PAB_MATCH_ALL_KEY) == MatchAll()
                 end
@@ -835,6 +857,12 @@ local function BuildAssignedDebuffsFields(frame, fontPath, sy, cfg, apply)
                     -- class-filter selection; alone it acts as the timed
                     -- catch-all (DebuffCatchAllOn).
                     cfg.hasDuration = v or nil
+                    apply()
+                    EllesmereUI:RefreshPage()
+                    return
+                end
+                if k == PAB_HIDE_EXH_KEY then
+                    cfg.hideExhaustion = v or nil
                     apply()
                     EllesmereUI:RefreshPage()
                     return
@@ -1888,7 +1916,7 @@ local function WrapCompensatedBody(parentFrame, topOffset)
     body:SetSize(visibleW + padDiff * 2, 10) -- finalized by FinalizeCompensatedBody
     body._showRowDivider = true
     scroll:SetScrollChild(body)
-    body._pabUpdateThumb = AttachEditorScroll(scroll, body, nil, padDiff + 2)
+    body._pabUpdateThumb = AttachEditorScroll(scroll, body, nil, padDiff + 2, true)
 
     -- Every WrapCompensatedBody call in this file immediately follows a
     -- PAB_BuildPreviewBox call on the same `parentFrame` (see the four BuildXDetail
@@ -2128,15 +2156,22 @@ local CLASS_ORDER = { "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST",
 
 -- Editor scroll (manager-page style bar). Returns UpdateThumb and SetScrollTo(v).
 -- rightInset (default 2): only WrapCompensatedBody passes more, since its scroll
--- extends padDiff (~25px) past the pane's visible right edge.
-AttachEditorScroll = function(scroll, child, onScroll, rightInset)
+-- extends padDiff (~25px) past the pane's visible right edge. panelWheel: a pane
+-- inside the options panel (Shift + wheel scales the panel), not a popup editor.
+AttachEditorScroll = function(scroll, child, onScroll, rightInset, panelWheel)
     return EllesmereUI.AttachSmoothScrollbar(scroll, {
         step = 60, thumbMin = 20, rightInset = rightInset, topInset = 2, level = 5,
-        trackAlpha = 0.05, thumbAlpha = 0.22, child = child, onScroll = onScroll })
+        trackAlpha = 0.05, thumbAlpha = 0.22, child = child, onScroll = onScroll,
+        panelWheel = panelWheel })
 end
 
 function ns.PABMP_ShowFilterEditor()
-    if ns._pabFilterEditor then ns._pabFilterEditor:Hide(); ns._pabFilterEditor = nil end
+    -- A shown editor is not hidden here: PoolKept below dresses the same
+    -- window again, and its reset hides it first (its OnHide hooks run with
+    -- the old scripts) and notes the control under a still cursor for the
+    -- pool's hover replay. A window the pool cannot reset is hidden as the
+    -- pool replaces it.
+    ns._pabFilterEditor = nil
     local filters = SortFiltersCanonical((ns.PAB_Filters and ns.PAB_Filters()) or {})
     local fontPath = (EllesmereUI.GetFontPath("unitFrames")) or "Fonts\\FRIZQT__.TTF"
     local ar, ag, ab = 1, 0.82, 0.30
@@ -2146,7 +2181,9 @@ function ns.PABMP_ShowFilterEditor()
 
     local POPUP_W, POPUP_H, SIDE_W = 620, 520, 180
 
-    local dimmer = CreateFrame("Frame", nil, UIParent)
+    -- One editor for the session: every open and every Rebuild() dresses the
+    -- same dimmer again, and the frames below it come back from the pool.
+    local dimmer = PoolKept(ns, "pabFilterEditor", "Frame", UIParent)
     dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
     dimmer:SetAllPoints(UIParent)
     dimmer:EnableMouse(true)
@@ -2162,7 +2199,7 @@ function ns.PABMP_ShowFilterEditor()
     popup:SetFrameStrata("FULLSCREEN_DIALOG")
     popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
     popup:EnableMouse(true)
-    local popBg = EllesmereUI.SolidTex(popup, "BACKGROUND", 0.06, 0.08, 0.10, 1); popBg:SetAllPoints()
+    local popBg = EllesmereUI.SolidTex(popup, "BACKGROUND", 0.077, 0.068, 0.058, 1); popBg:SetAllPoints()
     EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15)
     if EllesmereUI.GetPopupScale then popup:SetScale(EllesmereUI.GetPopupScale()) end
 
@@ -2184,6 +2221,28 @@ function ns.PABMP_ShowFilterEditor()
         close:SetScript("OnEnter", function() closeIcon:SetAlpha(0.50) end)
         close:SetScript("OnLeave", function() closeIcon:SetAlpha(0.40) end)
         close:SetScript("OnClick", function() dimmer:Hide(); ns._pabFilterEditor = nil end)
+    end
+
+    -- Escape closes the editor alone: the key is swallowed here, so it never
+    -- reaches the Escape proxy that would close the options window too.
+    -- SetPropagateKeyboardInput is protected in combat, so the editor takes
+    -- the keyboard only when built out of combat and stands aside in it. The
+    -- capture is a frame of its own, owned by the popup outside its child
+    -- list: a dress in combat cannot clear keyboard flags, so it leaves only
+    -- that frame for the next dress out of combat, never the popup.
+    if not InCombatLockdown() then
+        local keys = PoolOwned(popup, "keys", "Frame", popup)
+        keys:SetAllPoints(popup)
+        keys:EnableKeyboard(true)
+        keys:SetPropagateKeyboardInput(true)
+        keys:SetScript("OnKeyDown", function(self, key)
+            if InCombatLockdown() then return end
+            self:SetPropagateKeyboardInput(key ~= "ESCAPE")
+            if key == "ESCAPE" then
+                dimmer:Hide()
+                ns._pabFilterEditor = nil
+            end
+        end)
     end
 
     if pabFilterSel then
@@ -2505,7 +2564,7 @@ function ns.PABMP_ShowFilterEditor()
         box:SetSize(16, 16)
         box:SetPoint("LEFT", srow, "LEFT", 6, 0)
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
-        boxBg:SetAllPoints(); boxBg:SetColorTexture(0.12, 0.12, 0.14, 1)
+        boxBg:SetAllPoints(); boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
         local boxBrd = EllesmereUI.MakeBorder(box, 0.4, 0.4, 0.4, 0.6)
         local chk = box:CreateTexture(nil, "ARTWORK")
         chk:SetPoint("TOPLEFT", box, "TOPLEFT", 2, -2)
@@ -2735,9 +2794,30 @@ end
 --  Page entry point
 -------------------------------------------------------------------------------
 
+-- Between renders the kept root waits hidden under a holder of its own (made
+-- once), off the shared scroll frame whose children the other manager pages'
+-- roots join; its next render (Pool.Kept) puts it back on the scroll frame.
+-- ns._pabRoot = nil means "needs a render". Called where the page is left.
+local pabRootPark
+function ns.PABMP_ParkRoot()
+    local root = ns._pabRoot
+    if not root then return end
+    ns._pabRoot = nil
+    root:Hide()
+    if not pabRootPark then
+        pabRootPark = CreateFrame("Frame", nil, UIParent)
+        pabRootPark:Hide()
+    end
+    root:SetParent(pabRootPark)
+end
+
 function ns.PABMP_BuildPage(pageName, parent, yOffset)
     local scrollFrame = EllesmereUI._scrollFrame
     if not scrollFrame then return 0 end
+    -- The refresh callbacks of the previous render of this root leave the live
+    -- list before this render records its own (also for the render the panel's
+    -- on-show runs outside a page pass).
+    EllesmereUI._BeginRootRender(PAB_RENDER_KEY)
     local fontPath = (EllesmereUI.GetFontPath("unitFrames")) or "Fonts\\FRIZQT__.TTF"
 
     -- Runs every time this page opens, not just when empty: creates any
@@ -2756,11 +2836,18 @@ function ns.PABMP_BuildPage(pageName, parent, yOffset)
     local sidebarW = floor(parentW * 0.28) - 20
     local leftW = parentW - sidebarW
 
-    local outerRoot = CreateFrame("Frame", nil, scrollFrame)
+    -- One root for the session: every render dresses it again (the reset hides
+    -- and parks the previous render's frames) on the scroll frame; a root it
+    -- replaced is parked.
+    local outerRoot = PoolKept(ns, "pabRoot", "Frame", scrollFrame)
     outerRoot:SetAllPoints(scrollFrame)
     outerRoot:SetFrameLevel(scrollFrame:GetFrameLevel() + 5)
-    if ns._pabRoot then ns._pabRoot:Hide(); ns._pabRoot:SetParent(nil) end
+    if ns._pabRoot ~= outerRoot then ns.PABMP_ParkRoot() end
     if EllesmereUI._pickMenu then EllesmereUI._pickMenu:Hide() end
+    -- The Add Bar popup hangs on an Add button of the previous render, which
+    -- this render dresses again (maybe as another control): it closes, as the
+    -- pick menu does.
+    if pabAddPopup then pabAddPopup:Hide() end
     ns._pabRoot = outerRoot
 
     -- Editing-spec bucket sanity: stale/unknown keys reset to All Specs.
@@ -3407,5 +3494,6 @@ function ns.PABMP_BuildPage(pageName, parent, yOffset)
         end)
     end
 
+    EllesmereUI._EndRootRender(PAB_RENDER_KEY)
     return 0
 end

@@ -19,7 +19,7 @@ local GetBindingKey = GetBindingKey
 local EFD = ns.EFD
 
 local EAB, EAB_VTABLE, BAR_LOOKUP = ns.EAB, ns.EAB_VTABLE, ns.BAR_LOOKUP
-local ResolveBorderThickness, ButtonHasAction, barButtons = ns.ResolveBorderThickness, ns.ButtonHasAction, ns.barButtons
+local ResolveBorderThickness, barButtons = ns.ResolveBorderThickness, ns.barButtons
 local I = ns._internals
 local BAR_CONFIG, BINDING_MAP, FONT_PATH = I.BAR_CONFIG, I.BINDING_MAP, I.FONT_PATH
 local NUM_ACTIONBAR_BUTTONS = I.NUM_ACTIONBAR_BUTTONS
@@ -541,15 +541,18 @@ function EAB:ApplyCooldownFonts()
     end
 end
 
--- Immediate re-apply of the Hide Count at 0 alpha on every button, so the options
--- toggle applies on click instead of waiting for the next count event. Alpha only --
--- the count TEXT stays whatever its owners last wrote. Cold path: options clicks only.
--- Show Equipped Border, live: every square button's Border takes the look
--- (and shows on an equipped item's button) or hides again. The Blizzard and
--- Classic styles keep their own equipped border, so EllesmereUI style only.
-function EAB:ApplyEquippedBorder()
+-- Show Equipped Item Color, live: every square button's Border takes the look
+-- (and shows on an equipped item's button, in its rarity color) or hides
+-- again. The Blizzard and Classic styles keep their own equipped border, so
+-- EllesmereUI style only. changedOnly (ApplyAll: profile / spec switches,
+-- imports) repaints only when the value differs from the one last painted;
+-- the first pass just records it, as button setup painted from it.
+function EAB:ApplyEquippedBorder(changedOnly)
+    local on = self.db.profile.showEquippedBorder and true or false
+    local was = ns._eabEqBorderOn
+    ns._eabEqBorderOn = on
+    if changedOnly and (was == nil or was == on) then return end
     if ns.AB_Style() ~= "eui" then return end
-    local on = self.db.profile.showEquippedBorder
     for _, info in ipairs(BAR_CONFIG) do
         local btns = barButtons[info.key]
         if btns then
@@ -557,9 +560,7 @@ function EAB:ApplyEquippedBorder()
                 local bd = btn.Border
                 if bd and EFD(btn).squared then
                     if on then
-                        ns.AB_EquippedBorderLook(bd)
-                        local a = btn:GetAttribute("action")
-                        bd:SetShown(a and IsEquippedAction(a) and true or false)
+                        ns.AB_SyncEquippedBorder(btn, btn:GetAttribute("action"))
                     else
                         bd:Hide()
                         bd:SetAlpha(0)
@@ -570,6 +571,9 @@ function EAB:ApplyEquippedBorder()
     end
 end
 
+-- Immediate re-apply of the Hide Count at 0 alpha on every button, so the options
+-- toggle applies on click instead of waiting for the next count event. Alpha only --
+-- the count TEXT stays whatever its owners last wrote. Cold path: options clicks only.
 function EAB:RefreshAllCounts()
     if not (C_ActionBar and C_ActionBar.GetActionDisplayCount) then return end
     for _, info in ipairs(BAR_CONFIG) do
@@ -891,6 +895,9 @@ function EAB:ApplyAlwaysShowButtons(barKey)
     -- alone. QuickKeybind still needs the normal visibility refresh so its
     -- dedicated KEYBOUND flag can show empty slots on EAB-owned bars.
     if _gridState.shown and not _quickKeybindState.open then return end
+    -- The loop below rewrites the pet buttons from live state: drop the pet
+    -- handler's shape memo so its next full pass lays them out again.
+    if info.isPetBar then ns._eabPetLayoutSig = nil end
     local lastVisible = 0
     for i = 1, numIcons do
         local btn = buttons[i]
@@ -898,8 +905,7 @@ function EAB:ApplyAlwaysShowButtons(barKey)
             if info.nativeMainBar then
                 EAB_VTABLE.MainBarPageSync.SetButtonConfig(btn, true, showEmpty)
             end
-            local hasAction = ButtonHasAction(btn, info.blizzBtnPrefix)
-            local visible = showEmpty or hasAction or quickKeybindVisible
+            local visible = showEmpty or quickKeybindVisible or not ns.AB_EmptySlot(btn, info)
 
             local bfd = EFD(btn)
             if bfd.slotBG then
@@ -1006,9 +1012,12 @@ end
 --  child-update from the MainBar frame to drive the buttons' normal
 --  OnAttributeChanged -> UpdateAction path in combat.
 -------------------------------------------------------------------------------
+-- A combat pass (every page flip and spell swap) owes the main bar's own
+-- AlwaysShow pass once combat ends, never a full ApplyAll: the regen handler
+-- runs it from ns._eabMainBarAsbOwed.
 function EAB_VTABLE.MainBarPageSync.SetButtonConfig(btn, withinCutoff, showEmpty)
     if not btn then return end
-    if InCombatLockdown() then ns._eabApplyDeferred = true return end
+    if InCombatLockdown() then ns._eabMainBarAsbOwed = true return end
     btn:SetAttributeNoHandler("eab-withincutoff", withinCutoff and 1 or 0)
     btn:SetAttributeNoHandler("eab-showempty", showEmpty and 1 or 0)
 end
@@ -1019,7 +1028,7 @@ function EAB_VTABLE.MainBarPageSync.Queue()
     state.pending = true
     C_Timer_After(0, function()
         state.pending = false
-        if InCombatLockdown() then ns._eabApplyDeferred = true return end
+        if InCombatLockdown() then ns._eabMainBarAsbOwed = true return end
         if not EAB or not EAB.db then return end
         EAB:ApplyAlwaysShowButtons("MainBar")
     end)

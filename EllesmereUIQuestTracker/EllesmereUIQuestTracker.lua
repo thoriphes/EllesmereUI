@@ -71,12 +71,17 @@ local QT_DEFAULTS = {
             autoAccept           = false,
             autoAcceptPreventMulti = true,
             autoAcceptShiftSkip  = true,
+            autoAcceptIgnoreTrivial = false,
+            autoAcceptIgnoreOldExpansion = false,
             autoTurnIn           = false,
             autoTurnInShiftSkip  = true,
             questItemHotkey      = nil,
         },
     },
 }
+-- WoW Forever's quest tools add their keys to this table at load
+-- (EllesmereUIQuestTracker_Forever.lua), before the DB is made.
+ns.QT_DEFAULTS = QT_DEFAULTS
 
 local _qtDB
 local function EnsureDB()
@@ -192,6 +197,9 @@ _G._EQT_RefreshAll = function()
     -- profile's key stays overridden -- taken from whatever the player really
     -- has bound there -- and the incoming profile's key is never laid down.
     if EQT.ApplyQuestItemHotkey then EQT.ApplyQuestItemHotkey() end
+    -- WoW Forever's quest tools (nil on retail).
+    if EQT.ApplyQuestWatches then EQT.ApplyQuestWatches() end
+    if EQT.ApplyQuestProgress then EQT.ApplyQuestProgress() end
 end
 
 -------------------------------------------------------------------------------

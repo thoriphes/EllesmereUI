@@ -78,6 +78,10 @@ local function CurrentWhereBucket()
     if C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive and C_ChallengeMode.IsChallengeModeActive() then
         return "dungeon_mythic"
     end
+    -- Housing plots report as "scenario"; they belong to the open world.
+    if C_Housing and C_Housing.IsInsideHouseOrPlot and C_Housing.IsInsideHouseOrPlot() then
+        return "open_world"
+    end
     local _, iType, diffID, _, _, _, _, _, _, _, hasWorldTier = GetInstanceInfo()
     diffID = tonumber(diffID) or 0
     -- Lairs carry the World Tier flag instead of a difficulty id the branches
@@ -96,6 +100,7 @@ local function CurrentWhereBucket()
         if diffID == 33 then return "timewalking" end
     elseif iType == "scenario" then
         if diffID == 208 then return "delve" end
+        return "scenario"
     end
     if IsInInstance and not IsInInstance() then return "open_world" end
     return nil -- unmapped (PvP/arena/etc.) -- always shows, matching AuraBuffReminders
@@ -108,6 +113,7 @@ end
 local LOCATION_KEYS = {
     "open_world", "raid_mythic", "raid_heroic", "raid_normal_lfr",
     "dungeon_mythic", "dungeon_nonmythic", "timewalking", "delve", "lair",
+    "scenario",
 }
 
 -- Combat state is TRACKED from PLAYER_REGEN_DISABLED / _ENABLED instead of
@@ -1194,7 +1200,9 @@ local function ShowPreview()
         if hasTarget then
             local tc = cfg.targetColor
             if cfg.targetClassColor ~= false and C_ClassColor and UnitClassBase then
-                local col = C_ClassColor.GetClassColor(UnitClassBase("player"))
+                -- Class token only: UnitClassBase also returns the class ID, which
+                -- would land in GetClassColor's optional tint color argument.
+                local col = C_ClassColor.GetClassColor((UnitClassBase("player")))
                 if col then e.bar.target:SetTextColor(col:GetRGB()) end
             elseif tc then
                 e.bar.target:SetTextColor(tc.r, tc.g, tc.b, 1)

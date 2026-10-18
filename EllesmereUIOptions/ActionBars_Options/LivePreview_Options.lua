@@ -7,6 +7,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUIActionBars"]
 if not ns then return end  -- module disabled: no options page
+-- Options page pool (EllesmereUI_FramePool.lua, first in this addon): the
+-- preview is built on the header's kept root, so its frames are reset and
+-- dressed again by the next build instead of made anew; on any other parent
+-- this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
 
 --- Build (or rebuild for a different bar) the live preview frame. Shows only
 --- Edit-Mode-enabled buttons (numButtonsShowable) at the first real button's
@@ -72,7 +77,7 @@ local function BuildLivePreview(parent, yOff)
     sf:EnableMouseWheel(true)
 
     local UpdatePVThumb = EllesmereUI.AttachSmoothScrollbar(sf, {
-        step = 40, thumbMin = 20, trackParent = wrapper, topInset = 2, level = 5 })
+        step = 40, thumbMin = 20, trackParent = wrapper, topInset = 2, level = 5, panelWheel = true })
 
     -- Store refs for height management after Update()
     pf._wrapper = wrapper
@@ -108,7 +113,7 @@ local function BuildLivePreview(parent, yOff)
 
         local icon = bf:CreateTexture(nil, "ARTWORK")
         icon:SetAllPoints()
-        icon:SetColorTexture(0.06, 0.08, 0.10, 1)
+        icon:SetColorTexture(0.077, 0.068, 0.058, 1)
 
         local bT = bf:CreateTexture(nil, "OVERLAY")
         local bB = bf:CreateTexture(nil, "OVERLAY")
@@ -358,7 +363,16 @@ local function BuildLivePreview(parent, yOff)
         end
         local gridW = gridCols * scaledBtnW + (gridCols - 1) * scaledPad
         local gridH = gridRows * scaledBtnH + (gridRows - 1) * scaledPad
-        local gridStartX = Snap(math.max(0, (self:GetWidth() - gridW) / 2))
+        -- Paging Arrows (Action Bar 1), sized as the live ones
+        -- (ns.AB_PagingArrowMetrics): beside a horizontal bar (grid and arrows
+        -- centred as one), above or below a vertical one.
+        local pgArrow, pgText, pgGap, pgOff, pgRight
+        if info.key == "MainBar" and settings.showPagingArrows then
+            pgArrow, pgText, pgGap, pgOff = ns.AB_PagingArrowMetrics(btnH)
+            pgRight = settings.pagingArrowsRight and true or false
+        end
+        local pgSide = (pgArrow and not isVertical) and (pgArrow + pgOff) or 0
+        local gridStartX = Snap(math.max(0, (self:GetWidth() - gridW - pgSide) / 2) + (pgRight and 0 or pgSide))
 
         -- Inset for background growth above/below the grid (ScrollFrame clips its child; without it the top border is lost).
         local bgTopInset, bgBottomInset = 0, 0
@@ -384,6 +398,21 @@ local function BuildLivePreview(parent, yOff)
             local reachT, reachB = ns.AB_ChromeReach(scaledBtnW, gridH, fvPrev, capsPrev, gridRows > 1, totalScale, info.key)
             bgTopInset = math.max(bgTopInset, Snap(reachT - 10))
             bgBottomInset = math.max(bgBottomInset, Snap(reachB - 10))
+        end
+        -- Room for the paging arrows past the grid's 10px margins.
+        if pgArrow then
+            if isVertical then
+                local need = Snap(pgArrow + pgOff - 10)
+                if pgRight then
+                    bgBottomInset = math.max(bgBottomInset, need)
+                else
+                    bgTopInset = math.max(bgTopInset, need)
+                end
+            else
+                local need = Snap((pgArrow * 2 + pgText + pgGap * 2 - gridH) / 2 - 10)
+                bgTopInset = math.max(bgTopInset, need)
+                bgBottomInset = math.max(bgBottomInset, need)
+            end
         end
 
         local frameH = Snap(gridH + 20 + bgTopInset + bgBottomInset)
@@ -599,18 +628,19 @@ local function BuildLivePreview(parent, yOff)
                     end
                     local adjX = (settings.borderTextureOffset or dox) * ratio
                     local adjY = (settings.borderTextureOffsetY or doy) * ratio
+                    -- Whole pixels at the preview's own scale, as ApplyBorderStyle snaps the live anchors.
+                    local snapES = (pvES > 0.01) and pvES or uiES
                     local offX, offY
                     if EllesmereUI.BorderTextureUsesScaleOffset(brdTexKey) then
-                        offX = (edgeSize / 2) + adjX
-                        offY = (edgeSize / 2) + adjY
+                        local half = EllesmereUI.BorderHalfEdge(brdTexKey, edgeSize, snapES)
+                        offX = half + adjX
+                        offY = half + adjY
                     else
                         offX = adjX
                         offY = adjY
                     end
                     local sx = (settings.borderTextureShiftX or dsx) * ratio
                     local sy = (settings.borderTextureShiftY or dsy) * ratio
-                    -- Whole pixels at the preview's own scale, as ApplyBorderStyle snaps the live anchors.
-                    local snapES = (pvES > 0.01) and pvES or uiES
                     offX, offY = gamePP.SnapForES(offX, snapES), gamePP.SnapForES(offY, snapES)
                     sx, sy = gamePP.SnapForES(sx, snapES), gamePP.SnapForES(sy, snapES)
                     bdPv:ClearAllPoints()
@@ -801,6 +831,56 @@ local function BuildLivePreview(parent, yOff)
                 info.key, capsL, capsR)
         end
 
+        -- The paging arrows' stand-in (built on first use): the live arrow art
+        -- and page number, over the bar's chrome.
+        local pg = self._pagingPreview
+        if pgArrow then
+            if not pg then
+                pg = CreateFrame("Frame", nil, self)
+                pg.up = pg:CreateTexture(nil, "ARTWORK")
+                pg.up:SetAtlas("UI-HUD-ActionBar-PageUpArrow-Up")
+                pg.down = pg:CreateTexture(nil, "ARTWORK")
+                pg.down:SetAtlas("UI-HUD-ActionBar-PageDownArrow-Up")
+                pg.text = pg:CreateFontString(nil, "OVERLAY")
+                pg.text:SetTextColor(1, 1, 1, 0.9)
+                self._pagingPreview = pg
+            end
+            pg:SetFrameLevel(self:GetFrameLevel() + 20)
+            pg.text:SetFont(STANDARD_TEXT_FONT, pgText, (EllesmereUI.SlugFlag("OUTLINE, SLUG")) or "OUTLINE, SLUG")
+            pg.text:SetText(tostring(ns.EAB_VTABLE.GetActionBarPage() or 1))
+            pg.up:SetSize(pgArrow, pgArrow)
+            pg.down:SetSize(pgArrow, pgArrow)
+            pg:ClearAllPoints()
+            pg.up:ClearAllPoints()
+            pg.down:ClearAllPoints()
+            pg.text:ClearAllPoints()
+            pg.text:SetPoint("CENTER", pg, "CENTER", 0, 0)
+            if isVertical then
+                pg:SetSize(pgArrow * 2 + pgText * 2 + pgGap * 2, pgArrow)
+                local cx = Snap(gridStartX + gridW / 2)
+                if pgRight then
+                    pg:SetPoint("TOP", self, "TOPLEFT", cx, self._gridStartY - gridH - pgOff)
+                else
+                    pg:SetPoint("BOTTOM", self, "TOPLEFT", cx, self._gridStartY + pgOff)
+                end
+                pg.down:SetPoint("LEFT", pg, "LEFT", 0, 0)
+                pg.up:SetPoint("RIGHT", pg, "RIGHT", 0, 0)
+            else
+                pg:SetSize(pgArrow, pgArrow * 2 + pgText + pgGap * 2)
+                local cy = Snap(self._gridStartY - gridH / 2)
+                if pgRight then
+                    pg:SetPoint("LEFT", self, "TOPLEFT", gridStartX + gridW + pgOff, cy)
+                else
+                    pg:SetPoint("RIGHT", self, "TOPLEFT", gridStartX - pgOff, cy)
+                end
+                pg.up:SetPoint("TOP", pg, "TOP", 0, 0)
+                pg.down:SetPoint("BOTTOM", pg, "BOTTOM", 0, 0)
+            end
+            pg:Show()
+        elseif pg then
+            pg:Hide()
+        end
+
         if settings.bgEnabled then
             local bgC = settings.bgColor or { r = 0, g = 0, b = 0, a = 0.5 }
             local bgAlpha = settings.bgOpacity ~= nil and settings.bgOpacity / 100 or bgC.a
@@ -869,7 +949,9 @@ local function BuildLivePreview(parent, yOff)
 
     -- Return the actual computed height (converted to parent-space)
     optState.activePreview = pf
-    EllesmereUI._contentHeaderPreview = pf
+    -- This module's own header preview slot: other modules' header previews
+    -- stay alive beside it and never answer for it.
+    EllesmereUI._abHeaderPreview = pf
     return pf._wrapper:GetHeight()
 end
 

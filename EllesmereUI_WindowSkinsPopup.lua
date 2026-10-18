@@ -99,7 +99,7 @@ local function ShowWindowSkinsPopup()
         PP.Point(card, "CENTER", popup, "TOP", (i - 2) * (CARD_W + CARD_GAP), MIDLINE)
         local cbg = card:CreateTexture(nil, "BACKGROUND")
         cbg:SetAllPoints()
-        cbg:SetColorTexture(0.12, 0.13, 0.15, 1)
+        cbg:SetColorTexture(0.121, 0.113, 0.106, 1)
 
         -- Window title bar (colored, full width inset 1px so the border reads
         -- around it), with a small close-dot at its right to sell the "window".
@@ -194,15 +194,9 @@ local function ShowWindowSkinsPopup()
         if not EllesmereUIDB then EllesmereUIDB = {} end
         EllesmereUIDB.windowSkinsIntroShown = true
         if disable then
-            if EllesmereUI.DisableAllBlizzWindowSkins then
-                EllesmereUI.DisableAllBlizzWindowSkins()
-            end
-            EllesmereUI.RequestReload()
-            -- On the Forever client the reload waits on its popup: close the
-            -- announcement and clear its pending flag so the popups queued
-            -- behind it stop waiting. Retail is already reloading.
-            dimmer:Hide()
-            EllesmereUI._windowSkinsIntroPending = nil
+            -- The reload first, then the switch-off as its pre-reload work
+            -- (nil while Blizzard Skins+ is off).
+            EllesmereUI.RequestReload(nil, nil, EllesmereUI.DisableAllBlizzWindowSkins)
             return
         end
         dimmer:Hide()

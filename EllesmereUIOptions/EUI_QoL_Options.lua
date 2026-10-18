@@ -11,6 +11,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -- SILENTLY on a mismatch. Renaming one means updating every consumer.
 if not EllesmereUI._ModuleNS["EllesmereUIQoL"] then return end  -- module disabled: no options page
 
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local PAGE_QOL      = "QoL"
 local PAGE_CURSOR   = "Cursor"
 local PAGE_UPGCALC  = "Upgrader"
@@ -82,7 +87,7 @@ local function ShowTransformsPopup()
 
         local bg = popup:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetColorTexture(0.06, 0.08, 0.10, 1)
+        bg:SetColorTexture(0.077, 0.068, 0.058, 1)
         EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
 
         local title = popup:CreateFontString(nil, "OVERLAY")
@@ -171,7 +176,7 @@ local function ShowTransformsPopup()
                 box:SetFrameLevel(row:GetFrameLevel() + 1)
                 local boxBg = box:CreateTexture(nil, "BACKGROUND")
                 boxBg:SetAllPoints()
-                boxBg:SetColorTexture(0.12, 0.12, 0.14, 1)
+                boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
                 row._boxBorder = EllesmereUI.MakeBorder(box, 0.4, 0.4, 0.4, 0.6, PP)
                 local check = box:CreateTexture(nil, "ARTWORK")
                 check:SetPoint("TOPLEFT", box, "TOPLEFT", 3, -3)
@@ -205,7 +210,7 @@ local function ShowTransformsPopup()
         applyBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, 38)
         local applyBg = applyBtn:CreateTexture(nil, "BACKGROUND")
         applyBg:SetAllPoints()
-        applyBg:SetColorTexture(0.06, 0.08, 0.10, 0.92)
+        applyBg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
         local applyBrd = EllesmereUI.MakeBorder(applyBtn, EG.r, EG.g, EG.b, 0.9, PP)
         local applyLbl = applyBtn:CreateFontString(nil, "OVERLAY")
         applyLbl:SetFont(FONT, 16, "")
@@ -240,8 +245,9 @@ local function ShowTransformsPopup()
         dimmer:SetScript("OnMouseDown", function(self)
             if not popup:IsMouseOver() then self:Hide() end
         end)
-        popup:EnableKeyboard(true)
+        EllesmereUI.PopupTakeKeys(popup, dimmer)
         popup:SetScript("OnKeyDown", function(self, key)
+            if InCombatLockdown() then return end
             if key == "ESCAPE" then
                 self:SetPropagateKeyboardInput(false)
                 dimmer:Hide()
@@ -303,7 +309,7 @@ local function BuildSelfCombatTextSection(parent, y)
         { type="toggle", text="Self Combat Text",
           tooltip="Shows your damage taken, healing, avoids and combat enter/leave above the player frame instead of Blizzard's combat text, whose other messages are hidden while this is on. Move it in Unlock Mode.",
           getValue=function() return not sctOff() end,
-          setValue=function(v) SCTSet("enabled", v); EllesmereUI:RefreshPage() end },
+          setValue=EllesmereUI.SectionToggleSetValue(function(v) SCTSet("enabled", v) end) },
         { type="slider", text="Combat Text Size", min=10, max=48, step=1,
           disabled=sctOff, disabledTooltip="Self Combat Text",
           getValue=function() return SCTGet("size") end,
@@ -322,11 +328,16 @@ local function BuildSelfCombatTextSection(parent, y)
                   get=function() return SCTGet("critScale") end,
                   set=function(v) SCTSet("critScale", v) end },
                 { type="toggle", label="Stagger Hits",
+                  tooltip="Spaces out hits that land together so none hides another.",
                   get=function() return SCTGet("stagger") end,
                   set=function(v) SCTSet("stagger", v) end },
             },
         })
     end
+
+    -- Section gate: the rows below exist only while Self Combat Text is on (the
+    -- toggle's SectionToggleSetValue rebuilds the page).
+    if sctOff() then return y end
 
     _, h = W:DualRow(parent, y,
         sctDropdown("Animation", "anim",
@@ -374,6 +385,34 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  QoL Features page
     ---------------------------------------------------------------------------
+    -- The Macro Factory card: open or closed for the session (closed at its
+    -- start), the section name its header carries in search (set by each
+    -- build), and its glyph, the Potion macro's icon.
+    local macroFactoryOpen = {}
+    local macroFactorySection
+    local function MacroFactoryGlyph(hdr)
+        local PP = EllesmereUI.PanelPP
+        local icon = hdr:CreateTexture(nil, "ARTWORK")
+        PP.Size(icon, 22, 22)
+        PP.Point(icon, "LEFT", hdr, "LEFT", 17, 0)
+        icon:SetTexture("Interface\\Icons\\inv_potion_54")
+        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    end
+    -- Deep-link pre-hook: a jump to the card's own search entry opens the card
+    -- first, so the jump lands on the open factory (a jump to any other row of
+    -- the page leaves the card as it is).
+    do
+        local origNav = EllesmereUI.NavigateToElementSettings
+        function EllesmereUI:NavigateToElementSettings(moduleName, pageName, sectionName, preSelectFn, highlightText)
+            if moduleName == "EllesmereUIQoL" and pageName == PAGE_QOL and sectionName ~= nil
+               and sectionName == macroFactorySection and not macroFactoryOpen.macroFactory then
+                macroFactoryOpen.macroFactory = true
+                EllesmereUI:InvalidatePageCache()
+            end
+            return origNav(self, moduleName, pageName, sectionName, preSelectFn, highlightText)
+        end
+    end
+
     local function BuildQoLPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
@@ -384,17 +423,32 @@ initFrame:SetScript("OnEvent", function(self)
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
 
-        -- The Macro Factory is deliberately NOT part of the global search. Its builder
-        -- arms live machinery at build time (a session event frame that rewrites the
-        -- player's real EUI_* macros on bag/spec events), so the hidden search
-        -- pre-build must never run it, and its rows are kept out of the search index so
-        -- results can never point into it (the index would otherwise deep-link to rows
-        -- whose page state the factory manages itself).
-        if EllesmereUI.BuildMacroFactory and not EllesmereUI._prebuilding then
-            EllesmereUI._searchIndexSuppress = true
-            local mfH = EllesmereUI.BuildMacroFactory(parent, y, PP)
-            EllesmereUI._searchIndexSuppress = nil
-            y = y - mfH
+        -- The Macro Factory sits in an expandable card (the patch notes' card),
+        -- closed at the start of every session: its section is built only while
+        -- the card is open, and a closed card parks the section an earlier build
+        -- left. The card's header is a search entry (a jump to it opens the card,
+        -- see the pre-hook below), but the factory's own rows stay out of the
+        -- index, and the hidden search pre-build builds the header only: it never
+        -- builds the section and never parks the one on screen. WoW Forever has no
+        -- Macro Factory: no card there.
+        if EllesmereUI.BuildMacroFactory and not EllesmereUI.IS_FOREVER then
+            local prebuilding = EllesmereUI._prebuilding
+            local mfTile = { key = "macroFactory", display = "Macro Factory",
+                desc = EllesmereUI.L("Ready-made macros for potions, food, trinkets and focus, plus a set for your spec"),
+                buildContent = function(_, cy)
+                    if prebuilding then return cy end
+                    EllesmereUI._searchIndexSuppress = true
+                    local mfH = EllesmereUI.BuildMacroFactory(parent, cy, PP)
+                    EllesmereUI._searchIndexSuppress = nil
+                    return cy - mfH
+                end }
+            macroFactorySection = mfTile.display .. " " .. mfTile.desc
+            y = EllesmereUI.BuildModuleCard(parent, y, W, mfTile, {
+                enabled = true, expanded = macroFactoryOpen, descW = 560,
+                glyph = MacroFactoryGlyph })
+            if not macroFactoryOpen.macroFactory and not prebuilding then
+                EllesmereUI.ParkMacroFactory()
+            end
         end
 
         ---------------------------------------------------------------------------
@@ -402,53 +456,246 @@ initFrame:SetScript("OnEvent", function(self)
         ---------------------------------------------------------------------------
         _, h = W:SectionHeader(parent, "GENERAL", y);  y = y - h
 
-        local row1
-        row1, h = W:DualRow(parent, y,
-            { type="toggle", text="Hide Blizzard Party Panel",
-              tooltip="Hides the collapsed Blizzard party/raid sidebar panel on the side of the screen.",
-              disabled=function() return C_AddOns and C_AddOns.IsAddOnLoaded("EllesmereUIRaidFrames") end,
-              disabledTooltip="This option is now controlled by the Raid Frames addon", rawTooltip=true,
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideBlizzardPartyFrame or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideBlizzardPartyFrame = v
-                  EllesmereUI._applyHideBlizzardPartyFrame()
-              end },
-            { type="toggle", text="Skip Cinematics",
-              tooltip="When you press Escape or Space during a cinematic, the confirmation prompt is automatically accepted.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.skipCinematics or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.skipCinematics = v
-                  EllesmereUI:RefreshPage()
-              end }
-        );  y = y - h
-
-        -- Cog on Skip Cinematics (right region of row1)
-        if not EllesmereUI._prebuilding then
-            local rightRgn = row1._rightRegion
-            local function cinematicsOff()
-                return not (EllesmereUIDB and EllesmereUIDB.skipCinematics)
+        -- Row 1: Hide Blizzard Elements (checklist + Loot Rolls Window cog) |
+        -- Skip Cinematics (+ cog). Each checklist row reads and writes its own
+        -- saved key, as its toggle did. Party Panel is the same key and apply
+        -- as the Raid Frames toggle (EllesmereUI_BlizzardParty.lua). The talking
+        -- head, banner and toast rows are retail only: their runtime blocks do
+        -- not exist on WoW Forever.
+        do
+            local HBE_LABEL = "Hide Blizzard Elements"
+            local function QDB()
+                if not EllesmereUIDB then EllesmereUIDB = {} end
+                return EllesmereUIDB
+            end
+            -- The toast rows share the hideAlertToasts switch: a kind hides while
+            -- the switch is on and its own key allows it (Loot unset = on, the
+            -- others unset = off), the runtime's KindHidden rule.
+            local TOAST_KEYS = { "hideAlertToastsLoot", "hideAlertToastsAchievements", "hideAlertToastsHousing" }
+            local function ToastHidden(key)
+                local db = EllesmereUIDB
+                if not (db and db.hideAlertToasts) then return false end
+                local v = db[key]
+                if v == nil then return key == "hideAlertToastsLoot" end
+                return v
+            end
+            local function SetToast(key, v)
+                local db = QDB()
+                if v and not db.hideAlertToasts then
+                    -- The switch goes on for this kind alone.
+                    db.hideAlertToasts = true
+                    for i = 1, #TOAST_KEYS do db[TOAST_KEYS[i]] = false end
+                end
+                db[key] = v and true or false
+                if not v then
+                    local any = false
+                    for i = 1, #TOAST_KEYS do
+                        if ToastHidden(TOAST_KEYS[i]) then any = true end
+                    end
+                    if not any then db.hideAlertToasts = false end
+                end
+                if EllesmereUI._applyHideAlertToasts then EllesmereUI._applyHideAlertToasts() end
+            end
+            local function Toast(key, label, alias)
+                return { key = key, label = label, alias = alias,
+                    read = function() return ToastHidden(key) end,
+                    write = function(v) SetToast(key, v) end }
             end
 
-            EllesmereUI.BuildInlineCog(rightRgn, {
-                title = "Cinematic Settings",
-                rows = {
-                    { type="toggle", label="Automatically Skip If Possible",
-                      get=function()
-                          return EllesmereUIDB and EllesmereUIDB.skipCinematicsAuto or false
-                      end,
-                      set=function(v)
-                          if not EllesmereUIDB then EllesmereUIDB = {} end
-                          EllesmereUIDB.skipCinematicsAuto = v
-                      end },
-                },
-                gap = 9, disabled = cinematicsOff, disabledTooltip = "Skip Cinematics",
-            })
+            -- alias: the row's old label, kept as search text.
+            local RETAIL = not EllesmereUI.IS_FOREVER
+            local items = {}
+            items[#items + 1] = { key = "hideBlizzardPartyFrame", label = "Party Panel (Sidebar)",
+                alias = "Hide Blizzard Party Panel",
+                tooltip = "Hides the collapsed Blizzard party/raid sidebar panel on the side of the screen.",
+                read = function() return EllesmereUIDB and EllesmereUIDB.hideBlizzardPartyFrame or false end,
+                write = function(v)
+                    QDB().hideBlizzardPartyFrame = v
+                    EllesmereUI._applyHideBlizzardPartyFrame()
+                end }
+            if RETAIL then
+                items[#items + 1] = { key = "hideTalkingHead", label = "Talking Head",
+                    alias = "Hide Talking Head",
+                    tooltip = "Hides the large NPC dialogue popup that appears during quests and dungeons.",
+                    read = function() return EllesmereUIDB and EllesmereUIDB.hideTalkingHead or false end,
+                    write = function(v)
+                        QDB().hideTalkingHead = v
+                        EllesmereUI._applyHideTalkingHead()
+                    end }
+                items[#items + 1] = { key = "muteTalkingHead", label = "Talking Head Audio",
+                    alias = "Mute Talking Head",
+                    tooltip = "Silences the talking head's voice lines.",
+                    read = function() return EllesmereUIDB and EllesmereUIDB.muteTalkingHead == true end,
+                    write = function(v)
+                        QDB().muteTalkingHead = v
+                        EllesmereUI._applyHideTalkingHead()
+                    end }
+            end
+            items[#items + 1] = { key = "hideTutorials", label = "Tutorial Popups",
+                alias = "Hide Tutorial Pop-ups",
+                tooltip = "Hides Blizzard's tutorial UI: the yellow HelpTip bubbles and the glowing (i) help-plate buttons on the spellbook, talents, map, collections, and other panels.",
+                read = function() return EllesmereUIDB and EllesmereUIDB.hideTutorials or false end,
+                write = function(v)
+                    QDB().hideTutorials = v
+                    if EllesmereUI._applyHideTutorials then EllesmereUI._applyHideTutorials() end
+                end }
+            items[#items + 1] = { key = "hideErrorMessages", label = "Error Messages",
+                alias = "Hide Error Messages",
+                tooltip = "Hides most red error messages (such as 'Not enough rage' or 'Ability is not ready yet'). Important errors like a full bag or quest log are still shown.",
+                read = function() return EllesmereUIDB and EllesmereUIDB.hideErrorMessages or false end,
+                write = function(v)
+                    QDB().hideErrorMessages = v
+                    -- Turning it off takes effect at the next reload; the apply
+                    -- returns true while one is due.
+                    if EllesmereUI._applyHideErrorMessages and EllesmereUI._applyHideErrorMessages() then
+                        EllesmereUI:ShowConfirmPopup({
+                            title       = "Reload Required",
+                            message     = "Hidden error messages come back after a UI reload.",
+                            confirmText = "Reload Now",
+                            cancelText  = "Later",
+                            reload      = true,
+                        })
+                    end
+                end }
+            items[#items + 1] = { key = "hideLootHistory", label = "Group Loot Rolls Window",
+                alias = "Hide Loot Rolls Window",
+                tooltip = "Hides Blizzard's \"Loot Rolls\" window -- the running list of dropped items showing who rolled what and who won. Use the cog to let it appear briefly and close itself instead. The Need/Greed roll popups themselves are not affected.",
+                read = function() return EllesmereUIDB and EllesmereUIDB.hideLootHistory or false end,
+                write = function(v)
+                    QDB().hideLootHistory = v
+                    if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
+                    EllesmereUI:RefreshPage()  -- the Loot Rolls Window cog follows
+                end }
+            if RETAIL then
+                items[#items + 1] = { key = "hideBanners", label = "Top Screen Banners",
+                    alias = "Hide Banners",
+                    tooltip = "Hides the big banners at the top of the screen.",
+                    read = function() return EllesmereUIDB and EllesmereUIDB.hideBanners or false end,
+                    write = function(v)
+                        QDB().hideBanners = v
+                        if EllesmereUI._applyHideBanners then EllesmereUI._applyHideBanners() end
+                    end }
+            end
+            -- The same EllesmereUIDB.suppressErrors key and scriptErrors CVar as
+            -- Global Settings > Developer, applied on login by the parent.
+            items[#items + 1] = { key = "suppressErrors", label = "Lua Errors",
+                alias = "Suppress Lua Errors",
+                tooltip = "Hides the Lua error popup. The same setting as Global Settings > Developer.",
+                read = function() return not (EllesmereUIDB and EllesmereUIDB.suppressErrors == false) end,
+                write = function(v)
+                    QDB().suppressErrors = v
+                    if not InCombatLockdown() then EllesmereUI.SetCVar("scriptErrors", v and "0" or "1") end
+                end }
+            if RETAIL then
+                items[#items + 1] = Toast("hideAlertToastsLoot", "Loot Toasts", "Hide Alert Toasts")
+                items[#items + 1] = Toast("hideAlertToastsAchievements", "Achievement Toasts")
+                items[#items + 1] = Toast("hideAlertToastsHousing", "Housing Toasts")
+            end
+
+            -- Global search sees row labels and tooltips only, so this row's
+            -- entry, registered before the row (the index keeps the first one),
+            -- carries the checklist's names as search text; it is never shown.
+            if EllesmereUI._RegisterSearchEntry then
+                local words = {}
+                local function Word(s)
+                    if not s then return end
+                    words[#words + 1] = s
+                    local loc = EllesmereUI.L(s)
+                    if loc ~= s then words[#words + 1] = loc end
+                end
+                for i = 1, #items do
+                    Word(items[i].label)
+                    Word(items[i].alias)
+                end
+                local labelLoc = EllesmereUI.L(HBE_LABEL)
+                EllesmereUI._RegisterSearchEntry(HBE_LABEL, labelLoc ~= HBE_LABEL and labelLoc or nil,
+                    table.concat(words, " "), EllesmereUI._buildingModule, EllesmereUI._buildingPage,
+                    parent._currentSection and parent._currentSection._sectionName)
+            end
+
+            local row1
+            row1, h = W:DualRow(parent, y,
+                { type="label", text=HBE_LABEL,
+                  tooltip="Choose which Blizzard elements to hide." },
+                { type="toggle", text="Skip Cinematics",
+                  tooltip="When you press Escape or Space during a cinematic, the confirmation prompt is automatically accepted.",
+                  getValue=function()
+                      return EllesmereUIDB and EllesmereUIDB.skipCinematics or false
+                  end,
+                  setValue=function(v)
+                      if not EllesmereUIDB then EllesmereUIDB = {} end
+                      EllesmereUIDB.skipCinematics = v
+                      EllesmereUI:RefreshPage()
+                  end }
+            );  y = y - h
+
+            if not EllesmereUI._prebuilding then
+                local leftRgn = row1._leftRegion
+                local byKey = {}
+                for i = 1, #items do byKey[items[i].key] = items[i] end
+                local hbeDD, hbeDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    leftRgn, 210, leftRgn:GetFrameLevel() + 2, items,
+                    function(key) return byKey[key].read() end,
+                    function(key, v) byKey[key].write(v) end)
+                PP.Point(hbeDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+                leftRgn._control = hbeDD
+                leftRgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(hbeDDRefresh)
+
+                -- Loot Rolls Window cog (mode + auto-close delay), left of the list
+                local function lootHistOff()
+                    return not (EllesmereUIDB and EllesmereUIDB.hideLootHistory)
+                end
+                -- The delay only means anything in auto-close mode.
+                local function delayOff()
+                    return lootHistOff()
+                        or (EllesmereUIDB and EllesmereUIDB.lootHistoryMode) ~= "autoclose"
+                end
+                EllesmereUI.BuildInlineCog(leftRgn, {
+                    title = "Loot Rolls Window Settings",
+                    minWidth = 300,
+                    rows = {
+                        { type="dropdown", label="Mode",
+                          values={ hide = "Hide Completely", autoclose = "Close After Delay" },
+                          order={ "hide", "autoclose" },
+                          get=function() return (EllesmereUIDB and EllesmereUIDB.lootHistoryMode) or "hide" end,
+                          set=function(v)
+                            QDB().lootHistoryMode = v
+                            if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
+                          end },
+                        { type="slider", label="Close After (sec)",
+                          min=1, max=30, step=1,
+                          disabled=delayOff,
+                          get=function()
+                            return (EllesmereUIDB and EllesmereUIDB.lootHistoryDelay) or 5
+                          end,
+                          set=function(v)
+                            QDB().lootHistoryDelay = v
+                            if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
+                          end },
+                    },
+                    gap = 9, disabled = lootHistOff, disabledTooltip = "Group Loot Rolls Window",
+                })
+
+                -- Cog on Skip Cinematics (right region)
+                local function cinematicsOff()
+                    return not (EllesmereUIDB and EllesmereUIDB.skipCinematics)
+                end
+                EllesmereUI.BuildInlineCog(row1._rightRegion, {
+                    title = "Cinematic Settings",
+                    rows = {
+                        { type="toggle", label="Automatically Skip If Possible",
+                          get=function()
+                              return EllesmereUIDB and EllesmereUIDB.skipCinematicsAuto or false
+                          end,
+                          set=function(v)
+                              if not EllesmereUIDB then EllesmereUIDB = {} end
+                              EllesmereUIDB.skipCinematicsAuto = v
+                          end },
+                    },
+                    gap = 9, disabled = cinematicsOff, disabledTooltip = "Skip Cinematics",
+                })
+            end
         end
 
         local row2
@@ -534,197 +781,9 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
 
-        -- AH Current Expansion Only | Hide Talking Head. Not offered on WoW
-        -- Forever: the row is not built there and neither runtime block exists.
-        if not EllesmereUI.IS_FOREVER then
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="AH Current Expansion Only",
-              tooltip="Automatically enables the 'Current Expansion Only' filter whenever you open the Auction House.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.ahCurrentExpansion or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.ahCurrentExpansion = v
-              end },
-            { type="toggle", text="Hide Talking Head",
-              tooltip="Hides the large NPC dialogue popup that appears during quests and dungeons.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideTalkingHead or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideTalkingHead = v
-              end }
-        );  y = y - h
-        end -- not IS_FOREVER
-
-        -- Row 5: Show Coordinates on Map (left, with cog) | Suppress Lua Errors
-        -- (Suppress Lua Errors is a front-end duplicate of the toggle in
-        -- Global Settings > Developer; same EllesmereUIDB.suppressErrors key and
-        -- scriptErrors CVar, applied on login by the parent General module.)
-        local coordRow
-        coordRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Coordinates on Map",
-              tooltip="Displays cursor and player coordinates at the bottom of the world map.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.mapCoords or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.mapCoords = v
-                  if EllesmereUI._applyMapCoords then EllesmereUI._applyMapCoords() end
-                  EllesmereUI:RefreshPage()
-              end },
-            { type="toggle", text="Suppress Lua Errors",
-              tooltip="Hides the Lua error popup. The same setting as Global Settings > Developer.",
-              getValue=function()
-                  return not (EllesmereUIDB and EllesmereUIDB.suppressErrors == false)
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.suppressErrors = v
-                  if not InCombatLockdown() then EllesmereUI.SetCVar("scriptErrors", v and "0" or "1") end
-              end }
-        );  y = y - h
-
-        -- Cog on Show Coordinates on Map (left region)
-        if not EllesmereUI._prebuilding then
-            local leftRgn = coordRow._leftRegion
-            local function coordsOff()
-                return EllesmereUIDB and EllesmereUIDB.mapCoords == false
-            end
-
-            EllesmereUI.BuildInlineCog(leftRgn, {
-                title = "Map Coordinates Settings",
-                rows = {
-                    { type = "slider", label = "Text Size", min = 8, max = 24, step = 1,
-                      get = function()
-                          return (EllesmereUIDB and EllesmereUIDB.mapCoordsTextSize) or 12
-                      end,
-                      set = function(v)
-                          if not EllesmereUIDB then EllesmereUIDB = {} end
-                          EllesmereUIDB.mapCoordsTextSize = v
-                          if EllesmereUI._applyMapCoords then EllesmereUI._applyMapCoords() end
-                      end },
-                },
-                gap = 9, disabled = coordsOff, disabledTooltip = "Show Coordinates on Map",
-            })
-        end
-
-        -- Row 6: Hide Error Messages (left) | Hide Tutorial Pop-ups (right)
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Hide Error Messages",
-              tooltip="Hides most red error messages (such as 'Not enough rage' or 'Ability is not ready yet'). Important errors like a full bag or quest log are still shown.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideErrorMessages or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideErrorMessages = v
-                  if EllesmereUI._applyHideErrorMessages then EllesmereUI._applyHideErrorMessages() end
-              end },
-            { type="toggle", text="Hide Tutorial Pop-ups",
-              tooltip="Hides Blizzard's tutorial UI: the yellow HelpTip bubbles and the glowing (i) help-plate buttons on the spellbook, talents, map, collections, and other panels.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideTutorials or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideTutorials = v
-                  if EllesmereUI._applyHideTutorials then EllesmereUI._applyHideTutorials() end
-              end }
-        );  y = y - h
-
-        -- Row: Hide Loot Rolls Window (left, with settings cog) | Combat
-        -- Alert (right, with its own settings cog below)
-        local lootHistRow
-        lootHistRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Hide Loot Rolls Window",
-              tooltip="Hides Blizzard's \"Loot Rolls\" window -- the running list of dropped items showing who rolled what and who won. Use the cog to let it appear briefly and close itself instead. The Need/Greed roll popups themselves are not affected.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideLootHistory or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideLootHistory = v
-                  if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
-                  EllesmereUI:RefreshPage()  -- update the cog disabled state
-              end },
-            { type="toggle", text="Combat Alert",
-              tooltip="Shows a large on-screen text when you enter and/or leave combat (e.g. \"+Combat\" / \"-Combat\"). Use the cog to set the display text, size, colors and which transitions are shown; use Unlock Mode to reposition the alert.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.combatAlertEnabled or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.combatAlertEnabled = v
-                  if EllesmereUI._applyCombatAlert then EllesmereUI._applyCombatAlert() end
-                  EllesmereUI:RefreshPage()
-              end }
-        );  y = y - h
-
-        -- Inline cog (mode + auto-close delay) on the Hide Loot Rolls toggle
-        if not EllesmereUI._prebuilding then
-            local leftRgn = lootHistRow._leftRegion
-            local function lootHistOff()
-                return not (EllesmereUIDB and EllesmereUIDB.hideLootHistory)
-            end
-            -- The delay only means anything in auto-close mode.
-            local function delayOff()
-                return lootHistOff()
-                    or (EllesmereUIDB and EllesmereUIDB.lootHistoryMode) ~= "autoclose"
-            end
-
-            local lhModeValues = {
-                hide      = "Hide Completely",
-                autoclose = "Close After Delay",
-            }
-            local lhModeOrder = { "hide", "autoclose" }
-
-            EllesmereUI.BuildInlineCog(leftRgn, {
-                title = "Loot Rolls Window Settings",
-                minWidth = 300,
-                rows = {
-                    { type="dropdown", label="Mode",
-                      values=lhModeValues, order=lhModeOrder,
-                      get=function() return (EllesmereUIDB and EllesmereUIDB.lootHistoryMode) or "hide" end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.lootHistoryMode = v
-                        if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
-                      end },
-                    { type="slider", label="Close After (sec)",
-                      min=1, max=30, step=1,
-                      disabled=delayOff,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.lootHistoryDelay) or 5
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.lootHistoryDelay = v
-                        if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
-                      end },
-                },
-                gap = 9, disabled = lootHistOff, disabledTooltip = "Hide Loot Rolls Window",
-            })
-        end
-
-        -- Row 7: Announce Group Deaths (left, with Text Size cog) | Hide Item
-        -- Transforms (right, with picker cog)
-        local deathRow
-        deathRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Announce Group Deaths",
-              tooltip="Shows a large on-screen alert (e.g. \"Player DIED!\") whenever a party or raid member dies, so you immediately notice deaths during dungeons and raids. Use Unlock Mode to reposition the alert.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.announceGroupDeaths or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.announceGroupDeaths = v
-                  if EllesmereUI._applyAnnounceGroupDeaths then EllesmereUI._applyAnnounceGroupDeaths() end
-                  EllesmereUI:RefreshPage()
-              end },
+        -- Hide Item Transforms (+ picker cog) | Auto Select Single Gossip (+ cog)
+        local transformRow
+        transformRow, h = W:DualRow(parent, y,
             { type="toggle", text="Hide Item Transforms (ex: Chef's Hat)",
               tooltip="Automatically removes cosmetic transforms when they are applied to you, such as profession gear, holiday costumes, toys and consumables. Use the cog to pick exactly which transforms are removed. Transforms applied during combat are removed when combat ends.",
               getValue=function()
@@ -737,187 +796,25 @@ initFrame:SetScript("OnEvent", function(self)
                       EllesmereUI._applyHideTransforms()
                   end
                   EllesmereUI:RefreshPage()  -- update the picker cog disabled state
+              end },
+            { type="toggle", text="Auto Select Single Gossip",
+              tooltip="Picks an NPC's only dialog option for you.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.autoGossip or false
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.autoGossip = v
+                  if EllesmereUI._applyAutoGossip then EllesmereUI._applyAutoGossip() end
+                  EllesmereUI:RefreshPage()
               end }
         );  y = y - h
 
-        -- Inline cog (Text Size) on the Announce Group Deaths toggle
+        -- Inline picker cog on Hide Item Transforms (left slot): opens the item
+        -- checklist popup. Dimmed and inert while the toggle is off, mirroring
+        -- the resource-bar spec-picker button.
         if not EllesmereUI._prebuilding then
-            local leftRgn = deathRow._leftRegion
-            local function deathOff()
-                return not (EllesmereUIDB and EllesmereUIDB.announceGroupDeaths)
-            end
-
-            -- Sound dropdown values (mirrors Chat's "Whisper Sound"): shallow-copy
-            -- the runtime name table and attach _menuOpts so each row gets a
-            -- click-to-preview speaker icon.
-            local gdSoundPaths = EllesmereUI._groupDeathSoundPaths or {}
-            local gdSoundNames = EllesmereUI._groupDeathSoundNames or { none = "None" }
-            local gdSoundOrder = EllesmereUI._groupDeathSoundOrder or { "none" }
-            local gdSoundValues = {}
-            for k, v in pairs(gdSoundNames) do gdSoundValues[k] = v end
-            gdSoundValues._menuOpts = {
-                itemHeight = 26,
-                maxTextWidthPct = 0.8,
-                searchable = true,
-                iconAtlas = function(key)
-                    if key == "none" then return nil end
-                    if not gdSoundPaths[key] then return nil end
-                    return EllesmereUI.SOUND_ICON_ATLAS
-                end,
-                iconPressedAtlas = function(key)
-                    if key == "none" then return nil end
-                    return EllesmereUI.SOUND_ICON_PRESSED_ATLAS
-                end,
-                iconOnClick = function(key)
-                    local path = gdSoundPaths[key]
-                    if path then PlaySoundFile(path, "Master") end
-                end,
-                iconTooltip = function() return "Preview Sound" end,
-            }
-
-            EllesmereUI.BuildInlineCog(leftRgn, {
-                title = "Group Death Alert Settings",
-                rows = {
-                    { type="slider", label="Text Size",
-                      min=14, max=64, step=1,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.groupDeathTextSize) or 34
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.groupDeathTextSize = v
-                        if EllesmereUI._applyGroupDeathAlert then EllesmereUI._applyGroupDeathAlert() end
-                        if EllesmereUI._groupDeathShowVisual then EllesmereUI._groupDeathShowVisual() end
-                      end },
-                    { type="dropdown", label="Sound",
-                      values=gdSoundValues, order=gdSoundOrder,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.groupDeathSoundKey) or "none"
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.groupDeathSoundKey = v
-                        if v ~= "none" and EllesmereUI._groupDeathPlaySound then
-                            EllesmereUI._groupDeathPlaySound()
-                        end
-                      end },
-                },
-                gap = 9, disabled = deathOff, disabledTooltip = "Announce Group Deaths",
-            })
-        end
-
-        -- Inline cog (text, size, colors, mode) on the Combat Alert toggle
-        -- (the RIGHT slot of the Hide Loot Rolls row above).
-        if not EllesmereUI._prebuilding then
-            local leftRgn = lootHistRow._rightRegion
-            local function caOff()
-                return not (EllesmereUIDB and EllesmereUIDB.combatAlertEnabled)
-            end
-            local function enterClassOn()
-                return EllesmereUIDB and EllesmereUIDB.combatAlertEnterUseClassColor
-            end
-            local function leaveClassOn()
-                return EllesmereUIDB and EllesmereUIDB.combatAlertLeaveUseClassColor
-            end
-
-            local caModeValues = {
-                both  = "Enter & Leave",
-                enter = "Enter Only",
-                leave = "Leave Only",
-            }
-            local caModeOrder = { "both", "enter", "leave" }
-
-            EllesmereUI.BuildInlineCog(leftRgn, {
-                title = "Combat Alert Settings",
-                minWidth = 300,
-                rows = {
-                    { type="dropdown", label="Show On",
-                      values=caModeValues, order=caModeOrder,
-                      get=function() return (EllesmereUIDB and EllesmereUIDB.combatAlertMode) or "both" end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertMode = v
-                      end },
-                    { type="slider", label="Text Size",
-                      min=14, max=64, step=1,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.combatAlertTextSize) or 22
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertTextSize = v
-                        if EllesmereUI._applyCombatAlertFrame then EllesmereUI._applyCombatAlertFrame() end
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("enter") end
-                      end },
-                    { type="input", label="Enter Text", inputWidth=90,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.combatAlertEnterText) or "+Combat"
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertEnterText = v
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("enter") end
-                      end },
-                    { type="colorpicker", label="Enter Color",
-                      disabled=enterClassOn,
-                      disabledTooltip="Disable Class Color to pick a custom color.", rawTooltip=true,
-                      get=function()
-                        local c = (EllesmereUIDB and EllesmereUIDB.combatAlertEnterColor) or { r=1.00, g=1.00, b=1.00 }
-                        return c.r, c.g, c.b
-                      end,
-                      set=function(r, g, b)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertEnterColor = { r=r, g=g, b=b }
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("enter") end
-                      end },
-                    { type="toggle", label="Enter Class Color",
-                      get=function() return enterClassOn() end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertEnterUseClassColor = v
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("enter") end
-                      end },
-                    { type="input", label="Leave Text", inputWidth=90,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.combatAlertLeaveText) or "-Combat"
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertLeaveText = v
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("leave") end
-                      end },
-                    { type="colorpicker", label="Leave Color",
-                      disabled=leaveClassOn,
-                      disabledTooltip="Disable Class Color to pick a custom color.", rawTooltip=true,
-                      get=function()
-                        local c = (EllesmereUIDB and EllesmereUIDB.combatAlertLeaveColor) or { r=1.00, g=1.00, b=1.00 }
-                        return c.r, c.g, c.b
-                      end,
-                      set=function(r, g, b)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertLeaveColor = { r=r, g=g, b=b }
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("leave") end
-                      end },
-                    { type="toggle", label="Leave Class Color",
-                      get=function() return leaveClassOn() end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertLeaveUseClassColor = v
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("leave") end
-                      end },
-                },
-                footer = { unlockKey = "EUI_CombatAlert" },
-                gap = 9, disabled = caOff, disabledTooltip = "Combat Alert",
-            })
-        end
-
-        -- (Target Distance Text moved to the EXTRAS section, Row 4 right slot.)
-
-        -- Inline picker cog on Hide Item Transforms (right slot of the death
-        -- row): opens the item checklist popup. Dimmed and inert while the
-        -- toggle is off, mirroring the resource-bar spec-picker button.
-        if not EllesmereUI._prebuilding then
-            local rgn = deathRow._rightRegion
+            local rgn = transformRow._leftRegion
             local function hitOff()
                 return not (EllesmereUIDB and EllesmereUIDB.hideTransforms)
             end
@@ -927,6 +824,82 @@ initFrame:SetScript("OnEvent", function(self)
                 show = function() ShowTransformsPopup() end,
             })
         end
+
+        -- Cog on Auto Select Single Gossip (right slot)
+        if not EllesmereUI._prebuilding then
+            local rightRgn = transformRow._rightRegion
+            local function gossipOff()
+                return not (EllesmereUIDB and EllesmereUIDB.autoGossip)
+            end
+
+            EllesmereUI.BuildInlineCog(rightRgn, {
+                title = "Auto Gossip Settings",
+                rows = {
+                    { type="toggle", label="Hold Shift to Skip",
+                      get=function()
+                          if not EllesmereUIDB then return true end
+                          return EllesmereUIDB.autoGossipShiftSkip ~= false
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.autoGossipShiftSkip = v
+                      end },
+                    { type="toggle", label="Disable in Instances",
+                      get=function()
+                          if not EllesmereUIDB then return true end
+                          return EllesmereUIDB.autoGossipDisableInstance ~= false
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.autoGossipDisableInstance = v
+                      end },
+                    { type="toggle", label="Ignore Low Level Quests",
+                      get=function()
+                          return EllesmereUIDB and EllesmereUIDB.autoGossipIgnoreTrivial or false
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.autoGossipIgnoreTrivial = v
+                      end },
+                },
+                gap = 9, disabled = gossipOff, disabledTooltip = "Auto Select Single Gossip",
+            })
+        end
+
+        -- Type /cd to open Blizzard CDM | AH Current Expansion Only. The AH
+        -- filter is not offered on WoW Forever (its runtime block does not
+        -- exist there), so that slot is blank there.
+        _, h = W:DualRow(parent, y,
+            -- Cooldown Manager registers /cd at load from this key, so a change reloads
+            { type="toggle", text="Type /cd to open Blizzard CDM",
+              tooltip="Lets /cd open or close Blizzard's Cooldown Manager settings.",
+              disabled=function() return not EllesmereUI._ModuleNS["EllesmereUICooldownManager"] end,
+              disabledTooltip="Cooldown Manager",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.blizzCDMSlash == true
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.blizzCDMSlash = v and true or nil
+                  EllesmereUI:ShowConfirmPopup({
+                      title       = "Reload Required",
+                      message     = "The /cd change applies after a UI reload.",
+                      confirmText = "Reload Now",
+                      cancelText  = "Later",
+                      reload      = true,
+                  })
+              end },
+            EllesmereUI.IS_FOREVER and EllesmereUI.BlankRowCfg() or
+            { type="toggle", text="AH Current Expansion Only",
+              tooltip="Automatically enables the 'Current Expansion Only' filter whenever you open the Auction House.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.ahCurrentExpansion or false
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.ahCurrentExpansion = v
+              end }
+        );  y = y - h
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
 
@@ -1847,12 +1820,43 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
 
-        -- Row 5: Environment Ping keybind (left) | (blank)
+        -- Row 5: Environment Ping keybind (left) | Show Coordinates on Map (+ cog)
         local pingRow
         pingRow, h = W:DualRow(parent, y,
             { type="label", text="Environment Ping" },
-            EllesmereUI.BlankRowCfg()
+            { type="toggle", text="Show Coordinates on Map",
+              tooltip="Displays cursor and player coordinates at the bottom of the world map.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.mapCoords or false
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.mapCoords = v
+                  if EllesmereUI._applyMapCoords then EllesmereUI._applyMapCoords() end
+                  EllesmereUI:RefreshPage()
+              end }
         );  y = y - h
+        -- Cog on Show Coordinates on Map (right region)
+        if not EllesmereUI._prebuilding then
+            local function coordsOff()
+                return not (EllesmereUIDB and EllesmereUIDB.mapCoords)
+            end
+            EllesmereUI.BuildInlineCog(pingRow._rightRegion, {
+                title = "Map Coordinates Settings",
+                rows = {
+                    { type = "slider", label = "Text Size", min = 8, max = 24, step = 1,
+                      get = function()
+                          return (EllesmereUIDB and EllesmereUIDB.mapCoordsTextSize) or 12
+                      end,
+                      set = function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.mapCoordsTextSize = v
+                          if EllesmereUI._applyMapCoords then EllesmereUI._applyMapCoords() end
+                      end },
+                },
+                gap = 9, disabled = coordsOff, disabledTooltip = "Show Coordinates on Map",
+            })
+        end
         if not EllesmereUI._prebuilding then
             local rgn = pingRow._leftRegion
             local kbBtn, refresh = EllesmereUI.BuildKeybindButton(rgn, {
@@ -2268,9 +2272,7 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v)
                   if not EllesmereUIDB then EllesmereUIDB = {} end
                   EllesmereUIDB.quickSignup = v
-                  if EllesmereUI._applyQuickSignup then
-                      EllesmereUI._applyQuickSignup()
-                  end
+                  EllesmereUI._applyQuickSignup()
               end }
         local persistCfg = { type="toggle", text="Persistent Signup Note",
               tooltip="Keeps a saved signup note you can copy into the Sign Up dialog with the Copy button.",
@@ -2280,9 +2282,7 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v)
                   if not EllesmereUIDB then EllesmereUIDB = {} end
                   EllesmereUIDB.persistSignupNote = v
-                  if EllesmereUI._applyPersistSignupNote then
-                      EllesmereUI._applyPersistSignupNote()
-                  end
+                  EllesmereUI._applyPersistSignupNote()
                   EllesmereUI:RefreshPage()
               end }
         local noteRow
@@ -2307,8 +2307,7 @@ initFrame:SetScript("OnEvent", function(self)
                         title="Signup Note",
                         message="Saved between reloads and relogs. In Group Finder, choose Copy, press Ctrl+C, then Ctrl+V.",
                         placeholder="Enter signup note...",
-                        initialText=EllesmereUI.GetPersistentSignupNote
-                            and EllesmereUI.GetPersistentSignupNote() or "",
+                        initialText=EllesmereUI.GetPersistentSignupNote(),
                         maxLetters=63,
                         inputHeight=70,
                         multiline=true,
@@ -2316,9 +2315,7 @@ initFrame:SetScript("OnEvent", function(self)
                         allowEmpty=true,
                         confirmText="Save",
                         onConfirm=function(note)
-                            if EllesmereUI.SetPersistentSignupNote then
-                                EllesmereUI.SetPersistentSignupNote(note or "")
-                            end
+                            EllesmereUI.SetPersistentSignupNote(note or "")
                         end,
                     })
                 end,
@@ -2440,6 +2437,7 @@ initFrame:SetScript("OnEvent", function(self)
               tooltip=EllesmereUI.L("Asks before spending a bonus roll and shows your loot specialization. Use the cog to also confirm Pass."),
               disabled=bonusRollConflict,
               disabledTooltip=EllesmereUI.L("BonusRollConfirm is loaded and handles confirmation. Disable that addon and reload to use this feature."),
+              rawTooltip=true,
               getValue=function()
                   return EllesmereUIDB and EllesmereUIDB.bonusRollConfirmation == true
               end,
@@ -2491,11 +2489,12 @@ initFrame:SetScript("OnEvent", function(self)
     -- (its resident file returns at load, so the page builder never exists either).
     if not EllesmereUI.IS_FOREVER then pages[#pages + 1] = PAGE_UPGCALC end
     local searchTerms = { "brez", "bres", "battle res", "combat res", "cursor", "macro", "fps", "logging", "combat log", "warcraft logs", "upgrade", "ilvl", "item level", "crest", "upgrade calculator", "shifter", "move", "drag", "position", "demodal", "drift", "combat alert", "enter combat", "leave combat", "in combat", "combat text", "combat notification", "transform", "transforms", "costume", "disguise", "chef's hat", "noggenfogger", "target distance", "distance to target", "range text", "yard", "yards", "movement", "mobility", "gap closer", "blink", "gateway", "warlock gateway", "control shard", "time spiral", "free movement", "raid tools", "raid", "pull timer", "pull", "ready check", "role check", "raid marker", "target marker", "world marker", "flare", "disband", "convert to raid", "countdown" }
-    -- Terms for features WoW Forever does not have (the Battle Res indicator)
-    -- are dropped there, so a sidebar search for them does not list this
-    -- module; retail keeps the full list.
+    -- Terms for features WoW Forever does not have (the Battle Res indicator,
+    -- the Macro Factory) are dropped there, so a sidebar search for them does
+    -- not list this module; retail keeps the full list.
     if EllesmereUI.IS_FOREVER then
-        local foreverDrop = { ["brez"] = true, ["bres"] = true, ["battle res"] = true, ["combat res"] = true }
+        local foreverDrop = { ["brez"] = true, ["bres"] = true, ["battle res"] = true, ["combat res"] = true,
+            ["macro"] = true }
         for i = #searchTerms, 1, -1 do
             if foreverDrop[searchTerms[i]] then table.remove(searchTerms, i) end
         end
@@ -2543,10 +2542,15 @@ initFrame:SetScript("OnEvent", function(self)
                 _G._EUI_RaidTools_Preview(pageName == PAGE_RAIDTOOLS)
             end
         end,
+        resetScope = "account",
         onReset = function()
             if EllesmereUIDB then
                 EllesmereUIDB.hideBlizzardPartyFrame = false
                 EllesmereUIDB.quickLoot = false
+                EllesmereUIDB.autoGossip = false
+                EllesmereUIDB.autoGossipShiftSkip = nil
+                EllesmereUIDB.autoGossipDisableInstance = nil
+                EllesmereUIDB.autoGossipIgnoreTrivial = nil
                 EllesmereUIDB.skipCinematics = false
                 EllesmereUIDB.skipCinematicsAuto = false
                 EllesmereUIDB.autoFillDelete = false
@@ -2557,6 +2561,8 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.persistSignupNote = false
                 EllesmereUIDB.signupNote = nil
                 EllesmereUIDB.ahCurrentExpansion = false
+                EllesmereUIDB.hideTalkingHead = false
+                EllesmereUIDB.muteTalkingHead = nil
                 EllesmereUIDB.hideScreenshotStatus = false
                 EllesmereUIDB.trainAllButton = false
                 EllesmereUIDB.autoUnwrapCollections = false
@@ -2569,10 +2575,20 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.shifterEnabled = false
                 EllesmereUIDB.shifterPositions = nil
                 EllesmereUIDB.hideErrorMessages = false
+                EllesmereUIDB.hideTutorials = false
+                -- Hands the tutorial CVars back before the reset's reload.
+                if EllesmereUI._applyHideTutorials then EllesmereUI._applyHideTutorials() end
                 EllesmereUIDB.hideLootHistory = false
                 EllesmereUIDB.lootHistoryMode = nil
                 EllesmereUIDB.lootHistoryDelay = nil
                 if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
+                -- Talking Head does not exist on WoW Forever.
+                if EllesmereUI._applyHideTalkingHead then EllesmereUI._applyHideTalkingHead() end
+                EllesmereUIDB.hideBanners = false
+                EllesmereUIDB.hideAlertToasts = false
+                EllesmereUIDB.hideAlertToastsLoot = nil
+                EllesmereUIDB.hideAlertToastsAchievements = nil
+                EllesmereUIDB.hideAlertToastsHousing = nil
                 EllesmereUIDB.announceGroupDeaths = false
                 EllesmereUIDB.groupDeathTextSize = nil
                 EllesmereUIDB.groupDeathAlertPos = nil
@@ -2588,6 +2604,17 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.combatAlertLeaveColor = nil
                 EllesmereUIDB.combatAlertEnterUseClassColor = nil
                 EllesmereUIDB.combatAlertLeaveUseClassColor = nil
+                EllesmereUIDB.alertsPos = nil
+                EllesmereUIDB.potionAlertEnabled = false
+                EllesmereUIDB.potionAlertText = nil
+                EllesmereUIDB.potionAlertTextSize = nil
+                EllesmereUIDB.potionAlertColor = nil
+                EllesmereUIDB.potionAlertUseClassColor = nil
+                EllesmereUIDB.talentAlertEnabled = false
+                EllesmereUIDB.talentAlertText = nil
+                EllesmereUIDB.talentAlertTextSize = nil
+                EllesmereUIDB.talentAlertColor = nil
+                EllesmereUIDB.talentAlertUseClassColor = nil
                 EllesmereUIDB.targetDistanceEnabled = false
                 EllesmereUIDB.targetDistanceFormat = nil
                 EllesmereUIDB.targetDistanceAlign = nil
@@ -2598,23 +2625,35 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.targetDistancePos = nil
                 if EllesmereUIDB.unlockAnchors then
                     EllesmereUIDB.unlockAnchors.EUI_TargetDistance = nil
+                    EllesmereUIDB.unlockAnchors.EUI_CombatAlert = nil
+                    EllesmereUIDB.unlockAnchors.EUI_BattleRes = nil
+                    EllesmereUIDB.unlockAnchors.EUI_Bloodlust = nil
                 end
                 EllesmereUIDB.hideTransforms = false
                 EllesmereUIDB.hideTransformItems = nil
+                -- The /keys popup, LFG Reminder and /way sections (the reset reloads).
+                EllesmereUIDB.keystonePopup = nil
+                EllesmereUIDB.teleportPrompt = nil
+                EllesmereUIDB.waypointCmd = nil
             end
             EllesmereUIDB.autoLogging = nil
             if _G._EUI_ResetUpgradeCalc then _G._EUI_ResetUpgradeCalc() end
             if _G._EBS_ResetCursor then _G._EBS_ResetCursor() end
+            -- Battle Res and Bloodlust do not exist on WoW Forever.
+            if _G._EUI_BattleRes_Reset then _G._EUI_BattleRes_Reset() end
             EllesmereUI._applyHideBlizzardPartyFrame()
             if EllesmereUI._applyBonusRollConfirmation then EllesmereUI._applyBonusRollConfirmation() end
             if EllesmereUI._applyHideErrorMessages then EllesmereUI._applyHideErrorMessages() end
             if EllesmereUI._applyAnnounceGroupDeaths then EllesmereUI._applyAnnounceGroupDeaths() end
             if EllesmereUI._applyCombatAlert then EllesmereUI._applyCombatAlert() end
+            if EllesmereUI._applyPotionAlert then EllesmereUI._applyPotionAlert() end
+            if EllesmereUI._applyTalentAlert then EllesmereUI._applyTalentAlert() end
             if EllesmereUI._applyTargetDistance then EllesmereUI._applyTargetDistance() end
             if EllesmereUI._applyHideTransforms then EllesmereUI._applyHideTransforms() end
             if EllesmereUI._applyQuickSignup then EllesmereUI._applyQuickSignup() end
             if EllesmereUI._applyPersistSignupNote then EllesmereUI._applyPersistSignupNote() end
             if EllesmereUI._applyQuickLoot then EllesmereUI._applyQuickLoot() end
+            if EllesmereUI._applyAutoGossip then EllesmereUI._applyAutoGossip() end
             if EllesmereUI._applyInstanceResetAnnounce then EllesmereUI._applyInstanceResetAnnounce() end
             if EllesmereUI._applyAutoOpenContainers then EllesmereUI._applyAutoOpenContainers() end
             if EllesmereUI._ShutdownShifter then EllesmereUI._ShutdownShifter() end

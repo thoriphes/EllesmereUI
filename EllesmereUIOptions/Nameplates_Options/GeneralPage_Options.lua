@@ -8,6 +8,18 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUINameplates"]
 if not ns then return end  -- module disabled: no options page
 
+-- The options page frame pool (EllesmereUI_FramePool.lua): frames made under a
+-- pooled page part are handed back to the page's next build.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
+-- A row half's slider label, for a "(Percent)" suffix beside it: the half's own
+-- label (a page built again keeps its earlier dresses' font strings, idle,
+-- among the half's regions).
+local function SliderLabel(rgn, text)
+    local label = rgn._label
+    if label and label.GetText and EllesmereUI.EnKey(label:GetText()) == text then return label end
+end
+
 ---------------------------------------------------------------------------
 --  General page (Friendly settings, Spacing, Show All Debuffs); two-column DualRow layout where possible
 ---------------------------------------------------------------------------
@@ -15,6 +27,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
     local env = ns._NPO_OptEnv
     local DB, DBVal, defaults, FOCUS_LETTER_ANCHOR_ORDER = env.DB, env.DBVal, env.defaults, env.FOCUS_LETTER_ANCHOR_ORDER
     local FOCUS_LETTER_ANCHORS, GetFocusLetterAnchor, GetNPOptOutline, npDispelGlowDesc = env.FOCUS_LETTER_ANCHORS, env.GetFocusLetterAnchor, env.GetNPOptOutline, env.npDispelGlowDesc
+    local npPandemicGlowDesc = env.npPandemicGlowDesc
     local pairs, pcall, plates, PP = env.pairs, env.pcall, env.plates, env.PP
     local RefreshAllAuras, RefreshAllPlates, SECTION_AURA, SECTION_ENEMY_NP = env.RefreshAllAuras, env.RefreshAllPlates, env.SECTION_AURA, env.SECTION_ENEMY_NP
     local SECTION_FRIENDLY, SECTION_MISC, UpdatePreview = env.SECTION_FRIENDLY, env.SECTION_MISC, env.UpdatePreview
@@ -297,9 +310,19 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           rawTooltip=function() return not friendlyPlayersOff() end,
           swatches = MakeGuildColorSwatches() });  y = y - h
 
-    -- Subtitle Text inline cog (guild bracket toggle)
+    -- Subtitle Text inline cog (guild bracket toggle). WoW Forever retitles it
+    -- Name Text Settings and heads it with the friendly Name Format (a friendly
+    -- player's first or last name, in both modes), so there the cog opens
+    -- whenever friendly players show and the guild row carries the guild
+    -- requirement itself.
     if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineCog(subtitleRow._leftRegion, {
+        local guildRow = { type = "toggle", label = "Show <> Around Guild",
+            get = function() return DBVal("friendlyBelowNameGuildBrackets") ~= false end,
+            set = function(v)
+              DB().friendlyBelowNameGuildBrackets = v and true or false
+              if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
+            end }
+        local cog = {
             chain = false,
             disabled = subtitleGuildOff,
             -- Same requirement as the Guild Text Color swatch beside it; the
@@ -310,15 +333,23 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             end,
             rawTooltip = function() return not friendlyPlayersOff() end,
             title = "Subtitle Text Settings",
-            rows = {
-                { type = "toggle", label = "Show <> Around Guild",
-                  get = function() return DBVal("friendlyBelowNameGuildBrackets") ~= false end,
-                  set = function(v)
-                    DB().friendlyBelowNameGuildBrackets = v and true or false
-                    if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
-                  end },
-            },
-        })
+            rows = { guildRow },
+        }
+        if EllesmereUI.IS_FOREVER then
+            cog.title = "Name Text Settings"
+            cog.disabled, cog.disabledTooltip, cog.rawTooltip =
+                friendlyPlayersOff, "Show EUI Friendly Player Nameplates", nil
+            guildRow.disabled = subtitleGuildOff
+            guildRow.disabledTooltip = "This option requires Subtitle Text to include the Guild Name"
+            guildRow.rawTooltip = true
+            table.insert(cog.rows, 1, EllesmereUI.NameFormatCogRow(
+                function() return DBVal("friendlyNameFormat") end,
+                function(v)
+                    DB().friendlyNameFormat = v
+                    ns.NP_SyncFriendlyNameFormat()
+                end))
+        end
+        EllesmereUI.BuildInlineCog(subtitleRow._leftRegion, cog)
     end
 
     local npcRow
@@ -545,8 +576,8 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end,
           tooltip="Increases the clickable hitbox height of enemy nameplates. 100% = matches bar height. Increase to make nameplates easier to click." });  y = y - h
 
-    -- Eyeball toggle on Hitbox Size X: translucent overlay on real enemy nameplates marking the clickable area, for visual slider tuning; runtime-only, auto-hides when the panel closes.
-    do
+    -- Eyeball toggle on Hitbox Size X: translucent overlay on real enemy nameplates marking the clickable area, for visual slider tuning; runtime-only, auto-hides when the panel closes. None in the search pre-build: it indexes nothing, and the row is a stand-in there.
+    if not EllesmereUI._prebuilding then
         local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
         local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
         local leftRgn = hitboxRow._leftRegion
@@ -582,6 +613,54 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                     ns.SetHitboxOverlayShown(false)
                 end
             end)
+        end
+    end
+
+    -- Stacking Speed | Top Screen Inset: CVars Blizzard restored in 12.1.5,
+    -- so each slider exists only on a client that has its CVar. The client
+    -- does not save either one across a game restart, so a slider keeps its
+    -- value account-wide and the module writes it again at login
+    -- (ns.KeepNameplateCVar); nothing is written until a slider moves. Speed
+    -- reads as a percent of the client's own default; the inset as a percent
+    -- of the screen's height (raw values if the client's default is not a
+    -- fraction).
+    do
+        local function CVarDefault(name) return tonumber(C_CVar.GetCVarDefault(name)) end
+        local cvarRows = {}
+        if C_CVar.GetCVarInfo("nameplateMotionSpeed") then
+            cvarRows[#cvarRows + 1] = { type="slider", text="Stacking Speed",
+                min=25, max=400, step=5,
+                getValue=function()
+                    local def, cur = CVarDefault("nameplateMotionSpeed"), tonumber(GetCVar("nameplateMotionSpeed"))
+                    if not (def and def > 0 and cur) then return 100 end
+                    return math.floor(cur / def * 100 + 0.5)
+                end,
+                setValue=function(v)
+                    if InCombatLockdown() then return end
+                    local def = CVarDefault("nameplateMotionSpeed")
+                    if not (def and def > 0) then return end
+                    ns.KeepNameplateCVar("nameplateMotionSpeed", def * v / 100)
+                end,
+                tooltip="How fast stacked nameplates slide into place. 100% is Blizzard's default." }
+        end
+        if C_CVar.GetCVarInfo("nameplateTopInset") then
+            local def = CVarDefault("nameplateTopInset")
+            local frac = not def or def <= 1
+            cvarRows[#cvarRows + 1] = { type="slider", text="Top Screen Inset",
+                min=0, max=frac and 50 or math.max(100, math.ceil((def or 0) * 4)), step=1,
+                getValue=function()
+                    local cur = tonumber(GetCVar("nameplateTopInset")) or 0
+                    if frac then return math.floor(cur * 100 + 0.5) end
+                    return cur
+                end,
+                setValue=function(v)
+                    if InCombatLockdown() then return end
+                    ns.KeepNameplateCVar("nameplateTopInset", frac and v / 100 or v)
+                end,
+                tooltip="How far from the top of the screen nameplates stop. 0 lets them reach the edge." }
+        end
+        for i = 1, #cvarRows, 2 do
+            _, h = W:DualRow(parent, y, cvarRows[i], cvarRows[i + 1] or EllesmereUI.BlankRowCfg());  y = y - h
         end
     end
 
@@ -623,10 +702,71 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end,
           tooltip="Maximum number of debuff icons shown on enemy nameplates." }
     local debuffRow1
-        debuffRow1, h = W:DualRow(parent, y, maxDbfCfg, { type="label", text="" });  y = y - h
+        debuffRow1, h = W:DualRow(parent, y, maxDbfCfg,
+        { type="toggle", text="Show Buff / Debuff Tooltips",
+          tooltip="Show the spell tooltip when you hover a buff or debuff icon on a nameplate.\n\nWhile the cursor is over an icon, the plate behind it will not highlight or take mouseover targeting.",
+          getValue=function() return DBVal("showAuraTooltips") == true end,
+          setValue=function(v)
+            DB().showAuraTooltips = v
+            if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
+          end });  y = y - h
+
+    local GO = EllesmereUI.GlowOptions
+
+    -- --- Pandemic Glow -------------------------------------------------
+    -- Style with its color swatches and cog, the preview in the right half.
+    local panDesc = npPandemicGlowDesc
+    local panRow
+    panRow, h = W:DualRow(parent, y,
+        GO.DropdownSpec(panDesc, "Pandemic Glow Style",
+            "Show a glow on your debuffs while they can be refreshed without losing any duration."),
+        { type="label", text="Pandemic Glow Preview" });  y = y - h
+    GO.AttachInline(panRow._leftRegion, panDesc)
+
+    if not EllesmereUI._prebuilding then
+        -- A pandemic debuff of the player's class (Rip, Moonfire, Festering
+        -- Wound, Vampiric Touch / Shadow Word: Pain, Agony, Rupture), any of
+        -- them otherwise; the first the client knows from a random start.
+        local BY_CLASS = {
+            DRUID = { 1079, 8921 }, DEATHKNIGHT = { 194310 }, PRIEST = { 34914, 589 },
+            WARLOCK = { 980 }, ROGUE = { 1943 },
+        }
+        local pool = BY_CLASS[select(2, UnitClass("player"))] or { 1079, 8921, 194310, 34914, 980, 1943 }
+        local icon = 136197
+        local start = math.random(#pool)
+        for i = 0, #pool - 1 do
+            local info = C_Spell.GetSpellInfo(pool[(start + i - 1) % #pool + 1])
+            if info and info.iconID then icon = info.iconID; break end
+        end
+        local rightRgn = panRow._rightRegion
+        GO.BuildPreview(rightRgn, panDesc, { anchor = rightRgn, point = "RIGHT", relPoint = "RIGHT", x = -20, icon = icon })
+        -- The preview's label dims with it while no glow is picked.
+        local previewLabel = rightRgn._label
+        local function DimPreviewLabel()
+            previewLabel:SetAlpha(GO.Renders(panDesc) and 1 or 0.3)
+        end
+        EllesmereUI.RegisterWidgetRefresh(DimPreviewLabel)
+        DimPreviewLabel()
+
+        -- Apply to all: the CDM pandemic sync (only while that module is loaded).
+        if EllesmereUI.ApplyPandemicGlowToAll then
+            EllesmereUI.BuildSyncIcon({
+                region = panRow._leftRegion,
+                tooltip = "Apply this pandemic glow to all CDM bars and tracking bars. A surface that can't show a style uses its closest match.",
+                isSynced = function()
+                    return EllesmereUI.IsPandemicGlowSyncedToAll(
+                        EllesmereUI.PandemicPayloadFromNameplate(DB()), { skipNameplates = true })
+                end,
+                onClick = function()
+                    EllesmereUI.ApplyPandemicGlowToAll(
+                        EllesmereUI.PandemicPayloadFromNameplate(DB()), { skipNameplates = true })
+                    C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
+                end,
+            })
+        end
+    end
 
     -- --- Dispellable Buff Glow ----------------------------------------
-    local GO = EllesmereUI.GlowOptions
     local dispelDesc = npDispelGlowDesc
     local dispelGlowDropdown = GO.DropdownSpec(dispelDesc, "Dispel Glow Style")
     -- Enemy Buff Filter (replaces the retired Show All Enemy Buffs toggle;
@@ -696,15 +836,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             local suffixFS = rightFrame:CreateFontString(nil, "OVERLAY")
             suffixFS:SetFont(EllesmereUI.EXPRESSWAY, 11, GetNPOptOutline())
             suffixFS:SetTextColor(1, 1, 1, 0.35)
-            local sliderLabel
-            local regions = { rightFrame:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Hash Line Location" then
-                    sliderLabel = reg
-                    break
-                end
-            end
+            local sliderLabel = SliderLabel(rightFrame, "Hash Line Location")
             if sliderLabel then
                 suffixFS:SetPoint("LEFT", sliderLabel, "RIGHT", 5, -1)
             else
@@ -774,15 +906,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             local suffixFS = leftFrame:CreateFontString(nil, "OVERLAY")
             suffixFS:SetFont(EllesmereUI.EXPRESSWAY, 11, GetNPOptOutline())
             suffixFS:SetTextColor(1, 1, 1, 0.35)
-            local sliderLabel
-            local regions = { leftFrame:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Scale Target Nameplate" then
-                    sliderLabel = reg
-                    break
-                end
-            end
+            local sliderLabel = SliderLabel(leftFrame, "Scale Target Nameplate")
             if sliderLabel then
                 suffixFS:SetPoint("LEFT", sliderLabel, "RIGHT", 5, -1)
             else
@@ -841,15 +965,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             local suffixFS = leftFrame:CreateFontString(nil, "OVERLAY")
             suffixFS:SetFont(EllesmereUI.EXPRESSWAY, 11, GetNPOptOutline())
             suffixFS:SetTextColor(1, 1, 1, 0.35)
-            local sliderLabel
-            local regions = { leftFrame:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Focus Cast Height" then
-                    sliderLabel = reg
-                    break
-                end
-            end
+            local sliderLabel = SliderLabel(leftFrame, "Focus Cast Height")
             if sliderLabel then
                 suffixFS:SetPoint("LEFT", sliderLabel, "RIGHT", 5, -1)
             else
@@ -911,7 +1027,30 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end },
         { type="label", text="" }
     );  y = y - h
-    -- RESIZE cog: text size + X/Y offsets (mirrors the raid-marker cog)
+    -- Inline color swatch (default light orange), beside the toggle
+    if not EllesmereUI._prebuilding then
+        local rgn = tfRangeRow._leftRegion
+        local rangeColorGet = function()
+            local c = (DB() and DB().rangeTextColor) or defaults.rangeTextColor
+            return c.r, c.g, c.b
+        end
+        local rangeColorSet = function(r, g, b)
+            DB().rangeTextColor = { r = r, g = g, b = b }
+            if ns.RangeText_Refresh then ns.RangeText_Refresh() end
+        end
+        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, rangeColorGet, rangeColorSet, nil, 20)
+        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        EllesmereUI.RegisterWidgetRefresh(function()
+            local off = tfRangeOff()
+            swatch:SetAlpha(off and 0.15 or 1)
+            swatch:EnableMouse(not off)
+            updateSwatch()
+        end)
+        swatch:SetAlpha(tfRangeOff() and 0.15 or 1)
+        swatch:EnableMouse(not tfRangeOff())
+    end
+    -- RESIZE cog: text size + X/Y offsets (mirrors the raid-marker cog), left of the swatch
     if not EllesmereUI._prebuilding then
         local rgn = tfRangeRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
@@ -940,29 +1079,6 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                   end },
             },
         })
-    end
-    -- Inline color swatch (default light orange), left of the cog
-    if not EllesmereUI._prebuilding then
-        local rgn = tfRangeRow._leftRegion
-        local rangeColorGet = function()
-            local c = (DB() and DB().rangeTextColor) or defaults.rangeTextColor
-            return c.r, c.g, c.b
-        end
-        local rangeColorSet = function(r, g, b)
-            DB().rangeTextColor = { r = r, g = g, b = b }
-            if ns.RangeText_Refresh then ns.RangeText_Refresh() end
-        end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, rangeColorGet, rangeColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = tfRangeOff()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end)
-        swatch:SetAlpha(tfRangeOff() and 0.15 or 1)
-        swatch:EnableMouse(not tfRangeOff())
     end
 
     _, h = W:Spacer(parent, y, 20);  y = y - h
@@ -998,15 +1114,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             local suffixFS = leftFrame:CreateFontString(nil, "OVERLAY")
             suffixFS:SetFont(EllesmereUI.EXPRESSWAY, 11, GetNPOptOutline())
             suffixFS:SetTextColor(1, 1, 1, 0.35)
-            local sliderLabel
-            local regions = { leftFrame:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Scale Nameplate On Cast" then
-                    sliderLabel = reg
-                    break
-                end
-            end
+            local sliderLabel = SliderLabel(leftFrame, "Scale Nameplate On Cast")
             if sliderLabel then
                 suffixFS:SetPoint("LEFT", sliderLabel, "RIGHT", 5, -1)
             else

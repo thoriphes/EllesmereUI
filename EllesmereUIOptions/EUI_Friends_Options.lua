@@ -18,6 +18,12 @@ local PAGE_DMG_METERS    = "Damage Meters"
 local SECTION_CHAT    = "CHAT"
 local SECTION_MINIMAP = "DISPLAY"
 
+-- Page reuse: a frame this file builds goes through the options frame pool
+-- (EllesmereUI_FramePool.lua, the options addon's first file), which hands a
+-- kept page its previous build's frames back reset to new; on any other
+-- parent it is the plain CreateFrame. The page builds only factory widgets.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
 initFrame:SetScript("OnEvent", function(self)
@@ -85,21 +91,9 @@ initFrame:SetScript("OnEvent", function(self)
     --  Friends List Page
     ---------------------------------------------------------------------------
 
-    local ICON_STYLE_VALUES = {
-        blizzard = "Blizzard",
-        modern   = "Modern",
-        pixel    = "Pixel",
-        pixelsComic = "Pixels Comic",
-        glyph    = "Glyph",
-        arcade   = "Arcade",
-        legend   = "Legend",
-        midnight = "Midnight",
-        runic    = "Runic",
-    }
-    local ICON_STYLE_ORDER = {
-        "blizzard", "modern", "pixel", "pixelsComic", "glyph",
-        "arcade", "legend", "midnight", "runic",
-    }
+    -- Class Icon Theme choices (shared with the WoW Forever Friends List card)
+    local ICON_STYLE_VALUES = EllesmereUI.FriendsKit.ICON_STYLE_VALUES
+    local ICON_STYLE_ORDER  = EllesmereUI.FriendsKit.ICON_STYLE_ORDER
 
     -- Live repaint after a display toggle: the legacy list's row pass, plus a
     -- decoration-only pass over the 12.1 cards (never Blizzard's view:Refresh,
@@ -129,7 +123,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
         -- Border Size / Border Color drive only this module's own flat look;
         -- the Window Skins "Friends List" card draws the frame otherwise.
-        local CHROME_BORDER_TIP = "The Friends List window skin draws this border (Blizz UI Enhanced > Blizzard Window Skins)."
+        local CHROME_BORDER_TIP = "The Friends List window skin draws this border (Blizzard Skins+ > Window Skins)."
 
         -- DISPLAY
         _, h = W:SectionHeader(parent, "DISPLAY", y);  y = y - h

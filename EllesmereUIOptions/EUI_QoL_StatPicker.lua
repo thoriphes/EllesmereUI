@@ -11,6 +11,11 @@ if not EllesmereUI.IS_FOREVER then return end
 local qns = EllesmereUI._ModuleNS["EllesmereUIQoL"]
 if not qns then return end  -- module disabled: no options page
 
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua). The window is built once on the overlay layer,
+-- which is no pool host, so its frames are plain new frames.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local NUM_COLS, COL_W, COL_GAP = 3, 200, 18
 local PAD, CONTENT_TOP = 24, 92
 local HEADER_H, ITEM_H = 26, 24
@@ -82,7 +87,7 @@ local function Build()
     pf[#pf + 1] = { popup = panel }
     EllesmereUI.PadHint(panel, "nodepass")
 
-    EllesmereUI.SolidTex(panel, "BACKGROUND", 0.06, 0.08, 0.10, 1):SetAllPoints()
+    EllesmereUI.SolidTex(panel, "BACKGROUND", 0.077, 0.068, 0.058, 1):SetAllPoints()
     EllesmereUI.MakeBorder(panel, 1, 1, 1, 0.15, EllesmereUI.PanelPP)
 
     local title = EllesmereUI.MakeFont(panel, 18, "", 1, 1, 1)

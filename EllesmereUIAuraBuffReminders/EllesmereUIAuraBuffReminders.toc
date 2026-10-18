@@ -1,16 +1,29 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 16001
+## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
 ## Title: |cff0cd29fEllesmereUI|r AuraBuff Reminders
 ## Category: |cff0cd29fEllesmere|rUI
 ## Group: EllesmereUI
 ## Notes: Simple raid buff, auras, consumables and talent reminders.
 ## Author: Ellesmere
-## Version: 9.3.5
+## Version: 9.6.1
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUIAuraBuffRemindersDB
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
 # Main Lua
 EllesmereUIAuraBuffReminders.lua
+EUI_AuraBuffReminders_Auras.lua
+EUI_AuraBuffReminders_Data.lua
+EUI_AuraBuffReminders_Defaults.lua
+EUI_AuraBuffReminders_Icons.lua
+EUI_AuraBuffReminders_Collect.lua
+EUI_AuraBuffReminders_Refresh.lua
+EUI_AuraBuffReminders_Unlock.lua
+EUI_AuraBuffReminders_Beacon.lua
+EUI_AuraBuffReminders_Lifecycle.lua
+EUI_AuraBuffReminders_ReadyCheck.lua
+
+# Beacon M+ Reminders (retail, Holy Paladin)
+EllesmereUIABR_BeaconMPlus.lua
 
 # Talent Reminders (standalone, no ABR dependency)
 EllesmereUIABR_TalentReminders.lua

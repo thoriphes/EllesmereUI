@@ -4,7 +4,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --
 --  Threat display on the unit frames: the additive Player Threat border
 --  and the threat % text on target and focus (WoW Forever only). Loads
---  right after the main file and reads it through ns and ns._internals;
+--  after the main file and reads it through ns and ns._internals;
 --  db is set through I.dbSetters.
 -------------------------------------------------------------------------------
 local _, ns = ...

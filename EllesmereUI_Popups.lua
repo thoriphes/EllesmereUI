@@ -32,7 +32,7 @@ EllesmereUI.GetPopupScale = GetPopupScale
 -- Reference density for dialog popups: 1440p at 0.64 UI scale (the suite's design reference),
 -- where popups render at 768/(1440*0.64) = 0.8333 physical px/unit. Applied as a CONSTANT it
 -- pins that size on every display, fixing both defects of the old squared scale: size no longer
--- moves INVERSELY with UI scale, nor grows QUADRATICALLY with the panel-scale dropdown; px/unit
+-- moves INVERSELY with UI scale, nor grows QUADRATICALLY with the Window Scale slider; px/unit
 -- is 0.8333 * panelScale. THE INVARIANT: every popup occupies the same screen fraction it does
 -- at 1440p/0.64 -- screen-height fraction = (units * POPUP_REF_DENSITY * panelScale) / physH,
 -- which holds exactly when panelScale == physH/1440 (what the Startup seed and the
@@ -106,7 +106,7 @@ function EllesmereUI.BuildPopupShell(name, opts)
     popup:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     popup:EnableMouse(true)
 
-    local c = opts.bg or { 0.06, 0.08, 0.10 }
+    local c = opts.bg or { 0.077, 0.068, 0.058 }
     local bg = popup:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(c[1], c[2], c[3], 1)
@@ -126,8 +126,15 @@ function EllesmereUI.BuildPopupShell(name, opts)
     local spR = MakeEdge(); spR:SetPoint("TOPRIGHT", spT, "BOTTOMRIGHT"); spR:SetPoint("BOTTOMRIGHT", spB, "TOPRIGHT"); spR:SetWidth(edgeW)
 
     local onEscape = opts.onEscape
-    popup:EnableKeyboard(true)
+    -- EnableKeyboard and SetPropagateKeyboardInput are protected in combat:
+    -- a shell built there never takes the keyboard, and in combat a shown one
+    -- stands aside (keys reach the game, its buttons still answer).
+    if not InCombatLockdown() then
+        popup:EnableKeyboard(true)
+        popup:SetPropagateKeyboardInput(true)
+    end
     popup:SetScript("OnKeyDown", function(self, key)
+        if InCombatLockdown() then return end
         self:SetPropagateKeyboardInput(key ~= "ESCAPE")
         if key == "ESCAPE" and onEscape then onEscape() end
     end)
@@ -158,7 +165,7 @@ function EllesmereUI.MakeActionButton(parent, font, text, r, g, b, opts)
     PanelPP.Size(btn, opts.w, 38)
     local bbg = btn:CreateTexture(nil, "BACKGROUND")
     bbg:SetAllPoints()
-    bbg:SetColorTexture(0.06, 0.08, 0.10, 0.92)
+    bbg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
     local brd = MakeBorder(btn, r, g, b, secondary and 0.35 or 0.9, PanelPP)
     local lbl = btn:CreateFontString(nil, "OVERLAY")
     lbl:SetFont(font, 15, "")
@@ -182,7 +189,8 @@ function EllesmereUI.MakeActionButton(parent, font, text, r, g, b, opts)
 end
 
 -- Fading popup button (confirm and input popups): 125x27; text and border lerp from the
--- default to the hover colours over 0.1s. Exposes btn._lbl and btn._resetAnim.
+-- default to the hover colours over 0.1s. Exposes btn._lbl, btn._resetAnim and
+-- btn._setColors (new colours, same argument order as the defaults below).
 function EllesmereUI.MakePopupButton(parent, anchorPoint, anchorTo, anchorRef, xOff, yOff, defR, defG, defB, defA, hovR, hovG, hovB, hovA, bDefR, bDefG, bDefB, bDefA, bHovR, bHovG, bHovB, bHovA)
     local FADE_DUR = 0.1
     local btn = CreateFrame("Button", nil, parent)
@@ -219,6 +227,13 @@ function EllesmereUI.MakePopupButton(parent, anchorPoint, anchorTo, anchorRef, x
 
     btn._lbl = lbl
     btn._resetAnim = function() progress = 0; target = 0; Apply(0); btn:SetScript("OnUpdate", nil) end
+    -- Replaces the default and hover colours and repaints at the current hover progress.
+    btn._setColors = function(...)
+        defR, defG, defB, defA, hovR, hovG, hovB, hovA,
+            bDefR, bDefG, bDefB, bDefA, bHovR, bHovG, bHovB, bHovA = ...
+        lbl:SetAlpha(defA)
+        Apply(progress)
+    end
     return btn
 end
 
@@ -247,9 +262,34 @@ EllesmereUI._onScaleChanged[#EllesmereUI._onScaleChanged + 1] = RefreshPopupScal
 local confirmPopup
 
 -- Helper: wire Escape key to dismiss a popup via its dimmer
+-- Keyboard for a popup of ours: `frame` takes the keys, `host` (its dimmer,
+-- when it has one) shows and hides it. EnableKeyboard and
+-- SetPropagateKeyboardInput are protected in combat, so the frame takes the
+-- keyboard now and each time the host shows, only out of combat, passing keys
+-- on by default; its OnKeyDown returns first in combat (keys reach the game,
+-- Escape stands aside, the buttons still answer).
+function EllesmereUI.PopupTakeKeys(frame, host)
+    local function Take()
+        if InCombatLockdown() then return end
+        frame:EnableKeyboard(true)
+        frame:SetPropagateKeyboardInput(true)
+    end
+    if host then host:HookScript("OnShow", Take) end
+    Take()
+end
+
 local function WirePopupEscape(popup, dimmer)
-    popup:EnableKeyboard(true)
+    -- EnableKeyboard and SetPropagateKeyboardInput are protected in combat:
+    -- the popup takes the keyboard only while shown out of combat, passing
+    -- keys on by default, and in combat it stands aside (keys reach the
+    -- game, Escape does not close it, its buttons still answer).
+    local function TakeKeys(on)
+        if InCombatLockdown() then return end
+        popup:EnableKeyboard(on)
+        if on then popup:SetPropagateKeyboardInput(true) end
+    end
     popup:SetScript("OnKeyDown", function(self, key)
+        if InCombatLockdown() then return end
         if key == "ESCAPE" then
             if popup._modal then
                 -- Modal popups swallow Escape: the user must click a button.
@@ -264,12 +304,9 @@ local function WirePopupEscape(popup, dimmer)
         end
     end)
     -- Release keyboard capture when the popup is dismissed
-    dimmer:HookScript("OnHide", function()
-        popup:EnableKeyboard(false)
-    end)
-    dimmer:HookScript("OnShow", function()
-        popup:EnableKeyboard(true)
-    end)
+    dimmer:HookScript("OnHide", function() TakeKeys(false) end)
+    dimmer:HookScript("OnShow", function() TakeKeys(true) end)
+    if dimmer:IsShown() then TakeKeys(true) end
     -- Controller Back takes the same route as Escape (modal popups swallow it).
     -- It counts only when a controller is in use at the show, so the keyboard
     -- path never changes.
@@ -315,7 +352,7 @@ local function CreateConfirmPopup()
     -- Popups render at default UI scale (dimmer stays at 1 to cover the full screen).
 
     -- Background: flat dark default, optional stone atlas for modern style
-    local popBgFlat = SolidTex(popup, "BACKGROUND", 0.06, 0.08, 0.10, 1)
+    local popBgFlat = SolidTex(popup, "BACKGROUND", 0.077, 0.068, 0.058, 1)
     popBgFlat:SetAllPoints()
     local popBgAtlas = popup:CreateTexture(nil, "BACKGROUND")
     popBgAtlas:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png")
@@ -405,7 +442,7 @@ local function CreateConfirmPopup()
     cbBox:SetSize(14, 14)
     cbBox:SetPoint("LEFT", cbRow, "LEFT", 0, 0)
     cbBox:SetFrameLevel(cbRow:GetFrameLevel() + 1)
-    local cbBoxBg = SolidTex(cbBox, "BACKGROUND", 0.075, 0.113, 0.141, 1)
+    local cbBoxBg = SolidTex(cbBox, "BACKGROUND", 0.103, 0.095, 0.088, 1)
     cbBoxBg:SetAllPoints()
     MakeBorder(cbBox, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.25)
     local cbCheck = SolidTex(cbBox, "ARTWORK", EG.r, EG.g, EG.b, 1)
@@ -444,93 +481,46 @@ local function CreateConfirmPopup()
     return popup
 end
 
--- Invalidate cached popup so it rebuilds with current accent colors
+-- Repaints the cached popup's accent parts (the confirm button and the checkbox
+-- tick) with the current accent; the popup itself is built once and reused.
 local function InvalidateConfirmPopup()
-    if confirmPopup then
-        confirmPopup._dimmer:Hide()
-        confirmPopup:Hide()
-        confirmPopup._dimmer:SetParent(nil)
-        confirmPopup:SetParent(nil)
-        confirmPopup = nil
-    end
+    local popup = confirmPopup
+    if not popup then return end
+    local EG = ELLESMERE_GREEN
+    popup._confirmBtn._setColors(
+        EG.r, EG.g, EG.b, 0.9,   EG.r, EG.g, EG.b, 1,
+        EG.r, EG.g, EG.b, 0.9,   EG.r, EG.g, EG.b, 1)
+    popup._cbCheck:SetColorTexture(EG.r, EG.g, EG.b, 1)
 end
 EllesmereUI._InvalidateConfirmPopup = InvalidateConfirmPopup
 
--- Reload the UI from our own code (not from a confirm popup: those pass
--- reload = true). Retail reloads at once, as every such call always has. The
--- WoW Forever client blocks ReloadUI() from addon code even inside a click, so
--- there the same request opens the standard reload popup, whose Reload Now
--- button is the secure /reload macro overlay. Optional `work` is the caller's
--- pre-reload step, run only once the reload is committed (retail: right
--- before ReloadUI(); Forever: the popup's confirm), so "Later" writes nothing.
+-- Reload the UI from our own code: the reload is asked for at once, then the
+-- caller's optional pre-reload `work` runs. WoW Forever lets addon code reload
+-- only inside a click or keypress (in or out of combat), never from an event
+-- or a timer, so every caller runs from one: a button, a confirm popup or a
+-- slash command. It also refused a reload asked for late in the click, after
+-- the confirm popup had closed and the caller's work had run (build 70425),
+-- so the reload comes before anything else the click does. The client
+-- reloads only once the click's code has finished, so `work` still runs and
+-- is saved. Code that may run from an event asks with a confirm popup
+-- (reload = true), whose click reloads. `title` and `message` name the reload
+-- for its callers; nothing shows them.
 function EllesmereUI.RequestReload(title, message, work)
-    if not EllesmereUI.IS_FOREVER then
-        if work then work() end
-        ReloadUI()
-        return
-    end
-    EllesmereUI:ShowConfirmPopup({
-        title       = title or EllesmereUI.L("Reload Required"),
-        message     = message or EllesmereUI.L("A reload is required to apply this."),
-        confirmText = EllesmereUI.L("Reload Now"),
-        cancelText  = EllesmereUI.L("Later"),
-        reload      = true,
-        onConfirm   = work,
-    })
-end
-
--- WoW Forever: a button whose click reloads becomes the secure /reload click
--- itself (the macro overlay the reload popup uses), so no reload popup follows
--- it. `work` (optional) is the pre-reload step, run as the click's post-click
--- action before the reload lands. Returns the overlay, or nil on retail (the
--- button's own OnClick reloads there) and in combat (the overlay's attributes
--- cannot be set; the button keeps its RequestReload path).
-function EllesmereUI.AttachReloadClick(btn, work)
-    if not EllesmereUI.IS_FOREVER or InCombatLockdown() then return nil end
-    local ov = CreateFrame("Button", nil, btn, "InsecureActionButtonTemplate")
-    ov:SetAllPoints(btn)
-    ov:SetFrameLevel(btn:GetFrameLevel() + 5)
-    -- Mouse-up only, and the attribute says so (the key-down CVar would
-    -- otherwise act on a press this button never receives).
-    ov:RegisterForClicks("AnyUp")
-    ov:SetAttribute("useOnKeyDown", false)
-    ov:SetAttribute("type", "macro")
-    ov:SetAttribute("macrotext", "/reload")
-    -- Hover visuals stay on the real button underneath.
-    ov:SetScript("OnEnter", function() local f = btn:GetScript("OnEnter"); if f then f(btn) end end)
-    ov:SetScript("OnLeave", function() local f = btn:GetScript("OnLeave"); if f then f(btn) end end)
-    if work then ov:HookScript("OnClick", work) end
-    return ov
+    ReloadUI()
+    if work then work() end
 end
 
 function EllesmereUI:ShowConfirmPopup(opts)
-    -- reload = true: confirming reloads the UI, after the caller's own
-    -- onConfirm work if it has any. Retail calls ReloadUI() from the click,
-    -- the way every reload confirm always has. The Forever client takes the
-    -- macro overlay below instead (a hardware click on a secure button, the
-    -- caller's work running as its post-click action); in combat, where the
-    -- overlay's attributes cannot be written, the work is applied and the
-    -- popup asks for a manual /reload. The caller's table is left as is.
+    -- reload = true: confirming reloads the UI from the click (RequestReload),
+    -- the caller's own onConfirm, if it has one, running after the reload is
+    -- asked for as its pre-reload work. The caller's table is left as is.
     if opts.reload then
         local o = {}
         for k, v in pairs(opts) do o[k] = v end
         o.reload = nil
         local work = opts.onConfirm
-        if not EllesmereUI.IS_FOREVER then
-            if work then
-                o.onConfirm = function(...) work(...) ReloadUI() end
-            else
-                o.onConfirm = ReloadUI
-            end
-        elseif InCombatLockdown() then
-            o.message = EllesmereUI.L(o.message or "A reload is required to apply this.") .. " "
-                .. EllesmereUI.L("Type /reload in chat to apply.")
-            o.confirmText = EllesmereUI.L("Okay")
-            o.hideCancel = true
-            o.onConfirm = work
-        else
-            o.confirmMacro = "/reload"
-            o.onConfirm = work
+        o.onConfirm = function(checked)
+            EllesmereUI.RequestReload(nil, nil, work and function() work(checked) end)
         end
         opts = o
     end
@@ -586,6 +576,19 @@ function EllesmereUI:ShowConfirmPopup(opts)
         popup._cbRow:Hide()
     end
 
+    -- The base height affords roughly three message lines; a longer message or a
+    -- disclaimer grows the popup by the measured overflow, so no text runs under
+    -- the buttons. A secret metric (tainted M+ execution) counts as no overflow.
+    local isv = issecretvalue
+    local textH = popup._msg:GetStringHeight() or 0
+    if isv and isv(textH) then textH = 0 end
+    if opts.disclaimer then
+        local discH = popup._disclaimer:GetStringHeight() or 0
+        if isv and isv(discH) then discH = 0 end
+        textH = textH + discH + 8
+    end
+    local overflowH = math.max(0, textH - 44)
+
     -- Optional type-to-confirm gate (lazy, like the macro overlay): the user must type the given
     -- word (case-insensitive) before confirm accepts clicks. NOT supported with confirmMacro (secure overlay clicks cannot be gated).
     local typeH = 0
@@ -618,11 +621,13 @@ function EllesmereUI:ShowConfirmPopup(opts)
                 popup._confirmBtn:SetAlpha(ok and 1 or 0.3)
             end)
             box:SetScript("OnEnterPressed", function(self)
-                self:ClearFocus()
+                -- The confirm runs first in the keypress, as a click on it
+                -- would (a reload it asks for comes first), then the focus clears.
                 if popup._typeGateOk then
                     local click = popup._confirmBtn:GetScript("OnClick")
                     if click then click(popup._confirmBtn) end
                 end
+                self:ClearFocus()
             end)
             row._label = tLbl
             row._box = box
@@ -638,12 +643,7 @@ function EllesmereUI:ShowConfirmPopup(opts)
         row:ClearAllPoints()
         row:SetPoint("BOTTOM", popup, "BOTTOM", 0, 13 + 27 + 10 + cbH)
         row:Show()
-        -- The base height affords roughly three message lines; gated popups carry long warnings, so grow by the measured overflow too.
-        local extra = popup._msg:GetStringHeight() or 0
-        if opts.disclaimer then
-            extra = extra + (popup._disclaimer:GetStringHeight() or 0) + 8
-        end
-        typeH = 36 + math.max(0, extra - 44)
+        typeH = 36
     elseif popup._typeRow then
         popup._typeRow._box:ClearFocus()
         popup._typeRow:Hide()
@@ -663,16 +663,12 @@ function EllesmereUI:ShowConfirmPopup(opts)
         lbl:SetPoint("BOTTOM", popup, "BOTTOM", 0, 13 + 27 + 10 + cbH + 6)
         lbl:SetText(EllesmereUI.Lf('Press "%1$s" twice to continue.', EllesmereUI.L(opts.confirmText or "Confirm")))
         lbl:Show()
-        local extra = popup._msg:GetStringHeight() or 0
-        if opts.disclaimer then
-            extra = extra + (popup._disclaimer:GetStringHeight() or 0) + 8
-        end
-        typeH = 36 + math.max(0, extra - 44)
+        typeH = 36
     elseif popup._padGateLbl then
         popup._padGateLbl:Hide()
     end
 
-    popup:SetHeight((popup._baseH or 176) + scaleWarnH + cbH + typeH)
+    popup:SetHeight((popup._baseH or 176) + overflowH + scaleWarnH + cbH + typeH)
     popup._cancelBtn._lbl:SetText(EllesmereUI.L(opts.cancelText or "Cancel"))
     popup._confirmBtn._lbl:SetText(EllesmereUI.L(opts.confirmText or "Confirm"))
     -- onDismiss: called on escape/click-outside. Falls back to onCancel if not provided.
@@ -715,8 +711,8 @@ function EllesmereUI:ShowConfirmPopup(opts)
         if opts.onCancel then opts.onCancel() end
     end)
 
-    -- Macro overlay: protected actions (/logout, and /reload on the Forever client)
-    -- need a hardware event routed through InsecureActionButtonTemplate.
+    -- Macro overlay: a protected action (/logout) needs a hardware event routed
+    -- through InsecureActionButtonTemplate.
     if opts.confirmMacro then
         if not popup._macroOverlay then
             local ov = CreateFrame("Button", "EUIConfirmMacroOverlay", popup._confirmBtn, "InsecureActionButtonTemplate")
@@ -745,7 +741,9 @@ function EllesmereUI:ShowConfirmPopup(opts)
         -- Hide the normal confirm click so it doesn't double-fire
         popup._confirmBtn:SetScript("OnClick", nil)
     else
-        if popup._macroOverlay then popup._macroOverlay:Hide() end
+        if popup._macroOverlay then
+            popup._macroOverlay:Hide()
+        end
         popup._confirmBtn:SetScript("OnClick", function()
             if opts.confirmDisabled then return end
             if popup._typeGateOn and not popup._typeGateOk then
@@ -760,8 +758,12 @@ function EllesmereUI:ShowConfirmPopup(opts)
             end
             -- Controller gate: a double tap or a bounced press is not a second press.
             if popup._padGate and GetTime() - (popup._padArmT or 0) < 0.5 then return end
-            popup._dimmer:Hide()
+            -- The callback runs before the popup closes, as Blizzard's own
+            -- popups do, so a reload it asks for comes first in the click
+            -- (RequestReload). The popup then closes only while it still
+            -- shows this request: the callback may have opened the next one.
             if opts.onConfirm then opts.onConfirm(popup._cbChecked) end
+            if popup._handle == handle then popup._dimmer:Hide() end
         end)
     end
 
@@ -817,7 +819,7 @@ local function CreateInfoPopup()
     popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
     popup:EnableMouse(true)
 
-    local popBg = SolidTex(popup, "BACKGROUND", 0.06, 0.08, 0.10, 1)
+    local popBg = SolidTex(popup, "BACKGROUND", 0.077, 0.068, 0.058, 1)
     popBg:SetAllPoints()
     MakeBorder(popup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15)
 
@@ -923,7 +925,7 @@ function EllesmereUI:ShowInputPopup(opts)
         popup:SetFrameStrata("FULLSCREEN_DIALOG")
         popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
 
-        local popBgFlat = SolidTex(popup, "BACKGROUND", 0.06, 0.08, 0.10, 1)
+        local popBgFlat = SolidTex(popup, "BACKGROUND", 0.077, 0.068, 0.058, 1)
         popBgFlat:SetAllPoints()
         local popBgAtlas = popup:CreateTexture(nil, "BACKGROUND")
         popBgAtlas:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png")
@@ -1102,8 +1104,10 @@ function EllesmereUI:ShowInputPopup(opts)
             if popup._multiline then return end
             local txt = editBox:GetText()
             if txt and (txt ~= "" or popup._allowEmpty) then
-                dimmer:Hide()
+                -- The callback before the close, as the confirm button runs it.
+                local shown = popup._handle
                 if popup._onConfirmCb then popup._onConfirmCb(txt) end
+                if popup._handle == shown then dimmer:Hide() end
             else
                 popup._flashEmpty()
             end
@@ -1137,6 +1141,9 @@ function EllesmereUI:ShowInputPopup(opts)
     popup._confirmBtn._lbl:SetText(EllesmereUI.L(opts.confirmText or "Save"))
     popup._onCancel = opts.onDismiss or opts.onCancel or nil
     popup._onConfirmCb = opts.onConfirm or nil
+    -- This show's request: a confirm closes the popup only while it still shows it.
+    local handle = {}
+    popup._handle = handle
     popup._allowEmpty = opts.allowEmpty == true
     popup._multiline = opts.multiline == true
 
@@ -1231,8 +1238,11 @@ function EllesmereUI:ShowInputPopup(opts)
     popup._confirmBtn:SetScript("OnClick", function()
         local txt = popup._editBox:GetText()
         if txt and (txt ~= "" or opts.allowEmpty) then
-            popup._dimmer:Hide()
+            -- The callback runs before the popup closes, so a reload it asks
+            -- for comes first in the click (RequestReload); the popup closes
+            -- only while it still shows this request.
             if opts.onConfirm then opts.onConfirm(txt) end
+            if popup._handle == handle then popup._dimmer:Hide() end
         else
             popup._flashEmpty()
         end
@@ -1240,4 +1250,175 @@ function EllesmereUI:ShowInputPopup(opts)
 
     popup._dimmer:Show()
     C_Timer.After(0.05, function() popup._editBox:SetFocus() end)
+end
+
+-------------------------------------------------------------------------------
+--  Quantity window (the Bags stack splitter, Blizzard Skins+' Merchant Bulk
+--  Buy): a small window over a button with a title, a close button,
+--  - [amount] + and "/ max", an optional text line and a row of action
+--  buttons. Amounts are whole steps from one step up to the max (0 while not
+--  even one step fits); Shift on -/+ moves by the range's shiftStep when set.
+--  Built once per caller, dressed by opts.skin, refilled on every use:
+--    d:SetRange(step, max[, shiftStep]), d:SetValue(n), d:Current(),
+--    d:Open(owner), d:FocusInput(); d._eb, d._extra, d._buttons[key].
+--  opts: name, width, height, title, editWidth, maxLetters, extraLine,
+--    buttons = { { key, label, width, height, point ("BOTTOMLEFT", "BOTTOM" or
+--    "BOTTOMRIGHT"), onClick, tooltip, primary } }, onEnter, onChange(n),
+--    onShow, onHide, skin = { frame(d), font(fs, size), button(parent, w, h,
+--    label) -> button, editBox(eb), close(btn) }.
+-------------------------------------------------------------------------------
+function EllesmereUI.CreateQuantityDialog(opts)
+    local skin = opts.skin
+    local d = CreateFrame("Frame", opts.name, UIParent)
+    d:SetFrameStrata("DIALOG")
+    d:SetSize(opts.width, opts.height)
+    d:SetClampedToScreen(true)
+    d:EnableMouse(true)
+    d:EnableMouseWheel(true)
+    d:Hide()
+    d._step, d._max = 1, 1
+    skin.frame(d)
+
+    local title = d:CreateFontString(nil, "OVERLAY")
+    skin.font(title, 13)
+    title:SetPoint("TOPLEFT", d, "TOPLEFT", 10, -9)
+    title:SetTextColor(1, 1, 1, 0.9)
+    title:SetText(opts.title)
+
+    local close = CreateFrame("Button", nil, d)
+    skin.close(close)
+    close:SetScript("OnClick", function() d:Hide() end)
+    -- Controller cursor: Cancel finds the window's close button.
+    if EllesmereUI.PadCP() then d.CloseButton = close end
+
+    local eb = CreateFrame("EditBox", nil, d)
+    local function Clamped(n)
+        if d._max < d._step then return 0 end
+        return Clamp(math.floor(n / d._step) * d._step, d._step, d._max)
+    end
+    function d:Current() return Clamped(eb:GetNumber() or 0) end
+    function d:SetValue(n)
+        n = Clamped(n)
+        eb:SetText(tostring(n))
+        eb:SetCursorPosition(#eb:GetText())
+        if opts.onChange then opts.onChange(n) end
+    end
+    function d:SetRange(step, top, shiftStep)
+        d._step, d._max, d._shiftStep = math.max(step or 1, 1), top, shiftStep
+        d._maxLbl:SetText("/ " .. top)
+    end
+    local function Nudge(dir)
+        d:SetValue(d:Current() + dir * ((IsShiftKeyDown() and d._shiftStep) or d._step))
+    end
+
+    local minus = skin.button(d, 22, 22, "-")
+    minus:SetPoint("TOPLEFT", d, "TOPLEFT", 10, -30)
+    minus:SetScript("OnClick", function() Nudge(-1) end)
+
+    eb:SetSize(opts.editWidth or 56, 22)
+    eb:SetPoint("LEFT", minus, "RIGHT", 4, 0)
+    eb:SetAutoFocus(false)
+    eb:SetNumeric(true)
+    eb:SetMaxLetters(opts.maxLetters or 5)
+    eb:SetTextColor(1, 1, 1, 1)
+    eb:SetJustifyH("CENTER")
+    eb:SetTextInsets(4, 4, 0, 0)
+    skin.editBox(eb)
+    eb:SetScript("OnTextChanged", function(self, userInput)
+        if not userInput then return end
+        if self:GetNumber() > d._max then
+            d:SetValue(d._max)
+        elseif opts.onChange then
+            opts.onChange(d:Current())
+        end
+    end)
+    eb:SetScript("OnEditFocusLost", function()
+        if d:IsShown() then d:SetValue(d:Current()) end
+    end)
+    eb:SetScript("OnEnterPressed", function() if opts.onEnter then opts.onEnter() end end)
+    eb:SetScript("OnEscapePressed", function() d:Hide() end)
+    -- Controller cursor: the -/+ buttons cover the amount, so no on-screen
+    -- keyboard for this box.
+    EllesmereUI.PadHint(eb, "hidekeyboard")
+    d._eb = eb
+
+    local plus = skin.button(d, 22, 22, "+")
+    plus:SetPoint("LEFT", eb, "RIGHT", 4, 0)
+    plus:SetScript("OnClick", function() Nudge(1) end)
+
+    local maxLbl = d:CreateFontString(nil, "OVERLAY")
+    skin.font(maxLbl, 12)
+    maxLbl:SetPoint("LEFT", plus, "RIGHT", 8, 0)
+    maxLbl:SetTextColor(0.7, 0.7, 0.7, 1)
+    d._maxLbl = maxLbl
+
+    if opts.extraLine then
+        local line = d:CreateFontString(nil, "OVERLAY")
+        skin.font(line, 12)
+        line:SetPoint("TOPLEFT", minus, "BOTTOMLEFT", 0, -9)
+        line:SetPoint("RIGHT", d, "RIGHT", -10, 0)
+        line:SetJustifyH("LEFT")
+        line:SetWordWrap(false)
+        line:SetTextColor(1, 1, 1, 0.9)
+        d._extra = line
+    end
+
+    d._buttons = {}
+    for _, spec in ipairs(opts.buttons) do
+        local b = skin.button(d, spec.width, spec.height, spec.label)
+        local p = spec.point
+        b:SetPoint(p, d, p, (p == "BOTTOMLEFT" and 10) or (p == "BOTTOMRIGHT" and -10) or 0, 10)
+        b:SetScript("OnClick", spec.onClick)
+        if spec.tooltip then
+            b:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(b, spec.tooltip) end)
+            b:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        end
+        d._buttons[spec.key] = b
+        if spec.primary then d._primary = b end
+    end
+
+    d:SetScript("OnMouseWheel", function(_, delta) Nudge(delta > 0 and 1 or -1) end)
+    d:SetScript("OnShow", function() if opts.onShow then opts.onShow() end end)
+    d:SetScript("OnHide", function()
+        eb:ClearFocus()
+        if opts.onHide then opts.onHide() end
+    end)
+    EllesmereUI.RegisterEscapeClose(d)
+
+    function d:Open(owner)
+        d:ClearAllPoints()
+        d:SetPoint("BOTTOMLEFT", owner, "TOPLEFT", -4, 6)
+        d:Show()
+    end
+    -- Keyboard on the amount, or, with a controller cursor on screen, the
+    -- cursor on the primary button (focus would raise the on-screen keyboard).
+    function d:FocusInput()
+        if EllesmereUI.PadCursorShown() then
+            EllesmereUI.PadFocus(d._primary)
+        else
+            eb:SetFocus()
+            eb:HighlightText()
+        end
+    end
+    return d
+end
+
+-- Blizzard's StackSplitFrame when it is open on owner and ours to take over:
+-- returns its max. Not when a key is still held in it (its OnHide replays key
+-- releases through RunBinding, which must not run from our code), nor under
+-- WoW Forever's Gamepad interface style (the popup is part of the controller
+-- navigation).
+function EllesmereUI.StackSplitFor(owner)
+    local ssf = StackSplitFrame
+    if not ssf or not ssf:IsShown() or ssf.owner ~= owner then return nil end
+    if ssf.down and next(ssf.down) then return nil end
+    if EllesmereUI.PadGamepadUI() then return nil end
+    return ssf.maxStack or 0
+end
+
+-- Takes Blizzard's StackSplitFrame away once StackSplitFor said yes: Hide
+-- only, no field writes on Blizzard's popup. Its OnHide runs under this call
+-- and writes owner.hasStackSplit = 0 onto the button it was open on.
+function EllesmereUI.TakeStackSplit()
+    StackSplitFrame:Hide()
 end

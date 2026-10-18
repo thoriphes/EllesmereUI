@@ -150,9 +150,9 @@ do
                 -- screen fraction on any display, and 4K seeds 1.5 to read exactly like
                 -- a 2K monitor. Floored at 1 so 1080p (which runs a slightly larger
                 -- fraction, uncomplained-about) keeps its current size rather than
-                -- shrinking, then snapped onto the dropdown's real steps (see
-                -- EllesmereUI.SnapPanelScale) -- an off-menu value leaves the control
-                -- reading 100% while the panel renders larger.
+                -- shrinking, then snapped onto the Window Scale slider's 5% steps
+                -- (see EllesmereUI.SnapPanelScale), so the slider reads exactly what
+                -- the panel renders at.
                 --
                 -- This sits INSIDE the ppUIScale == nil guard on purpose: it is
                 -- the first-install path only. Existing saves never reach here
@@ -519,21 +519,11 @@ if EUI_CLIENT_FOREVER ~= true and C_AddOns and C_AddOns.DoesAddOnExist
     C_AddOns.DisableAddOn("EllesmereUIForeverEssentials")
 end
 
--- /rl reload shortcut -- only
+-- /rl reload shortcut -- only while no other addon owns it. A slash command
+-- runs inside the Enter keypress, where every client lets addon code reload.
 if not SlashCmdList["RL"] then
     SlashCmdList["RL"] = function()
-        -- The Forever client blocks ReloadUI() from addon code; the reload
-        -- popup stands in there, or a chat line in combat (the popup's
-        -- button cannot reload then). Retail reloads at once.
-        if EllesmereUI and EllesmereUI.IS_FOREVER and EllesmereUI.RequestReload then
-            if InCombatLockdown() then
-                EllesmereUI.PrintError(EllesmereUI.L("Cannot reload during combat. Type /reload instead."))
-                return
-            end
-            EllesmereUI.RequestReload(EllesmereUI.L("Reload UI"), EllesmereUI.L("Reload the UI now?"))
-        else
-            ReloadUI()
-        end
+        ReloadUI()
     end
     SLASH_RL1 = "/rl"
 end

@@ -90,7 +90,7 @@ local function ShowRaidFramesPopup()
         PP.Point(cell, "TOPLEFT", popup, "TOPLEFT", gridLeft + (i - 1) * (CELL_W + CELL_GAP), -28)
         local cbg = cell:CreateTexture(nil, "BACKGROUND")
         cbg:SetAllPoints()
-        cbg:SetColorTexture(0.12, 0.13, 0.15, 1)
+        cbg:SetColorTexture(0.121, 0.113, 0.106, 1)
         local c = cellColors[i]
         local fill = cell:CreateTexture(nil, "ARTWORK")
         fill:SetColorTexture(c[1], c[2], c[3], 0.9)
@@ -155,15 +155,12 @@ local function ShowRaidFramesPopup()
         if not EllesmereUIDB then EllesmereUIDB = {} end
         EllesmereUIDB.raidFramesIntroShown = true
         if disable then
-            if C_AddOns and C_AddOns.DisableAddOn then
-                C_AddOns.DisableAddOn(RF_FOLDER)
-            end
-            EllesmereUI.RequestReload()
-            -- On the Forever client the reload waits on its popup: close the
-            -- announcement and clear its pending flag so the popups queued
-            -- behind it stop waiting. Retail is already reloading.
-            dimmer:Hide()
-            EllesmereUI._raidFramesIntroPending = nil
+            -- The reload first, then the switch-off as its pre-reload work.
+            EllesmereUI.RequestReload(nil, nil, function()
+                if C_AddOns and C_AddOns.DisableAddOn then
+                    C_AddOns.DisableAddOn(RF_FOLDER)
+                end
+            end)
             return
         end
         dimmer:Hide()

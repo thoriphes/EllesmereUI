@@ -12,6 +12,12 @@ local PAGE_TSB = "Targeted Spell Bars"
 local PAGE_TFB = "Target/Focus Bars"
 local PAGE_RS = "Run Summary"
 
+-- Page reuse: the frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua, the options addon's first file), which hands a
+-- kept page its previous build's frames back reset to new; on any other
+-- parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
 initFrame:SetScript("OnEvent", function(self)
@@ -108,7 +114,7 @@ initFrame:SetScript("OnEvent", function(self)
         local W = EllesmereUI.Widgets
         local PP = EllesmereUI.PP
         local y = yOffset
-        local row, h
+        local _, row, h
 
         if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
         parent._showRowDivider = true
@@ -1059,6 +1065,7 @@ initFrame:SetScript("OnEvent", function(self)
         { key="timewalking",       label="Timewalking" },
         { key="delve",             label="Delve" },
         { key="lair",              label="Lair" },
+        { key="scenario",          label="Scenario" },
         { key="in_combat",         label="In Combat" },
         { key="out_of_combat",     label="Out of Combat" },
     }
@@ -1170,7 +1177,7 @@ initFrame:SetScript("OnEvent", function(self)
 
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local row, h
+        local _, row, h
 
         if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
         parent._showRowDivider = true
@@ -1536,7 +1543,7 @@ initFrame:SetScript("OnEvent", function(self)
 
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local row, h
+        local _, row, h
 
         if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
         parent._showRowDivider = true
@@ -1887,9 +1894,8 @@ initFrame:SetScript("OnEvent", function(self)
         local REQ = "Enable Run Summary"
 
         -----------------------------------------------------------------
-        --  Top action buttons: Show Preview + Clear Run History, the same
-        --  pair layout as the Action Bars page's Quick Keybind / Blizzard
-        --  Style buttons.
+        --  Top action buttons: Show Preview + Clear Run History, two 312x38
+        --  buttons centred with a 40px gap.
         -----------------------------------------------------------------
         do
             local PPn = EllesmereUI.PanelPP

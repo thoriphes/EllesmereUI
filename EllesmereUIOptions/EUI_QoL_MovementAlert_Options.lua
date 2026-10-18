@@ -11,6 +11,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 
 if not EllesmereUI._ModuleNS["EllesmereUIQoL"] then return end  -- module disabled: no options page
 
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local function DB()
     local fn = _G._EUI_MovementAlert_DB
     return fn and fn() or nil
@@ -162,7 +167,7 @@ local function ShowAddSpellPopup(onAdded)
         popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
         popup:EnableMouse(true)
         local bg = popup:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints(); bg:SetColorTexture(0.06, 0.08, 0.10, 1)
+        bg:SetAllPoints(); bg:SetColorTexture(0.077, 0.068, 0.058, 1)
         EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
 
         local title = popup:CreateFontString(nil, "OVERLAY")
@@ -188,7 +193,7 @@ local function ShowAddSpellPopup(onAdded)
         sidBox:SetJustifyH("LEFT")
         sidBox:SetTextInsets(6, 6, 0, 0)
         local sidBg = sidBox:CreateTexture(nil, "BACKGROUND")
-        sidBg:SetAllPoints(); sidBg:SetColorTexture(0.04, 0.06, 0.08, 1)
+        sidBg:SetAllPoints(); sidBg:SetColorTexture(0.060, 0.049, 0.037, 1)
         EllesmereUI.MakeBorder(sidBox, 1, 1, 1, 0.12, PP)
         popup._sidBox = sidBox
 
@@ -267,7 +272,7 @@ local function ShowCustomTextPopup(titleText, initial, onSave)
         popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
         popup:EnableMouse(true)
         local bg = popup:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints(); bg:SetColorTexture(0.06, 0.08, 0.10, 1)
+        bg:SetAllPoints(); bg:SetColorTexture(0.077, 0.068, 0.058, 1)
         EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
 
         local title = popup:CreateFontString(nil, "OVERLAY")
@@ -292,7 +297,7 @@ local function ShowCustomTextPopup(titleText, initial, onSave)
         box:SetJustifyH("LEFT")
         box:SetTextInsets(6, 6, 0, 0)
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
-        boxBg:SetAllPoints(); boxBg:SetColorTexture(0.04, 0.06, 0.08, 1)
+        boxBg:SetAllPoints(); boxBg:SetColorTexture(0.060, 0.049, 0.037, 1)
         EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, PP)
         popup._box = box
 
@@ -366,12 +371,18 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
         if previewBtnLbl then previewBtnLbl:SetText(PreviewLabel()) end
     end);  y = y - h
     if not EllesmereUI._prebuilding then
-        local btn = select(1, previewBtnFrame:GetChildren())
+        -- The button the row was built with and its label, the SHOWN ones: a
+        -- pooled row also holds the hidden children and regions an earlier
+        -- dress left there, so the first child is not necessarily the button.
+        local btn
+        for _, c in ipairs({ previewBtnFrame:GetChildren() }) do
+            if c:IsShown() and c:IsObjectType("Button") then btn = c; break end
+        end
         if btn then
-            local regions = { btn:GetRegions() }
-            for i = 1, #regions do
-                local rgn = regions[i]
-                if rgn and rgn.GetText and rgn:GetText() then previewBtnLbl = rgn; break end
+            for _, rgn in ipairs({ btn:GetRegions() }) do
+                if rgn:IsShown() and rgn:IsObjectType("FontString") and rgn:GetText() then
+                    previewBtnLbl = rgn; break
+                end
             end
         end
         -- Keep the label truthful if the preview self-terminated meanwhile.
@@ -866,9 +877,9 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
                     box:SetPoint("RIGHT", cell, "RIGHT", -GRID_SIDE_PAD, 0)
                     local boxBg = box:CreateTexture(nil, "BACKGROUND")
                     boxBg:SetAllPoints()
-                    boxBg:SetColorTexture(0.12, 0.12, 0.14, 1)
+                    boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
                     if boxBg.SetSnapToPixelGrid then boxBg:SetSnapToPixelGrid(false); boxBg:SetTexelSnappingBias(0) end
-                    local boxBrd = EllesmereUI.MakeBorder(box, 0.25, 0.25, 0.28, 0.6, EllesmereUI.PanelPP)
+                    local boxBrd = EllesmereUI.MakeBorder(box, 0.224, 0.215, 0.207, 0.6, EllesmereUI.PanelPP)
                     local check = box:CreateTexture(nil, "ARTWORK")
                     check:SetPoint("TOPLEFT", box, "TOPLEFT", 3, -3)
                     check:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -3, 3)
@@ -899,7 +910,7 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
                             boxBrd:SetColor(EG.r, EG.g, EG.b, 0.15)
                         else
                             check:Hide()
-                            boxBrd:SetColor(0.25, 0.25, 0.28, 0.6)
+                            boxBrd:SetColor(0.224, 0.215, 0.207, 0.6)
                         end
                         if dis then
                             label:SetAlpha(0.3)

@@ -7,6 +7,14 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local EllesmereUI = _G.EllesmereUI
 EllesmereUI._deferredInits[#EllesmereUI._deferredInits + 1] = function()
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host (a kept popup and every frame it hands out) are reset and dressed again
+-- by the next build instead of made anew; elsewhere this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+local PoolKept, PoolOwned = EllesmereUI._Pool.Kept, EllesmereUI._Pool.Owned
+-- Deferred work on a pooled frame stops once the frame was reset (dressed
+-- again for another use): its generation moved on, or it waits idle.
+local PoolGen, PoolIsIdle = EllesmereUI._Pool.Gen, EllesmereUI._Pool.IsIdle
 local PP = EllesmereUI.PanelPP
 local SolidTex = EllesmereUI.SolidTex
 local MakeFont = EllesmereUI.MakeFont
@@ -24,12 +32,38 @@ local BuildDropdownControl = EllesmereUI.BuildDropdownControl
 local BuildToggleControl = EllesmereUI.BuildToggleControl
 local BuildColorSwatch = EllesmereUI.BuildColorSwatch
 
+-- One hidden font string measures the labels of every popup (made on the first).
+local measureFS
+-- Every popup made while the settings panel exists closes when the panel hides:
+-- ONE OnHide hook on the panel (installed with the first popup) over a weak set
+-- of the popups, hidden in the order they were made.
+local panelPopups = setmetatable({}, { __mode = "k" })  -- popup -> order made
+local panelPopupN, panelHooked = 0, false
+local hideList = {}
+local function PopupOrder(a, b) return panelPopups[a] < panelPopups[b] end
+local function HidePanelPopups()
+    local n = 0
+    for pf in pairs(panelPopups) do
+        if pf:IsShown() then n = n + 1; hideList[n] = pf end
+    end
+    if n > 1 then table.sort(hideList, PopupOrder) end
+    for i = 1, n do
+        local pf = hideList[i]
+        hideList[i] = nil
+        if pf:IsShown() then pf:Hide() end
+    end
+end
+
 -------------------------------------------------------------------------------
 --  BuildCogPopup -- reusable cog settings popup with consistent layout
 --  opts = { title = "Popup Title", rows = {
 --      { type="slider", label="Distance", min=-50, max=50, step=1, get=fn, set=fn },
 --      { type="toggle", label="Show Health Percent", get=fn, set=fn }, } }
 --  Returns: popupFrame, showFn(anchorBtn)
+--  The popup frame is kept per anchor button and set of shown rows (the options
+--  page pool), not per call: one anchor button opens one live popup. Two popups
+--  built from separate calls and opened from the same button would share the
+--  frame, the later open dressing it for its own rows.
 -------------------------------------------------------------------------------
 local function BuildCogPopup(opts)
     -- Spec Overrides capture: a cog's settings belong to its hosting slot -- ONE setting, captured whole. When the call site passes captureRegion (the DualRow half-region the cog sits in), every row with get/set joins that slot's capture group.
@@ -89,31 +123,55 @@ local function BuildCogPopup(opts)
     local SwapVariant  -- set below showFn; the refresh pass calls it
 
     -- Spec Overrides auto-capture: cog row writes attribute to the cog's anchor button, which sits inside the host slot's region.
-    if opts.rows then
+    -- The slot is read before the setter runs: a setter that rebuilds the page may dress that button again for another slot.
+    -- The notifying setter is this popup's own, on a row of its own over the caller's (popupRows): a row table a
+    -- caller keeps across builds is never wrapped again, so no earlier build's setter runs, notifies or stays alive.
+    -- Made by the first CreatePopup (most cogs a page builds are never opened).
+    local popupRows, popupRowsMade
+    local function PopupRows()
+        if popupRowsMade then return popupRows end
+        popupRowsMade = true
+        if not opts.rows then return nil end
         for _, row in ipairs(opts.rows) do
             if row.set then
                 local _s = row.set
-                row.set = function(...)
+                local function NotifyingSet(...)
+                    local f = popupOwner or opts.captureRegion
+                    local snap = EllesmereUI._SOAttribution(f)
                     _s(...)
-                    EllesmereUI._NotifySettingWrite(popupOwner or opts.captureRegion)
+                    EllesmereUI._NotifySettingWrite(f, snap)
                 end
+                popupRows = popupRows or {}
+                popupRows[row] = setmetatable({ set = NotifyingSet }, { __index = row })
             end
         end
+        return popupRows
     end
 
-    local function CreatePopup(sig)
+    -- anchorBtn: the button the popup opens from. The popup is kept per anchor
+    -- button and set of shown rows (sig): opened again after the page rebuilt,
+    -- the same frame is reset and dressed again here instead of made anew.
+    -- (CreatePopup sits near Lua 5.1's 60-upvalue limit: new popup state goes
+    -- into a table, not into more upvalues.)
+    local function CreatePopup(sig, anchorBtn)
         local rowWidgets = {}  -- per-row refresh info
-        -- The rows this frame shows (all of them without row.hidden).
-        local rows = opts.rows
-        if dynamic then
-            rows = {}
-            for _, row in ipairs(opts.rows) do
-                if not (row.hidden and row.hidden()) then rows[#rows + 1] = row end
+        -- The rows this frame shows (all of them without row.hidden), each with
+        -- this popup's notifying setter (popupRows).
+        local rows = {}
+        local notifying = PopupRows()
+        for _, row in ipairs(opts.rows) do
+            if not (dynamic and row.hidden and row.hidden()) then
+                rows[#rows + 1] = (notifying and notifying[row]) or row
             end
         end
         -- Measure slider labels to find maxLblW
-        local tmpFS = UIParent:CreateFontString(nil, "OVERLAY")
+        local tmpFS = measureFS
+        if not tmpFS then
+            tmpFS = UIParent:CreateFontString(nil, "OVERLAY")
+            measureFS = tmpFS
+        end
         tmpFS:SetFont(EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
+        tmpFS:Show()
         local COG_DD_W = 130
         local maxLblW = 0
         -- Widest label + dropdown pair (a dropdown or checkbox-list row may ask
@@ -168,7 +226,7 @@ local function BuildCogPopup(opts)
             totalH = totalH + FOOTER_H
         end
 
-        local pf = CreateFrame("Frame", nil, EllesmereUI.OverlayParent())
+        local pf, isNew = PoolKept(anchorBtn, "cog:" .. (sig or ""), "Frame", EllesmereUI.OverlayParent())
         pf:SetSize(POPUP_W, totalH)
         pf:SetFrameStrata(opts.frameStrata or "DIALOG"); pf:SetFrameLevel(opts.frameLevel or 200)
         pf:EnableMouse(true); pf:Hide()
@@ -180,11 +238,11 @@ local function BuildCogPopup(opts)
         -- Match panel scale so the popup matches scrollable-area widgets
         local ppScale = EllesmereUI.GetPopupScale() or 1
         pf:SetScale(ppScale)
-        if EllesmereUI._popupFrames then
+        if isNew and EllesmereUI._popupFrames then
             EllesmereUI._popupFrames[#EllesmereUI._popupFrames + 1] = { popup = pf }
         end
 
-        local bg = SolidTex(pf, "BACKGROUND", 0.06, 0.08, 0.10, opts.bgAlpha or 0.95)
+        local bg = SolidTex(pf, "BACKGROUND", 0.077, 0.068, 0.058, opts.bgAlpha or 0.95)
         bg:SetAllPoints()
         MakeBorder(pf, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15, PP)
 
@@ -194,6 +252,27 @@ local function BuildCogPopup(opts)
         titleFS:SetText(EllesmereUI.L(opts.title or ""))
 
         local curY = -(TOP_PAD + TITLE_H + TITLE_GAP)
+        -- A dropdown-height row's disabled overlay (row.disabled set): dims the row,
+        -- blocks it and explains the lock; the refresh shows it while disabled.
+        local function RowDisabledOverlay(row, y)
+            if not row.disabled then return nil end
+            local dis = CreateFrame("Frame", nil, pf)
+            dis:SetPoint("TOPLEFT", pf, "TOPLEFT", 1, y)
+            dis:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -1, y)
+            dis:SetHeight(DROPDOWN_ROW_H)
+            dis:SetFrameLevel(pf:GetFrameLevel() + 10)
+            dis:EnableMouse(true)
+            local disTex = SolidTex(dis, "OVERLAY", 0.077, 0.068, 0.058, 0.70)
+            disTex:SetAllPoints()
+            dis:SetScript("OnEnter", function(self)
+                local tip = ResolveDisabledTip(row)
+                if tip and EllesmereUI.ShowWidgetTooltip then
+                    EllesmereUI.ShowWidgetTooltip(self, tip)
+                end
+            end)
+            dis:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            return dis
+        end
         for i, row in ipairs(rows) do
             if i > 1 then curY = curY - GAP end
 
@@ -231,7 +310,7 @@ local function BuildCogPopup(opts)
                     sliderDis:SetHeight(ROW_H)
                     sliderDis:SetFrameLevel(pf:GetFrameLevel() + 10)
                     sliderDis:EnableMouse(true)
-                    local disTex = SolidTex(sliderDis, "OVERLAY", 0.06, 0.08, 0.10, 0.70)
+                    local disTex = SolidTex(sliderDis, "OVERLAY", 0.077, 0.068, 0.058, 0.70)
                     disTex:SetAllPoints()
                     sliderDis:SetScript("OnEnter", function(self)
                         local tip = ResolveDisabledTip(row)
@@ -284,7 +363,7 @@ local function BuildCogPopup(opts)
                     toggleDis:SetHeight(TOGGLE_ROW_H)
                     toggleDis:SetFrameLevel(pf:GetFrameLevel() + 10)
                     toggleDis:EnableMouse(true)
-                    local disTex = SolidTex(toggleDis, "OVERLAY", 0.06, 0.08, 0.10, 0.70)
+                    local disTex = SolidTex(toggleDis, "OVERLAY", 0.077, 0.068, 0.058, 0.70)
                     disTex:SetAllPoints()
                     toggleDis:SetScript("OnEnter", function(self)
                         local tip = ResolveDisabledTip(row)
@@ -327,24 +406,7 @@ local function BuildCogPopup(opts)
                 end)
 
                 -- Disabled overlay, mirroring slider/input handling
-                local ddDis
-                if row.disabled then
-                    ddDis = CreateFrame("Frame", nil, pf)
-                    ddDis:SetPoint("TOPLEFT", pf, "TOPLEFT", 1, curY)
-                    ddDis:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -1, curY)
-                    ddDis:SetHeight(DROPDOWN_ROW_H)
-                    ddDis:SetFrameLevel(pf:GetFrameLevel() + 10)
-                    ddDis:EnableMouse(true)
-                    local disTex = SolidTex(ddDis, "OVERLAY", 0.06, 0.08, 0.10, 0.70)
-                    disTex:SetAllPoints()
-                    ddDis:SetScript("OnEnter", function(self)
-                        local tip = ResolveDisabledTip(row)
-                        if tip and EllesmereUI.ShowWidgetTooltip then
-                            EllesmereUI.ShowWidgetTooltip(self, tip)
-                        end
-                    end)
-                    ddDis:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                end
+                local ddDis = RowDisabledOverlay(row, curY)
 
                 rowWidgets[#rowWidgets + 1] = { type = 'dropdown', btn = ddBtn, lbl = ddLbl, get = row.get, values = row.values, refresh = ddBtn._ddRefresh, disOverlay = ddDis, disCheck = row.disabled }
                 curY = curY - DROPDOWN_ROW_H
@@ -354,16 +416,24 @@ local function BuildCogPopup(opts)
                 lbl:SetPoint('LEFT', pf, 'TOPLEFT', SIDE_PAD, curY - DROPDOWN_ROW_H / 2 - 1)
 
                 local items = type(row.items) == "function" and row.items() or row.items or {}
-                local ddBtn, refresh = EllesmereUI.BuildReorderCBDropdown(
+                local ddBtn, refresh
+                ddBtn, refresh = EllesmereUI.BuildReorderCBDropdown(
                     pf, row.ddWidth or COG_DD_W, pf:GetFrameLevel() + 2, items,
                     row.get,
-                    function(k, v)
-                        row.set(k, v)
+                    function(k, v, order)
+                        row.set(k, v, order)
                         if pf._refresh then pf._refresh() end
                     end,
                     {
                         hint = row.hint,
                         hint2 = row.hint2,
+                        grip = row.grip,
+                        openOrder = row.openOrder,
+                        tail = row.tail,
+                        onTail = function(k)
+                            if row.onTail then row.onTail(k, ddBtn) end
+                        end,
+                        tailSelected = row.tailSelected,
                         setOrder = function(keys)
                             if row.setOrder then row.setOrder(keys) end
                         end,
@@ -378,8 +448,9 @@ local function BuildCogPopup(opts)
                         self._ddMenu:SetFrameLevel(pf:GetFrameLevel() + 30)
                     end
                 end)
+                local rcDis = RowDisabledOverlay(row, curY)
 
-                rowWidgets[#rowWidgets + 1] = { type = 'reordercheck', btn = ddBtn, refresh = refresh }
+                rowWidgets[#rowWidgets + 1] = { type = 'reordercheck', btn = ddBtn, refresh = refresh, disOverlay = rcDis, disCheck = row.disabled }
                 curY = curY - DROPDOWN_ROW_H
             elseif row.type == 'segmented' then
                 local lbl = MakeFont(pf, 11, nil, 1, 1, 1); lbl:SetAlpha(0.6)
@@ -410,7 +481,7 @@ local function BuildCogPopup(opts)
                     segDis:SetHeight(TOGGLE_ROW_H)
                     segDis:SetFrameLevel(pf:GetFrameLevel() + 10)
                     segDis:EnableMouse(true)
-                    local disTex = SolidTex(segDis, "OVERLAY", 0.06, 0.08, 0.10, 0.70)
+                    local disTex = SolidTex(segDis, "OVERLAY", 0.077, 0.068, 0.058, 0.70)
                     disTex:SetAllPoints()
                     segDis:SetScript("OnEnter", function(self)
                         local tip = ResolveDisabledTip(row)
@@ -510,8 +581,10 @@ local function BuildCogPopup(opts)
                     local swatch, updateSwatch = BuildColorSwatch(pf, pf:GetFrameLevel() + 2,
                         sc.getValue,
                         function(r, g, b, a)
+                            local f = popupOwner or opts.captureRegion
+                            local snap = EllesmereUI._SOAttribution(f)
                             if sc.setValue then sc.setValue(r, g, b, a) end
-                            EllesmereUI._NotifySettingWrite(popupOwner or opts.captureRegion)
+                            EllesmereUI._NotifySettingWrite(f, snap)
                             if pf._refresh then pf._refresh() end
                         end,
                         sc.hasAlpha, 20)
@@ -521,8 +594,10 @@ local function BuildCogPopup(opts)
                     if sc.onClick then
                         swatch._eabOrigClick = swatch:GetScript('OnClick')
                         swatch:SetScript('OnClick', function(self, ...)
+                            local f = popupOwner or opts.captureRegion
+                            local snap = EllesmereUI._SOAttribution(f)
                             sc.onClick(self, ...)
-                            EllesmereUI._NotifySettingWrite(popupOwner or opts.captureRegion)
+                            EllesmereUI._NotifySettingWrite(f, snap)
                             if pf._refresh then pf._refresh() end
                         end)
                     end
@@ -550,7 +625,7 @@ local function BuildCogPopup(opts)
                     mswDis:SetHeight(ROW_H)
                     mswDis:SetFrameLevel(pf:GetFrameLevel() + 10)
                     mswDis:EnableMouse(true)
-                    local disTex = SolidTex(mswDis, "OVERLAY", 0.06, 0.08, 0.10, 0.70)
+                    local disTex = SolidTex(mswDis, "OVERLAY", 0.077, 0.068, 0.058, 0.70)
                     disTex:SetAllPoints()
                     mswDis:SetScript("OnEnter", function(self)
                         local tip = ResolveDisabledTip(row)
@@ -636,7 +711,9 @@ local function BuildCogPopup(opts)
                     if saveBg then
                         saveBg:SetColorTexture(1, 1, 1, 0.9)
                         saveLbl:SetText(EllesmereUI.L("Saved"))
+                        local g = PoolGen(saveBg)
                         C_Timer.After(0.4, function()
+                            if PoolGen(saveBg) ~= g or PoolIsIdle(saveBg) then return end
                             saveBg:SetColorTexture(EG.r, EG.g, EG.b, 0.85)
                             saveLbl:SetText(EllesmereUI.L("Save"))
                         end)
@@ -666,7 +743,7 @@ local function BuildCogPopup(opts)
                     inputDis:SetHeight(ROW_H)
                     inputDis:SetFrameLevel(pf:GetFrameLevel() + 10)
                     inputDis:EnableMouse(true)
-                    local disTex = SolidTex(inputDis, "OVERLAY", 0.06, 0.08, 0.10, 0.70)
+                    local disTex = SolidTex(inputDis, "OVERLAY", 0.077, 0.068, 0.058, 0.70)
                     disTex:SetAllPoints()
                     inputDis:SetScript("OnEnter", function(self)
                         local tip = ResolveDisabledTip(row)
@@ -729,10 +806,11 @@ local function BuildCogPopup(opts)
                     rLbl:SetAlpha(EllesmereUI.DD_TXT_A)
                 end)
 
-                -- Menu is FULLSCREEN_DIALOG so it floats above the popup
+                -- Menu is FULLSCREEN_DIALOG so it floats above the popup; it
+                -- belongs to the popup (hidden with it, dressed again with it).
                 local MH = 26
                 local FONT = (EllesmereUI.GetFontPath()) or "Fonts\\FRIZQT__.TTF"
-                local menu = CreateFrame("Frame", nil, EllesmereUI.OverlayParent())
+                local menu = PoolOwned(pf, "reorder", "Frame", EllesmereUI.OverlayParent())
                 menu:SetFrameStrata("FULLSCREEN_DIALOG")
                 menu:SetFrameLevel(220)
                 menu:SetClampedToScreen(true)
@@ -977,7 +1055,7 @@ local function BuildCogPopup(opts)
                     reorderDis:SetHeight(DROPDOWN_ROW_H)
                     reorderDis:SetFrameLevel(pf:GetFrameLevel() + 12)
                     reorderDis:EnableMouse(true)
-                    local disTex = SolidTex(reorderDis, "OVERLAY", 0.06, 0.08, 0.10, 0.70)
+                    local disTex = SolidTex(reorderDis, "OVERLAY", 0.077, 0.068, 0.058, 0.70)
                     disTex:SetAllPoints()
                     reorderDis:SetScript("OnEnter", function(self)
                         local tip = ResolveDisabledTip(row)
@@ -1113,6 +1191,12 @@ local function BuildCogPopup(opts)
                         end
                     end
                 elseif rw.type == 'reordercheck' then
+                    if rw.disOverlay then
+                        local dis = rw.disCheck
+                        if type(dis) == "function" then dis = dis() end
+                        rw.disOverlay:SetShown(dis and true or false)
+                        if dis and rw.btn._ddMenu then rw.btn._ddMenu:Hide() end
+                    end
                     if rw.refresh then rw.refresh() end
                 end
             end
@@ -1125,6 +1209,11 @@ local function BuildCogPopup(opts)
             for _, rw in ipairs(rowWidgets) do
                 if (rw.type == 'dropdown' or rw.type == 'reorder' or rw.type == 'reordercheck') and rw.btn and rw.btn._ddMenu
                    and rw.btn._ddMenu:IsShown() and rw.btn._ddMenu:IsMouseOver() then
+                    return true
+                end
+                -- A cog popup a dropdown row opened beside this one (btn._sidePopup).
+                local sp = rw.btn and rw.btn._sidePopup
+                if sp and sp:IsShown() and (sp:IsMouseOver() or sp._anyDropdownHovered()) then
                     return true
                 end
             end
@@ -1184,13 +1273,18 @@ local function BuildCogPopup(opts)
             end
         end)
 
-        -- Close when the main EllesmereUI frame hides
-        if EllesmereUI._mainFrame then
-            EllesmereUI._mainFrame:HookScript("OnHide", function()
-                if pf:IsShown() then pf:Hide() end
-            end)
+        -- Close when the main EllesmereUI frame hides (HidePanelPopups)
+        if EllesmereUI._mainFrame and not panelPopups[pf] then
+            panelPopupN = panelPopupN + 1
+            panelPopups[pf] = panelPopupN
+            if not panelHooked then
+                panelHooked = true
+                EllesmereUI._mainFrame:HookScript("OnHide", HidePanelPopups)
+            end
         end
 
+        -- Every dress (a no-op once tracked): a popup first made before the
+        -- controller overlay layer existed is tracked once it sits on it.
         EllesmereUI.TrackOverlay(pf)
         popupFrame = pf
         pf._sig = sig
@@ -1203,14 +1297,14 @@ local function BuildCogPopup(opts)
         if dynamic then
             -- The frame for the rows shown right now (built on first need).
             local cur = popupFrame
-            local want = variants[HiddenSig()] or CreatePopup(HiddenSig())
+            local want = variants[HiddenSig()] or CreatePopup(HiddenSig(), anchorBtn)
             popupFrame = cur
             if popupFrame ~= want then
                 if popupFrame and popupFrame:IsShown() then popupFrame:Hide() end
                 popupFrame = want
             end
             self._popupFrame = popupFrame
-        elseif not popupFrame then CreatePopup(); self._popupFrame = popupFrame end
+        elseif not popupFrame then CreatePopup(nil, anchorBtn); self._popupFrame = popupFrame end
 
         -- Toggle off if same anchor clicked while visible
         if popupOwner == anchorBtn and popupFrame:IsShown() then
@@ -1229,7 +1323,15 @@ local function BuildCogPopup(opts)
         popupFrame:SetAlpha(0)
         popupFrame:Show()
         local elapsed = 0
+        local anchorGen = PoolGen(anchorBtn)
         popupFrame:SetScript("OnUpdate", function(self, dt)
+            -- The anchor was dressed again mid-slide (page reuse): the popup
+            -- stays where it is, fully shown.
+            if PoolGen(anchorBtn) ~= anchorGen or PoolIsIdle(anchorBtn) then
+                self:SetAlpha(1)
+                self:SetScript("OnUpdate", self._clickOutside)
+                return
+            end
             elapsed = elapsed + dt
             local t = math.min(elapsed / 0.15, 1)
             self:SetAlpha(t)
@@ -1254,7 +1356,7 @@ local function BuildCogPopup(opts)
         local owner = popupOwner
         if not (dynamic and owner) then return end
         local old = popupFrame
-        local want = variants[HiddenSig()] or CreatePopup(HiddenSig())
+        local want = variants[HiddenSig()] or CreatePopup(HiddenSig(), owner)
         popupFrame = old
         if want == old then return end
         if old then old:Hide() end  -- its OnHide lets go of the owner

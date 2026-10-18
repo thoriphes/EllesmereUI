@@ -2,10 +2,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 --  EUI_UnitFrames_Init.lua
 --
---  InitializeFrames, a global that EnableBody (EUI_UnitFrames_Lifecycle.lua)
---  calls once: spawns the unit frames, takes over the Blizzard ones and builds
---  the visibility pass. Reads the main file and EUI_UnitFrames_Visibility.lua
---  through ns and ns._internals; db is set through I.dbSetters.
+--  InitializeFrames, published as I.InitializeFrames for EnableBody
+--  (EUI_UnitFrames_Lifecycle.lua), which calls it once: spawns the unit frames,
+--  takes over the Blizzard ones and builds the visibility pass. Reads the main
+--  file and EUI_UnitFrames_Visibility.lua through ns and ns._internals; db is
+--  set through I.dbSetters.
 -------------------------------------------------------------------------------
 local _, ns = ...
 
@@ -26,7 +27,7 @@ local UnitFrame_OnEnter, UnitFrame_OnLeave = I.UnitFrame_OnEnter, I.UnitFrame_On
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
-function InitializeFrames()
+local function InitializeFrames()
     -- Sync EUI global power colors into oUF at init
     EllesmereUI.ApplyColorsToOUF()
 
@@ -39,7 +40,8 @@ function InitializeFrames()
     -- it keeps it. The Forever defaults themselves (modern, shown, above, 16)
     -- are IS_FOREVER conditionals in DEFAULTS.player; nothing is seeded or
     -- migrated here. Under the WoW Forever style that entry is the combo
-    -- point arc on our target frame (ns.UF_ApplyForeverComboArc) and stands.
+    -- point arc on our target or player frame (Combo Points;
+    -- ns.UF_ApplyForeverComboArc) and stands.
     if ns.UF_ForeverCPStyle then classPowerStyle = ns.UF_ForeverCPStyle(classPowerStyle) end
     -- Per-unit frame source, resolved once for this build. When a unit is set to
     -- "blizzard" (leave Blizzard's default frame) or "hidden", the EllesmereUI frame is
@@ -234,6 +236,12 @@ function InitializeFrames()
             EllesmereUI._GetFFD(EditModeManagerFrame).castbarHooked = true
             hooksecurefunc(EditModeManagerFrame, "Hide", function()
                 C_Timer.After(0, ApplyBlizzCastbarState)
+                -- WoW Forever: Blizzard's own combo points stay up while Edit
+                -- Mode is open; a Combo Points spot picked meanwhile takes
+                -- them down once it closes.
+                if ns._ufComboFrameKept and ns.UF_ComboLocation() ~= "target" then
+                    C_Timer.After(0, ns.UF_ApplyForeverComboArc)
+                end
             end)
         end
     end
@@ -338,11 +346,9 @@ function InitializeFrames()
         local offsetY = db.profile.player.classPowerBarY or 0
 
         -- Stop castbar watcher by default; only re-enabled in the "bottom" branch
-        if bar._castbarWatcher then
-            ns._cpWatchFn = nil
-            ns._cpWatchTick.Stop()
-            bar._castbarWatcher:Hide()
-        end
+        ns._cpWatchFn = nil
+        ns._cpWatchTick.Stop()
+        ns._cpCastWatcher:Hide()
 
         if style == "modern" and position == "above" then
             -- Above health bar, inside the frame -- pips stretch to fill health bar width
@@ -456,25 +462,27 @@ function InitializeFrames()
             if ns.UF_Blizz() then ns.UF_ApplyBlizzardLayout(frames.player, "player") end
             -- Only run the castbar watcher if the player castbar is enabled
             if db.profile.player.showPlayerCastbar then
-                if not bar._castbarWatcher then
-                    -- Shared child-born shell (see ns._cpCastWatcher): a frame created
-                    -- here would be born in whatever context triggered this rebuild and
-                    -- could bill the parent for the 10 Hz poll below.
-                    bar._castbarWatcher = ns._cpCastWatcher
-                    bar._castbarWatcher:SetParent(bar)
-                end
+                -- Shared child-born shell (see ns._cpCastWatcher): a frame created
+                -- here would be born in whatever context triggered this rebuild and
+                -- could bill the parent for the 10 Hz poll below. It rides the bar,
+                -- so its ticker pauses while the bar is hidden; its state lives in
+                -- this closure, never on the bar (Blizzard's own frame under the
+                -- Blizzard style).
+                local watcher = ns._cpCastWatcher
+                if watcher:GetParent() ~= bar then watcher:SetParent(bar) end
                 local playerFrame = frames.player
+                local lastCastVis
                 -- 10 Hz body on the shared anim ticker (see ns._cpWatchTick).
                 ns._cpWatchFn = function()
                     local cb = playerFrame and playerFrame.Castbar
                     local castbarBg = cb and cb:GetParent()
                     local nowVis = castbarBg and castbarBg:IsShown() and db.profile.player.showPlayerCastbar
-                    if nowVis ~= bar._lastCastVis then
-                        bar._lastCastVis = nowVis
+                    if nowVis ~= lastCastVis then
+                        lastCastVis = nowVis
                         AnchorBottom()
                     end
                 end
-                bar._castbarWatcher:Show()
+                watcher:Show()
                 ns._cpWatchTick.Start()
             end
             ResizeFrameForClassPower(0)
@@ -607,7 +615,7 @@ function InitializeFrames()
             frames._classPowerBuiltStyle = style
         end
         -- WoW Forever: the "Blizzard" entry is the combo point arc on the
-        -- target frame (returns at once everywhere else).
+        -- frame Combo Points names (returns at once everywhere else).
         ns.UF_ApplyForeverComboArc()
 
         -- Clean up existing
@@ -617,6 +625,11 @@ function InitializeFrames()
             DestroyCustomClassPower()
             frames._classPowerBar = nil
         elseif frames._classPowerBar then
+            -- The cast bar watcher may ride this bar: stop it before the bar goes
+            -- back, so it never re-anchors a frame we no longer own.
+            ns._cpWatchFn = nil
+            ns._cpWatchTick.Stop()
+            ns._cpCastWatcher:Hide()
             -- Handed on to Resource Bars' Blizzard Class Resource Art: left shown, so
             -- it appears there at once (Blizzard only re-shows it from its own Setup).
             if not (style ~= "blizzard" and _G._ERB_BlizzArtWanted and _G._ERB_BlizzArtWanted()) then
@@ -788,22 +801,30 @@ function InitializeFrames()
     end
 
     -- Forever combo points belong to the target, and Blizzard draws them with the
-    -- classic ComboFrame: parented to UIParent but only anchored to TargetFrame,
-    -- so replacing that frame strands the art at a dead anchor instead of hiding
-    -- it, and ComboFrame_Update re-anchors it there on every change, so it
-    -- cannot be re-homed onto ours either. No BLIZZARD_CP_FRAMES global exists
-    -- here, so the takeover above never reaches it. Our pips are the display: the
-    -- classic frame goes to the hidden parent the way TargetFrame itself does,
-    -- events unregistered, so it costs nothing. It is left alone only where
-    -- Blizzard's own target frame is kept AND the class resource is off, the one
-    -- case in which nothing else draws combo points (or the WoW Forever style's
-    -- "Blizzard" class resource asks for exactly that arc, which Blizzard's own
-    -- target frame then keeps). The hidden parent is pinned for the session,
-    -- like every frame HandleFrame takes.
-    if EllesmereUI.IS_FOREVER == true and _G.ComboFrame
-       and (targetFrameSource ~= "blizzard"
-            or (classPowerStyle ~= "none" and classPowerStyle ~= "blizzard")) then
-        ns.UF_HideBlizzardFrame(_G.ComboFrame)
+    -- classic ComboFrame, which ComboFrame_Update re-anchors to TargetFrame on
+    -- every change, so it cannot be re-homed onto ours. No BLIZZARD_CP_FRAMES
+    -- global exists here, so the takeover above never reaches it. Our display
+    -- (the pips, or the WoW Forever style's arc) replaces it: the classic frame
+    -- goes to the hidden parent the way TargetFrame itself does, events
+    -- unregistered, so it costs nothing. It is left alone only where Blizzard's
+    -- own target frame is kept AND the class resource is off or is the WoW
+    -- Forever style's "Blizzard" one showing on the target frame (Combo Points
+    -- reads Target Frame without our player frame, and moves combo points for
+    -- rogues and druids only), the cases in which nothing else of ours draws
+    -- there; ns._ufComboFrameKept lets a later Combo Points change take it
+    -- down (ns.UF_ApplyForeverComboArc). The hidden parent is pinned for the
+    -- session, like every frame HandleFrame takes.
+    if EllesmereUI.IS_FOREVER == true and _G.ComboFrame then
+        if targetFrameSource ~= "blizzard"
+           or (classPowerStyle ~= "none" and classPowerStyle ~= "blizzard") then
+            ns.UF_HideBlizzardFrame(_G.ComboFrame)
+        elseif classPowerStyle == "blizzard" and playerFrameSource == "eui"
+           and ns.UF_ComboClass() and ns.UF_ComboLocation() ~= "target" then
+            ns.UF_HideBlizzardFrame(_G.ComboFrame)
+            ns._ufComboFrameByLoc = true
+        else
+            ns._ufComboFrameKept = true
+        end
     end
 
     local focusFrameSource = ns.GetUnitFrameSource("focus")
@@ -1485,7 +1506,7 @@ function InitializeFrames()
             -- in the other frameStrata-apply pass above for why this is needed.
             if frame.Power then
                 local us2 = GetSettingsForUnit(unitKey)
-                local ppPos = us2 and us2.powerPosition or "below"
+                local ppPos = ns.UF_PowerPos(us2)
                 if ppPos == "detached_top" or ppPos == "detached_bottom" then
                     if db.profile.enableCustomBarStratas then
                         frame.Power:SetFrameStrata(db.profile.detachedPowerStrata or "HIGH")
@@ -2178,3 +2199,5 @@ function InitializeFrames()
     -- frames are spawned and anchored.
     ReloadFrames()
 end
+
+I.InitializeFrames = InitializeFrames

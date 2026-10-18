@@ -47,17 +47,21 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --   ns.MakePreviewBackdrop(host, themeCfg, showBorder)
 --   ns.BLOCK_TYPES / ns.BLOCK_DEFAULTS / ns.EDB_VIS_CAPS / ns.EDGE_PAD
 --
---  The one call that runs the other way (options file -> runtime): a block
---  whose empty state invites a click can send the player to the control that
---  fills it in. Defined from the options PLAYER_LOGIN handler, hence the nil
---  guard at its call site:
+--  The calls that run the other way (options file -> runtime). Both are
+--  defined from the options PLAYER_LOGIN handler, hence the nil guard at
+--  their call sites:
 --
 --   ns.OpenBlockSettings(barId, blockId, settingKey)
---       deep-links to the "block:<blockId>:<settingKey>" click target the
---       options page registers for that row (see _edbClickTargets).
+--       a block whose empty state invites a click sends the player to the
+--       control that fills it in: deep-links to the
+--       "block:<blockId>:<settingKey>" click target the options page
+--       registers for that row (see _edbClickTargets).
+--   ns.OnBarLaidOut(barId)
+--       called at the end of every layout pass of a bar: the options page's
+--       preview strip re-solves from the block measurements that pass settled.
 
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -96,7 +100,6 @@ local L = {
     SPENT                = "Spent",
     PROFIT               = "Profit",
     DEFICIT              = "Deficit",
-    WARBANK              = "Warbank",
     TOTAL                = "Total",
     WOW_TOKEN            = "WoW Token",
     OPEN_BAGS            = "Open Bags",
@@ -183,6 +186,9 @@ local floor             = math.floor
 local max, min, abs     = math.max, math.min, math.abs
 
 local PP = EllesmereUI.PP
+-- The options page frame pool's table (made by the parent, filled in place when
+-- the options addon loads it): read for its Gen at call time.
+local POOL = EllesmereUI._Pool
 
 local MEDIA = "Interface\\AddOns\\EllesmereUIDataBars\\media\\"
 ns.MEDIA = MEDIA
@@ -445,7 +451,7 @@ end
 
 -- Reset countdowns for the clock tooltip. SecondsToTime is the client's own duration
 -- formatter, so units come out localized. Same call the Minimap module
--- (EllesmereUIMinimap.lua) makes for the weekly reset, so both render identically.
+-- (EUI_Minimap_Tooltips.lua) makes for the weekly reset, so both render identically.
 -- Seconds are suppressed above a minute (3 units already covers "2d 5h 30m"); below a
 -- minute they're all that's left, so suppressing them there would return "".
 function ns.FormatTimeLeft(seconds)
@@ -1740,7 +1746,12 @@ local BASE_L, BASE_R, BASE_T, BASE_B = 0.25, 1, 0, 0.75
 local BASE_U, BASE_V = BASE_R - BASE_L, BASE_B - BASE_T
 
 local function EnsureThemeTextures(host)
-    if host._edbBgAtlas then return end
+    -- Made once per host. An options preview strip is a frame of the options
+    -- page pool that every header build dresses again for another use: the
+    -- textures count only for the dress (generation) they were made in. Gen
+    -- is nil for every frame the pool did not make (the live bars).
+    local gen = POOL.Gen and POOL.Gen(host)
+    if host._edbBgAtlas and host._edbThemeGen == gen then return end
     local bgAtlas = host:CreateTexture(nil, "BACKGROUND", nil, -8)
     bgAtlas:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png")
     bgAtlas:SetAllPoints(host)
@@ -1759,6 +1770,7 @@ local function EnsureThemeTextures(host)
     host._edbBgOverlay = bgOverlay
     host._edbModernBg  = modernBg
     host._edbBarTex    = barTex
+    host._edbThemeGen  = gen
 
     -- Cover-fit: crop the atlas so it fills the host without stretching.
     local function UpdateBgTexCoords()
@@ -2175,6 +2187,9 @@ ApplyLayout = function(id)
             end
         end
     end
+    -- The options page's preview strip solves from these measurements.
+    local onLaidOut = ns.OnBarLaidOut
+    if onLaidOut then onLaidOut(id) end
 end
 
 --- "Never" is this module's only disable channel, so every gate that asks it has to ask
@@ -3180,8 +3195,8 @@ end
 -------------------------------------------------------------------------------
 function WB:OnInitialize()
     self.db = EllesmereUI.Lite.NewDB("EllesmereUIDataBarsDB", defaults)
-    -- Cross-character gold ledger is account data (EllesmereUIDB.dataBarsGold,
-    -- GoldStore), not profile -- a profile-scoped copy would leak every
+    -- Cross-character gold ledger is account data (EllesmereUIDB.goldLedger,
+    -- EllesmereUI.GetGoldLedger()), not profile -- a profile-scoped copy would leak every
     -- character's name/realm/balance into export strings. Drop any old
     -- profile copy (don't migrate): on an imported profile it holds the
     -- exporter's characters, and the account store refills from play anyway.

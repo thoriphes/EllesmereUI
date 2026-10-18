@@ -17,6 +17,7 @@ local frames, defaults, ResolveFontPath = I.frames, I.defaults, I.ResolveFontPat
 local healthBarTextureNames, healthBarTextureOrder, healthBarTextures =
     I.healthBarTextureNames, I.healthBarTextureOrder, I.healthBarTextures
 local RegisterUFUnlockElements = I.RegisterUFUnlockElements
+local InitializeFrames, SetupOptionsPanel = I.InitializeFrames, I.SetupOptionsPanel
 local db -- assigned by EllesmereUF:OnInitialize below, no setter
 
 local EllesmereUF = EllesmereUI.Lite.NewAddon("EllesmereUIUnitFrames")
@@ -129,7 +130,7 @@ end
 
 -- Called by EUI_UnlockMode.lua's Grow Direction dropdown for barKey ==
 -- "PAB_Buffs" / "PAB_Debuffs". Thin delegation to
--- EllesmereUIUnitFrames_PlayerAuraBars.lua's ns.PAB_Get/SetGrowDirection so
+-- EUI_PlayerAuraBars_Bars.lua's ns.PAB_Get/SetGrowDirection so
 -- the settings field names stay defined in exactly one file.
 
 function EllesmereUF:GetGrowDirectionForBar(barKey)
