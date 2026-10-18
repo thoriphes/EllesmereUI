@@ -187,6 +187,8 @@ if EABR.FOREVER then
         wellFed = false,    -- Well Fed reminder; opt-in, matched by aura name (every food has its own spell ID)
         whereToShow = {},   -- section "Where to Show" (an absent bucket = shown)
         customIDs = {},     -- spell IDs the user tracks, in the order added
+        palAura = false,        -- paladin: aura reminder
+        palRF = false,          -- paladin: Righteous Fury while grouped as Tank
     }
 end
 
