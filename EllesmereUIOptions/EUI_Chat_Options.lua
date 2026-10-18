@@ -9,6 +9,12 @@ local ns = EllesmereUI._ModuleNS["EllesmereUIChat"]  -- module namespace (publis
 if not ns then return end  -- module disabled: no options page
 local ECHAT = ns.ECHAT
 
+-- Page reuse: the frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua, the options addon's first file), which hands a
+-- kept page its previous build's frames back reset to new; on any other
+-- parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
 initFrame:SetScript("OnEvent", function(self)
@@ -36,7 +42,7 @@ initFrame:SetScript("OnEvent", function(self)
         local W  = EllesmereUI.Widgets
         local PP = EllesmereUI.PP
         local y  = yOffset
-        local h
+        local _, h
 
         if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
         parent._showRowDivider = true
@@ -395,6 +401,37 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end -- not STOCK
 
+        -- WoW Forever: the frame its kit draws round the panel, input box,
+        -- tabs and sidebar buttons (Slim Textured, Blizzard's live art, is the
+        -- default and reads for an unset value; each pick is saved). Latched
+        -- with the look, so picking another kind than the latched one asks
+        -- for a reload; a kind this client has no art for draws Slim
+        -- (EllesmereUI.ForeverBorderKind). Odd last slot of the section.
+        if FV then
+            _, h = W:DualRow(parent, y,
+                { type="dropdown", text="Border Style",
+                  tooltip="WoW Forever's frame round the chat panel, input box, tabs and sidebar buttons. Slim Textured uses Blizzard's current art; a style whose art this client lacks draws Slim. Applies after a UI reload.",
+                  values = { slim = "Slim", textured = "Slim Textured", heavy = "Heavy Bronze" },
+                  order  = { "slim", "textured", "heavy" },
+                  getValue=function()
+                      local v = Cfg("foreverBorder")
+                      return (v == "slim" or v == "heavy") and v or "textured"
+                  end,
+                  setValue=function(v)
+                      Set("foreverBorder", v)
+                      if EllesmereUI.ForeverBorderKind(v) == ns.ChatFvKind() then return end
+                      EllesmereUI:ShowConfirmPopup({
+                          title       = "Reload Required",
+                          message     = "Border Style changed. A UI reload is needed to apply it.",
+                          confirmText = "Reload Now",
+                          cancelText  = "Later",
+                          reload      = true,
+                      })
+                  end },
+                EllesmereUI.BlankRowCfg())
+            y = y - h
+        end
+
         -- -- IDLE FADE ---------------------------------------------------------
         _, h = W:SectionHeader(parent, "IDLE FADE", y); y = y - h
 
@@ -452,6 +489,7 @@ initFrame:SetScript("OnEvent", function(self)
             showCopy       = "Copy Chat",
             showPortals    = "M+ Portals",
             showVoice      = "Voice/Channels",
+            showChatMenu   = "Chat Menu",
             showSettings   = "Settings",
         }
         -- Chain icons listed in the user's saved order (drag rows to reorder);

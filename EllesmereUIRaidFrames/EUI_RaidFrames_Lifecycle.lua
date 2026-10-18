@@ -30,8 +30,6 @@ local SetInCombat = I.SetInCombat
 
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
-local PP
-I.PPSetters[#I.PPSetters + 1] = function(v) PP = v end
 local containerFrame
 I.containerFrameSetters[#I.containerFrameSetters + 1] = function(v) containerFrame = v end
 local framesVisible = false
@@ -49,7 +47,6 @@ function ERF:OnInitialize()
     self.db = EllesmereUI.Lite.NewDB("EllesmereUIRaidFramesDB", defaults, true)
     SetDB(self.db)
     ns.db = db
-    ns._PreviewBind(db, PP, containerFrame)
 
     -- Migration: the legacy "Threat Borders" toggle (showThreat) became the
     -- "threatBorderSize" slider. Preserve intent for users who turned it off
@@ -83,7 +80,6 @@ end
 -------------------------------------------------------------------------------
 function ERF:OnEnable()
     SetPP(EllesmereUI.PanelPP or EllesmereUI.PP)
-    ns._PreviewBind(db, PP, containerFrame)
 
     -- First-install default position: left edge of frame at 200px from screen
     -- left, vertically centered.

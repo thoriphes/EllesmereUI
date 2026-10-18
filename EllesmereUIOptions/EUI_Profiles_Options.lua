@@ -6,6 +6,22 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local PP = EllesmereUI.PanelPP
 
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host are reset and dressed again by the next build instead of made anew;
+-- elsewhere this is CreateFrame. The profiles root is kept for the session
+-- (PROFILES_ROOT owns it), so everything built on it is pooled.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+local PoolKept, PoolBegin, PoolManaged = EllesmereUI._Pool.Kept, EllesmereUI._Pool.Begin, EllesmereUI._Pool.Managed
+local PoolGen, PoolIsIdle = EllesmereUI._Pool.Gen, EllesmereUI._Pool.IsIdle
+local PROFILES_ROOT = {}
+
+-- A deferred callback's frame is still in the dress it had when the callback
+-- was scheduled (gen = PoolGen(obj) then): a rebuild dresses the same pooled
+-- frames again, so a callback from before it must leave them alone.
+local function SameDress(obj, gen)
+    return PoolGen(obj) == gen and not PoolIsIdle(obj)
+end
+
 ---------------------------------------------------------------------------
 --  Profiles page
 ---------------------------------------------------------------------------
@@ -230,6 +246,10 @@ local function MakeAccentFade(btn, lbl, brd)
     end
 end
 
+-- A profile's keybind popup: built on its first open and kept across page
+-- builds; each open points it at that profile (ShowProfileKeybindPopup).
+local profileKeybindPopup
+
 function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
     local W = EllesmereUI.Widgets
     local y = yOffset
@@ -281,12 +301,9 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
     local scrollFrame = EllesmereUI._scrollFrame
     if not scrollFrame then return 0 end
 
-    if EllesmereUI._profilesRoot then
-        EllesmereUI._profilesRoot:Hide()
-        EllesmereUI._profilesRoot:SetParent(nil)
-    end
-
-    local root = CreateFrame("Frame", nil, scrollFrame)
+    -- One root for the session: each build dresses it again, and its previous
+    -- contents reset to new first (the reset hides whatever they showed).
+    local root = PoolKept(PROFILES_ROOT, "root", "Frame", scrollFrame)
     root:SetAllPoints(scrollFrame)
     root:SetFrameLevel(scrollFrame:GetFrameLevel() + 5)
     EllesmereUI._profilesRoot = root
@@ -339,8 +356,9 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         bg:SetAllPoints()
         bg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
         local brd = EllesmereUI.MakeBorder(btn, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
-        local lbl = EllesmereUI.MakeFont(btn, 13, nil, 1, 1, 1)
-        lbl:SetAlpha(EllesmereUI.DD_TXT_A)
+        -- The resting alpha is the text colour's, the channel the hover
+        -- colours below write, so a hover and leave land back on it.
+        local lbl = EllesmereUI.MakeFont(btn, 13, nil, 1, 1, 1, EllesmereUI.DD_TXT_A)
         lbl:SetJustifyH("LEFT")
         lbl:SetWordWrap(false)
         lbl:SetMaxLines(1)
@@ -363,8 +381,10 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         return btn, lbl, bg, brd
     end
 
+    -- One menu per dropdown button, kept with the button: a build that dresses
+    -- the button again dresses its menu again too.
     local function MakeDropdownMenu(anchor, w)
-        local menuFrame = CreateFrame("Frame", nil, UIParent)
+        local menuFrame = PoolKept(anchor, "profilesMenu", "Frame", UIParent)
         menuFrame:SetFrameStrata("FULLSCREEN_DIALOG")
         menuFrame:SetFrameLevel(200)
         menuFrame:SetClampedToScreen(true)
@@ -397,78 +417,90 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
 
     local ShowImportPage  -- forward declaration (defined after import page builder)
 
-    local _kbPopup
     local function ShowProfileKeybindPopup(profileName)
-        if _kbPopup then _kbPopup:Hide() end
+        local popup = profileKeybindPopup
+        if popup then
+            -- Still open: closed first, cancelling a capture in progress.
+            if popup._dimmer:IsShown() then popup._dimmer:Hide() end
+        else
+            local POPUP_W, POPUP_H = 320, 130
 
-        local POPUP_W, POPUP_H = 320, 130
+            local dimmer = CreateFrame("Frame", nil, UIParent)
+            dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
+            dimmer:SetFrameLevel(100)
+            dimmer:SetAllPoints(UIParent)
+            dimmer:EnableMouse(true)
+            dimmer:EnableMouseWheel(true)
+            dimmer:SetScript("OnMouseWheel", function() end)
+            dimmer:Hide()
 
-        local dimmer = CreateFrame("Frame", nil, UIParent)
-        dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
-        dimmer:SetFrameLevel(100)
-        dimmer:SetAllPoints(UIParent)
-        dimmer:EnableMouse(true)
-        dimmer:EnableMouseWheel(true)
-        dimmer:SetScript("OnMouseWheel", function() end)
+            local dimTex = dimmer:CreateTexture(nil, "BACKGROUND")
+            dimTex:SetAllPoints()
+            dimTex:SetColorTexture(0, 0, 0, 0.25)
 
-        local dimTex = dimmer:CreateTexture(nil, "BACKGROUND")
-        dimTex:SetAllPoints()
-        dimTex:SetColorTexture(0, 0, 0, 0.25)
+            popup = CreateFrame("Frame", nil, dimmer)
+            popup:SetFrameStrata("FULLSCREEN_DIALOG")
+            popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
+            popup:SetSize(POPUP_W, POPUP_H)
+            popup:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+            popup:EnableMouse(true)
+            popup:SetClampedToScreen(true)
+            popup._dimmer = dimmer
+            popup._profileName = profileName
 
-        local popup = CreateFrame("Frame", nil, dimmer)
-        popup:SetFrameStrata("FULLSCREEN_DIALOG")
-        popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
-        popup:SetSize(POPUP_W, POPUP_H)
-        popup:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
-        popup:EnableMouse(true)
-        popup:SetClampedToScreen(true)
-        _kbPopup = popup
-        popup._dimmer = dimmer
+            dimmer:SetScript("OnMouseDown", function()
+                if not popup:IsMouseOver() then
+                    dimmer:Hide()
+                end
+            end)
 
-        dimmer:SetScript("OnMouseDown", function()
-            if not popup:IsMouseOver() then
-                dimmer:Hide()
-            end
-        end)
+            local popBg = popup:CreateTexture(nil, "BACKGROUND")
+            popBg:SetAllPoints()
+            popBg:SetColorTexture(0.077, 0.068, 0.058, 0.97)
+            EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.20, PP)
 
-        local popBg = popup:CreateTexture(nil, "BACKGROUND")
-        popBg:SetAllPoints()
-        popBg:SetColorTexture(0.077, 0.068, 0.058, 0.97)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.20, PP)
+            local title = EllesmereUI.MakeFont(popup, 14, nil, 1, 1, 1)
+            title:SetPoint("TOP", popup, "TOP", 0, -14)
+            popup._title = title
 
-        local title = EllesmereUI.MakeFont(popup, 14, nil, 1, 1, 1)
-        title:SetPoint("TOP", popup, "TOP", 0, -14)
-        title:SetText(EllesmereUI.Lf("Keybind: %1$s", profileName))
+            -- Reads and writes the profile the popup was last opened for.
+            local kbBtn, kbRefresh = EllesmereUI.BuildKeybindButton(popup, {
+                w = 160, h = 30, font = 13,
+                get = function() return EllesmereUI.GetProfileKeybind(popup._profileName) end,
+                set = function(v) EllesmereUI.SetProfileKeybind(popup._profileName, v) end,
+            })
+            kbBtn:SetPoint("CENTER", popup, "CENTER", 0, -2)
+            popup._kbRefresh = kbRefresh
 
-        local kbBtn = EllesmereUI.BuildKeybindButton(popup, {
-            w = 160, h = 30, font = 13,
-            get = function() return EllesmereUI.GetProfileKeybind(profileName) end,
-            set = function(v) EllesmereUI.SetProfileKeybind(profileName, v) end,
-        })
-        kbBtn:SetPoint("CENTER", popup, "CENTER", 0, -2)
+            local hint = EllesmereUI.MakeFont(popup, 10, nil, 1, 1, 1, 0.35)
+            hint:SetPoint("BOTTOM", popup, "BOTTOM", 0, 12)
+            hint:SetText(EllesmereUI.L("Left-click to set  |  Right-click to unbind  |  Esc to close"))
 
-        local hint = EllesmereUI.MakeFont(popup, 10, nil, 1, 1, 1, 0.35)
-        hint:SetPoint("BOTTOM", popup, "BOTTOM", 0, 12)
-        hint:SetText(EllesmereUI.L("Left-click to set  |  Right-click to unbind  |  Esc to close"))
+            -- kbBtn's own OnHide cancels a capture in progress.
+            popup:SetScript("OnHide", function()
+                if popup._dimmer then popup._dimmer:Hide() end
+            end)
 
-        -- kbBtn's own OnHide cancels a capture in progress.
-        popup:SetScript("OnHide", function()
-            if popup._dimmer then popup._dimmer:Hide() end
-            _kbPopup = nil
-        end)
+            EllesmereUI.PopupTakeKeys(popup, dimmer)
+            popup:SetScript("OnKeyDown", function(self, kkey)
+                if InCombatLockdown() then return end
+                -- kbBtn takes the keyboard only while it is capturing.
+                if kkey == "ESCAPE" and not kbBtn:IsKeyboardEnabled() then
+                    self:SetPropagateKeyboardInput(false)
+                    dimmer:Hide()
+                else
+                    self:SetPropagateKeyboardInput(true)
+                end
+            end)
 
-        popup:EnableKeyboard(true)
-        popup:SetScript("OnKeyDown", function(self, kkey)
-            -- kbBtn takes the keyboard only while it is capturing.
-            if kkey == "ESCAPE" and not kbBtn:IsKeyboardEnabled() then
-                self:SetPropagateKeyboardInput(false)
-                dimmer:Hide()
-            else
-                self:SetPropagateKeyboardInput(true)
-            end
-        end)
+            profileKeybindPopup = popup
+        end
 
-        dimmer:Show()
+        popup._profileName = profileName
+        popup._title:SetText(EllesmereUI.Lf("Keybind: %1$s", profileName))
+        popup._kbRefresh()
+        popup:Show()
+        popup._dimmer:Show()
     end
 
     local function BuildErrorFlash(btn, brd)
@@ -498,10 +530,16 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
     --  IMPORT PAGE BUILDER (shared by presets + import profile)
     -------------------------------------------------------------------
     ShowImportPage = function(exportString, payload, defaultName, editModeString, editModeLayoutName, applyImportedScale)
-        -- Clear any previous import page content
-        for _, child in ipairs({ importPage:GetChildren() }) do
-            child:Hide()
-            child:SetParent(nil)
+        -- The previous import page goes: its frames and texts are reset and
+        -- dressed again below (options page pool), or dropped where the page
+        -- is no pool host.
+        if PoolManaged(importPage) then
+            PoolBegin(importPage)
+        else
+            for _, child in ipairs({ importPage:GetChildren() }) do
+                child:Hide()
+                child:SetParent(nil)
+            end
         end
 
         -- Optional Blizzard Edit Mode layout to apply alongside this import (preset path only; the manual paste path leaves these nil).
@@ -1042,19 +1080,23 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 { label = "Window & Tooltip Skins", sum = "Window Skins",
                   enabled = stringHasBlizzSkin,
                   offTip = "This profile string does not carry any Window & Tooltip Skins settings.",
-                  tip   = "Apply the sharer's Blizzard Skins+ Window Skins and Tooltips, Menus & Popups settings. These are account-wide and will overwrite yours across ALL profiles. Off = keep your own.",
+                  tip   = "Apply the sharer's Blizzard Skins+ Window Skins and Tooltips & Menus settings. These are account-wide and will overwrite yours across ALL profiles. Off = keep your own.",
                   get   = function() return includeWindowSkinsImport end,
                   set   = function(refresh)
                       if includeWindowSkinsImport then
                           includeWindowSkinsImport = false
                           return
                       end
+                      -- The answer is for this build of the import page: a build
+                      -- that dresses the dropdown again before it comes drops it.
+                      local ddGen = PoolGen(ddBtn)
                       EllesmereUI:ShowConfirmPopup({
                           title       = EllesmereUI.L("Overwrite Window & Tooltip Settings?"),
-                          message     = EllesmereUI.L("This will replace YOUR Blizzard Skins+ settings (the Window Skins and Tooltips, Menus & Popups tabs) with the sharer's, across ALL of your profiles. Your current settings on those two tabs cannot be recovered afterward."),
+                          message     = EllesmereUI.L("This will replace YOUR Blizzard Skins+ settings (the Window Skins and Tooltips & Menus tabs) with the sharer's, across ALL of your profiles. Your current settings on those two tabs cannot be recovered afterward."),
                           confirmText = EllesmereUI.L("OK"),
                           cancelText  = EllesmereUI.L("Cancel"),
                           onConfirm   = function()
+                              if not SameDress(ddBtn, ddGen) then return end
                               includeWindowSkinsImport = true
                               if refresh then refresh() end
                           end,
@@ -1278,6 +1320,13 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 -- CONCURRENT silent imports) never cancels the committing one.
                 local apiSession = EllesmereUI._apiImportSession
                 if apiSession and apiSession.state == "done" then apiSession = nil end
+                -- The import reloads the UI as it lands (an interactive-API session hands that to its caller), and only a
+                -- profile payload imports (ImportProfile refuses every other type), so the outcome is known now: the reload
+                -- is asked for first in the click (RequestReload; WoW Forever refused it after the import's own work) and the
+                -- import below runs before the client reloads.
+                if not apiSession and filteredPayload and filteredPayload.type == "full" then
+                    EllesmereUI.RequestReload(EllesmereUI.L("Profile Imported"), EllesmereUI.ImportReloadMessage(filteredPayload))
+                end
                 if apiSession then apiSession.committing = true end
                 local ok, err, status = EllesmereUI.ImportProfile(filteredPayload, name)
                 if apiSession then apiSession.committing = nil end
@@ -1300,10 +1349,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                         title   = EllesmereUI.L("Profile Imported"),
                         content = EllesmereUI.Lf("\"%1$s\" was saved but cannot be loaded because this spec has an assigned profile. Switch specs or remove the spec assignment to use it.", name),
                     })
-                    EllesmereUI.RequestReload(EllesmereUI.L("Profile Imported"), EllesmereUI.ImportReloadMessage(filteredPayload))
-                elseif ok then
-                    EllesmereUI.RequestReload(EllesmereUI.L("Profile Imported"), EllesmereUI.ImportReloadMessage(filteredPayload))
-                else
+                elseif not ok then
                     EllesmereUI:ShowInfoPopup({ title = EllesmereUI.L("Import Failed"), content = err or EllesmereUI.L("Unknown error") })
                 end
             end
@@ -1335,9 +1381,14 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
     --  PASTE PAGE (Import Profile step 1: paste string)
     -------------------------------------------------------------------
     local function ShowPastePage()
-        for _, child in ipairs({ pastePage:GetChildren() }) do
-            child:Hide()
-            child:SetParent(nil)
+        -- The previous paste page goes (as the import page's, above).
+        if PoolManaged(pastePage) then
+            PoolBegin(pastePage)
+        else
+            for _, child in ipairs({ pastePage:GetChildren() }) do
+                child:Hide()
+                child:SetParent(nil)
+            end
         end
 
         local PAD = EllesmereUI.CONTENT_PAD
@@ -1482,8 +1533,12 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 contLbl:SetText(EllesmereUI.L("Continue"))
                 contReset()
             end
+            -- The paste page this decode belongs to: once it is dressed again
+            -- (reopened, or the page rebuilt), the result is dropped.
+            local btnGen = PoolGen(contBtn)
             decodeRun = EllesmereUI.DecodeImportStringAsync(importStr,
                 function(payload, err)
+                    if not SameDress(contBtn, btnGen) then return end
                     Restore()
                     -- The user may have navigated away mid-decode; a stale run's result is simply dropped.
                     if not pastePage:IsVisible() then return end
@@ -1512,11 +1567,15 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                         return
                     end
                     pastePage:Hide()
+                    local pageGen = PoolGen(pastePage)
                     MaybeConfirmUIScale(payload, function(applyScale)
+                        -- Not after a rebuild of the profiles page meanwhile.
+                        if not SameDress(pastePage, pageGen) then return end
                         ShowImportPage(importStr, payload, nil, nil, nil, applyScale)
                     end)
                 end,
                 function(frac)
+                    if not SameDress(contBtn, btnGen) then return end
                     contLbl:SetFormattedText("%s %d%%", EllesmereUI.L("Processing"), frac * 100)
                 end)
         end)
@@ -1969,8 +2028,10 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                         })
                         return
                     end
-                    EllesmereUI.SaveCurrentAsProfile(name)
-                    EllesmereUI.RequestReload(EllesmereUI.L("Copy Profile"), EllesmereUI.L("Reload to finish switching to the new profile."))
+                    -- The reload first, then the copy and the switch to it
+                    -- as its pre-reload work.
+                    EllesmereUI.RequestReload(EllesmereUI.L("Copy Profile"), EllesmereUI.L("Reload to finish switching to the new profile."),
+                        function() EllesmereUI.SaveCurrentAsProfile(name) end)
                 end,
             })
         end)
@@ -2345,7 +2406,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             if hasBlizzSkinRow then
                 rowDefs[#rowDefs + 1] = {
                     label = "Window & Tooltip Skins",
-                    tip   = "Include your Blizzard Skins+ settings from the Window Skins and Tooltips, Menus & Popups tabs. These are account-wide: if the importer opts in, they overwrite that player's settings across ALL of their profiles.",
+                    tip   = "Include your Blizzard Skins+ settings from the Window Skins and Tooltips & Menus tabs. These are account-wide: if the importer opts in, they overwrite that player's settings across ALL of their profiles.",
                     get   = function() return includeWindowSkinsExport end,
                     set   = function() includeWindowSkinsExport = not includeWindowSkinsExport end }
             end

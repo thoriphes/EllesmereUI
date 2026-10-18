@@ -11,6 +11,14 @@ local ns = EllesmereUI._ModuleNS["EllesmereUIRaidFrames"]  -- module namespace (
 if not ns then return end  -- module disabled: no options page
 local EllesmereUI = _G.EllesmereUI
 
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host (the kept Debuff Manager root, the kept Filter Editor and every frame
+-- they hand out) are reset and dressed again by the next render instead of
+-- made anew; elsewhere this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+local PoolKept = EllesmereUI._Pool.Kept
+local PoolOwned = EllesmereUI._Pool.Owned
+
 local floor = math.floor
 local max = math.max
 
@@ -591,6 +599,8 @@ local function BuildBaseDetailDM(frame, fontPath)
     if not (W and p and dm) then return 0 end
     frame._showRowDivider = true
     local sy, hh = 0, 0
+    -- A local _: the global _ would hold the last row, and through it the page.
+    local _
 
     _, hh = W:SectionHeader(frame, "ASSIGNED DEBUFFS", sy); sy = sy - hh
 
@@ -616,6 +626,7 @@ local function BuildBaseDetailDM(frame, fontPath)
         if rgn._control then rgn._control:Hide() end
         local DM_ALL_KEY = "__all"
         local DM_DUR_KEY = "__hasDuration"
+        local DM_HIDE_EXH = "__hideExhaustion"
         local DM_MATCH_ANY = "__matchAny"
         local DM_MATCH_ALL = "__matchAll"
         local function AllOn() return dm.all ~= false end
@@ -625,6 +636,12 @@ local function BuildBaseDetailDM(frame, fontPath)
               tooltip = "Show every debuff. Use the Hide lane below to remove specific filters." },
             { key = DM_DUR_KEY, label = "Has Duration",
               tooltip = "Only show debuffs that have a duration, excluding permanent ones. Combines with the filters below; checked alone it shows every timed debuff." },
+            -- Hide Exhaustion: a view over the profile's hideLustDebuff (on by
+            -- default), which every raid and party debuff display reads. Kept out
+            -- of the summary, so the default reads as before.
+            { key = DM_HIDE_EXH, label = "Hide Exhaustion",
+              tooltip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
+              excludeFromSummaryFn = function() return true end },
             -- Match Mode: modifier rows (out of the summary and the count), a
             -- radio pair over dm.match (nil = Match Any = the union). Locked
             -- while All Debuffs shows everything; the setting is kept.
@@ -760,6 +777,7 @@ local function BuildBaseDetailDM(frame, fontPath)
             function(k, neg)
                 if k == DM_ALL_KEY then return AllOn() end
                 if k == DM_DUR_KEY then return dm.hasDuration == true end
+                if k == DM_HIDE_EXH then return p.hideLustDebuff ~= false end
                 if k == DM_MATCH_ALL then return dm.match == "all" end
                 if k == DM_MATCH_ANY then return dm.match ~= "all" end
                 if k == "dispel_you" then
@@ -791,6 +809,12 @@ local function BuildBaseDetailDM(frame, fontPath)
                     -- AND-modifier: combines with All Debuffs or any show-lane
                     -- selection; checked alone it acts as the timed catch-all.
                     dm.hasDuration = v or nil
+                    DmApply()
+                    EllesmereUI:RefreshPage()
+                    return
+                end
+                if k == DM_HIDE_EXH then
+                    p.hideLustDebuff = v and true or false
                     DmApply()
                     EllesmereUI:RefreshPage()
                     return
@@ -1057,6 +1081,8 @@ local function BuildTileDetail(frame, fontPath, t)
     if not W then return 0 end
     frame._showRowDivider = true
     local sy, hh = 0, 0
+    -- A local _: the global _ would hold the last row, and through it the page.
+    local _
 
     local function TSet(key, v) t[key] = v; DmApply() end
 
@@ -1542,8 +1568,12 @@ end
 function ns.DMP_RefreshPreview()
     local pv = ns._dmPreviewFrame
     if not (pv and pv._health and pv:IsShown()) then return end
-    local p = DmProfile()
+    -- Party style: the replica's party view (scaled base grid, kit keys).
+    local p = pv._bmPvS or DmProfile()
     if not p then return end
+    -- Tile icon sizes live in dmDebuff, outside the proxy's scaled keys: live
+    -- party frames scale them by the party indicator scale, so does this.
+    local tileScale = pv._bmPvS and (ns._partyIndicatorScale or 1) or 1
     local PP = EllesmereUI.PanelPP or EllesmereUI.PP
     local fontPath = pv._dmFontPath
         or (EllesmereUI.GetFontPath("raidFrames"))
@@ -1870,7 +1900,7 @@ function ns.DMP_RefreshPreview()
                     -- Tile Display values: the tile's own keys over the base (nil = inherit).
                     sv = (ns.DM_TileStyleView and ns.DM_TileStyleView(p, t)) or p,
                     count = math.min(t.cap or 3, (sel or allVis) and 4 or 2),
-                    size = t.size or 18,
+                    size = (t.size or 18) * tileScale,
                     spacing = t.spacing or 1,
                     pos = t.position or "top",
                     grow = t.growDirection or "CENTER",
@@ -2006,10 +2036,14 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
     local sidebarW = floor(parentW * 0.28)
     local leftW = parentW - sidebarW
 
-    local outerRoot = CreateFrame("Frame", nil, scrollFrame)
+    -- The refreshers this render registers replace the previous render's (it
+    -- may run outside a page pass: the deferred renders of a cache restore).
+    EllesmereUI._BeginRootRender("rf.dm")
+    -- One root for the session (the options page pool): every render dresses
+    -- it again; its reset is the previous render's teardown.
+    local outerRoot = PoolKept(ns, "dmRoot", "Frame", scrollFrame)
     outerRoot:SetAllPoints(scrollFrame)
     outerRoot:SetFrameLevel(scrollFrame:GetFrameLevel() + 5)
-    if ns._dmRoot then ns._dmRoot:Hide(); ns._dmRoot:SetParent(nil) end
     if ns._dmAddPopup then ns._dmAddPopup:Hide() end
     if EllesmereUI._pickMenu then EllesmereUI._pickMenu:Hide() end
     ns._dmRoot = outerRoot
@@ -2087,7 +2121,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
     end
 
     local p = DmProfile()
-    if not p then return 0 end
+    if not p then EllesmereUI._EndRootRender("rf.dm"); return 0 end
 
     -- No header bar (matches the redesigned Buff Manager page): content
     -- starts at the top of the viewport.
@@ -2542,16 +2576,12 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
     -- Preview: the shared health-bar replica in replica-only mode; the DM
     -- renderer draws the base grid + tiles on it. Centered in the LEFT 65%
     -- (the Editing Spec section owns the right 35%).
-    local pvFrame, sectionH = ns.BM_BuildSimplePreview(leftFixed, p, fontPath, PP, pvSplitW / 2, -PAD)
+    local ovRaid, ovParty = ns.BM_PreviewOverrideTips("dm")
+    local pvFrame, sectionH, PV_SCALE = ns.BM_BuildSimplePreview(leftFixed, p, fontPath, PP, pvSplitW / 2, -PAD,
+        { party = ns.BM_PreviewIsParty(), styleToggle = true, kitAuras = "debuffs",
+          overrideTips = { raid = ovRaid, party = ovParty } })
     ns._dmPreviewFrame = pvFrame
     pvFrame._dmFontPath = fontPath
-
-    -- Matches the replica builder's scale math (for the eyeball offset).
-    local PV_SCALE = 1.5
-    do
-        local rawH = p.frameHeight or 46
-        if rawH * PV_SCALE > 100 then PV_SCALE = 100 / rawH end
-    end
 
     -- Eyeball toggle: show all tiles at full opacity (BM parity)
     do
@@ -2810,6 +2840,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
         end
     end
 
+    EllesmereUI._EndRootRender("rf.dm")
     return 0
 end
 
@@ -2836,10 +2867,24 @@ local fdScrollPos = 0 -- preserved spell-list scroll across editor rebuilds
 -- standard input popup + delete via the standard confirm popup); left =
 -- the selected filter's spells as checkbox rows using the checkbox-
 -- dropdown widget's exact visuals, grouped by class.
-function ns.BMP_ShowFilterEditor()
-    if ns._bm2FilterEditor then ns._bm2FilterEditor:Hide(); ns._bm2FilterEditor = nil end
+-- show / hide: the opening dropdown's Show and Hide picks (id -> true). The
+-- editor opens on the first picked filter in list order; with none picked it
+-- keeps the last one viewed.
+function ns.BMP_ShowFilterEditor(show, hide)
     local filters = ns.BM2_Filters and ns.BM2_Filters()
-    if not filters then return end
+    if not filters then
+        if ns._bm2FilterEditor then ns._bm2FilterEditor:Hide(); ns._bm2FilterEditor = nil end
+        return
+    end
+    -- An open editor stays shown until the kept frame's reset below (that
+    -- reset is the previous dress's teardown), so the frame under the cursor,
+    -- dressed again in place, gets its OnEnter back from the pool.
+    if show or hide then
+        for i = 1, #filters do
+            local id = filters[i].id
+            if (show and show[id]) or (hide and hide[id]) then fdSel = id; break end
+        end
+    end
     local fontPath = (EllesmereUI.GetFontPath("options"))
         or (EllesmereUI.GetFontPath("raidFrames"))
         or "Fonts\\FRIZQT__.TTF"
@@ -2850,7 +2895,10 @@ function ns.BMP_ShowFilterEditor()
     local POPUP_W, POPUP_H = 620, 520
     local SIDE_W = 180
 
-    local dimmer = CreateFrame("Frame", nil, UIParent)
+    -- One editor for the session (the options page pool): every open and every
+    -- Rebuild below dress it again; its reset is the previous dress's teardown
+    -- (a keyboard capture is put back out of combat only, by the pool).
+    local dimmer = PoolKept(ns, "bm2FilterEditor", "Frame", UIParent)
     dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
     dimmer:SetAllPoints(UIParent)
     dimmer:EnableMouse(true)
@@ -2900,6 +2948,28 @@ function ns.BMP_ShowFilterEditor()
         close:SetScript("OnClick", function()
             dimmer:Hide()
             ns._bm2FilterEditor = nil
+        end)
+    end
+
+    -- Escape closes the editor alone: the key is swallowed here, so it never
+    -- reaches the Escape proxy that would close the options window too.
+    -- SetPropagateKeyboardInput is protected in combat, so the editor takes
+    -- the keyboard only when built out of combat and stands aside in it. The
+    -- capture is a frame of its own, owned by the popup outside its child
+    -- list: a dress in combat cannot clear keyboard flags, so it leaves only
+    -- that frame for the next dress out of combat, never the popup.
+    if not InCombatLockdown() then
+        local keys = PoolOwned(popup, "keys", "Frame", popup)
+        keys:SetAllPoints(popup)
+        keys:EnableKeyboard(true)
+        keys:SetPropagateKeyboardInput(true)
+        keys:SetScript("OnKeyDown", function(self, key)
+            if InCombatLockdown() then return end
+            self:SetPropagateKeyboardInput(key ~= "ESCAPE")
+            if key == "ESCAPE" then
+                dimmer:Hide()
+                ns._bm2FilterEditor = nil
+            end
         end)
     end
 
@@ -3307,9 +3377,13 @@ function ns.BMP_ShowFilterEditor()
             or (C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(id))
         local lr, lg2, lb2 = 1, 1, 1
         if classColor then lr, lg2, lb2 = classColor.r, classColor.g, classColor.b end
+        -- A user-added id the preset has since curated keeps its custom mark
+        -- (it stays if the curation is ever dropped) but is a curated row now:
+        -- no remove control.
+        local removable = sel.custom[id] and not (curated and curated[id])
         local lbl = EllesmereUI.MakeFont(srow, 13, nil, lr, lg2, lb2)
         lbl:SetPoint("LEFT", ico, "RIGHT", 6, 0)
-        lbl:SetPoint("RIGHT", srow, "RIGHT", sel.custom[id] and -24 or -6, 0)
+        lbl:SetPoint("RIGHT", srow, "RIGHT", removable and -24 or -6, 0)
         lbl:SetJustifyH("LEFT")
         lbl:SetWordWrap(false)
         lbl:SetText(name or ("Spell " .. tostring(id)))
@@ -3337,7 +3411,7 @@ function ns.BMP_ShowFilterEditor()
             Apply()
             UpdateRow()
         end)
-        if sel.custom[id] then
+        if removable then
             local del = CreateFrame("Button", nil, srow)
             del:SetSize(14, 14)
             del:SetPoint("RIGHT", srow, "RIGHT", -6, 0)
@@ -3443,7 +3517,7 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
             local filters = (ns.BM2_Filters and ns.BM2_Filters()) or {}
             local items = {
                 { isTopAction = true, label = "Edit Filters", onClick = function()
-                    ns.BMP_ShowFilterEditor()
+                    ns.BMP_ShowFilterEditor(ind.filters, ind.negFilters)
                 end },
                 { isHeader = true, label = "Show", rightLabel = "Hide" },
             }
@@ -3477,7 +3551,14 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
                     end
                 end
                 if ns.BM2_Invalidate then ns.BM2_Invalidate() end
-                if ns.ReloadFrames then ns.ReloadFrames() end
+                -- Frames and preview now, then the selected tile's icon and
+                -- spell list (a widget refresh keeps this menu open).
+                if ns._bmReloadAndUpdate then
+                    ns._bmReloadAndUpdate()
+                elseif ns.ReloadFrames then
+                    ns.ReloadFrames()
+                end
+                EllesmereUI:RefreshPage()
             end,
             nil, 12)
         PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)

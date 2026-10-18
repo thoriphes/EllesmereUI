@@ -9,6 +9,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUIActionBars"]
 if not ns then return end  -- module disabled: no options page
+-- Options page pool (EllesmereUI_FramePool.lua, first in this addon): a frame
+-- made here on a pool host (a kept page and every frame it hands out) is reset
+-- and dressed again by the next build instead of made anew; on any other
+-- parent this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
 
 local function BuildBarAppearance(parent, y, ctx)
     local env = ns._ABO_OptEnv
@@ -266,7 +271,7 @@ local function BuildBarAppearance(parent, y, ctx)
                   -- Full rebuild: the Width/Height Offset row exists only for a textured style.
                   EllesmereUI:RefreshPage(true)
               end },
-            EllesmereUI.BorderPxSliderCfg{ text="Border Size", tooltip=false,
+            EllesmereUI.BorderPxSliderCfg{ text="Border Size",
               disabled=BgDisabled,
               disabledTooltip="Bar Background Border",
               -- The step ApplyBackgroundForBar renders with: a thickness with no
@@ -625,7 +630,7 @@ local function BuildBarAppearance(parent, y, ctx)
                   SUpdatePreview()
               end }
         else
-            sizeCfg = EllesmereUI.BorderPxSliderCfg{ text="Border Size", tooltip=false,
+            sizeCfg = EllesmereUI.BorderPxSliderCfg{ text="Border Size",
               disabled=BlizzStyleOn, disabledTooltip=EllesmereUI.BlizzStyle.Label("actionbars"), requireState="disabled",
               -- The step the buttons render with (ResolveBorderThickness's regular
               -- column): an unknown or numeric thickness is thin.
@@ -1789,6 +1794,12 @@ local function BuildBarAppearance(parent, y, ctx)
                       SUpdatePreviewAndResize()
                       EllesmereUI:RefreshPage()
                   end }
+                slots[#slots + 1] = { type="toggle", text="Skip Visible Bars When Paging",
+                  getValue=function() return SGet("skipVisiblePagingBars") or false end,
+                  setValue=function(v)
+                      SSet("skipVisiblePagingBars", v, function() ns.RefreshPagingCycleMacros() end)
+                  end,
+                  tooltip="Next and previous page, from the keybinds or the paging arrows, skip the pages your other enabled bars use." }
             end
             slots[#slots + 1] = { type="toggle", text="Modifier/Target Paging",
               getValue=ModTargetOn,

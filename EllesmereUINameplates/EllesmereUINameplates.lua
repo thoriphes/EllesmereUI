@@ -1,6 +1,6 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 local addon, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[addon] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -12,6 +12,11 @@ local p
 local ipairs = ipairs
 local PP = EllesmereUI.PP
 local UnitIsUnit = UnitIsUnit
+-- The core's table of the options page frame pool (EllesmereUI_PixelPerfect.lua
+-- makes it, the options addon fills it): the builders the options preview shares
+-- with the plates create through it, so a preview frame is handed back to the
+-- preview's next build. A plate's parent is no pool host: a plain CreateFrame.
+local Pool = EllesmereUI._Pool
 
 local function GetFont() return EllesmereUI.GetFontPath("nameplates") end
 -- Slug-gated at the source (GetFontOutlineFlag); SetFSFont gates the
@@ -240,6 +245,7 @@ local defaults = {
     castBarUninterruptible = { r = 0.45, g = 0.45, b = 0.45 },
     castBarImportant = { r = 1, g = 0.2, b = 0.2 },
     importantCastColorEnabled = false,
+    importantCastKickReadyAsInterruptible = false,
     castBarShieldEnabled = true,
     interruptedFlashEnabled = true,
     interruptedFlashColor = { r = 0.8, g = 0.0, b = 0.0 },
@@ -373,7 +379,7 @@ local defaults = {
     factionStyle = "pvp",  -- Icon Style: a key of EllesmereUI.FACTION_ART
     classificationIncludeFaction = false,  -- "Rare/Quest + Faction": the badge shares the classification slot
     -- The classification element's two halves, each switchable in Core Positions:
-    -- the Rare Indicator (elite and rare marks) and the Quest Indicator.
+    -- the Elite/Rare Indicator (elite and rare marks) and the Quest Indicator.
     classificationHideRare = false,
     classificationHideQuest = false,
     factionOppositeOnly = false,
@@ -424,6 +430,7 @@ local defaults = {
     rangeTextOffsetY = 0,
     rangeTextColor = { r = 0.816, g = 0.357, b = 0.220 },  -- #D05B38
     maxDebuffs = 5,
+    showAuraTooltips = false,  -- Buff / Debuff icons show their tooltip on hover
     showBorder = true,
     borderSize = 1,
     borderColor = { r = 0.067, g = 0.067, b = 0.067 },
@@ -447,6 +454,10 @@ local defaults = {
     customBorderAlpha = 1,
     customBorderBehind = false,
     pandemicGlow = false,
+    -- The aura glow styles' saved keys from before 9.6, read as a view
+    -- (EUI_Nameplates_Layout.lua): this old default and nil mean Blizzard
+    -- Pandemic Border; a style picked from 9.6 on is pandemicGlowPick /
+    -- dispelGlowPick (no defaults: nil = no pick).
     pandemicGlowStyle = 1,
     pandemicGlowColor = { r = 1.0, g = 0.800, b = 0.329 },
     pandemicGlowLines = 8,
@@ -619,6 +630,8 @@ function ns.ApplyCustomBorderStyle(plate, szOverride)
         bf = CreateFrame("Frame", nil, plate.health)
         bf:SetAllPoints(plate.health)
         plate._customBorder = bf
+        -- Plates move by sub-pixels: the Pixels styles need their edge fill.
+        EllesmereUI.SetBorderEdgeFill(bf, true)
     end
     -- Health bars flatten render layers: a BORDER-layer backdrop would be clipped by the
     -- ARTWORK health fill, so lift it onto MEDIUM strata (same escape the plate uses for
@@ -635,6 +648,9 @@ function ns.ApplyCustomBorderStyle(plate, szOverride)
     -- The size it is drawn at (a target/hover effect size included): the cast bar
     -- wrap's lower piece and seam copy it (ns.NP_UpdateCustomBorderWrap).
     bf._cbTex, bf._cbSz, bf._cbPx = tex, sz, px
+    -- A target/hover effect size redraws a rounded glow at that size (ApplyBorder
+    -- rounds after its own call).
+    if szOverride and plate._npRounded then ns.NP_ApplyRounding(plate, "health") end
 end
 function ns.ApplyCustomBorderColor(plate)
     if not plate or not plate._customBorder then return end
@@ -704,6 +720,7 @@ function ns.NP_UpdateCustomBorderWrap(plate)
             lower:SetPoint("TOPRIGHT", plate.health, "BOTTOMRIGHT", 0, 0)
             lower:SetPoint("BOTTOM", cast, "BOTTOM", 0, 0)
             plate._cbWrapLower = lower
+            EUI.SetBorderEdgeFill(lower, true)
         end
         -- Above the cast spell icon, re-set every pass (a strata change on the lifted
         -- cast bar resets its children's levels).
@@ -794,6 +811,7 @@ function ns.NP_SetWrapJoin(plate, on, tex, r, g, b, a)
             joined.BottomLeftCorner:Show()
             joined.BottomRightCorner:Show()
             bf._cbJoinBd = nil
+            EllesmereUI.SyncBorderEdgeFill(bf)
         end
         if lower and lower._cbFillL then
             lower._cbFillL:Hide()
@@ -808,6 +826,8 @@ function ns.NP_SetWrapJoin(plate, on, tex, r, g, b, a)
     lbd.TopEdge:Hide()
     lbd.TopLeftCorner:Hide()
     lbd.TopRightCorner:Hide()
+    EllesmereUI.SyncBorderEdgeFill(bf)
+    EllesmereUI.SyncBorderEdgeFill(lower)
     local fl, fr = lower._cbFillL, lower._cbFillR
     if not fl then
         fl = lower:CreateTexture(nil, "BORDER")
@@ -893,7 +913,7 @@ function ns.NP_SetWrapSeam(owner, anchor, show, tex, step, px, r, g, b, a, healt
         return
     end
     if not host then
-        host = CreateFrame("Frame", nil, owner)
+        host = Pool.CreateFrame("Frame", nil, owner)
         host:SetAllPoints(owner)
         host._seam = host:CreateTexture(nil, "OVERLAY", nil, 7)
         owner._cbSeamHost = host

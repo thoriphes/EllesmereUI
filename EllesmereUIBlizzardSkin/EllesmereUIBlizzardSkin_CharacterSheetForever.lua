@@ -10,8 +10,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --      house close button, through the same engine calls every skinned
 --      Blizzard window uses;
 --    - every piece of frame art stripped: the pane backdrops and stone
---      header, the item slot frames, the class icon and its ring, the level
---      text plate, the right-pane collapse arrow;
+--      header, the item slot frames, the class icon and its ring, the rock
+--      strip under the level line, the right-pane collapse arrow;
 --    - the retail sheet's model backdrop behind the character, cover-cropped
 --      to the model area, and the retail sidebar's darker panel behind the
 --      stats (its left edge is the divider between the two panes);
@@ -111,7 +111,8 @@ end
 --------------------------------------------------------------------------------
 --  Colours: the retail sidebar's category palette, keyed the way the options
 --  page stores overrides (EllesmereUIDB.statCategoryColors[key]). Forever's
---  categories map onto it; General gets its own cyan.
+--  categories map onto it; General gets its own cyan, the pet pane's Combat
+--  takes Attack's.
 --------------------------------------------------------------------------------
 local DEFAULT_COLORS = {
     General            = { r = 0.30,  g = 0.80,  b = 0.95 },
@@ -126,6 +127,7 @@ if STAT_CATEGORY_PRIMARY_ATTRIBUTES then CATEGORY_KEY[STAT_CATEGORY_PRIMARY_ATTR
 if STAT_CATEGORY_WEAPONS then CATEGORY_KEY[STAT_CATEGORY_WEAPONS] = "Attack" end
 if STAT_CATEGORY_MODIFIERS then CATEGORY_KEY[STAT_CATEGORY_MODIFIERS] = "Secondary Stats" end
 if STAT_CATEGORY_DEFENSE then CATEGORY_KEY[STAT_CATEGORY_DEFENSE] = "Defense" end
+if STAT_CATEGORY_COMBAT then CATEGORY_KEY[STAT_CATEGORY_COMBAT] = "Attack" end
 
 local function CategoryColor(categoryName)
     local key = categoryName and CATEGORY_KEY[categoryName]
@@ -488,7 +490,7 @@ local itemWatch                 -- GET_ITEM_INFO_RECEIVED, registered only while
 local function ApplyLabelFonts(d)
     local path = FontPath()
     local size = DB("charSheetUpgradeTrackSize") or 11
-    local flags = DB("charSheetUpgradeTrackOutline") and "OUTLINE, SLUG" or ""
+    local flags = DB("charSheetUpgradeTrackOutline") and EllesmereUI.SlugFlag("OUTLINE, SLUG") or ""
     EllesmereUI.PrimeFontShadow(d.stats, DB("charSheetUpgradeTrackShadow"))
     d.stats:SetFont(path, size, flags)
     if d.dps then
@@ -706,7 +708,7 @@ local function PaintSlotText(slot)
     if name ~= "" then
         local size = DB("charSheetEnchantSize") or 9
         if DB("charSheetEnchantNames") then
-            ench:SetFont(FontPath(), size, "OUTLINE, SLUG")
+            ench:SetFont(FontPath(), size, EllesmereUI.SlugFlag("OUTLINE, SLUG"))
             ench:SetTextColor(r + (1 - r) * 0.5, g + (1 - g) * 0.5, b + (1 - b) * 0.5, 0.9)
         else
             ench:SetFont(FontPath(), size, "")
@@ -1007,13 +1009,15 @@ local function SkinFrame()
         end)
     end
 
-    -- Name in the top bar and the level line: the house font on Blizzard's
-    -- own font strings, so the text (pvp title, class colour) stays theirs.
+    -- Name in the top bar and the level lines (the player's and the pet
+    -- view's): the house font on Blizzard's own font strings, so the text
+    -- (pvp title, class colour) stays theirs.
     local title = _G.CharacterFrameTitleText or (frame.TitleContainer and frame.TitleContainer.TitleText)
     if title and WSkin.Font then WSkin.Font(title, 1, 1, 1) end
     local level = _G.CharacterLevelText
     if level and WSkin.Font then WSkin.Font(level) end
-    if _G.CharacterLevelTextBackground then _G.CharacterLevelTextBackground:SetAlpha(0) end
+    local petLevel = _G.PetCharacterLevelText
+    if petLevel and WSkin.Font then WSkin.Font(petLevel) end
 
     -- Pane backdrops, the stone header, the divider strip, the stats box
     -- chrome (inside frame, scroll line, class crest) and the model backdrop.
@@ -1030,6 +1034,7 @@ local function SkinFrame()
     Fade(_G.CharacterStatsPaneScrollBox)
     Fade(_G.CharacterStatsPanePetScrollBox)
     Fade(_G.PaperDollFrame)
+    Fade(_G.PaperDollFrame.TopBackgroundStripHost)
     Fade(_G.CharacterModelScene)
     local shell = WSkin.GetFFD and WSkin.GetFFD(frame)
     local topBar = shell and shell.topBar

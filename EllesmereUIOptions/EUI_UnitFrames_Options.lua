@@ -8,6 +8,16 @@ local ADDON_NAME = "EllesmereUIUnitFrames"
 local ns = EllesmereUI._ModuleNS[ADDON_NAME]  -- module namespace (published by the module at its load)
 if not ns then return end  -- module disabled: no options page
 
+-- Page reuse: the frames this file builds under a kept page, header or row go
+-- through the options frame pool (EllesmereUI_FramePool.lua), which hands the
+-- next build the previous build's frames reset to new; on any other parent it
+-- is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+-- The pool's other calls this file makes, read once here as CreateFrame is:
+-- the page path never calls the pool through its public slot, which
+-- another addon could replace.
+local PoolGen, PoolIsIdle, PoolKeep = EllesmereUI._Pool.Gen, EllesmereUI._Pool.IsIdle, EllesmereUI._Pool.Keep
+
 local PAGE_DISPLAY   = "Main Frames"
 local PAGE_BOSS      = "Boss Frames"
 local PAGE_MINI      = "Mini Frames"
@@ -634,6 +644,25 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
         end
         EllesmereUI.RegisterWidgetRefresh(UpdateSw)
         UpdateSw()
+        -- Corner Radius (EllesmereUI_RoundedCorners.lua): the boss table's own,
+        -- left of the swatch; while inheriting the main frames' radius applies.
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Corner Radius", tip = "Corner Radius",
+            disabled = function() return Inheriting() or not EllesmereUI.RoundedStyleOK(B.borderTexture) end,
+            disabledTooltip = function()
+                if Inheriting() then return NEEDS_STYLE end
+                return "This option requires the Solid, Glow or Shadow border style."
+            end,
+            rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
+                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+                  get = function() return Src().cornerRadius or 0 end,
+                  set = function(v) B.cornerRadius = v; onChange() end },
+            }, function() return Src().cornerMask end, function(v) B.cornerMask = v; onChange() end),
+                "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
+                function() return B.cornerJoinPower end, function(v) B.cornerJoinPower = v; onChange() end,
+                function() local pos = B.powerPosition or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
+                "Detached Power Bar"),
+        })
     end
     return y0 - y
 end
@@ -818,6 +847,19 @@ local function DebuffModeDropdownCfg(text, unitKey, getS, onChanged, extra)
     end
     return cfg
 end
+-- Hide Exhaustion: the Debuff Filter cog row of target, focus and boss (their
+-- filter is a single-pick mode list; the player's checkbox Debuff Filter has
+-- the same toggle as a row). s.debuffHideExhaustion, nil = on: the Bloodlust
+-- lockouts stay hidden until it is turned off (stored as false).
+local function HideExhaustionRow(getS, onChanged)
+    return { type = "toggle", label = "Hide Exhaustion",
+        tooltip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
+        get = function() return getS().debuffHideExhaustion ~= false end,
+        set = function(v)
+            getS().debuffHideExhaustion = (not v) and false or nil
+            onChanged()
+        end }
+end
 -- The standard red empty-selection warning on the mode dropdown built by a
 -- DualRow slot (rgn._control): shown while Only Tracked Auras has no active
 -- entry and the column is not already dimmed by its Display = None.
@@ -897,12 +939,20 @@ initFrame:SetScript("OnEvent", function(self)
             local region = (m.slotSide == "left") and m.target._leftRegion or m.target._rightRegion
             if region then glowTarget = region end
         end
-        C_Timer.After(0.15, function() playGlow(glowTarget) end)
+        -- A page rebuilt before the glow plays (page reuse) has parked or dressed
+        -- its rows again: a target that moved on gets no glow.
+        local gen = PoolGen(glowTarget)
+        C_Timer.After(0.15, function()
+            if PoolGen(glowTarget) ~= gen or PoolIsIdle(glowTarget) then return end
+            playGlow(glowTarget)
+        end)
     end
 
+    -- allPreviews: unit -> its preview. An entry whose frame a kept header root
+    -- dressed again for another unit (pv._pvUnit) is stale and skipped.
     local function UpdatePreview()
-        for _, pv in pairs(allPreviews) do
-            if pv and pv.Update then pv:Update() end
+        for k, pv in pairs(allPreviews) do
+            if pv and pv._pvUnit == k and pv.Update then pv:Update() end
         end
         -- Sync in-game boss preview fake debuffs with live edits (location, simple display, size).
         if ns.RefreshBossPreviewDebuffs then ns.RefreshBossPreviewDebuffs() end
@@ -925,8 +975,8 @@ initFrame:SetScript("OnEvent", function(self)
 
     -- Hide UIParent-parented disabled overlays when the options window closes
     EllesmereUI:RegisterOnHide(function()
-        for _, pv in pairs(allPreviews) do
-            if pv and pv._disabledOverlay then pv._disabledOverlay:Hide() end
+        for k, pv in pairs(allPreviews) do
+            if pv and pv._pvUnit == k and pv._disabledOverlay then pv._disabledOverlay:Hide() end
         end
         -- Auto-disable in-game boss preview so live boss frames don't linger on close.
         if ns._bossPreviewActive and ns.SetBossPreview then
@@ -935,11 +985,9 @@ initFrame:SetScript("OnEvent", function(self)
         -- Player Aura Bars root lives on the shared live scrollFrame, not a page's
         -- own `parent`; only fires on full window close (cf. _bmRoot/_dmRoot/_ccRoot
         -- cleanup in EUI_RaidFrames_Options.lua). Module switching is handled below via SelectModule.
-        if ns._pabRoot then
-            ns._pabRoot:Hide()
-            ns._pabRoot:SetParent(nil)
-            ns._pabRoot = nil
-        end
+        -- The root is kept for the session (its next render dresses it again):
+        -- parked hidden, off the scroll frame; nil means "needs a render".
+        if ns._pabRoot then ns.PABMP_ParkRoot() end
     end)
 
     -- Rebuild Player Aura Bars on re-open while already on that page: RegisterOnHide
@@ -950,7 +998,8 @@ initFrame:SetScript("OnEvent", function(self)
            and EllesmereUI:GetActivePage() == PAGE_AURA_BARS
            and not ns._pabRoot then
             C_Timer.After(0, function()
-                if EllesmereUI:GetActiveModule() == "EllesmereUIUnitFrames" and ns.PABMP_BuildPage then
+                if EllesmereUI:GetActiveModule() == "EllesmereUIUnitFrames"
+                   and EllesmereUI:GetActivePage() == PAGE_AURA_BARS and ns.PABMP_BuildPage then
                     ns.PABMP_BuildPage(PAGE_AURA_BARS, nil, -6)
                 end
             end)
@@ -963,9 +1012,7 @@ initFrame:SetScript("OnEvent", function(self)
     if EllesmereUI.SelectModule then
         hooksecurefunc(EllesmereUI, "SelectModule", function(_, folderName)
             if folderName ~= "EllesmereUIUnitFrames" and ns._pabRoot then
-                ns._pabRoot:Hide()
-                ns._pabRoot:SetParent(nil)
-                ns._pabRoot = nil
+                ns.PABMP_ParkRoot()
             end
         end)
     end
@@ -1161,8 +1208,8 @@ initFrame:SetScript("OnEvent", function(self)
             end,
             onItemHover = function(key)
                 local texPath = texLookup[key]
-                for _, pv in pairs(allPreviews) do
-                    if pv then
+                for k, pv in pairs(allPreviews) do
+                    if pv and pv._pvUnit == k then
                         local hFill = pv._healthFill
                         if hFill then
                             if texPath then
@@ -1189,8 +1236,8 @@ initFrame:SetScript("OnEvent", function(self)
             end,
             onItemLeave = function(key)
                 -- Revert to the saved texture
-                for _, pv in pairs(allPreviews) do
-                    if pv and pv.Update then pv:Update() end
+                for k, pv in pairs(allPreviews) do
+                    if pv and pv._pvUnit == k and pv.Update then pv:Update() end
                 end
             end,
         }
@@ -1248,6 +1295,8 @@ initFrame:SetScript("OnEvent", function(self)
         ["perhp"]        = "Health %",
         ["perhpnosign"]  = "Health % (No Sign)",
         ["curhpshort"]   = "Health #",
+        ["healthshort"]  = "Health # Short (230.5K)",
+        ["curmaxhp"]     = "Health # / Max #",
         ["perhpnum"]     = "Health % | #",
         ["both"]         = "Health # | %",
         ["bothdash"]     = "Health # - %",
@@ -1259,12 +1308,12 @@ initFrame:SetScript("OnEvent", function(self)
         ["group"]        = "Group Number",
         ["none"]         = "None",
     }
-    local healthTextOrder = { "none", "---", "name", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "perhpnum", "both" }
+    local healthTextOrder = { "none", "---", "name", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both" }
     -- Boss frames also get "Name > Target" (the boss's target); ToT/FoT/Pet do not.
-    local healthTextOrderBoss = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
-    local healthTextOrderPlayer = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort", "group" }
+    local healthTextOrderBoss = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
+    local healthTextOrderPlayer = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort", "group" }
     -- Target/Focus: player's absorb options minus "group" (raid group number is meaningless off the player).
-    local healthTextOrderTargetFocus = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
+    local healthTextOrderTargetFocus = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
 
     -- Text bar (BTB) text dropdown values (includes power options)
     local btbTextValues = {
@@ -1272,15 +1321,18 @@ initFrame:SetScript("OnEvent", function(self)
         ["perhp"]        = "Health %",
         ["perhpnosign"]  = "Health % (No Sign)",
         ["curhpshort"]   = "Health #",
+        ["healthshort"]  = "Health # Short (230.5K)",
+        ["curmaxhp"]     = "Health # / Max #",
         ["perhpnum"]     = "Health % | #",
         ["both"]         = "Health # | %",
         ["perpp"]        = "Power %",
         ["curpp"]        = "Power Value",
+        ["curmaxpp"]     = "Power Value / Max",
         ["curhp_curpp"]  = "Health | Power Value",
         ["perhp_perpp"]  = "Health | Power %",
         ["none"]         = "None",
     }
-    local btbTextOrder = { "none", "---", "name", "perhp", "perhpnosign", "curhpshort", "perhpnum", "both", "perpp", "curpp", "curhp_curpp", "perhp_perpp" }
+    local btbTextOrder = { "none", "---", "name", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "perpp", "curpp", "curmaxpp", "curhp_curpp", "perhp_perpp" }
 
     -- Class theme portrait icons: full-size versions of the sidebar class art.
     local ICONS_PATH = "Interface\\AddOns\\EllesmereUI\\media\\icons\\"
@@ -1305,15 +1357,37 @@ initFrame:SetScript("OnEvent", function(self)
     local classIconLocValues = { ["left"]="Left", ["center"]="Center", ["right"]="Right" }
     local classIconLocOrder = { "left", "center", "right" }
 
-    -- Swap helper for buff/debuff anchors: prevent both from occupying the same slot
-    local function SwapAuraSlot(settingsTable, changedKey, newVal)
-        local otherKey = (changedKey == "buffAnchor") and "debuffAnchor" or "buffAnchor"
-        local otherVal = settingsTable[otherKey] or (otherKey == "buffAnchor" and "topleft" or "bottomleft")
-        if otherVal == newVal then
-            local oldVal = settingsTable[changedKey] or (changedKey == "buffAnchor" and "topleft" or "bottomleft")
-            settingsTable[otherKey] = oldVal
+    -- Buff and debuff stacks never share a spot. Moves one stack (changedKey
+    -- "buffAnchor" or "debuffAnchor") to newVal; the other stack, when its
+    -- stored spot is newVal, takes this stack's previous spot, or the first
+    -- free corner when that spot is None or newVal itself. A hidden buff
+    -- stack's stored corner counts both ways, so buffs turned back on by any
+    -- path (a Spec Override, an import) never land on the debuffs. Buffs turn
+    -- off through showBuffs (their corner is kept, never "none"); None never
+    -- collides.
+    local AURA_FREE_CORNERS = { "topleft", "bottomleft", "topright", "bottomright" }
+    local function SwapAuraSlot(t, changedKey, newVal)
+        local isBuff = (changedKey == "buffAnchor")
+        local prev
+        if isBuff then
+            prev = t.buffAnchor or "topleft"
+            if newVal == "none" then t.showBuffs = false; return end
+            t.showBuffs = true
+        else
+            prev = t.debuffAnchor or "bottomleft"
         end
-        settingsTable[changedKey] = newVal
+        t[changedKey] = newVal
+        if newVal == "none" then return end
+        local other
+        if isBuff then other = t.debuffAnchor or "bottomleft" else other = t.buffAnchor or "topleft" end
+        if other ~= newVal then return end
+        local dest = prev
+        if dest == "none" or dest == newVal then
+            for i = 1, #AURA_FREE_CORNERS do
+                if AURA_FREE_CORNERS[i] ~= newVal then dest = AURA_FREE_CORNERS[i]; break end
+            end
+        end
+        if isBuff then t.debuffAnchor = dest else t.buffAnchor = dest end
     end
 
     ---------------------------------------------------------------------------
@@ -1959,6 +2033,8 @@ initFrame:SetScript("OnEvent", function(self)
                   EllesmereUI:RefreshPage(true)
                   -- Close the cog popup before the reload prompt: the page under
                   -- it was just rebuilt, so it would float stale rows behind the dialog.
+                  -- (The popup is kept by its cog button, not built by the page: the
+                  -- rebuild leaves it showing where it was, for this Hide.)
                   if fsShow and fsShow._popupFrame and fsShow._popupFrame:IsShown() then
                       fsShow._popupFrame:Hide()
                   end
@@ -2009,6 +2085,12 @@ initFrame:SetScript("OnEvent", function(self)
         -- WoW Forever: the pet's power bar position has no counterpart on the
         -- other small frames (theirs never shows), so it stays with the pet.
         if key == "powerPosition" and ns.UF_PetHasPower and groupUnits == MINI_GROUP_ORDER then return false end
+        -- The pet's buffs and debuffs stay with the pet: the other small frames
+        -- have none, so a copy either way would only clear or plant aura keys.
+        if groupUnits == MINI_GROUP_ORDER and (key:find("^buff") or key:find("^debuff")
+            or key == "showBuffs" or key == "maxBuffs" or key == "maxDebuffs" or key == "auraSource") then
+            return false
+        end
         local sup = UNIT_SUPPORTS[key]
         if sup then
             for _, u in ipairs(groupUnits) do
@@ -2060,13 +2142,7 @@ initFrame:SetScript("OnEvent", function(self)
     -- re-picking the frame shown stores nothing, and Focus, which behaves
     -- exactly as no choice, is stored as none.
     local function BuildLookSourcePair(row, unitKey, ddW)
-        local function Shown()
-            local p = db.profile
-            local s = ns.GetMiniDonorSettings(unitKey)
-            if s == p.focus then return "focus" end
-            if s == p.target then return "target" end
-            return "player"
-        end
+        local function Shown() return ns.UF_MiniDonorKey(unitKey) end
         local ddBtn = EllesmereUI.BuildDropdownControl(
             row, ddW, row:GetFrameLevel() + 2,
             { target = "Target", focus = "Focus", player = "Player" },
@@ -2191,21 +2267,6 @@ initFrame:SetScript("OnEvent", function(self)
             if v ~= nil then return v end
             return default
         end
-        -- True while one of the unit's text slots shows its level (Level,
-        -- Level | Name, Name | Level). The Level Text: Difficulty Color row is
-        -- built only then, so the text setters rebuild the page when it flips.
-        local SShowsLevel
-        do
-            local slots = { "leftTextContent", "rightTextContent", "centerTextContent", "extraTextContent" }
-            local levelText = { level = true, levelname = true, namelevel = true }
-            SShowsLevel = function()
-                local d = UNIT_DB_MAP[optState.selectedUnit]()
-                for i = 1, #slots do
-                    if levelText[d[slots[i]]] then return true end
-                end
-                return false
-            end
-        end
         -- Set that also writes to the current unit (for UNIT_SUPPORTS keys)
         local function SSetSupported(key, val)
             UNIT_DB_MAP[optState.selectedUnit]()[key] = val
@@ -2262,7 +2323,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- the click mapping below points at; Display returns true second when
         -- the unit has no EUI frame (only the inactive notice is built).
         local ctx = {
-            W = W, SGet = SGet, SSet = SSet, SDB = SDB, SVal = SVal, SShowsLevel = SShowsLevel,
+            W = W, SGet = SGet, SSet = SSet, SDB = SDB, SVal = SVal,
             SSetSupported = SSetSupported, SGetSupported = SGetSupported, SValSupported = SValSupported,
             SVisible = SVisible, SApplySupport = SApplySupport,
         }
@@ -2298,9 +2359,10 @@ initFrame:SetScript("OnEvent", function(self)
             powerBar     = { section = sharedPowerHeader,    target = sharedPowerRow1, slotSide = "left" },
             powerBarText = { section = sharedPowerHeader,    target = sharedPowerRow2, slotSide = "left" },
             portrait     = { section = sharedPortraitHeader, target = sharedPortraitModeRow, slotSide = "left" },
-            nameText     = { section = sharedBarsHeader,     target = sharedTextRow, slotSide = "left" },
-            healthText   = { section = sharedBarsHeader,     target = sharedTextRow, slotSide = "right" },
-            centerText   = { section = sharedBarsHeader,     target = sharedCenterTextRow, slotSide = "left" },
+            nameText = ns.UFO_TextClickTarget(parent, "leftText", sharedBarsHeader, sharedTextRow),
+            healthText = ns.UFO_TextClickTarget(parent, "rightText", sharedBarsHeader, sharedTextRow),
+            centerText = ns.UFO_TextClickTarget(parent, "centerText", sharedBarsHeader, sharedTextRow),
+            extraText = ns.UFO_TextClickTarget(parent, "extraText", sharedBarsHeader, sharedTextRow),
             classResource= { section = sharedClassResHeader, target = sharedClassResRow, slotSide = "left" },
             btbBar       = { section = sharedBtbHeader,      target = sharedBtbToggleRow, slotSide = "left" },
             btbLeftText  = { section = sharedBtbHeader,      target = sharedBtbTextRow, slotSide = "left" },
@@ -2368,12 +2430,12 @@ initFrame:SetScript("OnEvent", function(self)
                 function() return optState.selectedUnit end,
                 function(v)
                     -- Preserve scroll position across the unit swap; capture BEFORE the
-                    -- rebuild since SetContentHeader's relayout can clobber the live value.
+                    -- rebuild since the header relayout can clobber the live value.
                     -- Settings sit below the fixed header, so the same offset lands on the same section for any unit.
                     local savedScroll = EllesmereUI.GetContentScroll and EllesmereUI.GetContentScroll() or 0
                     optState.selectedUnit = v
-                    EllesmereUI:InvalidateContentHeaderCache()
-                    EllesmereUI:SetContentHeader(_displayHeaderBuilder)
+                    -- One pass builds the page and its header together (buildPage
+                    -- sets the header for the new unit).
                     EllesmereUI:RefreshPage(true)
                     EllesmereUI.SmoothScrollTo(savedScroll)
                     -- Preview:Update() runs DURING the rebuild above, before the header
@@ -2412,7 +2474,10 @@ initFrame:SetScript("OnEvent", function(self)
             local hintH = 0
             if not IsPreviewHintDismissed() then
                 if not optState._ufPreviewHintFS_display then
-                    optState._ufPreviewHintFS_display = EllesmereUI.MakeFont(preview or hdr, 11, nil, 1, 1, 1)
+                    -- Held across builds by optState: it leaves the preview's
+                    -- region pool (Pool.Keep), so no later build hands it out
+                    -- for another text; it is still hidden at its host's reset.
+                    optState._ufPreviewHintFS_display = PoolKeep(EllesmereUI.MakeFont(preview or hdr, 11, nil, 1, 1, 1))
                     optState._ufPreviewHintFS_display:SetAlpha(0.45)
                     optState._ufPreviewHintFS_display:SetText(EllesmereUI.L("Click elements to scroll to and highlight their options"))
                 end
@@ -2459,9 +2524,10 @@ initFrame:SetScript("OnEvent", function(self)
             return (EllesmereUI.CreatePreviewHitOverlay(element, NavigateToSetting, mappingKey, isText, frameLevelOverride, opts))
         end
 
-        -- Create hit overlays on preview elements
+        -- Create hit overlays on preview elements. Never from the global search's
+        -- hidden prebuild: the preview is live header content, not this hidden job's.
         local textOverlays = {}
-        if activePreview then
+        if activePreview and not EllesmereUI._prebuilding then
             local pv = activePreview
             local baseLevel = (pv._health and pv._health:GetFrameLevel() or 20) + 15
             local textLevel = baseLevel + 10
@@ -2497,6 +2563,7 @@ initFrame:SetScript("OnEvent", function(self)
             if pv._nameFS and pv._nameFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._nameFS, "nameText", true, textLevel) end
             if pv._hpFS and pv._hpFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._hpFS, "healthText", true, textLevel) end
             if pv._centerFS and pv._centerFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._centerFS, "centerText", true, textLevel) end
+            if pv._extraFS and pv._extraFS:IsShown() then textOverlays[#textOverlays+1] = CreateHitOverlay(pv._extraFS, "extraText", true, textLevel) end
             -- Blizzard Style level number: built whenever the art has a level
             -- circle and shown with the text (the preview toggles it).
             if pv._levelFS then
@@ -2615,8 +2682,7 @@ initFrame:SetScript("OnEvent", function(self)
                 function() return selectedMiniUnit end,
                 function(v)
                     selectedMiniUnit = v
-                    EllesmereUI:InvalidateContentHeaderCache()
-                    EllesmereUI:SetContentHeader(_miniHeaderBuilder)
+                    -- One pass builds the page and its header together.
                     EllesmereUI:RefreshPage(true)
                     EllesmereUI.SmoothScrollTo(0)
                     -- Re-run the preview next frame once the rebuilt layout has
@@ -2675,8 +2741,9 @@ initFrame:SetScript("OnEvent", function(self)
             return (EllesmereUI.CreatePreviewHitOverlay(element, NavigateToSetting, mappingKey, isText, frameLevelOverride, opts, hitStyle))
         end
 
-        -- Create hit overlays on preview elements
-        if activePreview then
+        -- Create hit overlays on preview elements (never from the global search's
+        -- hidden prebuild: the preview is live header content)
+        if activePreview and not EllesmereUI._prebuilding then
             local pv = activePreview
             local baseLevel = (pv._health and pv._health:GetFrameLevel() or 20) + 15
             local textLevel = baseLevel + 10
@@ -2693,6 +2760,23 @@ initFrame:SetScript("OnEvent", function(self)
             end
             if pv._nameFS and pv._nameFS:IsShown() then CreateHitOverlay(pv._nameFS, "nameText", true, textLevel) end
             if pv._hpFS and pv._hpFS:IsShown() then CreateHitOverlay(pv._hpFS, "healthText", true, textLevel) end
+            if pv._extraFS and pv._extraFS:IsShown() then CreateHitOverlay(pv._extraFS, "extraText", true, textLevel) end
+            if pv._centerFS and pv._centerFS:IsShown() then CreateHitOverlay(pv._centerFS, "centerText", true, textLevel) end
+            -- The pet's buff/debuff icons -> Buffs / Debuffs Location. Every icon,
+            -- so one shown later stays clickable without a header rebuild (the
+            -- other mini frames show none).
+            if selectedMiniUnit == "pet" then
+                if pv._buffIcons then
+                    for i = 1, #pv._buffIcons do
+                        if pv._buffIcons[i] then CreateHitOverlay(pv._buffIcons[i], "buffIcon", false, baseLevel) end
+                    end
+                end
+                if pv._debuffIcons then
+                    for i = 1, #pv._debuffIcons do
+                        if pv._debuffIcons[i] then CreateHitOverlay(pv._debuffIcons[i], "debuffIcon", false, baseLevel) end
+                    end
+                end
+            end
         end
 
         return abs(y)
@@ -2754,8 +2838,9 @@ initFrame:SetScript("OnEvent", function(self)
             return (EllesmereUI.CreatePreviewHitOverlay(element, NavigateToSetting, mappingKey, isText, frameLevelOverride, opts, hitStyle))
         end
 
-        -- Create hit overlays on preview elements
-        if activePreview then
+        -- Create hit overlays on preview elements (never from the global search's
+        -- hidden prebuild: the preview is live header content)
+        if activePreview and not EllesmereUI._prebuilding then
             local pv = activePreview
             local baseLevel = (pv._health and pv._health:GetFrameLevel() or 20) + 15
             local textLevel = baseLevel + 10
@@ -2773,6 +2858,8 @@ initFrame:SetScript("OnEvent", function(self)
             end
             if pv._nameFS and pv._nameFS:IsShown() then CreateHitOverlay(pv._nameFS, "nameText", true, textLevel) end
             if pv._hpFS and pv._hpFS:IsShown() then CreateHitOverlay(pv._hpFS, "healthText", true, textLevel) end
+            if pv._extraFS and pv._extraFS:IsShown() then CreateHitOverlay(pv._extraFS, "extraText", true, textLevel) end
+            if pv._centerFS and pv._centerFS:IsShown() then CreateHitOverlay(pv._centerFS, "centerText", true, textLevel) end
             -- Blizzard Style level number: built whenever the art has a level
             -- circle and shown with the text (the preview toggles it).
             if pv._levelFS then
@@ -2838,10 +2925,58 @@ initFrame:SetScript("OnEvent", function(self)
             end)
         end
     end)
+    -- Textured Background: the Texture Settings cog row, shared by the Main and
+    -- Mini Frames pages and Global Settings > Textures. unitFn returns the
+    -- frame's settings (nil unitFn: the cast bar row); mini: a mini frame's key,
+    -- which follows its main frame while its Bar Texture is Inherit; apply: the
+    -- page's own refresh after a write.
+    local function TexBgRowCfg(unitFn, apply, mini)
+        if not unitFn then
+            return { type = "toggle", label = "Textured Background",
+                tooltip = "Draws the bar texture on the cast bar backgrounds too.",
+                disabled = function() return db.profile.castBarTexture == "blizzard" end,
+                disabledTooltip = "This option requires a Cast Bar Texture other than Blizzard.",
+                get = function() return db.profile.castTextureBg == true end,
+                set = function(v) db.profile.castTextureBg = v and true or false; apply() end }
+        end
+        local function Inheriting(s)
+            local v = mini and s.healthBarTexture
+            return mini and (v == nil or v == "inherit")
+        end
+        local function Tex(s) return s.healthBarTexture or db.profile.healthBarTexture or "none" end
+        return { type = "toggle", label = "Textured Background",
+            tooltip = "Draws the bar texture on the health and power backgrounds too.",
+            disabled = function()
+                local s = unitFn()
+                if not s or Inheriting(s) then return true end
+                return Tex(s) == "none" or not ns.UF_HealthOpaque(s)
+            end,
+            disabledTooltip = function()
+                local s = unitFn()
+                if not s then return nil end
+                if Inheriting(s) then return "This option requires a Bar Texture other than Inherit (Main Frames)." end
+                if Tex(s) == "none" then return "This option requires a Bar Texture other than None." end
+                if db.profile.darkTheme then return "This option requires a Dark Mode Fill of 100 (Global Settings > Colors)." end
+                if mini == "boss" then return "This option requires a health Fill Color of 100." end
+                return "This option requires a health Fill Opacity of 100."
+            end,
+            get = function()
+                local s = unitFn()
+                if not s then return false end
+                if Inheriting(s) then return ns.UF_TexBgOn(mini) end
+                return s.textureBg == true
+            end,
+            set = function(v)
+                local s = unitFn(); if not s then return end
+                s.textureBg = v and true or false
+                apply()
+            end }
+    end
 
     -- Shared helpers and state for the builders under UnitFrames_Options\
     -- (loaded before this file, read when a page builds).
     ns._UFO_OptEnv = {
+        TexBgRowCfg = TexBgRowCfg,
         _previewBuffIcons = _previewBuffIcons, _previewCreatureNames = _previewCreatureNames, abs = abs,
         AddDarkModeBlock = AddDarkModeBlock, allPreviews = allPreviews, ApplyClassIconTexture_Preview = ApplyClassIconTexture_Preview,
         ApplyPreviewPortraitShape = ApplyPreviewPortraitShape, AttachDebuffModeWarn = AttachDebuffModeWarn, AttachFrameSourceCog = AttachFrameSourceCog,
@@ -2855,7 +2990,7 @@ initFrame:SetScript("OnEvent", function(self)
         classPowerStyleValues = classPowerStyleValues, classThemeSubOrder = classThemeSubOrder, classThemeSubValues = classThemeSubValues,
         db = db, DebuffModeDropdownCfg = DebuffModeDropdownCfg, detPortraitShapeOrder = detPortraitShapeOrder,
         detPortraitShapeValues = detPortraitShapeValues, frames = frames, GetUFOptOutline = GetUFOptOutline,
-        GROUP_UNIT_ORDER = GROUP_UNIT_ORDER, healthTextOrder = healthTextOrder, healthTextOrderBoss = healthTextOrderBoss,
+        GROUP_UNIT_ORDER = GROUP_UNIT_ORDER, HideExhaustionRow = HideExhaustionRow, healthTextOrder = healthTextOrder, healthTextOrderBoss = healthTextOrderBoss,
         healthTextOrderPlayer = healthTextOrderPlayer, healthTextOrderTargetFocus = healthTextOrderTargetFocus, healthTextValues = healthTextValues,
         MINI_GROUP_ORDER = MINI_GROUP_ORDER, optState = optState, portraitArtOrder = portraitArtOrder,
         portraitArtValues = portraitArtValues, portraitModeOrder2 = portraitModeOrder2, portraitModeValues2 = portraitModeValues2,
@@ -2876,6 +3011,8 @@ initFrame:SetScript("OnEvent", function(self)
         title       = "Unit Frames",
         description = "Configure unit frame appearance and behavior.",
         pages       = { PAGE_DISPLAY, PAGE_BOSS, PAGE_MINI, PAGE_AURA_BARS },
+        -- Player Aura Bars draws over the scroll frame: no inline search there.
+        noSearchPages = { [PAGE_AURA_BARS] = true },
         searchTerms = ufSearchTerms,
         buildPage   = function(pageName, parent, yOffset)
             if EllesmereUI._prebuilding and pageName == PAGE_AURA_BARS then
@@ -2885,10 +3022,10 @@ initFrame:SetScript("OnEvent", function(self)
             -- onPageCacheRestore below: this covers a fresh build of the destination
             -- page, that one covers a cache-restored destination -- without both,
             -- cleanup is inconsistent across tab switches (mirrors EUI_RaidFrames_Options.lua's _bmRoot/_dmRoot/_ccRoot pattern).
-            if pageName ~= PAGE_AURA_BARS and ns._pabRoot then
-                ns._pabRoot:Hide()
-                ns._pabRoot:SetParent(nil)
-                ns._pabRoot = nil
+            -- Never from the global search's hidden prebuild of another page: the
+            -- root is the live page's.
+            if pageName ~= PAGE_AURA_BARS and ns._pabRoot and not EllesmereUI._prebuilding then
+                ns.PABMP_ParkRoot()
             end
             -- Randomize preview creature IDs on every tab switch
             RandomizePreviewCreatures()
@@ -2926,11 +3063,18 @@ initFrame:SetScript("OnEvent", function(self)
             return nil
         end,
         onPageCacheRestore = function(pageName)
+            local textCheck = ns._ufTextChecks and ns._ufTextChecks[pageName]
+            if textCheck and textCheck() then
+                C_Timer.After(0, function()
+                    if EllesmereUI:GetActiveModule() == "EllesmereUIUnitFrames"
+                       and EllesmereUI:GetActivePage() == pageName then
+                        EllesmereUI:RefreshPage(true)
+                    end
+                end)
+            end
             -- Clean up Player Aura Bars root when switching away
             if pageName ~= PAGE_AURA_BARS and ns._pabRoot then
-                ns._pabRoot:Hide()
-                ns._pabRoot:SetParent(nil)
-                ns._pabRoot = nil
+                ns.PABMP_ParkRoot()
             elseif pageName == PAGE_AURA_BARS and not ns._pabRoot then
                 -- PABMP_BuildPage bypasses `parent` and builds onto the live shared
                 -- scrollFrame into ns._pabRoot (see buildPage's _prebuilding guard
@@ -2949,12 +3093,12 @@ initFrame:SetScript("OnEvent", function(self)
             ns.UF_AskExisting2DMirror()
             -- Hide all UIParent-parented disabled overlays before restoring
             -- (they persist across tab switches since they're not children of pf)
-            for _, pv in pairs(allPreviews) do
-                if pv and pv._disabledOverlay then pv._disabledOverlay:Hide() end
+            for k, pv in pairs(allPreviews) do
+                if pv and pv._pvUnit == k and pv._disabledOverlay then pv._disabledOverlay:Hide() end
             end
             -- Force re-anchor previews after cache restore (parent changed)
-            for _, pv in pairs(allPreviews) do
-                if pv then
+            for k, pv in pairs(allPreviews) do
+                if pv and pv._pvUnit == k then
                     pv._lastOY = nil
                     -- Reset portrait anchor flag so Update() re-anchors it
                     if pv._portraitFrame then pv._portraitFrame._anchored = false end
@@ -2976,7 +3120,7 @@ initFrame:SetScript("OnEvent", function(self)
         end,
         onReset     = function()
             db:ResetProfile()
-            -- No reload here: the footer Reset popup (reload = true) reloads after this returns.
+            -- No reload here: Reset EUI Module Settings reloads after this returns.
         end,
         -- Tears down Boss Preview on module switch (RegisterOnHide above
         -- only covers closing the whole options window).
@@ -2998,8 +3142,9 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         if msg == "reset" then
-            db:ResetProfile()
+            -- The reload first (RequestReload); the reset lands before it.
             EllesmereUI.RequestReload()
+            db:ResetProfile()
             return
         end
 

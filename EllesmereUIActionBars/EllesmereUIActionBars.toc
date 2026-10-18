@@ -1,16 +1,30 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 16001
+## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
 ## Title: |cff0cd29fEllesmereUI|r Action Bars
 ## Category: |cff0cd29fEllesmere|rUI
 ## Group: EllesmereUI
 ## Notes: Modern action bars built for performance and clarity.
 ## Author: Ellesmere
-## Version: 9.3.9
+## Version: 9.6.1
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUIActionBarsDB
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
 # Main Luas
 EllesmereUIActionBars.lua
+EUI_ActionBars_Disposal.lua
+EUI_ActionBars_Controllers.lua
+EUI_ActionBars_Secure.lua
+EUI_ActionBars_Paging.lua
+EUI_ActionBars_Bars.lua
+EUI_ActionBars_Layout.lua
+EUI_ActionBars_Fade.lua
+EUI_ActionBars_VisibilityDrivers.lua
+EUI_ActionBars_Keybinds.lua
+EUI_ActionBars_Vehicle.lua
+EUI_ActionBars_ApplyAll.lua
+EUI_ActionBars_Unlock.lua
+EUI_ActionBars_Init.lua
+EUI_ActionBars_Setup.lua
 EUI_ActionBars_ButtonArt.lua
 EUI_ActionBars_Range.lua
 EUI_ActionBars_Apply.lua
