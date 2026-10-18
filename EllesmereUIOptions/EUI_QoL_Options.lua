@@ -387,7 +387,8 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     -- The Macro Factory card: open or closed for the session (closed at its
     -- start), the section name its header carries in search (set by each
-    -- build), and its glyph, the Potion macro's icon.
+    -- build), and its glyph, the Potion macro's icon (Trinket 1's on WoW
+    -- Forever, which has no Potion macro).
     local macroFactoryOpen = {}
     local macroFactorySection
     local function MacroFactoryGlyph(hdr)
@@ -395,7 +396,8 @@ initFrame:SetScript("OnEvent", function(self)
         local icon = hdr:CreateTexture(nil, "ARTWORK")
         PP.Size(icon, 22, 22)
         PP.Point(icon, "LEFT", hdr, "LEFT", 17, 0)
-        icon:SetTexture("Interface\\Icons\\inv_potion_54")
+        icon:SetTexture(EllesmereUI.IS_FOREVER and "Interface\\Icons\\inv_jewelry_trinketpvp_01"
+            or "Interface\\Icons\\inv_potion_54")
         icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     end
     -- Deep-link pre-hook: a jump to the card's own search entry opens the card
@@ -429,12 +431,14 @@ initFrame:SetScript("OnEvent", function(self)
         -- left. The card's header is a search entry (a jump to it opens the card,
         -- see the pre-hook below), but the factory's own rows stay out of the
         -- index, and the hidden search pre-build builds the header only: it never
-        -- builds the section and never parks the one on screen. WoW Forever has no
-        -- Macro Factory: no card there.
-        if EllesmereUI.BuildMacroFactory and not EllesmereUI.IS_FOREVER then
+        -- builds the section and never parks the one on screen. WoW Forever builds
+        -- it with that client's own general list (EllesmereUI.BuildMacroFactory).
+        if EllesmereUI.BuildMacroFactory then
             local prebuilding = EllesmereUI._prebuilding
             local mfTile = { key = "macroFactory", display = "Macro Factory",
-                desc = EllesmereUI.L("Ready-made macros for potions, food, trinkets and focus, plus a set for your spec"),
+                desc = EllesmereUI.IS_FOREVER
+                    and EllesmereUI.L("Ready-made macros for trinkets and for Find Minerals / Herbs")
+                    or EllesmereUI.L("Ready-made macros for potions, food, trinkets and focus, plus a set for your spec"),
                 buildContent = function(_, cy)
                     if prebuilding then return cy end
                     EllesmereUI._searchIndexSuppress = true
@@ -2489,12 +2493,11 @@ initFrame:SetScript("OnEvent", function(self)
     -- (its resident file returns at load, so the page builder never exists either).
     if not EllesmereUI.IS_FOREVER then pages[#pages + 1] = PAGE_UPGCALC end
     local searchTerms = { "brez", "bres", "battle res", "combat res", "cursor", "macro", "fps", "logging", "combat log", "warcraft logs", "upgrade", "ilvl", "item level", "crest", "upgrade calculator", "shifter", "move", "drag", "position", "demodal", "drift", "combat alert", "enter combat", "leave combat", "in combat", "combat text", "combat notification", "transform", "transforms", "costume", "disguise", "chef's hat", "noggenfogger", "target distance", "distance to target", "range text", "yard", "yards", "movement", "mobility", "gap closer", "blink", "gateway", "warlock gateway", "control shard", "time spiral", "free movement", "raid tools", "raid", "pull timer", "pull", "ready check", "role check", "raid marker", "target marker", "world marker", "flare", "disband", "convert to raid", "countdown" }
-    -- Terms for features WoW Forever does not have (the Battle Res indicator,
-    -- the Macro Factory) are dropped there, so a sidebar search for them does
-    -- not list this module; retail keeps the full list.
+    -- Terms for features WoW Forever does not have (the Battle Res indicator)
+    -- are dropped there, so a sidebar search for them does not list this
+    -- module; retail keeps the full list.
     if EllesmereUI.IS_FOREVER then
-        local foreverDrop = { ["brez"] = true, ["bres"] = true, ["battle res"] = true, ["combat res"] = true,
-            ["macro"] = true }
+        local foreverDrop = { ["brez"] = true, ["bres"] = true, ["battle res"] = true, ["combat res"] = true }
         for i = #searchTerms, 1, -1 do
             if foreverDrop[searchTerms[i]] then table.remove(searchTerms, i) end
         end
