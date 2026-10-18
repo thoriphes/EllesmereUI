@@ -1,8 +1,8 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 16001
+## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
 ## Title: |cff0cd29fEllesmereUI|r
 ## Notes: Shared framework for the EllesmereUI addon suite
 ## Author: Ellesmere
-## Version: 9.3.9
+## Version: 9.6.1
 ## SavedVariables: EllesmereUIDB
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 ## X-Curse-Project-ID: 1477613
@@ -42,6 +42,8 @@ EllesmereUI_Migration.lua
 # Early startup -- applies engine-cached settings before PLAYER_LOGIN
 EllesmereUI_Startup.lua
 
+EllesmereUI_GoldLedger.lua
+
 # Shared EllesmereUI Files
 EllesmereUI_PixelPerfect.lua
 EllesmereUI.lua
@@ -60,6 +62,7 @@ EllesmereUI_Mouse.lua
 EllesmereUI_BlizzardParty.lua
 EllesmereUI_Kick.lua
 EllesmereUI_MenuFallbacks.lua
+EllesmereUI_SignupHelpers.lua
 EllesmereUI_GlobalSearch.lua
 EllesmereUI_Visibility.lua
 EllesmereUI_Presets.lua
@@ -91,11 +94,20 @@ EllesmereUI_SpecOverridesPopup.lua
 EllesmereUI_StyleCards.lua
 EllesmereUI_StyleChoicePopup.lua
 EllesmereUI_StyleLaunchPopup.lua
+EllesmereUI_GroupFinderPopup.lua
 EllesmereUI_VideoGuides.lua
 
 # Spec Overrides (per-spec setting overrides within a profile)
 EllesmereUI_SpecOverrides.lua
+EUI_SpecOverrides_Harvest.lua
+EUI_SpecOverrides_Layers.lua
+EUI_SpecOverrides_Conditional.lua
+EUI_SpecOverrides_Borders.lua
+EUI_SpecOverrides_Session.lua
+EUI_SpecOverrides_Popups.lua
+EUI_SpecOverrides_ListPage.lua
+EUI_SpecOverrides_Hooks.lua
 
 # Conditional Overrides engine (Dungeon/Raid/Arena/BG/Solo/Keybind conditions;
-# override integration lives in EllesmereUI_SpecOverrides.lua)
+# override integration lives in EUI_SpecOverrides_Conditional.lua)
 EllesmereUI_Conditions.lua

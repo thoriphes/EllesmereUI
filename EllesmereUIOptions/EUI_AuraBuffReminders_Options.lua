@@ -37,6 +37,11 @@ initFrame:SetScript("OnEvent", function(self)
 
     if not EllesmereUI or not EllesmereUI.RegisterModule then return end
     local PP = EllesmereUI.PanelPP
+    -- Page reuse (EllesmereUI_FramePool.lua): a frame made under a page pool
+    -- host comes from the pool and is dressed again by every later build; under
+    -- any other parent it is a plain new frame.
+    local Pool = EllesmereUI._Pool
+    local CreateFrame = Pool.CreateFrame
 
     local function GetABROptOutline() return EllesmereUI.GetFontOutlineFlag("auraBuff") end
 
@@ -384,14 +389,23 @@ initFrame:SetScript("OnEvent", function(self)
         local sf = EllesmereUI._scrollFrame
         if not sf then return end
 
+        -- The glow plays a moment later: a target of the page pool that is
+        -- dressed again for another row by then belongs to a newer build.
+        local target = m.target
+        local gen = Pool.Gen(target)
+        local function PlayLater()
+            if Pool.Gen(target) ~= gen or Pool.IsIdle(target) then return end
+            EABRPlaySettingGlow(target)
+        end
+
         local child = sf.GetScrollChild and sf:GetScrollChild()
-        if child and m.target and m.target.GetTop and child.GetTop then
-            local targetTop = m.target:GetTop()
+        if child and target.GetTop and child.GetTop then
+            local targetTop = target:GetTop()
             local childTop = child:GetTop()
             if targetTop and childTop then
                 local scrollPos = math.max(0, childTop - targetTop - 40)
                 EllesmereUI.SmoothScrollTo(scrollPos)
-                C_Timer.After(0.15, function() EABRPlaySettingGlow(m.target) end)
+                C_Timer.After(0.15, PlayLater)
                 return
             end
         end
@@ -402,7 +416,7 @@ initFrame:SetScript("OnEvent", function(self)
             local scrollPos = math.max(0, math.abs(headerY) - 40)
             EllesmereUI.SmoothScrollTo(scrollPos)
         end
-        C_Timer.After(0.15, function() EABRPlaySettingGlow(m.target) end)
+        C_Timer.After(0.15, PlayLater)
     end
 
     local function EABRCreateHitOverlay(element, mappingKey, frameLevelOverride)
@@ -427,12 +441,16 @@ initFrame:SetScript("OnEvent", function(self)
         if _previewContainer and #_previewIcons == #icons then
             -- Re-parent and re-show (may have been orphaned by ClearContentHeader)
             _previewContainer:SetParent(hdr)
+            -- The levels the first build gave the container and its icons (a
+            -- kept header root's own dress can raise what it holds)
+            _previewContainer:SetFrameLevel(hdr:GetFrameLevel() + 1)
             _previewContainer:ClearAllPoints()
             _previewContainer:SetPoint("CENTER", hdr, "CENTER", 0, 0)
             _previewContainer:SetSize(hdrW, _previewContainer:GetHeight())
             _previewContainer:Show()
             -- Update textures/labels in case the icon set changed content
             for i, pIcon in ipairs(_previewIcons) do
+                if pIcon.frame then pIcon.frame:SetFrameLevel(_previewContainer:GetFrameLevel() + 1) end
                 if pIcon.frame and icons[i] then
                     if pIcon.frame._icon then pIcon.frame._icon:SetTexture(icons[i].texture or 134400) end
                     if pIcon.frame._text then pIcon.frame._text:SetText(icons[i].label or "") end
@@ -453,17 +471,25 @@ initFrame:SetScript("OnEvent", function(self)
         local textSz = d and d.textSize or 11
         local textOverhang = showText and (math.abs(textYOff) + textSz) or 0
 
-        -- Recycle or create container
+        -- Recycle or create container (kept across header builds: Pool.Keep
+        -- takes it out of its host's pool, so a later build never hands it out
+        -- as another frame)
         if _previewContainer then
             _previewContainer:SetParent(hdr)
             _previewContainer:ClearAllPoints()
         else
-            _previewContainer = CreateFrame("Frame", nil, hdr)
+            _previewContainer = Pool.Keep(CreateFrame("Frame", nil, hdr))
         end
+        -- (the level a new container gets: see the reuse branch above)
+        _previewContainer:SetFrameLevel(hdr:GetFrameLevel() + 1)
         _previewContainer:SetSize(hdrW, sz + textOverhang)
         _previewContainer:SetPoint("CENTER", hdr, "CENTER", 0, 0)
         _previewContainer:Show()
         local container = _previewContainer
+
+        -- The previous icon set goes before the new one is made: on a pool host
+        -- the icons below are handed back in order and dressed again.
+        Pool.Begin(container)
 
         -- Hide old icon frames before rebuilding
         for _, pIcon in ipairs(_previewIcons) do
@@ -556,7 +582,8 @@ initFrame:SetScript("OnEvent", function(self)
 
         if hintShown then
             if not _previewHintFS then
-                _previewHintFS = EllesmereUI.MakeFont(container, 11, nil, 1, 1, 1)
+                -- Kept across builds too (out of the container's pool).
+                _previewHintFS = Pool.Keep(EllesmereUI.MakeFont(container, 11, nil, 1, 1, 1))
                 _previewHintFS:SetAlpha(0.45)
                 _previewHintFS:SetText(EllesmereUI.L("Click elements to scroll to and highlight their options"))
             end
@@ -669,11 +696,12 @@ initFrame:SetScript("OnEvent", function(self)
 
     -- Per-section control dual-row: a "Where to Show" checkbox dropdown on
     -- the left. Right slot: for raid buffs the "Show When" checkbox
-    -- dropdown (+ reminder-sound cog beside it); for every other section a
-    -- full "Reminder Sound" dropdown fills the slot instead of a cog.
+    -- dropdown (+ reminder-sound cog beside it); for a section with a sound
+    -- a full "Reminder Sound" dropdown fills the slot instead of a cog; else
+    -- the section's own cfg.rightCfg (the caller dresses row._rightRegion).
     local function SectionControlRow(parent, y, cfg)
         local W = EllesmereUI.Widgets
-        local rightCfg
+        local rightCfg = cfg.rightCfg
         if cfg.showWhenStore then
             rightCfg = { type="dropdown", text="Show When", tooltip=cfg.showWhenTooltip,
                 values={ _placeholder="..." }, order={ "_placeholder" },
@@ -741,7 +769,8 @@ initFrame:SetScript("OnEvent", function(self)
             local regions = { rgn:GetRegions() }
             for i = 1, #regions do
                 local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == labelText then
+                -- (an idle pooled region still holds the text of an earlier dress)
+                if reg and reg.GetText and not Pool.IsIdle(reg) and EllesmereUI.EnKey(reg:GetText()) == labelText then
                     found = reg; break
                 end
             end
@@ -889,16 +918,15 @@ initFrame:SetScript("OnEvent", function(self)
     --  Auras, Buffs & Consumables page
     ---------------------------------------------------------------------------
     ---------------------------------------------------------------------------
-    --  WoW Forever custom spells: one DualRow slot per tracked spell (label =
-    --  name + id, button = Remove), filled left to right, a blank label in an
-    --  odd last slot. The page rebuilds on add and remove, so the slots never
-    --  need in-place updates.
+    --  WoW Forever custom spells: the lead slot (the Add Custom Spell entry),
+    --  then one slot per tracked spell (label = name + id, button = Remove),
+    --  filled left to right, a blank label in an odd last slot. The page
+    --  rebuilds on add and remove, so the slots never need in-place updates.
     ---------------------------------------------------------------------------
-    local function BuildForeverCustomRows(parent, y)
+    local function BuildForeverCustomRows(parent, y, lead)
         local f = FDB()
         local ids = f and f.customIDs
-        local n = ids and #ids or 0
-        if n == 0 then return y end
+        local n = 1 + (ids and #ids or 0)
         local W = EllesmereUI.Widgets
         local function Slot(id)
             return { type="labeledButton", buttonText="Remove", width=90,
@@ -915,9 +943,13 @@ initFrame:SetScript("OnEvent", function(self)
                     EllesmereUI:RefreshPage(true)
                 end }
         end
-        for i = 1, n, 2 do
-            local _, h = W:DualRow(parent, y, Slot(ids[i]),
-                ids[i + 1] and Slot(ids[i + 1]) or { type="label", text="" })
+        local function SlotAt(k)
+            if k == 1 then return lead end
+            local id = ids and ids[k - 1]
+            return id and Slot(id) or EllesmereUI.BlankRowCfg()
+        end
+        for k = 1, n, 2 do
+            local _, h = W:DualRow(parent, y, SlotAt(k), SlotAt(k + 1))
             y = y - h
         end
         return y
@@ -961,6 +993,62 @@ initFrame:SetScript("OnEvent", function(self)
         end
     end
 
+    ---------------------------------------------------------------------------
+    --  Beacon M+ row: the CORE toggle shows only for a retail Holy Paladin. A
+    --  page built for one Holy state is rebuilt once the player's no longer
+    --  matches it: on a spec change while the page is shown, or when the cached
+    --  page is shown again after one. One event frame, re-parented into each
+    --  build of the page, so its show and hide are the page's and the event is
+    --  registered only while the page is shown. Other classes and WoW Forever
+    --  never make it.
+    ---------------------------------------------------------------------------
+    local BeaconRowShown
+    do
+        local paladin = not FOREVER and select(2, UnitClass("player")) == "PALADIN"
+        local watch, builtHoly, queued
+        local function IsHoly()
+            local spec = C_SpecializationInfo.GetSpecialization()
+            return spec ~= nil and C_SpecializationInfo.GetSpecializationInfo(spec) == 65
+        end
+        -- One rebuild per burst, a frame later: a cached page has finished showing
+        local function Flush()
+            queued = nil
+            if watch:IsVisible() and IsHoly() ~= builtHoly then EllesmereUI:RefreshPage(true) end
+        end
+        local function Queue()
+            if queued then return end
+            queued = true
+            C_Timer.After(0, Flush)
+        end
+        -- Each build of the page: whether the toggle shows
+        BeaconRowShown = function(parent)
+            if not paladin then return false end
+            local holy = IsHoly()
+            if EllesmereUI._prebuilding then return holy end
+            builtHoly = holy
+            if not watch then
+                watch = CreateFrame("Frame")
+                watch._searchIgnore = true  -- the inline search never hides it
+                watch:SetScript("OnEvent", Queue)
+                watch:SetScript("OnShow", function(self)
+                    self:RegisterUnitEvent("PLAYER_SPECIALIZATION_CHANGED", "player")
+                    if IsHoly() ~= builtHoly then Queue() end
+                end)
+                watch:SetScript("OnHide", function(self)
+                    self:UnregisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+                end)
+            end
+            watch:Hide()
+            watch:SetParent(parent)
+            -- On a kept page wrapper the watcher rides it as an attachment: the
+            -- wrapper's next dress hides it (as dropping the page did) and
+            -- never moves it to the pool's graveyard.
+            Pool.Attach(parent, watch)
+            watch:Show()
+            return holy
+        end
+    end
+
     local function BuildRemindersPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
@@ -990,6 +1078,71 @@ initFrame:SetScript("OnEvent", function(self)
             y = y - 32
         end
 
+        -- WoW Forever: what this module is for, in the red of the suite's
+        -- warning banners, right above CORE. "CDM module" (the template's %s)
+        -- is its own button, like the patch notes' contributors link, and opens
+        -- the Cooldown Manager's Buffs bar while that module is loaded. Not
+        -- built in the search prebuild (nothing to index); y moves the same.
+        if FOREVER then
+            local GAP, WARN_H = 6, 44
+            if not EllesmereUI._prebuilding then
+                local PAD = EllesmereUI.CONTENT_PAD
+                local w = parent:GetWidth() - PAD * 2
+                local R, G, B = 1, 0.25, 0.25
+                local host = CreateFrame("Frame", nil, parent)
+                PP.Point(host, "TOPLEFT", parent, "TOPLEFT", PAD, y - GAP)
+                local line1 = EllesmereUI.MakeFont(host, 16, nil, R, G, B, 1)
+                line1:SetPoint("TOP", host, "TOP", 0, 0)
+                line1:SetWidth(w)
+                line1:SetWordWrap(true)
+                line1:SetJustifyH("CENTER")
+                line1:SetText(EllesmereUI.L("This module is for OUT OF COMBAT non-rotational buff/consumable reminders,"))
+                local tmpl = EllesmereUI.L("for in combat aura/rotational reminders please use the %s") or ""
+                local pre, post = tmpl:match("^(.-)%%s(.*)$")
+                if not pre then pre, post = tmpl, "" end
+                local line2 = CreateFrame("Frame", nil, host)
+                local preFs = EllesmereUI.MakeFont(line2, 16, nil, R, G, B, 1)
+                preFs:SetPoint("LEFT", line2, "LEFT", 0, 0)
+                preFs:SetText(pre)
+                local link = CreateFrame("Button", nil, line2)
+                local linkFs = EllesmereUI.MakeFont(link, 16, nil, R, G, B, 1)
+                linkFs:SetPoint("LEFT", link, "LEFT", 0, 0)
+                linkFs:SetText(EllesmereUI.L("CDM module"))
+                link:SetSize(math.ceil(linkFs:GetStringWidth() or 80) + 1, 20)
+                link:SetPoint("LEFT", preFs, "RIGHT", 0, 0)
+                local postFs = EllesmereUI.MakeFont(line2, 16, nil, R, G, B, 1)
+                postFs:SetPoint("LEFT", link, "RIGHT", 0, 0)
+                postFs:SetText(post)
+                if EllesmereUI._ModuleNS["EllesmereUICooldownManager"] then
+                    local EG = EllesmereUI.ELLESMERE_GREEN
+                    linkFs:SetTextColor(EG.r, EG.g, EG.b, 1)
+                    linkFs:SetAlpha(0.85)
+                    link:SetScript("OnEnter", function(self)
+                        linkFs:SetAlpha(1)
+                        EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.L("Open the Cooldown Manager's Buffs bar"))
+                    end)
+                    link:SetScript("OnLeave", function()
+                        linkFs:SetAlpha(0.85)
+                        EllesmereUI.HideWidgetTooltip()
+                    end)
+                    link:SetScript("OnClick", function()
+                        EllesmereUI.HideWidgetTooltip()
+                        EllesmereUI:NavigateToElementSettings("EllesmereUICooldownManager", "CDM Bars", nil,
+                            function() if EllesmereUI._setCDMBar then EllesmereUI._setCDMBar("buffs") end end)
+                    end)
+                else
+                    link:EnableMouse(false)
+                end
+                local w2 = (preFs:GetStringWidth() or 0) + link:GetWidth() + (postFs:GetStringWidth() or 0)
+                PP.Size(line2, math.ceil(w2), 20)
+                line2:SetPoint("TOP", line1, "BOTTOM", 0, -4)
+                -- A translation long enough to wrap the first line pushes CORE down.
+                WARN_H = math.max(WARN_H, math.ceil(line1:GetStringHeight() or 0) + 24)
+                PP.Size(host, w, WARN_H)
+            end
+            y = y - (GAP + WARN_H + 14)
+        end
+
         -----------------------------------------------------------------------
         --  CORE section
         -----------------------------------------------------------------------
@@ -1004,6 +1157,7 @@ initFrame:SetScript("OnEvent", function(self)
               getValue=function() local d = DDB(); return d and d.remindersEnabled ~= false end,
               setValue=function(v)
                   local d = DDB(); if not d then return end; d.remindersEnabled = v
+                  if _G._EABR_UpdateGroupAuraRegistration then _G._EABR_UpdateGroupAuraRegistration() end
                   RefreshAll()
                   EllesmereUI:RefreshPage()
               end },
@@ -1016,7 +1170,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
-        -- Row 2: Grow Direction
+        -- Row 2: Grow Direction | Beacon M+ Reminders (retail Holy Paladins only)
         _, h = W:DualRow(parent, y,
             { type="dropdown", text="Grow Direction",
               values=GROW_DIR_VALUES, order=GROW_DIR_ORDER,
@@ -1027,7 +1181,19 @@ initFrame:SetScript("OnEvent", function(self)
                   RefreshAll()
                   RelayoutPreviewIcons()
               end },
-            EllesmereUI.BlankRowCfg()
+            (function()
+                if not BeaconRowShown(parent) then return EllesmereUI.BlankRowCfg() end
+                return { type="toggle", text="Beacon M+ Reminders",
+                  tooltip="During Mythic+ boss fights, shows a glowing red Beacon on your tank's raid frame while they have your Beacon of Light or Beacon of Faith.",
+                  disabled=function() return not EllesmereUI._ModuleNS["EllesmereUIRaidFrames"] end,
+                  disabledTooltip=EllesmereUI.DisabledTooltip("EllesmereUI Raid Frames"),
+                  getValue=function() local d = DDB(); return d and d.beaconMPlus == true end,
+                  setValue=function(v)
+                      local d = DDB(); if not d then return end
+                      d.beaconMPlus = v or nil
+                      RefreshAll()
+                  end }
+            end)()
         );  y = y - h
 
         -----------------------------------------------------------------------
@@ -1401,8 +1567,9 @@ initFrame:SetScript("OnEvent", function(self)
 
         -----------------------------------------------------------------------
         --  WOW FOREVER section: on that client the rest of the page.
-        --  Camp Benefits toggle, a spell-ID entry that adds a custom reminder
-        --  and one row per tracked spell; the retail sections below never build.
+        --  Camp Benefits | Well Fed, then the spell-ID entry that adds a custom
+        --  reminder followed by one slot per tracked spell; the retail sections
+        --  below never build.
         -----------------------------------------------------------------------
         if FOREVER then
             _, h = W:SectionHeader(parent, SECTION_FOREVER, y);  y = y - h
@@ -1415,7 +1582,7 @@ initFrame:SetScript("OnEvent", function(self)
                 onChange = RefreshAll,
             });  y = y - h
 
-            -- Camp Benefits | Add Custom Spell
+            -- Camp Benefits | Well Fed
             _, h = W:DualRow(parent, y,
                 { type="toggle", text="Camp Benefits",
                   tooltip="Reminds you when the Camp Benefits campfire buff is missing.",
@@ -1424,6 +1591,18 @@ initFrame:SetScript("OnEvent", function(self)
                       local f = FDB(); if not f then return end; f.camp = v
                       RefreshAll()
                   end },
+                -- The client's own name for the buff (19705, EABR.WELL_FED), so it reads localized.
+                { type="toggle", text=_G._EABR_SpellName(19705, "Well Fed"),
+                  tooltip="Reminds you when you have no Well Fed buff.",
+                  getValue=function() local f = FDB(); return f and f.wellFed == true end,
+                  setValue=function(v)
+                      local f = FDB(); if not f then return end; f.wellFed = v
+                      RefreshAll()
+                  end }
+            );  y = y - h
+
+            -- Add Custom Spell, paired with the tracked spells
+            y = BuildForeverCustomRows(parent, y,
                 { type="input", text="Add Custom Spell", inputStyle="popup", placeholder="Spell ID", inputWidth=110,
                   tooltip="Type a spell ID and press Enter to be reminded whenever that buff is missing.\nUnknown IDs are ignored.",
                   getValue=function() return "" end,
@@ -1440,10 +1619,7 @@ initFrame:SetScript("OnEvent", function(self)
                       RefreshAll()
                       -- Rebuilds the page once the edit box has finished its commit.
                       C_Timer.After(0, function() EllesmereUI:RefreshPage(true) end)
-                  end }
-            );  y = y - h
-
-            y = BuildForeverCustomRows(parent, y)
+                  end })
 
             -- No preview header here, so no click-to-scroll mappings to wire.
             return math.abs(y)
@@ -1475,6 +1651,7 @@ initFrame:SetScript("OnEvent", function(self)
                         label = _G._EABR_SpellName(aura.castSpell, aura.name),
                         classToken = aura.class,
                         key = aura.key,
+                        tooltip = (aura.combatOnly and aura.isStance) and "Shows in combat only, while you are out of this form." or nil,
                         getVal = function() local a = ADB(); return a and a.enabled and a.enabled[aura.key] end,
                         setVal = function(v) local a = ADB(); if a and a.enabled then a.enabled[aura.key] = v end end,
                     }
@@ -1621,10 +1798,16 @@ initFrame:SetScript("OnEvent", function(self)
         local warlockHdr
         warlockHdr, h = W:SectionHeader(parent, SECTION_WARLOCK, y);  y = y - h
 
-        _, h = SectionControlRow(parent, y, {
+        -- Where to Show | Allowed Demons, then Wrong Demon | Soulstone.
+        local warlockCtrlRow
+        warlockCtrlRow, h = SectionControlRow(parent, y, {
             whereStore = CWarlockWhere,
             whereTooltip = "Pick which content these Warlock reminders appear in.\nRested areas (cities and inns) always stay hidden.",
             onChange = RefreshAll,
+            rightCfg = { type="dropdown", text="Allowed Demons",
+              tooltip="Pick which demons count as correct for Wrong Demon. A demon only counts while its summon spell is known; with none picked (or everything picked), the reminder never fires.",
+              values={ _placeholder="..." }, order={ "_placeholder" },
+              getValue=function() return "_placeholder" end, setValue=function() end },
         });  y = y - h
 
         local WARLOCK_PET_ITEMS = {}
@@ -1646,14 +1829,6 @@ initFrame:SetScript("OnEvent", function(self)
               tooltip="Show a reminder when your Warlock's active pet isn't one of the demons picked in Allowed Demons. A demon only counts while its summon spell is known, so leaving only Felguard picked stays silent for specs/builds that haven't talented Summon Felguard.",
               getValue=function() local c = CDB(); return c and c.enabled and c.enabled.wrong_pet ~= false end,
               setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.wrong_pet = v; RefreshAll(); RebuildPreviewHeader() end end },
-            { type="dropdown", text="Allowed Demons",
-              tooltip="Pick which demons count as correct for Wrong Demon. A demon only counts while its summon spell is known; with none picked (or everything picked), the reminder never fires.",
-              values={ _placeholder="..." }, order={ "_placeholder" },
-              getValue=function() return "_placeholder" end, setValue=function() end }
-        );  y = y - h
-
-        local soulstoneRow
-        soulstoneRow, h = W:DualRow(parent, y,
             { type="toggle", text=_G._EABR_SpellName(20707, "Soulstone"),
               tooltip="Show a reminder until your own Soulstone is active on you or another group member.",
               getValue=function() local a = ADB(); return a and a.enabled and a.enabled.soulstone ~= false end,
@@ -1662,19 +1837,18 @@ initFrame:SetScript("OnEvent", function(self)
                   if a and a.enabled then a.enabled.soulstone = v end
                   if _G._EABR_UpdateGroupAuraRegistration then _G._EABR_UpdateGroupAuraRegistration() end
                   RefreshAll(); RebuildPreviewHeader()
-              end },
-            { type="label", text="" }
+              end }
         );  y = y - h
 
         local wcc = RAID_CLASS_COLORS and RAID_CLASS_COLORS.WARLOCK
         if wcc then
+            if warlockCtrlRow._rightRegion._label then warlockCtrlRow._rightRegion._label:SetTextColor(wcc.r, wcc.g, wcc.b, 1) end
             if warlockRow._leftRegion._label then warlockRow._leftRegion._label:SetTextColor(wcc.r, wcc.g, wcc.b, 1) end
             if warlockRow._rightRegion._label then warlockRow._rightRegion._label:SetTextColor(wcc.r, wcc.g, wcc.b, 1) end
-            if soulstoneRow._leftRegion._label then soulstoneRow._leftRegion._label:SetTextColor(wcc.r, wcc.g, wcc.b, 1) end
         end
 
         if not EllesmereUI._prebuilding then
-            local rrgn = warlockRow._rightRegion
+            local rrgn = warlockCtrlRow._rightRegion
             if rrgn._control then rrgn._control:Hide() end
             local petDD, petDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
                 rrgn, 220, rrgn:GetFrameLevel() + 2, WARLOCK_PET_ITEMS,
@@ -2062,7 +2236,7 @@ initFrame:SetScript("OnEvent", function(self)
         _eabrClickMappings.raidbuff = { section = raidBufHdr, target = raidBufHdr }
         _eabrClickMappings.aura = { section = auraHdr, target = auraHdr }
         _eabrClickMappings.consumable = { section = consumHdr, target = consumFirstRow }
-        _eabrClickMappings["item:soulstone"] = { section = warlockHdr, target = soulstoneRow }
+        _eabrClickMappings["item:soulstone"] = { section = warlockHdr, target = warlockRow }
 
         -- Per-item mappings: grid cells for individual raid buffs / auras
         for k, cell in pairs(_gridCellRefs) do
@@ -2082,6 +2256,10 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  Talent Reminders Page
     ---------------------------------------------------------------------------
+    -- Owner of the page's kept popups (Pool.Kept): the zone popup and the
+    -- talent popup are made once for the session, on UIParent.
+    local _trPopups = {}
+
     local function BuildTalentRemindersPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
@@ -2204,10 +2382,13 @@ initFrame:SetScript("OnEvent", function(self)
         zoneDDLbl:SetPoint("LEFT", zoneDDBtn, "LEFT", 14, 0)
         zoneDDLbl:SetPoint("RIGHT", zoneArrow, "LEFT", -5, 0)
 
-        -- Multi-select checkbox popup
+        -- Multi-select checkbox popup: one kept frame for the session that
+        -- every build of the page dresses again. The global search's hidden
+        -- pre-build makes none (the popup holds nothing to index).
         local SEARCH_H = 26
         local ITEM_H = 28
-        local zonePopup = CreateFrame("Frame", nil, UIParent)
+        if not EllesmereUI._prebuilding then
+        local zonePopup = Pool.Kept(_trPopups, "zone", "Frame", UIParent)
         zonePopup:SetFrameStrata("FULLSCREEN_DIALOG")
         zonePopup:SetFrameLevel(200)
         zonePopup:SetClampedToScreen(true)
@@ -2362,6 +2543,10 @@ initFrame:SetScript("OnEvent", function(self)
         zoneDDBtn:SetScript("OnClick", function()
             if zonePopup:IsShown() then zonePopup:Hide() else zonePopup:Show() end
         end)
+        -- The zone list closes with its page (rebuild, tab switch, panel
+        -- close), as the talent list does.
+        zoneDDBtn:SetScript("OnHide", function() zonePopup:Hide() end)
+        end -- not prebuilding
         zoneDDBtn:SetScript("OnEnter", function()
             zoneDDBg:SetColorTexture(0.128, 0.120, 0.113, 1)
         end)
@@ -2418,10 +2603,12 @@ initFrame:SetScript("OnEvent", function(self)
             btn:SetScript("OnEnter", function() btnBg:SetColorTexture(0.128, 0.120, 0.113, 1) end)
             btn:SetScript("OnLeave", function() btnBg:SetColorTexture(0.103, 0.095, 0.088, 0.9) end)
 
-            -- Popup with search
+            -- Popup with search: kept like the zone popup above (one per
+            -- dropdown), and likewise not made by the global search's pre-build.
+            if EllesmereUI._prebuilding then return btn, btnLbl end
             local T_ITEM_H = 26
             local popupH = math.min(#allTalents * T_ITEM_H + 8, 250) + SEARCH_H + 10
-            local popup = CreateFrame("Frame", nil, UIParent)
+            local popup = Pool.Kept(_trPopups, "talent:" .. labelText, "Frame", UIParent)
             popup:SetFrameStrata("FULLSCREEN_DIALOG")
             popup:SetFrameLevel(200)
             popup:SetClampedToScreen(true)
@@ -2481,6 +2668,7 @@ initFrame:SetScript("OnEvent", function(self)
                 iLbl:SetJustifyH("LEFT")
                 iLbl:SetWordWrap(false)
                 iLbl:SetText(t.name)
+                item._lbl = iLbl
                 item._talentName = t.name
                 item._spellID = t.spellID
                 item:SetScript("OnClick", function()
@@ -2528,10 +2716,23 @@ initFrame:SetScript("OnEvent", function(self)
                 sf:GetScript("OnMouseWheel")(sf, delta)
             end)
 
-            -- Show/hide
+            -- Show/hide. The talent icons are made on the first open, so the
+            -- page build pays nothing for them.
+            local iconsMade = false
             popup:SetScript("OnShow", function()
                 popup:ClearAllPoints()
                 popup:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -2)
+                if not iconsMade then
+                    iconsMade = true
+                    for _, item in ipairs(items) do
+                        local ico = item:CreateTexture(nil, "ARTWORK", nil, 1)
+                        ico:SetSize(18, 18)
+                        ico:SetPoint("LEFT", item, "LEFT", 10, 0)
+                        ico:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+                        ico:SetTexture(C_Spell.GetSpellTexture(item._spellID) or 134400)
+                        item._lbl:SetPoint("LEFT", ico, "RIGHT", 6, 0)
+                    end
+                end
                 search:SetText("")
                 search:SetFocus()
                 tScrollTo(0)
@@ -2651,7 +2852,9 @@ initFrame:SetScript("OnEvent", function(self)
         local listRowCount = 0  -- manual alternating row counter
 
         local function RebuildReminderList()
-            -- Clear existing rows
+            -- Clear existing rows. On a page pool host the rows go back to the
+            -- container's pool and the list below dresses them again in order.
+            Pool.Begin(listContainer)
             for _, row in ipairs(listRows) do row:Hide() end
             wipe(listRows)
             listRowCount = 0

@@ -128,19 +128,29 @@ local function GetOrCreateSlot(idx)
 end
 ns.GetOrCreateSlot = GetOrCreateSlot
 
--- A slot's desaturation (locked, grey with the option on, Junk Marker junk)
--- and its Junk Marker coin badge, lifted past the bottom-left corner.
+-- A slot's desaturation (locked; grey items and Junk Marker junk while Junk
+-- Item Visuals' Desaturate is on) and its Junk Marker coin badge (its Show Coin
+-- Icon): the game's coin, cropped round, lifted past the bottom-left corner.
 local function PaintJunkState(btn, info, markerJunk)
+    local p = BP()
     local quality = info.quality or 1
-    SetItemButtonDesaturated(btn, info.isLocked or (BP().bagDesaturateJunkItems and quality == 0) or markerJunk)
-    if markerJunk then
-        if not btn._junkCoin then
-            btn._junkCoin = btn:CreateTexture(nil, "OVERLAY", nil, 6)
-            btn._junkCoin:SetTexture(ns.JUNK_COIN)
-            btn._junkCoin:SetSize(13, 13)
-            btn._junkCoin:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", -3, -3)
+    SetItemButtonDesaturated(btn, info.isLocked
+        or (p.bagDesaturateJunkItems == true and (quality == 0 or markerJunk)) or false)
+    if markerJunk and p.bagShowJunkCoin == true then
+        local coin = btn._junkCoin
+        if not coin then
+            coin = btn:CreateTexture(nil, "OVERLAY", nil, 6)
+            coin:SetTexture(ns.JUNK_COIN)
+            coin:SetTexCoord(0.12, 0.88, 0.12, 0.88)
+            local mask = btn:CreateMaskTexture()
+            mask:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+            mask:SetAllPoints(coin)
+            coin:AddMaskTexture(mask)
+            coin:SetSize(12, 12)
+            coin:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", -3, -3)
+            btn._junkCoin = coin
         end
-        btn._junkCoin:Show()
+        coin:Show()
     elseif btn._junkCoin then
         btn._junkCoin:Hide()
     end
@@ -840,7 +850,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
             local recentItems = {}
             if EUI_Bags._recentItems then
                 for _, d in ipairs(tempItems) do
-                    if d.info and d.info.itemID and EUI_Bags._recentItems[d.info.itemID] then
+                    if not d._pinnedOnly and d.info and d.info.itemID and EUI_Bags._recentItems[d.info.itemID] then
                         recentItems[#recentItems + 1] = d
                     end
                 end
@@ -1022,7 +1032,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
         for i = 1, #cats do itemsByCat[i] = {} end
         for _, data in ipairs(displayItems) do
             local ci = data.categoryIndex
-            if ci and itemsByCat[ci] then
+            if ci and itemsByCat[ci] and not data._pinnedOnly then
                 itemsByCat[ci][#itemsByCat[ci] + 1] = data
             end
         end
@@ -1256,7 +1266,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
         local hiddenSet = BP().bagHiddenInAllItems or {}
         for ci, cat in ipairs(cats) do
             if cat.isPinned then
-                -- Pinned Items: display-only duplicate (items also appear in their normal category)
+                -- Pinned Items quickview
                 if pinnedSet and showPinned then
                     local pinItems = {}
                     for _, data in ipairs(displayItems) do
@@ -1273,7 +1283,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                    and (BP().bagShowRecentItems ~= false) then
                     local recentItems = {}
                     for _, data in ipairs(displayItems) do
-                        if data.info and data.info.itemID and EUI_Bags._recentItems[data.info.itemID] then
+                        if not data._pinnedOnly and data.info and data.info.itemID and EUI_Bags._recentItems[data.info.itemID] then
                             recentItems[#recentItems + 1] = data
                         end
                     end

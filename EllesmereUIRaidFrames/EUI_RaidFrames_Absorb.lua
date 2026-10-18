@@ -24,6 +24,16 @@ local GetFFD, PixelSnap = I.GetFFD, I.PixelSnap
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
+-- (Re)seats a mask on a fill that may already carry it: AddMaskTexture refuses at the
+-- 3-mask cap even for an attached mask, and SetStatusBarTexture keeps the fill object
+-- with its masks. With rounded corners the backfill fill holds the absorb, current-health
+-- and corner masks, so it sits at the cap.
+local function AddMaskOnce(tex, mask)
+    pcall(tex.RemoveMaskTexture, tex, mask)
+    tex:AddMaskTexture(mask)
+end
+ns.RF_AddMaskOnce = AddMaskOnce
+
 -------------------------------------------------------------------------------
 --  Absorb style application. Single-fill styles match the unit-frame look; the
 --  RF-only compound "Blizzard (Modern)" style layers a tiled stripe fill over a
@@ -44,7 +54,7 @@ ns.ApplyModernAbsorbBar = function(bar, mask)
         fill:SetDrawLayer("ARTWORK", 1)
         fill:SetHorizTile(true)
         fill:SetVertTile(true)
-        if mask then fill:AddMaskTexture(mask) end
+        if mask then AddMaskOnce(fill, mask) end
         local base = bar._modernBase
         if base then base:SetAllPoints(fill); base:Show() end
     end
@@ -72,7 +82,7 @@ local function ApplyAbsorbStyle(absorbBar, style, settings)
         if bfFill then
             bfFill:SetDrawLayer("ARTWORK", 1)
             bfFill:SetHorizTile(false); bfFill:SetVertTile(false)
-            if mask then bfFill:AddMaskTexture(mask) end
+            if mask then AddMaskOnce(bfFill, mask) end
         end
         return
     end
@@ -92,7 +102,7 @@ local function ApplyAbsorbStyle(absorbBar, style, settings)
         fill:SetDrawLayer("ARTWORK", 1)
         fill:SetHorizTile(tiled)
         fill:SetVertTile(tiled)
-        if mask then fill:AddMaskTexture(mask) end
+        if mask then AddMaskOnce(fill, mask) end
     end
     -- New fill object + new tiling state: re-derive rotation.
     ns.RF_ApplyFillRotation(absorbBar)
@@ -104,7 +114,7 @@ local function ApplyAbsorbStyle(absorbBar, style, settings)
             fwFill:SetDrawLayer("ARTWORK", 1)
             fwFill:SetHorizTile(tiled)
             fwFill:SetVertTile(tiled)
-            if mask then fwFill:AddMaskTexture(mask) end
+            if mask then AddMaskOnce(fwFill, mask) end
         end
         ns.RF_ApplyFillRotation(fw)
     end
@@ -126,7 +136,7 @@ ns.ApplyHealAbsorbStyle = function(haBar, style, settings)
         fill:SetDrawLayer("ARTWORK", 2)
         fill:SetHorizTile(tiled)
         fill:SetVertTile(tiled)
-        if mask then fill:AddMaskTexture(mask) end
+        if mask then AddMaskOnce(fill, mask) end
     end
     ns.RF_ApplyFillRotation(haBar)
 end
@@ -757,14 +767,27 @@ local function UpdateAbsorb(button, unit, now)
     local RFShow, RFHide, PushRange = ns._RFShow, ns._RFHide, ns._RFPushRange
 
     local s = d._isParty and ns._scaledPartyProxy or (d._isExtra and ns._scaledExtraProxy) or ns._scaledProfile
+    -- The settings this function reads on every paint, re-derived only when the settings
+    -- generation or this button's proxy moves (unset keys walk the whole proxy chain).
+    if ab._pGen ~= ns._absorbGen or ab._pS ~= s then
+        ab._pGen, ab._pS = ns._absorbGen, s
+        ab._pBarPos = ns.GetAbsorbBarPosition(s)
+        ab._pHealBarPos = ns.GetHealAbsorbBarPosition(s)
+        local st = s.absorbStyle
+        ab._pStyleOn = (st and st ~= "none") and true or false
+        ab._pModern = st == "blizzardModern"
+        ab._pHealOn = (s.healAbsorbStyle or "clean") ~= "none"
+        ab._pPredOn = s.healPrediction and true or false
+        ab._pMaxHealthOn = (s.maxHealthStyle or "maxHealthStripes") ~= "none"
+    end
     local topBar = ab._topBar
-    local barPos = ns.GetAbsorbBarPosition(s)
+    local barPos = ab._pBarPos
     local barOn = topBar and barPos ~= "none"
     local healTopBar = ab._healTopBar
-    local healBarPos = ns.GetHealAbsorbBarPosition(s)
+    local healBarPos = ab._pHealBarPos
     local healBarOn = healTopBar and healBarPos ~= "none"
-    local styleOn = s.absorbStyle and s.absorbStyle ~= "none"
-    local modern = s.absorbStyle == "blizzardModern"
+    local styleOn = ab._pStyleOn
+    local modern = ab._pModern
     -- Blizzard Glow Line, settings-derived and gen-gated (an unset key would otherwise fall
     -- through the proxy chain on every paint). Unset follows the style: on for Default Blizz
     -- Frames only. _glowEdge = where the line sits on the drawn layout:
@@ -802,13 +825,13 @@ local function UpdateAbsorb(button, unit, now)
     -- overshield boolean; Overlay Reverse (3) needs none.
     local needClamp = glowOn and ab._glowEdge ~= 3
     -- Heal absorb is independent of the shield absorb: keep going whenever its style is on.
-    local healOn = (s.healAbsorbStyle or "clean") ~= "none"
+    local healOn = ab._pHealOn
     -- Heal prediction is also independent, and shares this frame, so it must keep the frame alive too.
-    local predOn = s.healPrediction and true or false
+    local predOn = ab._pPredOn
     -- Reduced max health is independent too (a max-HP-loss debuff has nothing to do with
     -- shield absorbs) -- without this the whole overlay frame bails out below whenever
     -- Absorb Style is "none", even with Max Health Style on, so it never gets to paint.
-    local maxHealthOn = (s.maxHealthStyle or "maxHealthStripes") ~= "none"
+    local maxHealthOn = ab._pMaxHealthOn
     if not styleOn and not barOn and not healOn and not healBarOn and not predOn and not maxHealthOn then
         RFHide(ab)
         if fw then RFHide(fw) end
@@ -969,7 +992,7 @@ local function UpdateAbsorb(button, unit, now)
                 if ha._lastHaKey ~= haKey then
                     ha._lastHaKey = haKey
                     ns.ApplyHealAbsorbStyle(ha, haStyle, s)
-                    -- Retexture REPLACES the fill object: re-arm the backing's one-time fill anchor.
+                    -- After the retexture, re-arm the backing's one-time fill anchor.
                     if ha._bg then ha._bg._fillAnchored = nil end
                 end
                 -- "Show Over Dispels" (default off): lift the heal-absorb overlay above the dispel
@@ -1045,9 +1068,9 @@ local function UpdateAbsorb(button, unit, now)
         if absStyle and absStyle ~= "none" and ab._lastAbsKey ~= absKey then
             ab._lastAbsKey = absKey
             ApplyAbsorbStyle(ab, absStyle, s)
-            -- Retexture REPLACES the fill objects: re-arm the modern base's one-time fill anchor
-            -- and the glow anchors that can ride ab's fill (the gate, the overshield spark). The
-            -- seam spark's target (the gate bar's texture) is creation-static and never re-arms.
+            -- After the retexture, re-arm the modern base's one-time fill anchor and the glow
+            -- anchors that can ride ab's fill (the gate, the overshield spark). The seam spark's
+            -- target (the gate bar's texture) is creation-static and never re-arms.
             if fw and fw._modernBase then fw._modernBase._fillAnchored = nil end
             if fw and fw._edgeGate then fw._edgeGate._ge = nil end
             if fw and fw._bfSpark then fw._bfSpark._anc = nil end

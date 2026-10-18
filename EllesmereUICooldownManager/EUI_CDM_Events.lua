@@ -22,7 +22,20 @@ local _CDMApplyVisibility, RequestUpdate = I._CDMApplyVisibility, I.RequestUpdat
 local SetInCombat = I.SetInCombat
 local OpenBlizzardCDMTab = I.OpenBlizzardCDMTab
 
-local _keybindDebounceTimer = nil   -- cancellable timer for debounced keybind updates
+-- Debounced keybind refresh: one prebuilt callback fires 0.5s after the LAST
+-- triggering event (each event only pushes the deadline), so a slot-event storm
+-- (mouseover macros re-fire ACTIONBAR_SLOT_CHANGED on every hover change)
+-- allocates nothing per event.
+local _keybindDue, _keybindArmed = 0, false
+local function KeybindDebounceFire()
+    local wait = _keybindDue - GetTime()
+    if wait > 0.01 then
+        C_Timer.After(wait, KeybindDebounceFire)
+        return
+    end
+    _keybindArmed = false
+    UpdateCDMKeybinds()
+end
 
 -------------------------------------------------------------------------------
 --  Event-Driven Runtime Maintenance
@@ -127,6 +140,9 @@ local function ScheduleTalentRebuild()
             if db and db.sv and db.sv.multiChargeSpells then
                 wipe(db.sv.multiChargeSpells)
             end
+            -- Hidden Outside Form/Stance answers (a talent can change which
+            -- forms a spell needs)
+            if ns.CdmWipeFormCache then ns.CdmWipeFormCache() end
         end
         -- Rebuild the cdID route map against the new talent set. The stored
         -- assignedSpells is left untouched (it's pure user intent); the route map is
@@ -183,8 +199,15 @@ local function ScheduleRosterRebuild()
     if ns.QueueReanchor then ns.QueueReanchor() end
 end
 
+-- Events that can move an ability to another action button (Bar Glows keyed per ability).
+local BAR_REBIND_EVENTS = {
+    ACTIONBAR_SLOT_CHANGED = true, ACTIONBAR_PAGE_CHANGED = true, UPDATE_BONUS_ACTIONBAR = true,
+    UPDATE_SHAPESHIFT_FORM = true, SPELLS_CHANGED = true,
+}
+
 eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
     if not ECME.db then return end
+    if ns._barGlowRebindOn and BAR_REBIND_EVENTS[event] then ns.QueueBarGlowRebind(event, unit) end
     if event == "PLAYER_LOGOUT" then
         ns.SaveCachedBarSizes()
         return
@@ -233,12 +256,12 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
             end
             if not firstSighting then return end
         end
-        -- Debounce: one-button rotation addons fire ACTIONBAR_SLOT_CHANGED on every GCD. Cancel the previous timer so rapid-fire events coalesce into a single update 0.5s after the last event.
-        if _keybindDebounceTimer then _keybindDebounceTimer:Cancel() end
-        _keybindDebounceTimer = C_Timer.NewTimer(0.5, function()
-            _keybindDebounceTimer = nil
-            UpdateCDMKeybinds()
-        end)
+        -- Debounce: one-button rotation addons fire ACTIONBAR_SLOT_CHANGED on every GCD. Rapid-fire events coalesce into a single update 0.5s after the last event.
+        _keybindDue = GetTime() + 0.5
+        if not _keybindArmed then
+            _keybindArmed = true
+            C_Timer.After(0.5, KeybindDebounceFire)
+        end
         return
     end
     if event == "COOLDOWN_VIEWER_DATA_LOADED" or event == "COOLDOWN_VIEWER_TABLE_HOTFIXED" then

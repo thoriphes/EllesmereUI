@@ -19,6 +19,11 @@ local cdmBarIcons, GetCDMFont, SetBlizzCDMFont = I.cdmBarIcons, I.GetCDMFont, I.
 
 local ApplyShapeToCDMIcon
 
+-- The options page pool's table (EllesmereUI_PixelPerfect.lua makes it; the
+-- options addon fills it in place): read through this file local, never the
+-- public slot, so nothing written to that slot later reaches the live icons.
+local POOL = EllesmereUI._Pool
+
 local _inCombat = false
 I.inCombatSetters[#I.inCombatSetters + 1] = function(v) _inCombat = v end
 
@@ -83,9 +88,9 @@ ApplyShapeToCDMIcon = function(icon, shape, barData, ssb)
             -- one equal to it takes the bar's px like the other two paint paths.
             local edgePx = EllesmereUI.BorderPx(barData.borderSizePx, borderSz, texKey)
             -- "Show Behind": set the border frame's level BEFORE styling so the
-            -- textured backdrop inherits it. +13 = in front, level-1 = behind.
+            -- textured backdrop inherits it. +13 = in front (+14 for the Pixels styles), level-1 = behind.
             if fd and fd.borderFrame then
-                fd.borderFrame:SetFrameLevel(barData.borderBehind and math.max(0, icon:GetFrameLevel() - 1) or (icon:GetFrameLevel() + 13))
+                fd.borderFrame:SetFrameLevel(barData.borderBehind and math.max(0, icon:GetFrameLevel() - 1) or (icon:GetFrameLevel() + (EllesmereUI._pixelArtBorders[texKey] and 14 or 13)))
             end
             EllesmereUI.ApplyBorderStyle(bdrTarget, borderSz, brdR, brdG, brdB, brdA, texKey, barData.borderTextureOffset, barData.borderTextureOffsetY, barData.borderTextureShiftX, barData.borderTextureShiftY, "cdm", barData.borderThickness or "thin", true, edgePx)
         end
@@ -197,9 +202,11 @@ ApplyShapeToCDMIcon = function(icon, shape, barData, ssb)
         end
     end
 
-    -- Shape border texture (on a dedicated frame above the cooldown swipe)
+    -- Shape border texture (on a dedicated frame above the cooldown swipe).
+    -- On an options preview slot (an options page pool host) the frame is
+    -- pooled with the slot; on a live icon this is the plain CreateFrame.
     if not ifc.shapeBorderFrame then
-        local sbf = CreateFrame("Frame", nil, icon)
+        local sbf = POOL.CreateFrame("Frame", nil, icon)
         sbf:SetAllPoints(icon)
         sbf:SetFrameLevel(icon:GetFrameLevel() + 2)
         ifc.shapeBorderFrame = sbf
@@ -658,13 +665,18 @@ local function RefreshCDMIconAppearance(barKey)
             if icon._isCustomBuffFrame or not ns.StackGlow_Configure then
                 nThreshold, nOperator = nil, nil
             end
+            -- Glow When Visible: the BuffTicker lights the glow whenever the icon is shown
+            -- (a Show When Missing placeholder included); Glow at Stacks wins over it.
+            local nVisible = (ssb and ssb.glowWhenVisible) or nil
             if fd then
                 if fd._bgT ~= nT or fd._bgColor ~= nColor
                    or fd._bgR ~= nR or fd._bgG ~= nG or fd._bgB ~= nB
-                   or fd._bgThreshold ~= nThreshold or fd._bgStackOperator ~= nOperator then
+                   or fd._bgThreshold ~= nThreshold or fd._bgStackOperator ~= nOperator
+                   or fd._bgVisible ~= nVisible then
                     fd._bgT = nT; fd._bgColor = nColor; fd._bgR = nR; fd._bgG = nG; fd._bgB = nB
                     fd._bgThreshold = nThreshold
                     fd._bgStackOperator = nOperator
+                    fd._bgVisible = nVisible
                     if fd.buffGlowActive and fd.buffGlowOverlay then
                         StopNativeGlow(fd.buffGlowOverlay)
                         fd.buffGlowActive = false
@@ -712,11 +724,12 @@ local function RefreshCDMIconAppearance(barKey)
         -- number both live on the Cooldown widget, so raise the whole widget ABOVE our border
         -- (icon+13) or the border draws over the number (most visible with edge-offset text);
         -- anchoring the number to cd (below) keeps the X/Y offset working. Side effect: the dark swipe lightly tints the thin border while active.
+        -- The Pixels styles swap the two (cd +13, border +14): a square swipe over their line squares off its rounded corners.
         if cd then
             cd:ClearAllPoints()
             cd:SetAllPoints(icon)
-            -- Above the border (icon+13); still below glow (icon+16) / text (icon+23).
-            pcall(cd.SetFrameLevel, cd, icon:GetFrameLevel() + 14)
+            -- Above the border (icon+13; below it at +13 under Pixels); still below glow (icon+16) / text (icon+23).
+            pcall(cd.SetFrameLevel, cd, icon:GetFrameLevel() + (EllesmereUI._pixelArtBorders[barData.borderTexture] and 13 or 14))
             -- Per-icon Duration Text override (ssb) falls back to the bar's values. Only Show
             -- Numbers no longer forces this on: hiding the duration (bar toggle or per-icon) under it leaves just the stack count.
             local showCD = ns.CdmDurationTextOn(barData)
@@ -964,12 +977,13 @@ local function RefreshCDMIconAppearance(barKey)
                 local sd = ns.GetBarSpellData(bk)
                 -- Shared resolver: direct hit + full identity/override matching against the family store, with bar-tier fallback.
                 local ss = ns.ResolveSpellSettings and ns.ResolveSpellSettings(icon, sid, sd, bk)
-                local cse = ns.GetSpellCdStateEffect(icon, ss)
-                local isReadyGlow = (cse == "pixelGlowReady" or cse == "buttonGlowReady"
-                    or cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable")
-                local isOnCdGlow = cse == "glowOnCD"
+                -- The glow half of the effect (any hide beside it runs below).
+                local glow = ns.CdStateGlowOf(ss, icon)
+                local isReadyGlow = (glow == "pixelGlowReady" or glow == "buttonGlowReady"
+                    or glow == "pixelGlowReadyUsable" or glow == "buttonGlowReadyUsable")
+                local isOnCdGlow = glow == "glowOnCD"
                 if (isReadyGlow or isOnCdGlow) and glowOv then
-                    local glowUsable = (cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable")
+                    local glowUsable = (glow == "pixelGlowReadyUsable" or glow == "buttonGlowReadyUsable")
                     local glowLive = sid
                     if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
                         glowLive = C_SpellBook.FindSpellOverrideByID(sid) or sid
@@ -978,10 +992,11 @@ local function RefreshCDMIconAppearance(barKey)
                     -- Glow (On CD) wants the opposite cooldown state of the ready variants.
                     local wantsGlow
                     if cseInfo then
+                        local realCD = ns.CdmOnRealCD(icon, cseInfo)
                         if isOnCdGlow then
-                            wantsGlow = cseInfo.isActive and not cseInfo.isOnGCD
+                            wantsGlow = realCD
                         else
-                            wantsGlow = not cseInfo.isActive or cseInfo.isOnGCD
+                            wantsGlow = not realCD
                         end
                     end
                     if wantsGlow then
@@ -996,7 +1011,7 @@ local function RefreshCDMIconAppearance(barKey)
                             end
                         end
                         if isUsable == true then
-                            local style = ns.CdReadyGlowStyle(cse, ss)
+                            local style = ns.CdReadyGlowStyle(glow, ss)
                             local cr, cg, cb = ns.CdReadyGlowColor(style, ss)
                             ifd._cdStateGlowOn = ns.StartCdGlow(ifd, style, cr, cg, cb, ns.CdReadyGlowAlpha(ss)) ~= nil
                         end
@@ -1029,36 +1044,36 @@ local function RefreshCDMIconAppearance(barKey)
             -- Shared resolver: direct hit + full identity/override matching
             -- against the family store, with bar-tier fallback.
             local csSs = ns.ResolveSpellSettings and ns.ResolveSpellSettings(icon, csSid, csSd, csBk)
-            local cse = ns.GetSpellCdStateEffect(icon, csSs)
-            -- Shift-Icons variants behave exactly like their base hidden mode plus the layout flag; normalize so the branches below stay as-is.
-            -- Hidden Until Usable = Hidden (On CD) + "not usable" counting as unavailable.
-            local cseShift = (cse == "hiddenOnCDShift" or cse == "hiddenReadyShift"
-                or cse == "hiddenUnusableShift" or cse == "hiddenFormShift")
-            local cseUsable = (cse == "hiddenUnusable" or cse == "hiddenUnusableShift")
-            if cse == "hiddenOnCDShift" or cseUsable then cse = "hiddenOnCD"
-            elseif cse == "hiddenReadyShift" then cse = "hiddenReady"
-            elseif cse == "hiddenFormShift" then cse = "hiddenForm" end
-            if cse then
+            -- The effect is a hide and a glow, each run on its own below.
+            local cse, csGlow = ns.CdStateOf(csSs, icon)
+            -- The hide effects run as their base mode plus flags (ns.CD_STATE_HIDE: Shift Icons, Hidden Until Usable, Hidden Outside Form/Stance), so the branches below stay as-is.
+            local m = cse and ns.CD_STATE_HIDE[cse]
+            local cseShift, cseUsable, cseForm
+            if m then cse, cseShift, cseUsable, cseForm = m.base, m.shift, m.usable, m.form end
+            if cse or csGlow then
                 local csLive = csSid
                 if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
                     csLive = C_SpellBook.FindSpellOverrideByID(csSid) or csSid
                 end
-                local onCD
-                if cse == "hiddenForm" then
-                    ns.WatchCdUsable(icon, true)
+                -- realCD is the plain cooldown read the glow runs on; onCD is
+                -- what the hide runs on (the form alone, or unusable counting too).
+                local realCD, onCD
+                if cseForm then
+                    -- Only the form decides; form changes re-arm through the form watch.
                     onCD = ns.CdmSpellOutsideForm(csLive)
+                    ns.WatchCdUsable(icon, true)
                 else
-                    local cseInfo = C_Spell.GetSpellCooldown(csLive)
-                    onCD = cseInfo and cseInfo.isActive and not cseInfo.isOnGCD
+                    realCD = ns.CdmOnRealCD(icon, C_Spell.GetSpellCooldown(csLive))
+                    onCD = realCD
                 end
                 if cseUsable then
                     if not onCD then onCD = ns.CdmSpellNotUsable(csLive) end
                     -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
                     ns.WatchCdUsable(icon)
                 end
-                if cse == "hiddenOnCD" or cse == "hiddenReady" or cse == "hiddenForm" then
+                if cse == "hiddenOnCD" or cse == "hiddenReady" then
                     local hide
-                    if cse == "hiddenOnCD" or cse == "hiddenForm" then
+                    if cse == "hiddenOnCD" then
                         hide = onCD and true or false
                     else
                         -- Hidden (CD Ready): on a charge spell "ready" means AT MAX charges, so the icon keeps tracking the recharge instead of vanishing with a charge still down (ns.CdmCdStateReady).
@@ -1084,7 +1099,7 @@ local function RefreshCDMIconAppearance(barKey)
                         if ns.SetCdStateShiftHidden then ns.SetCdStateShiftHidden(fc, false) end
                     end
                 else
-                    -- Clear stale hidden state when switching to a glow effect
+                    -- No hide effect: clear stale hidden state
                     if fc and fc._cdStateHidden then
                         fc._cdStateHidden = false
                         icon:SetAlpha(IconShownAlpha(fc, barData))
@@ -1092,17 +1107,20 @@ local function RefreshCDMIconAppearance(barKey)
                     if fc and ns.SetCdStateShiftHidden then
                         ns.SetCdStateShiftHidden(fc, false)
                     end
+                end
+                if csGlow then
+                    if realCD == nil then realCD = ns.CdmOnRealCD(icon, C_Spell.GetSpellCooldown(csLive)) end
                     -- A live proc or active-state glow keeps the shared overlay:
                     -- ns.StartCdGlow lights only a Blackout beside it.
                     if not ifd or not ifd._cdStateGlowOn then
-                        local isReadyGlow = (cse == "pixelGlowReady" or cse == "buttonGlowReady"
-                            or cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable")
-                        local isOnCdGlow = cse == "glowOnCD"
-                        local wantsGlow = (isOnCdGlow and onCD) or (isReadyGlow and not onCD)
+                        local isReadyGlow = (csGlow == "pixelGlowReady" or csGlow == "buttonGlowReady"
+                            or csGlow == "pixelGlowReadyUsable" or csGlow == "buttonGlowReadyUsable")
+                        local isOnCdGlow = csGlow == "glowOnCD"
+                        local wantsGlow = (isOnCdGlow and realCD) or (isReadyGlow and not realCD)
                         if wantsGlow and glowOv then
                             -- Plain variants glow purely from cooldown state (legacy). Resource Aware variants also require usability outside the loading-screen settle window.
                             local isUsable = true
-                            if cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable" then
+                            if csGlow == "pixelGlowReadyUsable" or csGlow == "buttonGlowReadyUsable" then
                                 if ns._cdmSoundSuppressed and ns._cdmSoundSuppressed() then
                                     isUsable = true
                                 else
@@ -1110,7 +1128,7 @@ local function RefreshCDMIconAppearance(barKey)
                                 end
                             end
                             if isUsable == true and ifd then
-                                local style = ns.CdReadyGlowStyle(cse, csSs)
+                                local style = ns.CdReadyGlowStyle(csGlow, csSs)
                                 local cr, cg, cb = ns.CdReadyGlowColor(style, csSs)
                                 ifd._cdStateGlowOn = ns.StartCdGlow(ifd, style, cr, cg, cb, ns.CdReadyGlowAlpha(csSs)) ~= nil
                             end
@@ -1121,8 +1139,8 @@ local function RefreshCDMIconAppearance(barKey)
                     -- (racial/trinket/potion/custom) drive desaturation via SetDesaturation(float),
                     -- which never fires that hook -- without a watch their glow stays lit for the
                     -- whole cooldown. Frames owned by the Fake-Active preset path (PresetHasCdState) are excluded; that engine glows them.
-                    local watchGlow = cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable"
-                    if not watchGlow and (cse == "pixelGlowReady" or cse == "buttonGlowReady" or cse == "glowOnCD")
+                    local watchGlow = csGlow == "pixelGlowReadyUsable" or csGlow == "buttonGlowReadyUsable"
+                    if not watchGlow and (csGlow == "pixelGlowReady" or csGlow == "buttonGlowReady" or csGlow == "glowOnCD")
                         and (icon._isRacialFrame or icon._isTrinketFrame or icon._isPresetFrame
                              or icon._isItemPresetFrame or icon._isCustomSpellFrame)
                         and not (ns.PresetHasCdState and ns.PresetHasCdState(icon)) then
@@ -1141,6 +1159,9 @@ local function RefreshCDMIconAppearance(barKey)
                 end
             end
         end
+        -- Ignore Resource Cost: repaint now, as a settings change brings no
+        -- Blizzard tint write for the hook to follow (one flag read when unused).
+        if ns._cdmAnyNoResourceTint and ns.CdmApplyResourceTint then ns.CdmApplyResourceTint(icon, fd) end
         end -- not icon._isEmptySlotFrame
         -- Only Show Numbers (bar setting): re-hide the icon art AFTER the passes above re-applied
         -- borders/shapes/textures, so the countdown number is all that remains. One field read when the bar is off; also restores one-shot right after the bar toggles off.
@@ -1148,7 +1169,6 @@ local function RefreshCDMIconAppearance(barKey)
         -- either way, so both kinds share this one line without widening the skip above.
         if ns.ApplyOnlyNumbers then ns.ApplyOnlyNumbers(icon, _getFD(icon), barData) end
     end
-    if ns.CdmReconcileFormWatch then ns.CdmReconcileFormWatch() end
 end
 ns.RefreshCDMIconAppearance = RefreshCDMIconAppearance
 

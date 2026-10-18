@@ -24,16 +24,15 @@ local _activeCache, _activeStacksCache = I._activeCache, I._activeStacksCache
 local _smHookedIcons, SwiftmendEnabled = I._smHookedIcons, I.SwiftmendEnabled
 local ProcessPresetCooldowns = I.ProcessPresetCooldowns
 local CollectAndReanchor, UpdateCustomBuffBars = I.CollectAndReanchor, I.UpdateCustomBuffBars
+local QueueViewerAnchor, RestoreViewerAnchors = I.QueueViewerAnchor, I.RestoreViewerAnchors
 
 local reanchorDirty = false
 local reanchorFrame = nil
 local viewerHooksInstalled = false
 
 -------------------------------------------------------------------------------
---  Lightweight position re-snap: re-applies stored _cdmAnchor on all claimed
---  icons without re-enumerating viewers or re-categorizing frames.
---  Used by OnActiveStateChanged where Blizzard may move frames but the icon
---  list hasn't changed.
+--  Queue claimed icons after active-state changes without interrupting a
+--  viewer's layout measurement or re-enumerating its pool.
 -------------------------------------------------------------------------------
 local function ReapplyPositions()
     for barKey, icons in pairs(cdmBarIcons) do
@@ -44,8 +43,7 @@ local function ReapplyPositions()
                     local fd = hookFrameData[frame]
                     local anchor = fd and fd._cdmAnchor
                     if anchor then
-                        frame:ClearAllPoints()
-                        frame:SetPoint(anchor[1], anchor[2], anchor[3], anchor[4], anchor[5])
+                        QueueViewerAnchor(frame)
                     end
                 end
             end
@@ -224,7 +222,14 @@ function ns.SetupViewerHooks()
                         _activeStateReanchorPending = false
                         QueueReanchor()
                     end)
-                    hooksecurefunc(frame, "OnActiveStateChanged", function()
+                    local isBarViewer = viewer == _G["BuffBarCooldownViewer"]
+                    hooksecurefunc(frame, "OnActiveStateChanged", function(itemFrame)
+                        -- Wake a parked Tracking Bars tick when this item activates (a
+                        -- deactivation has nothing to show): the sleeper's probe can run
+                        -- before the item binds its aura, reads a secret aura as nil and
+                        -- hears no target auras. Keep this ahead of the shared pending
+                        -- return below, which any buff item's change holds for two frames.
+                        if isBarViewer and ns.WakeTBBTickIfParked then ns.WakeTBBTickIfParked(itemFrame) end
                         ReapplyPositions()
                         if _activeStateReanchorPending then return end
                         _activeStateReanchorPending = true
@@ -239,6 +244,9 @@ function ns.SetupViewerHooks()
     for vi, vName in ipairs(VIEWER_NAMES) do
         local v = _G[vName]
         if v and v.itemFramePool then
+            if v.RefreshLayout then
+                hooksecurefunc(v, "RefreshLayout", RestoreViewerAnchors)
+            end
             local isBuff = (vi == 3 or vi == 4) -- BuffIcon or BuffBar
             local isBarViewer = (vi == 4) -- BuffBarCooldownViewer
             hooksecurefunc(v.itemFramePool, "Acquire", function()
@@ -320,24 +328,53 @@ function ns.SetupViewerHooks()
     for viewerName, barKey in pairs(SYNC_VIEWERS) do
         local viewer = _G[viewerName]
         if viewer then
-            -- No reanchor from RefreshLayout or Layout on CD/utility viewers.
-            -- CD/utility spell sets are static -- rebuilt by FullCDMRebuild
-            -- on spec/talent/equip events only. SetPoint hook on each icon
-            -- handles positioning when Blizzard calls Layout.
+            -- CD/utility spell sets are rebuilt by FullCDMRebuild, while the
+            -- shared restoration queue handles their icons after each layout.
+            -- The viewers are Edit Mode systems: pin them through the saved C
+            -- methods so Edit Mode's anchor sweep and snap state stay Blizzard's.
+            -- The SetPoint hook below watches Blizzard's own writes only.
+            -- A pin asked for in combat runs once combat ends (one queued pin
+            -- per viewer, however many asks).
+            local pinKey = "CDMViewerPin" .. barKey
             local function SyncViewerToBar()
-                if InCombatLockdown() then return end
+                if InCombatLockdown() then
+                    ns.CombatQueue.Defer(pinKey, SyncViewerToBar)
+                    return
+                end
                 local container = cdmBarFrames[barKey]
                 if not container then return end
-                viewer:ClearAllPoints()
-                viewer:SetPoint("TOPLEFT", container, "TOPLEFT", 0, 0)
-                viewer:SetPoint("BOTTOMRIGHT", container, "BOTTOMRIGHT", 0, 0)
+                EllesmereUI.ClearFramePoints(viewer)
+                EllesmereUI.SetFramePoint(viewer, "TOPLEFT", container, "TOPLEFT", 0, 0)
+                EllesmereUI.SetFramePoint(viewer, "BOTTOMRIGHT", container, "BOTTOMRIGHT", 0, 0)
             end
+            -- After a Blizzard SetPoint, a viewer in the bottom managed column
+            -- is pinned at once, so the column's next pass measures our bar. A
+            -- viewer outside it (moved or snapped in Edit Mode) is pinned once
+            -- Blizzard's call has returned: Edit Mode reads the anchor back right
+            -- after its own SetPoint (a snap break saves it into the layout) and
+            -- must find its own anchor there, never our bar.
+            local pinLater
             hooksecurefunc(viewer, "Layout", SyncViewerToBar)
             hooksecurefunc(viewer, "SetPoint", function(_, _, relativeTo)
-                if InCombatLockdown() then return end
+                if InCombatLockdown() then
+                    SyncViewerToBar() -- queues the pin for combat end
+                    return
+                end
                 local container = cdmBarFrames[barKey]
                 if relativeTo == container then return end
-                SyncViewerToBar()
+                local parent = viewer:GetParent()
+                if not issecretvalue(parent) and parent == BottomManagedFrameContainer then
+                    SyncViewerToBar()
+                    return
+                end
+                if not pinLater then
+                    pinLater = ns.TakeShell()
+                    pinLater:SetScript("OnUpdate", function(self)
+                        self:Hide()
+                        SyncViewerToBar()
+                    end)
+                end
+                pinLater:Show()
             end)
             SyncViewerToBar()
         end
@@ -351,6 +388,7 @@ function ns.SetupViewerHooks()
     local _lastDirectReanchor = 0
     local DIRECT_REANCHOR_GUARD = 0.05
     local function DirectBuffReanchor()
+        -- The shared RefreshLayout hook restores anchors before this throttle.
         local now = GetTime()
         if now - _lastDirectReanchor < DIRECT_REANCHOR_GUARD then return end
         _lastDirectReanchor = now
@@ -479,6 +517,7 @@ function ns.SetupViewerHooks()
                                 -- below regardless of the hosting bar's family.
                                 local isBuffIcon = isBuff or (fd and fd._isBuffViewerFrame)
                                     or frame._isPlaceholderFrame or false
+                                if fc and fc._missingN then ns.MissingRecheck(frame, fc) end
 
                                 local isActiveBuff = (frame.wasSetFromAura == true
                                     or frame.auraInstanceID ~= nil)
@@ -531,6 +570,12 @@ function ns.SetupViewerHooks()
                                 local buffPresent = isActiveBuff
                                     or (bd.barType == "custom_buff" and frame:IsShown())
                                 local glowActive = buffPresent
+                                -- Glow When Visible: lit exactly while the icon paints (a Show
+                                -- When Missing placeholder, an Always Show icon, a present buff).
+                                if fd and fd._bgVisible then
+                                    glowActive = not (fc and (fc._missingActiveHidden or fc._cdStateHidden))
+                                        and not ns.IsPlaceholderRenderHidden(frame, bd)
+                                end
                                 -- Glow at Stacks REPLACES the presence glow for
                                 -- thresholded icons: route to the gate instead.
                                 if fd and fd._bgThreshold then
@@ -542,6 +587,8 @@ function ns.SetupViewerHooks()
                                 -- the bar's Buff Glow. nil override => inherit; 0 => None.
                                 local effGlowType = buffGlowType
                                 if fd and fd._bgT ~= nil then effGlowType = fd._bgT end
+                                -- Glow When Visible always needs a style: None / Default use Modern WoW Glow.
+                                if effGlowType <= 0 and fd and fd._bgVisible then effGlowType = 6 end
                                 if effGlowType > 0 and fd and glowActive then
                                     if not fd.buffGlowOverlay then
                                         local ov = CreateFrame("Frame", nil, frame)
@@ -932,7 +979,7 @@ function ns.SetupViewerHooks()
                 -- indexing it, bind fields to locals (reading a secret is always
                 -- legal), then issecretvalue-gate every test. When unreadable, assume
                 -- churn -- one extra pool rebuild costs far less than a cache still
-                -- holding released frames. Same guard shape as the lust listener in CdmBuffBars.
+                -- holding released frames. Same guard shape as the lust listener in EUI_CDM_BuffBarPresets.lua.
                 if issecretvalue(updateInfo) then
                     ns._acGen = (ns._acGen or 0) + 1
                 else
@@ -1064,11 +1111,10 @@ local function LockCooldownViewerFrames()
         local frame = _G[vName]
         if IsCooldownViewerSystemFrame(frame) and ShouldLockViewer(frame) then
             frame:SetMovable(false)
+            -- No drag button on the selection box: a drag never starts there, so
+            -- Edit Mode's own OnDragStart / OnDragStop (left in place) never run.
             local selection = frame.Selection
-            if selection then
-                selection:SetScript("OnDragStart", nil)
-                selection:SetScript("OnDragStop", nil)
-            end
+            if selection then selection:RegisterForDrag() end
         end
     end
 end
@@ -1102,10 +1148,6 @@ function ns.SetupEditModeLock()
                     end
                     ShowEditModeLockNotice()
                 end)
-
-                hooksecurefunc(frame, "HighlightSystem", function() end)
-
-                hooksecurefunc(frame, "ClearHighlight", function() end)
             end
         end
 

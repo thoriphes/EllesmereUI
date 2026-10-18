@@ -7,6 +7,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  from the indicator config; no per-frame allocs (wipe + reuse).
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
+-- The options page pool's table (EllesmereUI_PixelPerfect.lua makes it; the
+-- options addon fills it in place): read through this file local, never the
+-- public slot.
+local POOL = EllesmereUI._Pool
 
 local pairs    = pairs
 local ipairs   = ipairs
@@ -65,6 +69,9 @@ tinsert(INDICATOR_TYPE_ORDER, 4, "---")
 -- overlays). UI-only (the runtime side of these settings is inert elsewhere);
 -- callers anchor the returned frame.
 local function BuildPTROverlay(parentFrame, label, fontSize)
+    -- Options page pool (EllesmereUI_FramePool.lua): on a page's pooled tile
+    -- the overlay is handed out again by the next render instead of made anew.
+    local CreateFrame = POOL.CreateFrame
     local ov = CreateFrame("Frame", nil, parentFrame)
     ov._searchIgnore = true -- inline search must never re-anchor/collapse it
     ov:SetFrameLevel(parentFrame:GetFrameLevel() + 60)
@@ -791,6 +798,8 @@ end
 -- styles/levels. Dashed diverges: the host sits on the forbidden slot-button
 -- subtree where driver-ticked ants error outside sanctioned windows, so it uses
 -- the C-side animated engine instead (identical in/out of secret; w/h come from OUR frame -- the engine never measures there).
+-- Where the client can, the host is bound to its slot button (BmEffectInit), which runs the march itself while it shows an aura: a start
+-- or stop the button refuses while auras are restricted re-runs at the lift (the glow engine defers it).
 function ns.BM_ApplyEffectBorder(borderFrame, ind, r, g, b, a, w, h)
     local Glows = EllesmereUI.Glows
     if w and (ind.borderStyle or "solid") == "dashed" then
@@ -890,6 +899,8 @@ end
 
 local function AttachPvIndHover(fr, PP)
     if PP then
+        -- The preview's pooled frames (options page pool): handed out again by the next render.
+        local CreateFrame = POOL.CreateFrame
         local hb = CreateFrame("Frame", nil, fr)
         hb:SetAllPoints()
         hb:SetFrameLevel(fr:GetFrameLevel() + 8)
@@ -906,6 +917,9 @@ end
 
 function ns.BM_CreatePreviewIndicators(f, health, PP)
     if not health then return end
+    -- Options page pool (EllesmereUI_FramePool.lua): on the Buff Manager's kept
+    -- root these are handed out again, in creation order, by the next render.
+    local CreateFrame = POOL.CreateFrame
 
     local iconPool = {}
     -- Pool is larger than per-group caps: every group must still get icons on
@@ -1036,6 +1050,8 @@ function ns.BM_ApplyPreviewIndicators(f, index, s)
     local iconPool = f._bmIconPool
     local barPool  = f._bmBarPool
     if not iconPool then return end
+    -- A manager page replica built in party style keeps reading the party view.
+    s = f._bmPvS or s
     -- Party preview passes the party proxy as `s`; use the party scale.
     local iscale = ((s == ns._scaledPartyProxy) and ns._partyBmScale or ns._bmScale) or 1
 
@@ -1187,6 +1203,11 @@ function ns.BM_ApplyPreviewIndicators(f, index, s)
                 end
             end
         end
+        -- Party Frames kit (manager page replica in party style): the live party
+        -- frames take the kit's Buff Size and one run outside the frame.
+        if f._bmPvS and ns.RF_PartyKit and ns.RF_PartyKit() and ns.RF_KitBmView then
+            out = ns.RF_KitBmView(out, true)
+        end
         -- Anchor To: stamp members with their terminal root and order them right after it, so the preview renders each set as one run.
         do
             local byId, isMember = {}, {}
@@ -1316,7 +1337,7 @@ function ns.BM_ApplyPreviewIndicators(f, index, s)
                             local per, wrapUp, wrapLeft = 0, false, false
                                 per = tonumber(ind.iconsPerRow) or 0
                                 local pu = string.upper(ind.position or "TOPLEFT")
-                                wrapUp = pu:find("BOTTOM", 1, true) ~= nil
+                                wrapUp = pu:find("BOTTOM", 1, true) ~= nil or ind.wrapUp == true
                                 wrapLeft = pu:find("RIGHT", 1, true) ~= nil
                                 local maxI = tonumber(ind.maxIcons) or 0
                                 if maxI > 0 and maxI < maxShow then maxShow = maxI end
@@ -1470,8 +1491,14 @@ function ns.BM_ApplyPreviewIndicators(f, index, s)
                                     end
                                     if fr._bdr and PP then
                                         local ibs = pvHideIcon and 0 or (ind.indBorderSize or 1)
+                                        local pandemicPreview = indType == "icon" and isSelected
+                                            and ind.pandemicBorderEnabled and not pvHideIcon
+                                            and not EllesmereUI.IS_FOREVER
+                                        if pandemicPreview then ibs = ind.pandemicBorderWidth or 2 end
                                         if ibs > 0 then
-                                            local ibc = ind.indBorderColor or { r=0, g=0, b=0 }
+                                            local ibc = pandemicPreview
+                                                and (ind.pandemicBorderColor or { r=1, g=0.2, b=0.2 })
+                                                or ind.indBorderColor or { r=0, g=0, b=0 }
                                             PP.UpdateBorder(fr._bdr, ibs, ibc.r, ibc.g, ibc.b, 1)
                                             fr._bdr:Show()
                                         else
@@ -1552,30 +1579,137 @@ end
 -------------------------------------------------------------------------------
 --  Health-bar replica preview, shared by the Debuff Manager (draws its own
 --  content on it) and the Buff Manager page. opts: previewClass (default:
---  the active spec's class), minH (150), noUniformRef. Returns pvFrame,
---  sectionH, scale.
+--  the active spec's class), minH (floor of the whole band, 91: the
+--  Editing Spec block beside it), party (read the
+--  party view instead of `s`), styleToggle (Raid/Party row above it),
+--  kitAuras ("buffs" | "debuffs": the kit hint under that row),
+--  overrideTips ({ raid = tip, party = tip }: override marks per segment).
+--  Returns pvFrame, sectionH, scale.
 function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
+    -- Options page pool (EllesmereUI_FramePool.lua): on a manager page's kept
+    -- root the replica is handed out again, in creation order, by the next render.
+    local CreateFrame = POOL.CreateFrame
     opts = opts or {}
+    -- Party style: the read-only party view (party size without an attached
+    -- portrait, party section overrides, party indicator scale), as the live
+    -- party frames read it. The kit's art is not rebuilt here.
+    if opts.party and ns._scaledPartyProxy then s = ns._scaledPartyProxy end
     local PV_SCALE = 1.5
     local rawW = s.frameWidth or 72
     local rawH = s.frameHeight or 46
     local previewPad = 20
     -- Cap on-screen height at 100px via uniform downscale (keeps rawW:rawH aspect).
     if rawH * PV_SCALE > 100 then PV_SCALE = 100 / rawH end
+    -- Party frames run much wider than raid cells: also keep the width inside
+    -- the preview column (centered on centerX).
+    if opts.party then
+        local maxW = centerX * 2 - previewPad * 2
+        if maxW > 0 and rawW * PV_SCALE > maxW then PV_SCALE = maxW / rawW end
+    end
     local pvH = floor(rawH * PV_SCALE + 0.5)
-    local sectionH = max(pvH + previewPad * 2, opts.minH or 150)
+    -- The band follows the replica (it changes with the Raid/Party style);
+    -- the switch row and kit room join it below.
+    local sectionH = pvH + previewPad * 2
+
+    -- Raid/Party row: captioned "Preview" and seated on the replica, so it
+    -- reads as a view switch, not as a second set of settings.
+    local kitMode = opts.party and ns.RF_PartyKit and ns.RF_PartyKit() and ns.RF_KitBuffMode
+        and ns.RF_KitBuffMode(ns.db and ns.db.profile)
+    local rowH = 0
+    if opts.styleToggle then
+        local row = CreateFrame("Frame", nil, parent)
+        local cap = row:CreateFontString(nil, "OVERLAY")
+        cap:SetFont(fontPath, 12, "")
+        cap:SetTextColor(1, 1, 1, 0.75)
+        cap:SetText(EllesmereUI.L("Preview"))
+        local seg, segBtn = ns.BM_BuildPreviewStyleToggle(row)
+        row:SetSize(math.ceil(cap:GetStringWidth()) + 10 + seg:GetWidth(), 22)
+        row:SetPoint("TOP", parent, "TOPLEFT", floor(centerX), topY)
+        cap:SetPoint("LEFT", row, "LEFT", 0, 0)
+        seg:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+        -- Overrides that apply on that side: a gold "i" (the overrides UI's
+        -- badge) in the segment's free right padding, carrying the tip.
+        -- Motion only: the segment keeps its clicks.
+        local tips = opts.overrideTips
+        if tips then
+            local gold = EllesmereUI._SPECOV_GOLD
+            for key, btn in pairs(segBtn) do
+                local tip = tips[key]
+                if tip then
+                    local badge = CreateFrame("Frame", nil, btn)
+                    badge:SetSize(12, 12)
+                    badge:SetPoint("RIGHT", btn, "RIGHT", -5, 0)
+                    badge:SetFrameLevel(btn:GetFrameLevel() + 5)
+                    local ico = badge:CreateTexture(nil, "OVERLAY")
+                    ico:SetAllPoints()
+                    ico:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-info.png")
+                    ico:SetVertexColor(gold[1], gold[2], gold[3], 0.85)
+                    badge:SetScript("OnEnter", function(self)
+                        ico:SetVertexColor(gold[1], gold[2], gold[3], 1)
+                        EllesmereUI.ShowWidgetTooltip(self, tip)
+                    end)
+                    badge:SetScript("OnLeave", function()
+                        ico:SetVertexColor(gold[1], gold[2], gold[3], 0.85)
+                        EllesmereUI.HideWidgetTooltip()
+                    end)
+                    badge:SetMouseClickEnabled(false)
+                end
+            end
+        end
+        row:EnableMouse(true)
+        row:SetScript("OnEnter", function(self)
+            EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.L("Only changes the preview. Raid and party frames share these settings."))
+        end)
+        row:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        rowH = 22 + 24
+        -- The kit decides these auras' size and place on party frames: name
+        -- the override and its value, in the accent colour.
+        if kitMode and opts.kitAuras then
+            local p = ns.db.profile
+            local hint = parent:CreateFontString(nil, "OVERLAY")
+            hint:SetFont(fontPath, 11, "")
+            local ar, ag, ab = EllesmereUI.ResolveActiveAccent()
+            hint:SetTextColor(ar or 1, ag or 1, ab or 1, 0.9)
+            hint:SetWidth(centerX * 2 - previewPad * 2)
+            hint:SetWordWrap(true)
+            hint:SetJustifyH("CENTER")
+            hint:SetPoint("TOP", row, "BOTTOM", 0, -8)
+            if opts.kitAuras == "buffs" then
+                hint:SetText(EllesmereUI.Lf("Party Frames kit override: Buff Size %d (Party > Frame Style)",
+                    ns.RF_KitBuffSize and ns.RF_KitBuffSize(p) or 15))
+            else
+                hint:SetText(EllesmereUI.Lf("Party Frames kit override: Debuff Size %d (Party > Frame Style)",
+                    p.partyKitDebuffSize or 15))
+            end
+            rowH = rowH + math.ceil(hint:GetStringHeight()) + 8
+        end
+    end
+    -- Kit buffs above the frame: room for their lines (at the Buff Manager scale).
+    local aboveH = 0
+    if kitMode == "ABOVE" and opts.kitAuras == "buffs" and ns.RF_KitAboveUnits then
+        aboveH = math.ceil(ns.RF_KitAboveUnits(ns.db.profile) * (ns._partyBmScale or 1) * PV_SCALE)
+    end
+    sectionH = max(sectionH + rowH + aboveH, opts.minH or 91)
+    topY = topY - rowH - aboveH
 
     local pvFrame = CreateFrame("Frame", nil, parent)
     pvFrame:SetSize(rawW, rawH)
     pvFrame:SetScale(PV_SCALE)
     pvFrame:SetPoint("TOP", parent, "TOPLEFT", floor(centerX / PV_SCALE), topY / PV_SCALE)
+    -- The side the kit's buff run takes (callers keep their controls off it).
+    pvFrame._bmKitSide = (opts.kitAuras == "buffs") and kitMode or nil
 
     local bgc = s.customBgColor or { r = 17/255, g = 17/255, b = 17/255 }
     local bg = pvFrame:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
 
     local rawPowerH = (s.powerShowForHealer or s.powerShowForTank or s.powerShowForDPS) and (s.powerHeight or 4) or 0
+    local matchPowerBorder = s.powerBorderMatchFrame == true and rawPowerH > 0
+        and (s.powerBorderStyle == "divider" or s.powerBorderStyle == "border") and not ns.RF_Stock()
+        and EllesmereUI._pixelArtBorders[s.borderTexture]
     local rawTopBarH = s.topNameBarEnabled and (s.topNameBarHeight or 20) or 0
+    local matchTopNameDivider = s.topNameBarDivider == true and rawTopBarH >= 4 and (s.borderSize or 1) > 0
+        and not ns.RF_Stock() and EllesmereUI._pixelArtBorders[s.borderTexture]
     -- Show on Bottom: the bar takes the bottom edge, health starts at the top and
     -- the power bar sits on the bar (as the live LayoutTopNameBar lays it out).
     local rawBottomY = (s.topNameBarEnabled and s.topNameBarBottom == true) and rawTopBarH or 0
@@ -1597,7 +1731,7 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
     health:SetValue(85)
 
     -- Full-height anchor reference (mirrors the live buttons' d.uniformRef so Uniform Icon Anchoring previews identically; see ns.RF_AnchorHost).
-    if not opts.noUniformRef then
+    do
         local pvUniformRef = CreateFrame("Frame", nil, pvFrame)
         pvUniformRef:SetFrameLevel(health:GetFrameLevel())
         pvUniformRef:SetPoint("TOPLEFT", health, "TOPLEFT", 0, 0)
@@ -1672,19 +1806,21 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
             ns.RF_StockBuild(pvFrame, pvFrame, power)
             ns.RF_StockDivider(pvFrame)
         elseif PP and s.powerBorderStyle and s.powerBorderStyle ~= "none" then
-            local pbSize = s.powerBorderSize or 1
+            local pbSize = matchPowerBorder and (s.borderSize or 1) or (s.powerBorderSize or 1)
             if pbSize > 0 then
                 local pwBdr = CreateFrame("Frame", nil, pvFrame)
                 pwBdr:SetAllPoints(power)
                 pwBdr:SetFrameLevel(power:GetFrameLevel() + 1)
                 PP.CreateBorder(pwBdr, 0, 0, 0, 1, 1)
-                local pBc = s.powerBorderColor or { r=0, g=0, b=0 }
-                PP.UpdateBorder(pwBdr, pbSize, pBc.r, pBc.g, pBc.b, s.powerBorderAlpha or 1)
-                local ppC = PP.GetBorders(pwBdr)
-                if ppC and s.powerBorderStyle == "divider" then
-                    if ppC._bottom then ppC._bottom:SetAlpha(0) end
-                    if ppC._left then ppC._left:SetAlpha(0) end
-                    if ppC._right then ppC._right:SetAlpha(0) end
+                if not (matchPowerBorder and ns.RF_ApplyPowerBorderArt(pwBdr, s, true, true)) then
+                    local pBc = s.powerBorderColor or { r=0, g=0, b=0 }
+                    PP.UpdateBorder(pwBdr, pbSize, pBc.r, pBc.g, pBc.b, s.powerBorderAlpha or 1)
+                    local ppC = PP.GetBorders(pwBdr)
+                    if ppC and s.powerBorderStyle == "divider" then
+                        if ppC._bottom then ppC._bottom:SetAlpha(0) end
+                        if ppC._left then ppC._left:SetAlpha(0) end
+                        if ppC._right then ppC._right:SetAlpha(0) end
+                    end
                 end
             end
         end
@@ -1700,7 +1836,14 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
             bdr:SetFrameLevel(pvFrame:GetFrameLevel() + 8)
             PP.CreateBorder(bdr, 0, 0, 0, 1, 1)
             local bc = s.borderColor or { r=0, g=0, b=0 }
-            PP.UpdateBorder(bdr, bsz, bc.r, bc.g, bc.b, s.borderAlpha or 1)
+            if matchPowerBorder or matchTopNameDivider then
+                EllesmereUI.ApplyBorderStyle(bdr, bsz, bc.r, bc.g, bc.b, s.borderAlpha or 1,
+                    s.borderTexture, s.borderTextureOffset, s.borderTextureOffsetY,
+                    s.borderTextureShiftX, s.borderTextureShiftY, "unitframes", bsz, nil,
+                    EllesmereUI.BorderPx(s.borderSizePx, bsz, s.borderTexture))
+            else
+                PP.UpdateBorder(bdr, bsz, bc.r, bc.g, bc.b, s.borderAlpha or 1)
+            end
         end
     end
 
@@ -1801,6 +1944,7 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
         else
             tnbText:SetTextColor(1, 1, 1)
         end
+        if s.topNameBarDivider == true then ns.RF_ApplyTopNameDivider(tnb, s, true) end
     end
 
     local htMode = s.healthTextMode or "none"
@@ -1861,8 +2005,149 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
     end
 
     pvFrame._health = health
+    -- Settings source for every later indicator pass on this replica (nil = the caller's).
+    pvFrame._bmPvS = opts.party and s or nil
 
     return pvFrame, sectionH, PV_SCALE
+end
+
+-- Which frames a condition group can apply on: raid (raid, battleground),
+-- party (dungeon, arena, solo). Keybind and Dark Mode hold wherever the player
+-- is, so a group with either reaches both; neither when it has no condition.
+function ns.BM_CondSides(g)
+    local c = g and g.conds or {}
+    if c.keybind or c.darkmode then return true, true end
+    return (c.raid or c.battleground) and true or false,
+        (c.dungeon or c.arena or c.solo) and true or false
+end
+
+-- The preview side an override editing session pins ("raid" | "party"): a
+-- condition group that applies on only one kind of frames. nil = free.
+function ns.BM_PreviewPinnedSide()
+    local kind, gid = EllesmereUI.SpecOverrides_EditSessionInfo()
+    if kind ~= "cond" then return nil end
+    local toRaid, toParty = ns.BM_CondSides(EllesmereUI.Conditions_GroupById(gid))
+    if toParty and not toRaid then return "party" end
+    if toRaid and not toParty then return "raid" end
+    return nil
+end
+
+-- The manager previews' style: the pinned side while one applies, else the
+-- session choice of the switch.
+function ns.BM_PreviewIsParty()
+    local pinned = ns.BM_PreviewPinnedSide()
+    if pinned then return pinned == "party" end
+    return ns._bmPvParty == true
+end
+
+-- The base debuff settings an override can hold key by key (the Debuff
+-- Manager's own content rides its forks).
+local DM_BASE_KEYS = { "debuffSize", "debuffPosition", "debuffOffsetX", "debuffOffsetY",
+    "debuffGrowDirection", "debuffWrapDirection", "debuffPerRow", "debuffCap",
+    "debuffSpacing", "debuffIconZoom", "debuffBorderSize", "debuffShowSwipe",
+    "debuffShowDurText", "debuffDurTextSize", "debuffShowStacks", "debuffStacksTextSize",
+    "debuffStacksOffsetX", "debuffStacksOffsetY" }
+
+-- The manager previews' override marks: tooltips for the Raid and the Party
+-- segment, nil where no override applies (read-only queries of the overrides
+-- system). "bm": groups with their own Buff Manager; "dm": groups with their
+-- own Debuff Manager and overrides holding base debuff settings. A condition
+-- group lands on the side whose frames it applies on; spec groups land on both.
+function ns.BM_PreviewOverrideTips(kind)
+    local raid, party, seenR, seenP = nil, nil, {}, {}
+    local function Add(name, toRaid, toParty)
+        name = name or "?"
+        if toRaid and not seenR[name] then
+            seenR[name] = true
+            raid = raid or {}
+            raid[#raid + 1] = name
+        end
+        if toParty and not seenP[name] then
+            seenP[name] = true
+            party = party or {}
+            party[#party + 1] = name
+        end
+    end
+    local function AddCond(gid)
+        local g = gid and EllesmereUI.Conditions_GroupById(gid)
+        if not g then return end
+        local toRaid, toParty = ns.BM_CondSides(g)
+        if not (toRaid or toParty) then toRaid, toParty = true, true end
+        Add(g.name, toRaid, toParty)
+    end
+    -- Groups with their own Buff or Debuff Manager.
+    local specGids, condGids = EllesmereUI.SpecOverrides_ManagerForkOwners(kind)
+    for i = 1, #specGids do
+        local g = EllesmereUI.SpecOverrides_GroupById(specGids[i])
+        if g then Add(g.name, true, true) end
+    end
+    for i = 1, #condGids do AddCond(condGids[i]) end
+    if kind == "dm" then
+        local holders = EllesmereUI.SpecOverrides_CapturedBy("EllesmereUIRaidFrames", DM_BASE_KEYS)
+        for j = 1, #holders do
+            local h = holders[j]
+            if h.kind == "cond" then
+                AddCond(h.id)
+            else
+                -- Spec values: the spec's group, else the spec's own name.
+                local og = EllesmereUI.SpecOverrides_OwningGroupFor(h.id)
+                local name = og and og.name
+                if not name and GetSpecializationInfoByID then
+                    local _, sn = GetSpecializationInfoByID(h.id)
+                    name = sn
+                end
+                Add(name, true, true)
+            end
+        end
+    end
+    local sub = (kind == "bm") and EllesmereUI.L("These overrides use their own Buff Manager.")
+        or EllesmereUI.L("These overrides hold their own debuff settings.")
+    local rgb = EllesmereUI._SPECOV_GOLD
+    local gold = EllesmereUI.HexColor(rgb[1], rgb[2], rgb[3])
+    local function Tip(names)
+        if not names then return nil end
+        return gold .. EllesmereUI.L("Overridden by:") .. "|r " .. table.concat(names, ", ")
+            .. "\n" .. EllesmereUI.COLOR_CODES.DIM .. sub .. "|r"
+    end
+    return Tip(raid), Tip(party)
+end
+
+-- Raid / Party style switch of the manager pages' previews. Session only
+-- (never saved): the Buff and Debuff Manager settings are shared by both.
+-- Returns the control and its segment buttons by key.
+function ns.BM_BuildPreviewStyleToggle(parent)
+    local seg, _, _, btnOf = EllesmereUI.BuildSegmentedControl({
+        parent    = parent,
+        keys      = { "raid", "party" },
+        labels    = { raid = "Raid", party = "Party" },
+        autoWidth = true,
+        square    = true,
+        height    = 22,
+        getChecked = function(key)
+            return (key == "party") == ns.BM_PreviewIsParty()
+        end,
+        -- An override editing session whose contexts show one kind of frames
+        -- pins the preview to that side; the other segment greys out.
+        isDisabled = function(key)
+            local pinned = ns.BM_PreviewPinnedSide()
+            return pinned ~= nil and key ~= pinned
+        end,
+        disabledTip = function()
+            local name = EllesmereUI.SpecOverrides_EditSessionName() or "?"
+            if ns.BM_PreviewPinnedSide() == "party" then
+                return EllesmereUI.Lf("Editing %s: it applies to party frames only.", name)
+            end
+            return EllesmereUI.Lf("Editing %s: it applies to raid frames only.", name)
+        end,
+        onToggle = function(key)
+            if ns.BM_PreviewPinnedSide() then return end
+            local party = (key == "party")
+            if party == (ns._bmPvParty == true) then return end
+            ns._bmPvParty = party
+            EllesmereUI:RefreshPage(true)
+        end,
+    })
+    return seg, btnOf
 end
 
 function ns.BM_BuildPage(pageName, parent, yOffset)
@@ -1870,6 +2155,10 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
     if not W then return 0 end
     local db = ns.db
     if not db then return 0 end
+    -- Options page pool (EllesmereUI_FramePool.lua): everything below builds on
+    -- the page's kept root, so the next render hands the same frames out again
+    -- (in creation order) instead of making new ones.
+    local CreateFrame = POOL.CreateFrame
     -- Override-session gate: heals a stale BM layer FIRST (renders the edited group's fork) and reports the end overlay; nil = normal WYSIWYG.
     local bmOverlayState = EllesmereUI.SpecOverrides_BmPagePrelude() or nil
     local PP = EllesmereUI.PanelPP
@@ -1888,6 +2177,9 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
             ns.BM_ApplyPreviewIndicators(pv, 1, db.profile)
         end
     end
+    -- The Assigned Buffs filter picks (the manager-pages file) update the
+    -- frames and preview in place through this.
+    ns._bmReloadAndUpdate = ReloadAndUpdate
 
     -- Full update: also rebuilds the page (preview, sidebar, settings) -- used by create/delete/toggle/dropdown changes that alter structure.
     local function ReloadAndRebuild()
@@ -2017,13 +2309,17 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
     local sidebarW = floor(parentW * 0.28)
     local leftW = parentW - sidebarW
 
-    -- Outer container: parented to scrollFrame, fills entire viewport
-    local outerRoot = CreateFrame("Frame", nil, scrollFrame)
+    -- The refreshers this render registers replace the previous render's (it
+    -- may run outside a page pass: the deferred renders of a cache restore).
+    EllesmereUI._BeginRootRender("rf.bm")
+    -- Outer container: parented to scrollFrame, fills entire viewport. One
+    -- for the session (the options page pool): every render dresses it again,
+    -- and its reset is the previous render's teardown.
+    local outerRoot = POOL.Kept(ns, "bmRoot", "Frame", scrollFrame)
     outerRoot:SetAllPoints(scrollFrame)
     outerRoot:SetFrameLevel(scrollFrame:GetFrameLevel() + 5)
 
     -- Store reference so we can clean up on page switch
-    if ns._bmRoot then ns._bmRoot:Hide(); ns._bmRoot:SetParent(nil) end
     if ns._addNewPopup then ns._addNewPopup:Hide() end
     if EllesmereUI._pickMenu then EllesmereUI._pickMenu:Hide() end
     ns._bmRoot = outerRoot
@@ -2232,26 +2528,29 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
             end
         end
     end
-    for _, ind in ipairs(specIndicators) do
-        -- v2: tiles render the RESOLVED spell union (assigned filters + direct spells) -- the raw list is empty for filter-driven groups.
+    -- v2: tiles render the RESOLVED spell union (assigned filters + direct
+    -- spells) -- the raw list is empty for filter-driven groups. The face
+    -- prefers a spell the EDITED bucket's spec/class actually uses (known
+    -- spell > class-tagged > all-class). Returns face, subtitle.
+    local function TileFaceSub(ind)
         local tileSpells = ind.spells
-        if ns.BM2_ResolveSpells then
-            tileSpells = ns.BM2_ResolveSpells(ind)
+        if ns.BM2_ResolveSpells then tileSpells = ns.BM2_ResolveSpells(ind) end
+        if not (tileSpells and #tileSpells > 0) then return 136243, EllesmereUI.L("(no spells)") end
+        local names = {}
+        for _, sid in ipairs(tileSpells) do
+            names[#names + 1] = SPELL_NAME_BY_ID[sid]
+                or (C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(sid))
+                or tostring(sid)
         end
-        local face = 136243
-        local subtitle = EllesmereUI.L("(no spells)")
-        if tileSpells and #tileSpells > 0 then
-            -- v2: prefer a spell the EDITED bucket's spec/class actually uses as the tile's face (known spell > class-tagged > all-class).
-            face = GetSpellIcon((ns.BM2_PreferredSpell
-                and ns.BM2_PreferredSpell(ind, SelectedBucketClass())) or tileSpells[1])
-            local names = {}
-            for _, sid in ipairs(tileSpells) do
-                names[#names + 1] = SPELL_NAME_BY_ID[sid]
-                    or (C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(sid))
-                    or tostring(sid)
-            end
-            subtitle = table.concat(names, ", ")
-        end
+        return GetSpellIcon((ns.BM2_PreferredSpell
+            and ns.BM2_PreferredSpell(ind, SelectedBucketClass())) or tileSpells[1]),
+            table.concat(names, ", ")
+    end
+    for _, ind in ipairs(specIndicators) do
+        -- The selected indicator's filters are edited live in the settings
+        -- column, so its tile re-reads face and subtitle on every widget refresh.
+        local isSel = selectedIndicator and selectedIndicator.id == ind.id
+        local face, subtitle = TileFaceSub(ind)
 
         local typeInfo2 = INDICATOR_TYPE_MAP[ind.type]
         local typeName = typeInfo2 and typeInfo2.name or ind.type
@@ -2262,10 +2561,12 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
 
         local tileH, tile = EllesmereUI.BuildManagerTile(sidebarFrame, tileY, {
             width = sidebarW, fontPath = fontPath, icon = face,
+            iconFn = isSel and function() return (TileFaceSub(ind)) end or nil,
             -- v2: named indicators (the seeded filter groups) show their name.
             title = ind.name and EllesmereUI.L(ind.name) or EllesmereUI.L(typeName),
             titleUnclamped = true, posText = posText, subtitle = subtitle,
-            selected = selectedIndicator and selectedIndicator.id == ind.id,
+            subtitleFn = isSel and function() return select(2, TileFaceSub(ind)) end or nil,
+            selected = isSel,
             enabled = ind.enabled,
             showToggle = true,
             onSelect = function()
@@ -2425,9 +2726,9 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
 
             if not selectedSpecKey then return end
 
-            -- Rebuild spell items for the (possibly changed) spec
-            if popup and popup._rebuildSpells then
-                popup._rebuildSpells()
+            -- Relabel the Filters and Extra Spells dropdowns (OnHide wiped the picks)
+            if popup and popup._refreshDDs then
+                popup._refreshDDs()
             end
 
             if not popup then
@@ -2527,11 +2828,14 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
                 local exDDY = py
                 py = py - ROW_H - DD_GAP
 
-                -- Rebuilt per open (filter list / Selected grouping go stale); pending picks survive rebuilds, wiped on hide.
+                -- Built once: both menus re-read their items on every open, so a
+                -- reopen only relabels the two dropdowns (OnHide wiped the picks).
                 local function BuildV2DDs()
-                    if popup._fltDD then popup._fltDD:Hide(); popup._fltDD:SetParent(nil) end
-                    if popup._exDD then popup._exDD:Hide(); popup._exDD:SetParent(nil) end
-                    popup._fltDD, popup._exDD = nil, nil
+                    if popup._fltDD then
+                        popup._fltRefresh()
+                        popup._exRefresh()
+                        return
+                    end
 
                     -- Dynamic items: fresh per menu open (adds/renames live).
                     -- Two-lane rows: Show picks (popup._v2Filters) and Hide picks
@@ -2540,7 +2844,7 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
                         local filters = (ns.BM2_Filters and ns.BM2_Filters()) or {}
                         local fItems = {
                             { isTopAction = true, label = "Edit Filters", onClick = function()
-                                if ns.BMP_ShowFilterEditor then ns.BMP_ShowFilterEditor() end
+                                if ns.BMP_ShowFilterEditor then ns.BMP_ShowFilterEditor(popup._v2Filters, popup._v2NegFilters) end
                             end },
                             { isHeader = true, label = "Show", rightLabel = "Hide" },
                         }
@@ -2549,7 +2853,7 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
                         end
                         return fItems
                     end
-                    local fltDD = EllesmereUI.BuildVisOptsCBDropdown(
+                    local fltDD, fltRefresh = EllesmereUI.BuildVisOptsCBDropdown(
                         popup, ddW, popup:GetFrameLevel() + 2,
                         FItems,
                         function(k, neg)
@@ -2568,7 +2872,7 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
                         nil, 12)
                     fltDD:SetSize(ddW, ROW_H)
                     fltDD:SetPoint("TOPLEFT", popup, "TOPLEFT", POPUP_PAD, fltDDY)
-                    popup._fltDD = fltDD
+                    popup._fltDD, popup._fltRefresh = fltDD, fltRefresh
 
                     local function SpellEntry(id)
                         -- Curated name first (distinguishes variants the client
@@ -2641,7 +2945,7 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
                         for i = 1, #rest do eItems[#eItems + 1] = rest[i] end
                         return eItems
                     end
-                    local exDD = EllesmereUI.BuildVisOptsCBDropdown(
+                    local exDD, exRefresh = EllesmereUI.BuildVisOptsCBDropdown(
                         popup, ddW, popup:GetFrameLevel() + 2,
                         EItems,
                         function(k) return popup._v2Extras[k] and true or false end,
@@ -2649,10 +2953,10 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
                         nil, 10, true)
                     exDD:SetSize(ddW, ROW_H)
                     exDD:SetPoint("TOPLEFT", popup, "TOPLEFT", POPUP_PAD, exDDY)
-                    popup._exDD = exDD
+                    popup._exDD, popup._exRefresh = exDD, exRefresh
                 end
                 BuildV2DDs()
-                popup._rebuildSpells = BuildV2DDs
+                popup._refreshDDs = BuildV2DDs
 
                 -- Create button
                 local cBtn = CreateFrame("Button", nil, popup)
@@ -2764,8 +3068,10 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
             local _, pc = UnitClass("player")
             previewClass = pc
         end
+        local ovRaid, ovParty = ns.BM_PreviewOverrideTips("bm")
         local pvFrame, sectionH, PV_SCALE = ns.BM_BuildSimplePreview(leftFrame, s, fontPath, PP, pvSplitW / 2, ly - 20,
-            { previewClass = previewClass, minH = 120, noUniformRef = true })
+            { previewClass = previewClass, party = ns.BM_PreviewIsParty(),
+              styleToggle = true, kitAuras = "buffs", overrideTips = { raid = ovRaid, party = ovParty } })
         local health = pvFrame._health
 
         -- Vertical divider between preview and editing spec
@@ -2864,7 +3170,12 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
 
             local eyeBtn = CreateFrame("Button", nil, leftFrame)
             eyeBtn:SetSize(26, 26)
-            eyeBtn:SetPoint("LEFT", pvFrame, "RIGHT", 18 / PV_SCALE, 0)
+            -- The kit's buff run beside the frame on the right: the eyeball moves left.
+            if pvFrame._bmKitSide == "RIGHT" then
+                eyeBtn:SetPoint("RIGHT", pvFrame, "LEFT", -18 / PV_SCALE, 0)
+            else
+                eyeBtn:SetPoint("LEFT", pvFrame, "RIGHT", 18 / PV_SCALE, 0)
+            end
             eyeBtn:SetFrameLevel(leftFrame:GetFrameLevel() + 5)
 
             local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
@@ -3372,11 +3683,11 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
 
             local bdrRow = SettingsRow(
                 { type="slider", text="Opacity", min=0, max=100, step=1,
-                  disabled=IconHidden, disabledTooltip="Hide Icons",
+                  disabled=IconHidden, disabledTooltip="Hide Icons", requireState="disabled",
                   getValue=function() return ind.iconOpacity or 100 end,
                   setValue=function(v) ind.iconOpacity = v; ReloadAndUpdate() end },
                 { type="slider", text="Border", min=0, max=4, step=1, trackWidth=120,
-                  disabled=IconHidden, disabledTooltip="Hide Icons",
+                  disabled=IconHidden, disabledTooltip="Hide Icons", requireState="disabled",
                   getValue=function() return ind.indBorderSize or 1 end,
                   setValue=function(v) ind.indBorderSize = v; ReloadAndUpdate() end })
             do
@@ -3397,7 +3708,7 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
 
             local durRow = SettingsRow(
                 { type="toggle", text="Duration Swipe",
-                  disabled=IconHidden, disabledTooltip="Hide Icons",
+                  disabled=IconHidden, disabledTooltip="Hide Icons", requireState="disabled",
                   getValue=function() return ind.showDuration ~= false end,
                   setValue=function(v) ind.showDuration = v; ReloadAndUpdate() end },
                 { type="toggle", text="Duration Text",
@@ -3571,7 +3882,43 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
                 end
             end
 
-            -- THRESHOLD section (Enable, seconds, color, opacity)
+            -- Pandemic Border (icon only, not on WoW Forever): the game shows it while
+            -- the buff is in its refresh window; color and size in the row's swatch and cog.
+            if indType == "icon" and not EllesmereUI.IS_FOREVER then
+                local pandemicOff = function() return IconHidden() or not ind.pandemicBorderEnabled end
+                local pandemicTip = function() return IconHidden() and "Hide Icons" or "Pandemic Border" end
+                local pandemicState = function() return IconHidden() and "disabled" or "enabled" end
+                local pandemicRow = SettingsRow(
+                    { type="toggle", text="Pandemic Border",
+                      tooltip="Shows a colored border on these icons while the buff can be refreshed without losing time.",
+                      disabled=IconHidden, disabledTooltip="Hide Icons", requireState="disabled",
+                      getValue=function() return ind.pandemicBorderEnabled == true end,
+                      setValue=function(v) ind.pandemicBorderEnabled = v; ReloadAndUpdate(); EllesmereUI:RefreshPage() end },
+                    { type="label", text="" })
+                local rgn = pandemicRow._leftRegion
+                EllesmereUI.BuildInlineSwatches(rgn, {
+                    { tooltip = "Pandemic Border Color",
+                      getValue = function()
+                          local c = ind.pandemicBorderColor or { r=1, g=0.2, b=0.2 }
+                          return c.r, c.g, c.b, 1
+                      end,
+                      setValue = function(r, g, b)
+                          ind.pandemicBorderColor = { r=r, g=g, b=b }
+                          ReloadAndUpdate()
+                      end },
+                }, { disabled = pandemicOff, disabledTooltip = pandemicTip, requireState = pandemicState, size = 20 })
+                EllesmereUI.BuildInlineCog(rgn, {
+                    disabled = pandemicOff, disabledTooltip = pandemicTip, requireState = pandemicState,
+                    title = "Pandemic Border",
+                    rows = {
+                        { type="slider", label="Border Size", min=1, max=5, step=1,
+                          get=function() return ind.pandemicBorderWidth or 2 end,
+                          set=function(v) ind.pandemicBorderWidth = v; ReloadAndUpdate() end },
+                    },
+                })
+            end
+
+            -- THRESHOLD section
             BuildThresholdRow()
 
         elseif typeInfo and typeInfo.placed then
@@ -3923,6 +4270,7 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
     local sidebarContentH = max(10, math.abs(tileY))
     sidebarChild:SetHeight(sidebarContentH)
 
+    EllesmereUI._EndRootRender("rf.bm")
     -- Return 0: content lives on scrollFrame directly, so no outer scroll range.
     return 0
 end

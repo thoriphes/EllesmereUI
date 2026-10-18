@@ -503,6 +503,11 @@ local function Skin_PlayerSpells()
     if f.SpellBookFrame and f.SpellBookFrame.CategoryTabSystem then
         WSkin.TabSystem(f.SpellBookFrame.CategoryTabSystem, { darkActive = true })
     end
+    -- WoW Forever's talents page carries its own dual-spec tabs (Primary /
+    -- Secondary): the same tab treatment, also ahead of the button sweep.
+    if f.TalentsFrame and f.TalentsFrame.TabSystem then
+        WSkin.TabSystem(f.TalentsFrame.TabSystem, { darkActive = true })
+    end
     -- Collapse/restore control: quest-tracker collapse/expand atlas pair,
     -- 16x16, desaturated white. Atlas-guarded: a missing name keeps Blizzard's art.
     local function MaxMinGlyph(btn, atlas)
@@ -555,6 +560,24 @@ local function Skin_PlayerSpells()
                 -- Tree background is content: exempt from art sweeps, shown at 75%.
                 WSkin.ExemptArt(sub)
                 DimTalentArt(sub)
+                -- WoW Forever keeps the spec art in ClassBackground and draws a
+                -- backdrop of its own as Background, 20px taller than the page,
+                -- over the shell's top bar: off, so the shell shows round the tree.
+                if sub.ClassBackground and sub.Background and sub.Background.SetAlpha then
+                    sub.Background:SetAlpha(0)
+                end
+                -- WoW Forever's search options button beside the search box: our
+                -- arrow alone, no block, on the search box's centre line (Blizzard
+                -- seats the button 2px below it). One-shot.
+                local sod = sub.SearchOptionsDropdown
+                if sod and not sod:IsForbidden() and not GetFFD(sod).arrow then
+                    WSkin.FadeRegions(sod)
+                    local arrow = sod:CreateTexture(nil, "OVERLAY")
+                    arrow:SetAtlas("Azerite-PointingArrow")
+                    arrow:SetSize(14, 10)
+                    arrow:SetPoint("CENTER", sod, "CENTER", 0, 2)
+                    GetFFD(sod).arrow = arrow
+                end
                 -- Search box matches loadout dropdown height (one-shot, retries until laid out).
                 local dd = sub.LoadSystem and sub.LoadSystem.Dropdown
                 local sbx = sub.SearchBox
@@ -11873,8 +11896,11 @@ end
 
 -------------------------------------------------------------------------------
 --  Loot roll popups (GroupLootFrame1..N inside GroupLootContainer). The
---  CONTAINER is deliberately UNTOUCHED: a UIParent-managed frame whose
---  position EllesmereUIQoL's Shifter already owns; writing its layout flags from here taints the secure managed-layout pass.
+--  CONTAINER is deliberately UNTOUCHED: a bottom managed column frame whose
+--  position belongs to the shared frame placer (EllesmereUI.SetFramePlacer:
+--  the Shifter's saved spot, else the Cooldown Manager's, else Blizzard's own
+--  column spot); writing its layout flags from here taints the managed-layout
+--  pass.
 -------------------------------------------------------------------------------
 function LP.SkinRollFrame(f)
     if not f or f:IsForbidden() then return end
@@ -11924,17 +11950,22 @@ function LP.SkinRollFrame(f)
         WSkin.QualityBorder(host or f, icon, qr, qg, qb)
     end
 
-    LP.Bar(f.Timer or f.Bar or f.StatusBar)
-
-    -- Bonus Roll: its timer lives on PromptFrame, parked by Blizzard one frame
-    -- level BELOW the window so the window's own art frames it. The shell
-    -- backdrop is drawn on the window, so under it the bar all but vanishes:
-    -- it rides one level above the window instead (the roll buttons' level).
+    -- Blizzard parks both timers one frame level BELOW the window so the
+    -- window's own art frames them (GroupLootFrame_OnLoad; BonusRollFrame_OnLoad
+    -- for the Bonus Roll's, which lives on PromptFrame). The shell backdrop is
+    -- drawn on the window, so under it a bar all but vanishes: each rides one
+    -- level above the window instead (the roll buttons' level).
+    local level = f:GetFrameLevel() + 1
+    local timer = f.Timer or f.Bar or f.StatusBar
+    if timer and not timer:IsForbidden() then
+        LP.Bar(timer)
+        timer:SetFrameLevel(level)
+    end
     local prompt = f.PromptFrame
     local ptimer = prompt and prompt.Timer
     if ptimer and not ptimer:IsForbidden() then
         LP.Bar(ptimer)
-        ptimer:SetFrameLevel(f:GetFrameLevel() + 1)
+        ptimer:SetFrameLevel(level)
     end
 
     -- Name keeps its item-quality color; only the face changes.
@@ -12222,7 +12253,7 @@ end
 --  application: group title, activity, your role, Accept/Decline) and
 --  LFGInvitePopup (invited to a group finder party, with role checks).
 --
---  EllesmereUIBlizzardSkin.lua also skins LFGListInviteDialog, gated on
+--  EUI_BlizzardSkin_Dialogs.lua also skins LFGListInviteDialog, gated on
 --  EllesmereUIDB.reskinQueuePopup (a plain truthiness test, unlike the Queue
 --  Popup's `~= false`, so it only runs for users who toggled the option ON).
 --  When it does, it lays a flat BACKGROUND texture at sublevel 0 over this
@@ -13393,8 +13424,8 @@ WSkin.RegisterWindow({
 --  registration on an existing key is the same shape charsheet and
 --  professionsbook already use.
 --
---  Blizzard swaps between two BACKGROUND textures depending on how many digits
---  the count needs (SingleItem vs MultiItem, chosen in ChooseFrameType), and
+--  Blizzard swaps between two BACKGROUND textures depending on whether the item
+--  is sold singly or in bundles (SingleItem vs MultiItem, chosen in ChooseFrameType), and
 --  re-shows whichever it picked on each open. Both are faded every pass rather
 --  than once, or the first multi-digit split brings the brass money-frame art
 --  back on a window that has already been skinned.
@@ -13453,14 +13484,21 @@ function HP.ApplyStackSplit()
                 WSkin.QualityBorder(f, bg,
                     Theme.brdR or 0.2, Theme.brdG or 0.2, Theme.brdB or 0.2)
 
-                -- ...and put the number in the MIDDLE of it. Stock leaves it
-                -- right-justified against an offset that only made sense with
-                -- the old money-frame plate behind it.
-                f.StackSplitText:ClearAllPoints()
-                f.StackSplitText:SetPoint("CENTER", bg, "CENTER", 0, 0)
                 if f.StackSplitText.SetJustifyH then
                     f.StackSplitText:SetJustifyH("CENTER")
                 end
+            end
+            -- A bundle shows two lines, the stacks over the total; Blizzard's
+            -- anchors for them already straddle the arrow row. A single count
+            -- goes in the MIDDLE of the field: stock right-justifies it against
+            -- an offset that only made sense with the old money-frame plate, and
+            -- ChooseFrameType puts that anchor back on every open.
+            if f.isMultiStack then
+                d.splitField:SetHeight(44)
+            else
+                d.splitField:SetHeight(22)
+                f.StackSplitText:ClearAllPoints()
+                f.StackSplitText:SetPoint("CENTER", d.splitField, "CENTER", 0, 0)
             end
         end
 
@@ -13489,9 +13527,11 @@ function HP.ApplyStackSplit()
     end
 
     Pass()
-    HP.OnShow(f, Pass)
-    -- ChooseFrameType is what swaps the two backdrops, so re-fade after it.
-    HP.HookMethod(f, "UpdateStackSplitFrame", WSkin.Debounce(function()
+    -- Every open runs ChooseFrameType (both clients open the box only through
+    -- OpenStackSplitFrame), and so does a shift-click on another item while the
+    -- box is up, which fires no OnShow. It swaps the two backdrops, resizes the
+    -- frame and re-anchors the count, so the pass follows it, one frame later.
+    HP.HookMethod(f, "ChooseFrameType", WSkin.Debounce(function()
         if f:IsVisible() then Pass() end
     end))
 end

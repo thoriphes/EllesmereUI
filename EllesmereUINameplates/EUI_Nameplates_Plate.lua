@@ -229,19 +229,17 @@ function ns.NP_ReclaimBlizzardFrame(uf)
     if wc and wc:GetParent() ~= uf then wc:SetParent(uf) end
     if stf and stf:GetParent() ~= uf then stf:SetParent(uf) end
 end
--- WoW Forever: Blizzard's behind-camera arrow (the rotated offscreen icon under a plate
--- whose unit is behind the camera) stays hidden on every plate, friendly ones included.
--- Alpha only: Blizzard drives nothing but its shown state, so alpha 0 holds for the
--- life of the pooled UnitFrame; once per frame (weak external record, nothing written
--- on Blizzard's frame).
-if EllesmereUI.IS_FOREVER then
-    local hiddenBehindCam = setmetatable({}, { __mode = "k" })
-    function ns.NP_HideBehindCameraIcon(uf)
-        if not uf or hiddenBehindCam[uf] or uf:IsForbidden() then return end
-        hiddenBehindCam[uf] = true
-        local icon = uf.behindCameraIcon
-        if icon then icon:SetAlpha(0) end
-    end
+-- Blizzard's behind-camera arrow (the rotated offscreen icon under a plate whose unit is
+-- behind the camera; retail and WoW Forever) stays hidden on every plate, friendly ones
+-- included. Alpha only: Blizzard drives nothing but its shown state, so alpha 0 holds
+-- for the life of the pooled UnitFrame; once per frame (weak external record, nothing
+-- written on Blizzard's frame). A client without the arrow has nothing to hide.
+local hiddenBehindCam = setmetatable({}, { __mode = "k" })
+function ns.NP_HideBehindCameraIcon(uf)
+    if not uf or hiddenBehindCam[uf] or uf:IsForbidden() then return end
+    hiddenBehindCam[uf] = true
+    local icon = uf.behindCameraIcon
+    if icon then icon:SetAlpha(0) end
 end
 ns.HideBlizzardFrame = HideBlizzardFrame
 local castFallbackFrame = CreateFrame("Frame")
@@ -781,7 +779,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
     if self.totText then self.totText:Hide() end
     -- Slot assignments may change element kinds: drop the value memo so the
     -- next UpdateHealthValues rewrites every slot's content.
-    self._hpTxtPct, self._hpTxtCur = nil, nil
+    self._hpTxtPct, self._hpTxtCur, self._hpTxtMax = nil, nil, nil
     if not self._cachedHealthSlots then
         self._cachedHealthSlots = { _count = 0 }
     end
@@ -969,6 +967,8 @@ function NameplateFrame:SetUnit(unit, nameplate)
     self:RegisterUnitEvent("UNIT_MAXHEALTH", unit)
     self:RegisterUnitEvent("UNIT_ABSORB_AMOUNT_CHANGED", unit)
     self:RegisterUnitEvent("UNIT_NAME_UPDATE", unit)
+    -- Elite/rare badge: Blizzard's own plates repaint it on this event.
+    self:RegisterUnitEvent("UNIT_CLASSIFICATION_CHANGED", unit)
     self:RegisterUnitEvent("UNIT_THREAT_LIST_UPDATE", unit)
     -- Target of Target text: its event only while a slot shows it.
     self:SyncToT(unit)
@@ -1062,11 +1062,6 @@ function NameplateFrame:SetUnit(unit, nameplate)
             self:ApplyTarget()
             self:ApplyMouseover()
             self:UpdateCast()
-            -- Mirrored class colour only: on a fresh plate Blizzard's own SetUnit may not have
-            -- run yet, in which case the same-unit guard refused to mirror and the plate is
-            -- wearing the plain fallback. Retry once a frame later so it does not sit there
-            -- until the unit's next health event.
-            if self._mirrorPending then self:UpdateHealthColor() end
         end
     end
     C_Timer.After(0, self._deferredSetupCB)
@@ -1151,7 +1146,6 @@ function NameplateFrame:ClearUnit()
     self._absorbHidden = nil
     self._maxHPValid = nil
     self._lastHCr, self._lastHCg, self._lastHCb = nil, nil, nil
-    self._mirrorPending = nil
     -- Threat Colors border/text channels: drop the skip-if-unchanged caches so a recycled
     -- plate always repaints for its new unit. _threatBdOn / _threatNameOn are deliberately
     -- LEFT set -- they record that the border and name still carry a threat tint, and the
@@ -1162,7 +1156,7 @@ function NameplateFrame:ClearUnit()
     self._scUnit = nil
     -- Health-text value memo (UpdateHealthValues): a recycled plate must
     -- always write its first values, never skip against the old unit's.
-    self._hpTxtPct, self._hpTxtCur = nil, nil
+    self._hpTxtPct, self._hpTxtCur, self._hpTxtMax = nil, nil, nil
     self._ovFocShown, self._ovTgtShown = nil, nil
     self._focusLetterShown = nil
     if self._tptShown then self.threatPctText:Hide() end

@@ -2,7 +2,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 --  EUI_DamageMeters_Options.lua
 --  Options page for EllesmereUI Damage Meters.
---  All settings are live (no Edit Mode, no reload required).
+--  All settings are live (no Edit Mode, no reload required), except the WoW
+--  Forever look's Border Style, latched with the look (reload popup).
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUIDamageMeters"]  -- module namespace (published by the module at its load)
 if not ns then return end  -- module disabled: no options page
@@ -15,6 +16,13 @@ local function DMBlizzGate(cfg, keepRow)
     if DMBlizzArt() then return EllesmereUI.BlizzStyle.Gate("damagemeters", cfg, keepRow) end
     return cfg
 end
+
+-- Page reuse: the frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua, the options addon's first file), which hands a
+-- kept page its previous build's frames back reset to new; on any other
+-- parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+local PoolIsIdle = EllesmereUI._Pool.IsIdle
 
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
@@ -34,7 +42,8 @@ initFrame:SetScript("OnEvent", function(self)
     local function Set(k, v) DB()[k] = v     end
 
     -- All settings are picked up on the next refresh cycle (0.3s combat,
-    -- 2s idle). Just Set() and go.
+    -- 2s idle). Just Set() and go -- except the WoW Forever look's Border
+    -- Style, which asks for a reload.
 
     -- Shared capture button for both damage meter hotkeys (reset data, show/hide
     -- windows). Returns the button so the caller can anchor its cog to it.
@@ -287,12 +296,38 @@ initFrame:SetScript("OnEvent", function(self)
         end
         y = y - h
 
-        -- Reset Data Keybind (+ inline cog: hide reset button) | (free). Refresh Rate and
-        -- its "(seconds)" suffix moved up to the Visibility row.
+        -- Reset Data Keybind (+ inline cog: hide reset button) | (free; on the WoW
+        -- Forever look its window Border Style). Refresh Rate and its "(seconds)"
+        -- suffix moved up to the Visibility row. The Border Style is latched with
+        -- the look (the windows are built with its insets), so picking another kind
+        -- than the latched one asks for a reload; Slim Textured (Blizzard's live
+        -- art) is the default and reads for an unset value, each pick is saved,
+        -- and a kind this client has no art for draws Slim
+        -- (EllesmereUI.ForeverBorderKind).
+        local fvBorderCfg = EllesmereUI.BlizzStyle.Forever("damagemeters") and
+            { type="dropdown", text="Border Style",
+              tooltip="WoW Forever's frame round the meter windows, the breakdown, Spell History and the Forever Essentials threat meter. Slim Textured uses Blizzard's current art; a style whose art this client lacks draws Slim. Applies after a UI reload.",
+              values = { slim = "Slim", textured = "Slim Textured", heavy = "Heavy Bronze" },
+              order  = { "slim", "textured", "heavy" },
+              getValue = function()
+                  local v = Cfg("foreverBorder")
+                  return (v == "slim" or v == "heavy") and v or "textured"
+              end,
+              setValue = function(v)
+                  Set("foreverBorder", v)
+                  if EllesmereUI.ForeverBorderKind(v) == ns.DMFvKind() then return end
+                  EllesmereUI:ShowConfirmPopup({
+                      title       = "Reload Required",
+                      message     = "Border Style changed. A UI reload is needed to apply it.",
+                      confirmText = "Reload Now",
+                      cancelText  = "Later",
+                      reload      = true,
+                  })
+              end }
         local rrRow
         rrRow, h = W:DualRow(parent, y,
             { type="label", text="Reset Data Keybind" },
-            { type="label", text="" })
+            fvBorderCfg or { type="label", text="" })
         -- "(seconds)" suffix for Refresh Rate, which lives in the Visibility row's right
         -- slot -- not this row.
         do
@@ -301,10 +336,12 @@ initFrame:SetScript("OnEvent", function(self)
             suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
             suffix:SetTextColor(1, 1, 1, 0.35)
             local rrLabel
+            -- An idle pooled region keeps its last build's text: skip it.
             local regions = { rgn:GetRegions() }
             for i = 1, #regions do
                 local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Refresh Rate" then
+                if reg and reg.GetText and not PoolIsIdle(reg)
+                    and EllesmereUI.EnKey(reg:GetText()) == "Refresh Rate" then
                     rrLabel = reg
                     break
                 end
@@ -1085,10 +1122,12 @@ initFrame:SetScript("OnEvent", function(self)
             suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
             suffix:SetTextColor(1, 1, 1, 0.35)
             local hnLabel
+            -- An idle pooled region keeps its last build's text: skip it.
             local regions = { rgn:GetRegions() }
             for i = 1, #regions do
                 local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Hide Rank Numbers" then
+                if reg and reg.GetText and not PoolIsIdle(reg)
+                    and EllesmereUI.EnKey(reg:GetText()) == "Hide Rank Numbers" then
                     hnLabel = reg
                     break
                 end
@@ -1563,7 +1602,7 @@ initFrame:SetScript("OnEvent", function(self)
         local W = EllesmereUI.Widgets
         local PP = EllesmereUI.PP
         local y = yOffset
-        local h
+        local _, h
 
         parent._showRowDivider = true
 
@@ -1757,7 +1796,9 @@ initFrame:SetScript("OnEvent", function(self)
               getValue = function() return SHDB().hideTopBar end,
               setValue = function(v) SHDB().hideTopBar = v; RefreshSH() end }
         );  y = y - h
-        do
+        -- Background colour swatch on the opacity slider; none in the search
+        -- pre-build (it indexes nothing, and the row is a stand-in there)
+        if not EllesmereUI._prebuilding then
             local rgn = bgRow._leftRegion
             local ctrl = rgn._control
             local swatch, swatchRefresh = EllesmereUI.BuildColorSwatch(
