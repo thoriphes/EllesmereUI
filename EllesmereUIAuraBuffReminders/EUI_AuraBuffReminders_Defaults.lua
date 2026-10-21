@@ -190,6 +190,8 @@ if EABR.FOREVER then
         whereToShow = {},   -- section "Where to Show" (an absent bucket = shown)
         customIDs = {},     -- spell IDs the user tracks, in the order added
         customGroups = {},  -- { name = string, ids = { spell IDs } }: one reminder while none of ids is active
+        palAura = false,        -- paladin: aura reminder
+        palRF = false,          -- paladin: Righteous Fury while grouped as Tank
     }
 end
 
