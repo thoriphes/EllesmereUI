@@ -286,9 +286,19 @@ local function TileNameplates(parent, y, W, tile)
             end }
     end
 
-    local _, h = W:DualRow(parent, y,
+    local _, texRow, h
+    texRow, h = W:DualRow(parent, y,
         texCfg("Bar Texture", "healthBarTexture"),
         texCfg("Cast Bar Texture", "castBarTexture"));  y = y - h
+    -- Textured Background cogs.
+    local function Row(kind)
+        return function()
+            local env = ns._NPO_OptEnv
+            return env and env.TexBgRowCfg(kind, NPTexApply)
+        end
+    end
+    TexBgCog(texRow._leftRegion, Row("health"), "nameplates")
+    TexBgCog(texRow._rightRegion, Row("cast"), "nameplates")
     _, h = W:DualRow(parent, y,
         { type = "dropdown", text = "Absorb Style", values = absorbStyleValues, order = absorbStyleOrder,
           getValue = function()
@@ -461,7 +471,7 @@ local function TileRaidFrames(parent, y, W, tile)
     local healAbsorbStyleOrder = { "none", "healBlizzModern", "striped", "stripedReversed", "stripedThick", "stripedThickR", "clean", "blizzard", "largeOutlinedStripes", "largeOutlinedStripesR", "largeStripes", "largeStripesR", "blizzardRaid", "pixelsShield" }
     local maxHealthStyleOrder = { "none", "maxHealthStripes", "striped", "stripedReversed", "stripedThick", "stripedThickR", "clean", "blizzard", "healBlizzModern", "largeOutlinedStripes", "largeOutlinedStripesR", "largeStripes", "largeStripesR", "blizzardRaid", "pixelsShield" }
     AppendSmTail(absorbStyleValues, { absorbStyleOrder, healAbsorbStyleOrder, maxHealthStyleOrder }, ns.healthBarTextureNames, ns.healthBarTextureOrder)
-    -- Default Blizz Frames' swatch draws its in-game compound (see the Raid Frames page).
+    -- Default Blizz Frames' swatch draws its in-game compound (see the Raid & Party Frames page).
     local modernSwatch = { base = { 0.776, 0.784, 1.0 }, tint = { 0.569, 0.588, 1.0 }, tile = true }
     absorbStyleValues._menuOpts = {
         itemHeight = 28,
@@ -473,7 +483,7 @@ local function TileRaidFrames(parent, y, W, tile)
         end,
     }
 
-    -- Mirrors write the RAID keys (same as the Frames tab); the Party tab's
+    -- Mirrors write the RAID keys (same as the Raid tab); the Party tab's
     -- unsynced party_ variants stay in the module and are linked below.
     local _, h = W:DualRow(parent, y,
         { type = "dropdown", text = "Health Bar Texture", values = hbtValues, order = hbtOrder,
@@ -494,7 +504,7 @@ local function TileRaidFrames(parent, y, W, tile)
           end,
           setValue = function(v)
               local p = db(); if not p then return end
-              -- Blizzard Glow Line follows the pick (see the Raid Frames page).
+              -- Blizzard Glow Line follows the pick (see the Raid & Party Frames page).
               if v == "blizzardModern" then
                   p.absorbGlowLine = true
               elseif p.absorbStyle == "blizzardModern" then

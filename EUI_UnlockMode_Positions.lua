@@ -85,6 +85,7 @@ local function MakeGhostSet(opts)
         -- gesture parity). Every refresh path funnels here, so the ghost stays
         -- hidden until the next unlock entry clears the flag.
         if g._tempHidden then g:Hide(); return end
+        if UM.FilterHides and UM.FilterHides(g._childKey) then HideGhost(g); return end  -- element filter
         if g._dragging then return end
         local childKey = g._childKey
         local link = getLink(g)
@@ -819,6 +820,7 @@ end
 -- edge sits in, so runtime straddling can never flip it.
 EllesmereUI._unlockCaptureGrowPin = function(childKey, ai, side)
     if not ai or not ai.target then return false end
+    if ai.mode == "POINT" then return false end
     local childBar = UM.GetBarFrame(childKey)
     local targetBar = UM.GetBarFrame(ai.target)
     if not childBar or not targetBar then return false end
@@ -908,6 +910,10 @@ end
 -- it back in. Returns nil when either rect is missing. With a point pair (explicit
 -- anchors) the offset runs point to point instead, from the same rebased rects.
 EllesmereUI._CaptureAnchorOffsets = function(childKey, targetKey, side, point, relPoint)
+    local info = GetAnchorInfo(childKey)
+    if info and info.mode == "POINT" and info.target == targetKey then
+        return ns.PointAnchors.Capture(childKey, info)
+    end
     local child, tgt = UM.GetBarFrame(childKey), UM.GetBarFrame(targetKey)
     if not (child and child:GetLeft() and tgt and tgt:GetLeft()) then return nil end
     local uiS = UIParent:GetEffectiveScale()
@@ -1169,8 +1175,13 @@ UM.ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fro
     -- ai.relPoint on the target, both any of the nine frame points. Replaces the
     -- side/centre geometry below outright and needs no growth-edge pin: the own
     -- point IS the fixed edge, so a resize grows away from it by construction.
-    local pointed = ai and ai.point and ai.relPoint and ai.offsetX ~= nil and ai.offsetY ~= nil
-    if pointed then
+    -- Point-mode links (the point picker, ai.mode == "POINT") have their own path.
+    local pointed = ai and ai.mode ~= "POINT" and ai.point and ai.relPoint
+        and ai.offsetX ~= nil and ai.offsetY ~= nil
+    if ai and ai.mode == "POINT" then
+        cx, cy = ns.PointAnchors.Center(childKey, childBar, ai, targetBar, cW, cH)
+        if not cx then return end
+    elseif pointed then
         local px, py = EllesmereUI._AnchorPointXY(ai.relPoint, tL, tR, tT, tB)
         local hx, hy = EllesmereUI._AnchorPointHalf(ai.point)
         cx = px + ai.offsetX - hx * cW / 2
@@ -1253,8 +1264,8 @@ UM.ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fro
     -- anchored bars always use the target-computed cx/cy (target bounds + offsets
     -- are authoritative; saved-edge data may be stale).
     local cdmEdgeAnchor
-    local isCdmOrAB = childKey:sub(1, 4) == "CDM_"
-        or (EllesmereUI._abBarKeys and EllesmereUI._abBarKeys[childKey])
+    local isCdmOrAB = not (ai and ai.mode == "POINT") and (childKey:sub(1, 4) == "CDM_"
+        or (EllesmereUI._abBarKeys and EllesmereUI._abBarKeys[childKey]))
     local isCDM = childKey:sub(1, 4) == "CDM_"
 
     -- Unified growth-edge pin (anchored custom-growth bars): the bar's fixed  -- eui-style: allow comment-budget
@@ -1608,7 +1619,15 @@ UM.ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fro
     if not noMove then
         local acRatio = uiS / cS
 
-        if cdmEdgeAnchor then
+        if ai and ai.mode == "POINT" then
+            local changed
+            bCenterX, bCenterY, changed = ns.PointAnchors.Place(childKey, childBar, ai, centerX, centerY, cW0, cH0)
+            if not bCenterX then return end
+            if changed then
+                UM._pendingAnchorKeys[childKey] = "all"
+                ScheduleAnchorBatch()
+            end
+        elseif cdmEdgeAnchor then
             -- Non-CENTER-grow bar: position at the growth edge directly so
             -- SetSize grows naturally without any post-resize re-anchoring.
             local bEdgeX, bEdgeY
@@ -1783,7 +1802,9 @@ UM.ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fro
         local actualCX = (bL + bR) / 2
         local actualCY = (bT + bB) / 2
         -- Skip offset recomputation if valid offsets already exist -- recomputing from live bounds introduces floating point drift.
-        if ai and (ai.offsetX == nil or ai.offsetY == nil) then
+        if ai and ai.mode == "POINT" and (ai.offsetX == nil or ai.offsetY == nil) then
+            ai.offsetX, ai.offsetY = ns.PointAnchors.Capture(childKey, ai, childBar, targetBar)
+        elseif ai and (ai.offsetX == nil or ai.offsetY == nil) then
             local actualHW = (bR - bL) / 2
             local actualHH = (bT - bB) / 2
             local snap = (EllesmereUI and EllesmereUI.PP and EllesmereUI.PP.Snap) or function(v) return math.floor(v + 0.5) end
@@ -1907,6 +1928,7 @@ end
 function EllesmereUI.GetAnchorPoints(childKey)
     local ai = GetAnchorInfo(childKey)
     if not (ai and ai.target) then return nil end
+    if ai.mode == "POINT" then return ai.sourcePoint, ai.targetPoint end
     if ai.point and ai.relPoint then return ai.point, ai.relPoint end
     return EllesmereUI._PointsFromSide(ai.side)
 end
@@ -1914,10 +1936,11 @@ end
 -- Cog-menu editing of an existing anchor: own point, target point and the two
 -- offsets. A point change keeps the element where it is (the offset is
 -- re-derived from live bounds for the new pair); a typed offset moves it.
--- Returns true when applied.
+-- Returns true when applied. Side anchors only: a point-mode link (the point
+-- picker, ai.mode == "POINT") keeps its own sourcePoint / targetPoint pair.
 function EllesmereUI.SetAnchorParams(childKey, p)
     local ai = GetAnchorInfo(childKey)
-    if not (ai and ai.target) or InCombatLockdown() then return false end
+    if not (ai and ai.target) or ai.mode == "POINT" or InCombatLockdown() then return false end
     if p.point or p.relPoint then
         local curP, curR = EllesmereUI.GetAnchorPoints(childKey)
         local point, relPoint = p.point or curP, p.relPoint or curR
@@ -2000,7 +2023,7 @@ UM.PropagateAnchorChain = function(parentKey, visited, changedAxis)
             if info.point and info.relPoint then
                 relHx, relHy = EllesmereUI._AnchorPointHalf(info.relPoint)
             end
-            if primaryMatch and changedAxis == "width" then
+            if primaryMatch and info.mode ~= "POINT" and changedAxis == "width" then
                 if relHx then
                     dominated = (relHx == 0)
                 else
@@ -2022,7 +2045,7 @@ UM.PropagateAnchorChain = function(parentKey, visited, changedAxis)
                         dominated = false
                     end
                 end
-            elseif primaryMatch and changedAxis == "height" then
+            elseif primaryMatch and info.mode ~= "POINT" and changedAxis == "height" then
                 if relHy then
                     dominated = (relHy == 0)
                 else
@@ -2205,7 +2228,7 @@ EllesmereUI.ReapplyAllUnlockAnchorsForced = function()
                 -- authoritative (edge format, width-independent, per LayoutBar).
                 local isABGrow = false
                 if EllesmereUI._abBarKeys and EllesmereUI._abBarKeys[childKey]
-                   and childKey ~= "StanceBar" then
+                   and childKey ~= "StanceBar" and info.mode ~= "POINT" then
                     local gd = GetBarGrowDirActual(childKey)
                     isABGrow = gd and gd ~= "CENTER"
                 end

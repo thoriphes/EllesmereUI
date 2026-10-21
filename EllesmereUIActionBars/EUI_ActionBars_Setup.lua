@@ -324,12 +324,14 @@ function EAB:FinishSetup()
     -- of the bar build nor starves the modules behind it. If a pull starts
     -- in the one-frame gap, both callees bail and re-arm on regen -- the
     -- same contract the combat path already lives on.
+    -- loginBuilt: the login loading screen's restore pass (PLAYER_ENTERING_WORLD
+    -- below) only checks the signature after this build instead of forcing another.
     if InCombatLockdown() then
-        UpdateKeybinds()
+        if UpdateKeybinds() then _bindState.loginBuilt = true end
         EAB:RebuildVisToggleBindings()
     else
         C_Timer_After(0, function()
-            UpdateKeybinds()
+            if UpdateKeybinds() then _bindState.loginBuilt = true end
             EAB:RebuildVisToggleBindings()
         end)
     end
@@ -631,7 +633,7 @@ function EAB:FinishSetup()
                         -- same reason), which would fix a clamped spot in place.
                         local s = bars[key]
                         local gd = (s and s.growDirection or "up"):upper()
-                        if key == "StanceBar" or gd == "CENTER" or ai.refFor == gd then
+                        if ai.mode == "POINT" or key == "StanceBar" or gd == "CENTER" or ai.refFor == gd then
                             reapply(key)
                         end
                     end
@@ -869,7 +871,15 @@ function EAB:FinishSetup()
             -- INTO combat (die, release, run back in while the raid still fights)
             -- needs this or empower slots sit on native bindings (Press-and-Tap
             -- behaviour) until the next reload.
-            _bindState.sigValid = false
+            -- The one exception is the login loading screen right after the login
+            -- build (loginBuilt): nothing can have cleared the bindings since (the
+            -- housing clear invalidates the signature itself), so only the signature
+            -- check runs, which still rebuilds on any change.
+            if _bindState.loginBuilt then
+                _bindState.loginBuilt = nil
+            else
+                _bindState.sigValid = false
+            end
             UpdateKeybinds()
         end)
         -- Re-evaluate visibility options (visOnlyInstances, visHideHousing,
@@ -1290,6 +1300,13 @@ function EAB:FinishSetup()
     -- [pet] driver keeps visibility correct engine-side -- and the show edge
     -- reconciles with one full pass (ns._eabPetReconcile).
     local _petPendingKind = nil  -- nil | "cd" | "full"
+    -- Set by PET_ATTACK_STOP, cleared by PET_ATTACK_START, a summon or
+    -- dismissal and a loading screen. GetPetActionInfo can still report the
+    -- attack when the stop fires, which kept the Attack button flashing after
+    -- the pet stopped, so the stop turns it off. Only the stop overrides: a pet
+    -- that stops with no stop event (sent back with Follow) is read from
+    -- GetPetActionInfo, as Blizzard's bar reads it.
+    local petAttackStopped = false
     local PetBarDeferred
     PetBarDeferred = function()
         local kind = _petPendingKind
@@ -1378,6 +1395,7 @@ function EAB:FinishSetup()
                         -- to call during combat lockdown.
                         local ct = btn:GetCheckedTexture()
                         local ctA = EAB:GetCheckedAlpha("PetBar")
+                        if isActive and petAttackStopped and IsPetAttackAction(i) then isActive = false end
                         if isActive then
                             if IsPetAttackAction(i) then
                                 btn:StartFlash()
@@ -1420,8 +1438,42 @@ function EAB:FinishSetup()
                 end
                 return
             end
-            if PetActionBar and PetActionBar.Update then
-                PetActionBar:Update()
+            -- Blizzard's bar update paints the pet buttons, and with no pet bar
+            -- it also hides its own bar. That hide runs Edit Mode's bottom bar
+            -- stack pass from here, which on WoW Forever writes the snap fields
+            -- of the stacked bars (MainActionBar to the micro menu) under our
+            -- taint: Blizzard's next stack pass reads them and is blocked in
+            -- combat, and every pass after it writes them tainted again. So it
+            -- runs only while a pet bar is out; with none the buttons are
+            -- emptied here, as its update would leave them.
+            if PetHasActionBar() then
+                if PetActionBar and PetActionBar.Update then
+                    PetActionBar:Update()
+                end
+            else
+                for i = 1, NUM_PET_ACTION_SLOTS do
+                    local btn = _G["PetActionButton" .. i]
+                    if btn then
+                        btn.icon:Hide()
+                        if btn.AutoCastOverlay then btn.AutoCastOverlay:Hide() end
+                        btn:StopFlash()
+                        btn:SetChecked(false)
+                        if btn.cooldown then
+                            local start, duration, enable = GetPetActionCooldown(i)
+                            CooldownFrame_Set(btn.cooldown, start, duration, enable)
+                        end
+                    end
+                end
+            end
+            -- Blizzard's update reads GetPetActionInfo too: the stop wins.
+            if petAttackStopped then
+                for i = 1, NUM_PET_ACTION_SLOTS do
+                    local btn = IsPetAttackAction(i) and _G["PetActionButton" .. i]
+                    if btn then
+                        btn:SetChecked(false)
+                        btn:StopFlash()
+                    end
+                end
             end
             -- Layout only when the populated-slot SHAPE changed (summon,
             -- dismiss, swap): re-laying the whole bar per aura/usable event
@@ -1457,6 +1509,10 @@ function EAB:FinishSetup()
         end
     end
     local function UpdatePetBar(_, event)
+        -- Kept while the bar is hidden too, for its show edge's pass.
+        if event == "PET_ATTACK_STOP" then petAttackStopped = true
+        elseif event == "PET_ATTACK_START" or event == "UNIT_PET" or event == "PET_UI_UPDATE"
+            or event == "PLAYER_ENTERING_WORLD" then petAttackStopped = false end
         -- Hidden pet bar: skip entirely. The [pet] visibility driver
         -- evaluates engine-side regardless, and the show edge runs a full
         -- reconcile pass, so nothing here can be missed.
