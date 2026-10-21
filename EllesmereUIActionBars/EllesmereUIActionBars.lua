@@ -571,6 +571,9 @@ for _, info in ipairs(BAR_CONFIG) do
         combatHideEnabled = false,
         housingHideEnabled = false,
         barVisibility = "always",
+        -- visCustom: raw macro-conditional show/hide string (shared Custom
+        -- Conditional, EllesmereUI_Visibility.lua). nil = checklist.
+        visCustom = nil,
         dragShow = false,
         -- Hide Bar When Using Gamepad: off by default; inert until a
         -- controller is connected with gamepad support enabled.

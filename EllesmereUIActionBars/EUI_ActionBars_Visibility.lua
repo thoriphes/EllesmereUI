@@ -485,6 +485,8 @@ local MYSLOT_VIS_FIELDS = {
     "visibilityMatch",
     -- Hide Bar When Using Gamepad would keep the bar hidden like Never.
     "gamepadHideBar",
+    -- A surviving custom conditional would keep driving the bar past the forced "always".
+    "visCustom",
 }
 -- The option LANES (target/enemy/mounted macro lanes AND the Lua-only
 -- instance/housing/skyriding/resting/VEHICLE lanes) are enumerated by the
@@ -548,6 +550,7 @@ function EAB:SetMyslotForceShow(on)
                 -- the forced "always"; the backup above already captured it.
                 s.visibilityModes = nil
                 s.visibilityMatch = nil
+                s.visCustom = nil
                 -- EVERY option lane off, macro and Lua-only alike (the live
                 -- VIS_OPT_KEYS list): visOnlyVehicle and friends otherwise
                 -- keep feeding CheckVisibilityOptionsNonMacro a hide verdict
