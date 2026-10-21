@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 
@@ -13,7 +14,7 @@ local Perf = {}
 addon.Perf = Perf
 
 local function Print(msg)
-    print(addon.Log.CHAT_PREFIX.accent .. msg)
+    addon.Chat.Print(msg)
 end
 
 
@@ -22,7 +23,6 @@ end
 
 
 local SELF = ADDON_NAME or "SimpleLootCouncil"
-local RIVAL = "RCLootCouncil"
 local KEEP_RUNS = 20
 
 local FRAME_BUDGET_MS = 1000 / 60
@@ -94,25 +94,14 @@ function Perf:Start(label)
     if not ProfilerOn() then return false, "off" end
     if recording then return false, "recording" end
 
-    local addons = { [SELF] = true }
-    if C_AddOns and C_AddOns.IsAddOnLoaded
-        and select(2, C_AddOns.IsAddOnLoaded(RIVAL)) then
-        addons[RIVAL] = true
-    end
-
     recording = {
         label = CleanLabel(label),
         startedAt = GetTime(),
         group = GroupSize(),
         samples = 0,
         appAvgMax = 0, overallAvgMax = 0, shareMax = 0,
-        addons = {},
+        addons = { [SELF] = { avgMax = 0, lastMax = 0, start = Counters(SELF) } },
     }
-    for name in pairs(addons) do
-        recording.addons[name] = {
-            avgMax = 0, lastMax = 0, start = Counters(name),
-        }
-    end
     Sample()
     recording.ticker = C_Timer.NewTicker(1, Sample)
     return true, recording.label
@@ -183,10 +172,9 @@ end
 
 
 function Perf.Summary(record)
-    local line = ("%s  raid=%d  window=%.0fs  %s  %s"):format(record.label,
+    local line = ("%s  raid=%d  window=%.0fs  %s"):format(record.label,
         record.group or 1, record.seconds or 0,
-        AddonColumns("SLC", record.addons[SELF]),
-        AddonColumns("RCLC", record.addons[RIVAL]))
+        AddonColumns("SLC", record.addons[SELF]))
 
     local t = record.stress
     if t and t.events and t.events > 0 then
@@ -204,12 +192,11 @@ end
 
 
 function Perf.Context(record)
-    local mine, rival = record.addons[SELF], record.addons[RIVAL]
-    return ("  v%s %s  app avg=%.2fms  all addons avg=%.3fms  SLC share max=%.1f%%  peak since game start: SLC %.1fms%s  samples=%d"):format(
+    local mine = record.addons[SELF]
+    return ("  v%s %s  app avg=%.2fms  all addons avg=%.3fms  SLC share max=%.1f%%  peak since game start: SLC %.1fms  samples=%d"):format(
         tostring(record.build), tostring(record.date or "?"),
         record.appAvgMax or 0, record.overallAvgMax or 0,
         (record.shareMax or 0) * 100, mine and mine.peak or 0,
-        rival and (" RCLC %.1fms"):format(rival.peak) or "",
         record.samples or 0)
 end
 
@@ -345,6 +332,15 @@ function Perf:CommsCommand(rest)
         report.dropped.failed or 0, report.dropped.blocked or 0))
     Print(("  send delay over the last %d frames: p50=%s p95=%s max=%s"):format(
         latency.n, Seconds(latency.p50), Seconds(latency.p95), Seconds(latency.max)))
+
+    local refused = {}
+    for reason, count in pairs(report.refused or {}) do
+        refused[#refused + 1] = reason .. "=" .. count
+    end
+    if #refused > 0 then
+        table.sort(refused)
+        Print("  refused: " .. table.concat(refused, "  "))
+    end
     for _, line in ipairs(Perf.LaneLines(report)) do Print(line) end
     for _, row in ipairs(rows) do
         Print(("  %-16s sent %4d f %7d B   recv %4d f %7d B   handled %4d"):format(

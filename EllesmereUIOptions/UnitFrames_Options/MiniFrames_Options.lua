@@ -8,6 +8,16 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUIUnitFrames"]
 if not ns then return end  -- module disabled: no options page
 
+-- Page reuse: the frames this file builds under a kept page go through the
+-- options frame pool (EllesmereUI_FramePool.lua), which hands the next build
+-- the previous build's frames reset to new; on any other parent it is the
+-- plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+-- The pool's other calls this file makes, read once here as CreateFrame is:
+-- the page path never calls the pool through its public slot, which
+-- another addon could replace.
+local PoolIsIdle = EllesmereUI._Pool.IsIdle
+
 ---------------------------------------------------------------------------
 --  Mini frame donor settings helper
 --  Returns the settings table unitKey copies its look from (its Copy Look
@@ -29,6 +39,7 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
     local AddDarkModeBlock, BuildBarTexDropdown, BuildInactiveNotice, PP = env.AddDarkModeBlock, env.BuildBarTexDropdown, env.BuildInactiveNotice, env.PP
     local RegisterWidgetRefresh, ReloadAndUpdate, db, healthTextOrder = env.RegisterWidgetRefresh, env.ReloadAndUpdate, env.db, env.healthTextOrder
     local healthTextOrderBoss, healthTextValues = env.healthTextOrderBoss, env.healthTextValues
+    local TexBgRowCfg = env.TexBgRowCfg
     local _, h
     opts = opts or {}
 
@@ -124,6 +135,14 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
                   ReloadAndUpdate()
               end },
             rightSlot);  y = y - h
+        -- Textured Background cog: while Bar Texture is Inherit the toggle
+        -- follows the main frame and shows its value, greyed.
+        if not EllesmereUI._prebuilding then
+            EllesmereUI.BuildInlineCog(barTexRow._leftRegion, {
+                title = "Texture Settings",
+                rows = { TexBgRowCfg(function() return settingsTable end, ReloadAndUpdate, unitKey) },
+            })
+        end
 
         -- Boss Hover Borders: checkbox dropdown (Hover Border / Target Border,
         -- both default off) with inline color swatches. Enabling one recolors
@@ -290,7 +309,7 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
             -- Fill Color = the health fill opacity (formerly "Fill Opacity")
             -- with the fill color swatches moved inline below.
             leftSlot2 = { type="slider", text="Fill Color", min=0, max=100, step=1,
-              disabled=function() return db.profile.darkTheme end,
+              disabled=function() return ns.UF_DarkThemeOn(settingsTable) end,
               disabledTooltip="Dark Mode", requireState="disabled",
               getValue=function() return MVal("healthBarOpacity", 90) end,
               setValue=function(v) MSet("healthBarOpacity", v) end }
@@ -346,7 +365,7 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
             }
             leftSlot2 = { type="multiSwatch", text="Fill Color", swatches = fillSwatches }
             rightSlot2 = { type="slider", text="Fill Opacity", min=0, max=100, step=1,
-              disabled=function() return db.profile.darkTheme end,
+              disabled=function() return ns.UF_DarkThemeOn(settingsTable) end,
               disabledTooltip="Dark Mode", requireState="disabled",
               getValue=function() return MVal("healthBarOpacity", 90) end,
               setValue=function(v) MSet("healthBarOpacity", v) end }
@@ -476,8 +495,8 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
         -- fill/background colors). Boss also blocks Bar Background so its swatches
         -- gray out like Main Frames; other mini units' Bar Opacity has its own disable handler.
         if not EllesmereUI._prebuilding then
-        AddDarkModeBlock(colorRow._leftRegion)
-        if isBoss then AddDarkModeBlock(colorRow._rightRegion) end
+        AddDarkModeBlock(colorRow._leftRegion, function() return settingsTable end)
+        if isBoss then AddDarkModeBlock(colorRow._rightRegion, function() return settingsTable end) end
         end
     end
 
@@ -1865,13 +1884,23 @@ function ns.UFO_BuildBossOptions(W, parent, y)
         if activateBtnLbl then activateBtnLbl:SetText(PreviewLabel()) end
     end);  y = y - h
     do
-        activateBtn = select(1, activateBtnFrame:GetChildren())
+        -- The row's button and its label, picked by kind and use rather than by
+        -- position: on a kept page the row frame may still hold idle children
+        -- and regions of an earlier dress (page reuse).
+        local kids = { activateBtnFrame:GetChildren() }
+        for i = 1, #kids do
+            local c = kids[i]
+            if c:GetObjectType() == "Button" and not PoolIsIdle(c) then
+                activateBtn = c; break
+            end
+        end
         if activateBtn then
             local regions = { activateBtn:GetRegions() }
             for i = 1, #regions do
                 local rgn = regions[i]
-                if rgn and rgn.GetText and rgn:GetText() then
-                    activateBtnLbl = rgn; break
+                if rgn and rgn.GetText and not PoolIsIdle(rgn) then
+                    local t = rgn:GetText()
+                    if t and t ~= "" then activateBtnLbl = rgn; break end
                 end
             end
         end

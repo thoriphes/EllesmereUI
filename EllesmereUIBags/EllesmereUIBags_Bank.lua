@@ -5,7 +5,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Visually matches the Bags module with sidebar, search, and sorting
 -------------------------------------------------------------------------------
 local EUI = EllesmereUI
-local ns = select(2, ...)  -- helpers shared with EllesmereUIBags.lua (loaded first)
+local ns = select(2, ...)  -- helpers shared with EllesmereUIBags.lua and the EUI_Bags_*.lua files (loaded first)
 local GetItemInfo = C_Item.GetItemInfo
 local GetItemInfoInstant = C_Item.GetItemInfoInstant
 local GetItemQualityColor = C_Item.GetItemQualityColor
@@ -264,7 +264,7 @@ searchClear:Hide()
 searchClear:SetScript("OnClick", function()
     bankSearch:SetText("")
     bankSearch:ClearFocus()
-    C_Container.SetItemSearch("")
+    EUI_Bags.ClearSearch()
 end)
 
 bankSearch:SetScript("OnEnterPressed", function(self)
@@ -273,17 +273,15 @@ end)
 bankSearch:SetScript("OnEscapePressed", function(self)
     self:SetText("")
     self:ClearFocus()
-    C_Container.SetItemSearch("")
+    EUI_Bags.ClearSearch()
 end)
-bankSearch:SetScript("OnTextChanged", function(self)
+-- Both windows repaint when the game reports the search (EUI_Bags.SetSearchText).
+local bankSearchChanged = EUI_Bags.WatchSearchBox(bankSearch, EUI_Bags.SetSearchText)
+bankSearch:SetScript("OnTextChanged", function(self, userInput)
     local text = self:GetText()
     searchPlaceholder:SetShown(text == "")
     searchClear:SetShown(text ~= "")
-    EUI_Bags.SetSearchText(text)
-    if EUI_Bank:IsVisible() then EUI_Bank:RefreshBank() end
-    if EUI_Bags and EUI_Bags:IsVisible() and EUI_Bags.RefreshInventory then
-        EUI_Bags:RefreshInventory()
-    end
+    bankSearchChanged(userInput)
 end)
 
 -- Sort button
@@ -1660,7 +1658,7 @@ end
 
 -------------------------------------------------------------------------------
 --  Expansion nesting (OneBank / OneWarbank)
---  Bucket logic follows EllesmereUIBags.lua, with one deliberate difference: the
+--  Bucket logic follows EUI_Bags_Data.lua, with one deliberate difference: the
 --  bags side forces every item of ilvl >= 180 into Midnight before reading the
 --  real expansion ID. A bank holds years of gear, so that misfiles most of it --
 --  here the expansion ID from C_Item.GetItemInfo always wins.
@@ -1733,7 +1731,7 @@ local function GetSubTypeBucket(link)
 end
 
 -- Sub-bucket by equipment slot. Condensed port of GetArmorySlotBucket in
--- EllesmereUIBags.lua so gear sorts head-to-feet, then weapons, in both windows.
+-- EUI_Bags_Data.lua so gear sorts head-to-feet, then weapons, in both windows.
 local ARMORY_SLOT_KEYS = {
     INVTYPE_HEAD     = { 10,  "INVTYPE_HEAD" },
     INVTYPE_NECK     = { 20,  "INVTYPE_NECK" },
@@ -3226,7 +3224,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
             EUI_Bank._searchBox:SetText("")
             EUI_Bank._searchBox:ClearFocus()
         end
-        C_Container.SetItemSearch("")
+        EUI_Bags.ClearSearch()
         local bankScale = BP().bagScale or 1
         EUI_Bank:SetScale(bankScale)
         EUI_Bank:Show()
@@ -3281,7 +3279,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
             EUI_Bank._searchBox:SetText("")
             EUI_Bank._searchBox:ClearFocus()
         end
-        C_Container.SetItemSearch("")
+        EUI_Bags.ClearSearch()
         EUI_Bank:Hide()
         -- Auto-close bags if we auto-opened them
         if EUI_Bank._autoOpenedBags and EUI_Bags and EUI_Bags:IsVisible() then

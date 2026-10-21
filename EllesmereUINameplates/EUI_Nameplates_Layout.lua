@@ -14,6 +14,11 @@ I.broken = true
 
 local ipairs, type = ipairs, type
 local PP = EllesmereUI.PP
+-- The core's table of the options page frame pool (EllesmereUI_PixelPerfect.lua
+-- makes it, the options addon fills it): the builders the options preview shares
+-- with the plates create through it, so a preview frame is handed back to the
+-- preview's next build. A plate's parent is no pool host: a plain CreateFrame.
+local Pool = EllesmereUI._Pool
 local UnitIsPlayer = UnitIsPlayer
 local GetTime = GetTime
 
@@ -80,11 +85,22 @@ if EllesmereUI then EllesmereUI.NameplatePandemicGlowStyles = PANDEMIC_GLOW_STYL
 -- PANDEMIC_GLOW_STYLES index -> shared EllesmereUI.Glows.STYLES index.
 ns.NP_TO_SHARED_GLOW = ns.NP_GLOW_VIEW.toShared
 
+-- Pandemic Glow style of a nameplate profile. A style picked from 9.6 on is
+-- pandemicGlowPick. Without one, the key from before 9.6 is read as a view:
+-- its old default (Pixel, 1) and nil mean Blizzard Pandemic Border, any other
+-- value is that pick (stored profiles and old profile strings can hold the old
+-- default written out, and must keep the border). Cross-addon for the CDM
+-- "Apply Pandemic Glow to all" sync.
+local function PandemicStyleOf(np)
+    local pick = np and np.pandemicGlowPick
+    if type(pick) == "number" then return pick end
+    local old = np and np.pandemicGlowStyle
+    if type(old) ~= "number" or old == 1 then return EllesmereUI.Glows.PANDEMIC_BORDER end
+    return old
+end
+EllesmereUI.NameplatePandemicStyle = PandemicStyleOf
 local function GetPandemicGlowStyle()
-    local raw = p and p.pandemicGlowStyle
-    if raw == nil then return defaults.pandemicGlowStyle end
-    if type(raw) == "number" then return raw end
-    return 1
+    return PandemicStyleOf(p)
 end
 ns.GetPandemicGlowStyle = GetPandemicGlowStyle
 local function GetPandemicGlowLines()
@@ -106,11 +122,19 @@ function ns.GetPandemicGlow()
 end
 -- Full render spec for the pandemic glow (live debuff glow and its preview).
 -- An unset color mode is Custom: the swatch color this glow always drew.
+-- Blizzard Pandemic Border (EllesmereUI.Glows.PANDEMIC_BORDER) sits outside
+-- the view and is always drawn untinted.
 function ns.GetPandemicGlowSpec(out)
     out = out or {}
-    out.style = ns.NP_TO_SHARED_GLOW[GetPandemicGlowStyle()] or 1
-    local c = (p and p.pandemicGlowColor) or defaults.pandemicGlowColor
-    out.r, out.g, out.b = EllesmereUI.Glows.ResolveColor((p and p.pandemicGlowMode) or "custom", c.r, c.g, c.b)
+    local idx = GetPandemicGlowStyle()
+    if idx == EllesmereUI.Glows.PANDEMIC_BORDER then
+        out.style = idx
+        out.r, out.g, out.b = nil, nil, nil
+    else
+        out.style = ns.NP_TO_SHARED_GLOW[idx] or 1
+        local c = (p and p.pandemicGlowColor) or defaults.pandemicGlowColor
+        out.r, out.g, out.b = EllesmereUI.Glows.ResolveColor((p and p.pandemicGlowMode) or "custom", c.r, c.g, c.b)
+    end
     out.lines = GetPandemicGlowLines()
     out.thickness = GetPandemicGlowThickness()
     out.speed = GetPandemicGlowSpeed()
@@ -141,11 +165,19 @@ do
         return (p and p.dispelGlow) or defaults.dispelGlow
     end
     ns.GetDispelGlowStyle = function()
-        local raw = p and p.dispelGlowStyle
-        if raw == nil then return defaults.dispelGlowStyle end
+        -- The same view as the Pandemic Glow's: dispelGlowPick holds a style
+        -- picked from 9.6 on; without one, the key from before 9.6 with its
+        -- old default (Action Button Glow, 2) or nil means Blizzard Pandemic
+        -- Border, and any other value is that pick.
+        local raw = p and p.dispelGlowPick
+        if raw == nil then
+            raw = p and p.dispelGlowStyle
+            if raw == nil or raw == 2 then return EllesmereUI.Glows.PANDEMIC_BORDER end
+        end
         -- Out-of-range picks read (and render) as Action Button Glow; Blizzard
-        -- Border sits outside the view.
+        -- Border and Blizzard Pandemic Border sit outside the view.
         if type(raw) == "number" and (raw == EllesmereUI.Glows.STEALABLE_BORDER
+           or raw == EllesmereUI.Glows.PANDEMIC_BORDER
            or (raw >= 1 and raw <= #ns.NP_GLOW_VIEW.list)) then
             return raw
         end
@@ -181,10 +213,14 @@ do
         out = out or {}
         local idx = ns.GetDispelGlowStyle()
         -- Blizzard Border sits outside the view and keeps Blizzard's own art
-        -- until a colour is picked (ns.GetDispelBorderColor).
+        -- until a colour is picked (ns.GetDispelBorderColor); Blizzard
+        -- Pandemic Border is always drawn untinted.
         if idx == EllesmereUI.Glows.STEALABLE_BORDER then
             out.style = idx
             out.r, out.g, out.b = ns.GetDispelBorderColor(dispelType)
+        elseif idx == EllesmereUI.Glows.PANDEMIC_BORDER then
+            out.style = idx
+            out.r, out.g, out.b = nil, nil, nil
         else
             out.style = ns.NP_TO_SHARED_GLOW[idx] or 2
             out.r, out.g, out.b = ns.GetDispelGlowColor(dispelType)
@@ -816,14 +852,6 @@ do
             icon:SetTexCoord(z, 1 - z, z, 1 - z)
         end
     end
-    -- Size + crop a single aura slot and its icon together so they never drift
-    -- out of sync. Returns the applied width and height for spacing/positioning.
-    function ns.ApplyAuraSlotCrop(slot, cropped, sizeW)
-        local h = ns.GetAuraCropHeight(cropped, sizeW)
-        PP.Size(slot, sizeW, h)
-        ns.SetAuraIconCrop(slot.icon, cropped, sizeW, h)
-        return sizeW, h
-    end
 end
 local function GetTargetGlowStyle()
     if p and p.targetGlowStyle then return p.targetGlowStyle end
@@ -1037,7 +1065,7 @@ function ns.NP_ApplyCastIconSeparator(cast, icon, db, customOn, strata)
         return
     end
     if not seam then
-        seam = CreateFrame("Frame", nil, cast)
+        seam = Pool.CreateFrame("Frame", nil, cast)
         seam:SetAllPoints(cast)
         seam:EnableMouse(false)
         seam._tex = seam:CreateTexture(nil, "OVERLAY", nil, 7)
@@ -1196,9 +1224,9 @@ function ns.GetSlotRaiseStrata(posKey)
     return defaults[key] or false
 end
 
--- Apply each slot's Raise Strata setting to its element frame(s). Frames otherwise share MEDIUM
--- strata; HIGH lifts that element above the flattened text/aura/indicator tiers. Children
--- (cooldown, count carrier, border) inherit the frame's strata.
+-- Apply each slot's Raise Strata setting to its element frame. Frames otherwise share MEDIUM
+-- strata; HIGH lifts that element above the flattened text/aura/indicator tiers, and its
+-- children inherit it. The aura containers apply their own (AnchorNPContainer).
 function ns.ApplySlotStrata(plate)
     if not plate then return end
     local function StrataFor(slot)
@@ -1212,17 +1240,6 @@ function ns.ApplySlotStrata(plate)
     end
     if plate.factionFrame then
         plate.factionFrame:SetFrameStrata(StrataFor(ns.NP_GetFactionSlot()))
-    end
-    local ds, bs, cs = GetAuraSlots()
-    local dStr, bStr, cStr = StrataFor(ds), StrataFor(bs), StrataFor(cs)
-    if plate.debuffs then
-        for i = 1, #plate.debuffs do plate.debuffs[i]:SetFrameStrata(dStr) end
-    end
-    if plate.buffs then
-        for i = 1, #plate.buffs do plate.buffs[i]:SetFrameStrata(bStr) end
-    end
-    if plate.cc then
-        for i = 1, #plate.cc do plate.cc[i]:SetFrameStrata(cStr) end
     end
 end
 
@@ -1256,34 +1273,56 @@ ns.StopAllGlows        = StopAllGlows
 local function StopDispelGlow(slot)
     local dg = slot.dispelGlow
     if not dg or not dg.active then return end
+    dg.active = false
     _G_Glows.StopAllGlows(dg.wrapper)
     dg.wrapper:Hide()
-    dg.active = false
+end
+
+-- Draws the preview glow's last request (dg.sz, dg.h, dg.type). Same spec and
+-- engine path as the live purge glow, so the preview is the live look.
+local function DrawDispelGlow(dg)
+    ns.GetDispelGlowSpec(dg.type, dg.spec)
+    _G_Glows.StartSpecGlow(dg.wrapper, dg.spec, dg.sz, dg.h, "engine", _G_Glows.PANEL_EXTRA)
 end
 
 -- Preview only: the live nameplate glow runs through EllesmereUI.Glows on the
--- engine buttons. dispelType is "magic" / "enrage" / nil. Same spec and engine
--- path as the live purge glow, so the preview is the live look.
--- slotH: the icon height (cropped icons).
+-- engine buttons. dispelType is "magic" / "enrage" / nil. slotH: the icon
+-- height (cropped icons). The glow draws only while the preview is visible:
+-- hidden (options closed, another page, a build made hidden) it stops, so its
+-- animations cost nothing, and it draws again when it shows (unchanged,
+-- StartSpecGlow returns at once).
 local function StartDispelGlow(slot, slotSize, dispelType, slotH)
     local dg = slot.dispelGlow
     if not dg then
-        local wrapper = CreateFrame("Frame", nil, slot)
+        local wrapper = Pool.CreateFrame("Frame", nil, slot)
         wrapper:SetAllPoints()
-        wrapper:SetFrameLevel(slot:GetFrameLevel() + 5)
+        -- Under the duration text (its frame sits at slot + 2), as the live
+        -- glow host sits under the text carrier.
+        wrapper:SetFrameLevel(slot:GetFrameLevel() + 1)
         wrapper:Show()
         dg = { wrapper = wrapper, active = false, spec = {} }
         slot.dispelGlow = dg
+        wrapper:SetScript("OnShow", function()
+            if dg.active then DrawDispelGlow(dg) end
+        end)
+        wrapper:SetScript("OnHide", function(self)
+            if dg.active then _G_Glows.StopAllGlows(self) end
+        end)
     end
     local sz = slotSize or 26
-    ns.GetDispelGlowSpec(dispelType, dg.spec)
-    dg.wrapper:Show()
-    _G_Glows.StartSpecGlow(dg.wrapper, dg.spec, sz, slotH or sz, "engine", _G_Glows.PANEL_EXTRA)
+    dg.sz, dg.h, dg.type = sz, slotH or sz, dispelType
     dg.active = true
+    local wrapper = dg.wrapper
+    if not wrapper:IsShown() then
+        -- Its OnShow draws, now or once the preview shows.
+        wrapper:Show()
+    elseif wrapper:IsVisible() then
+        DrawDispelGlow(dg)
+    end
     -- Always opaque. Visibility used to ride a per-aura dispel-type curve's
     -- alpha; dispellability is now decided by which aura GROUP the button
     -- belongs to, and this path only ever draws the options preview.
-    dg.wrapper:SetAlpha(1)
+    wrapper:SetAlpha(1)
 end
 
 ns.StopDispelGlow = StopDispelGlow
@@ -1292,121 +1331,6 @@ end -- do (glow engine)
 
 -- Forward declaration (assigned in EUI_Nameplates_ClassPower.lua, see SetClassPowerTopPush)
 local GetClassPowerTopPush
--- Position aura frames into a slot (top/left/right/topleft/topright/bottom).
--- count: how many to show; sizeW/sizeH: icon dimensions; gap: gap between icons.
-local function PositionAuraSlot(frames, count, slot, plate, sizeW, sizeH, gap, xOff, yOff)
-    xOff = xOff or 0
-    yOff = yOff or 0
-    local spacing = gap + sizeW  -- horizontal center-to-center distance
-    -- Vertical center-to-center; cropped icons are shorter so stacked slots (topleft/topright
-    -- "up") pack tighter. sizeH falls back to sizeW when square (uncropped).
-    local spacingV = gap + (sizeH or sizeW)
-    -- Profile reads, anchor resolution and growth lookups are invariant across the icon loop:
-    -- resolve once per slot branch, loop only ClearAllPoints + PP.Point. GetClassPowerTopPush
-    -- reads target identity, so the left/right/bottom and top-with-text-element paths must never call it.
-    if slot == "top" then
-        local debuffY = GetDebuffYOffset()
-        -- Determine anchor: resolve to whichever FontString is in the top slot
-        local topElement = GetTextSlot("textSlotTop")
-        local anchor
-        if ns.IsNameElement(topElement) then
-            anchor = plate.name
-        elseif topElement == "healthNumber" then
-            anchor = plate.hpNumber
-        elseif topElement == "level" then
-            anchor = plate.levelText
-        elseif topElement == "targetOfTarget" then
-            anchor = plate.totText or plate.health
-        elseif topElement ~= "none" then
-            anchor = plate.hpText  -- healthPercent, healthPctNum, healthNumPct
-        else
-            anchor = plate.health
-        end
-        -- Only add cpPush when anchoring to health bar (topElement is "none");
-        -- text FontStrings already include cpPush in their own positioning.
-        local cpPush = (topElement == "none") and GetClassPowerTopPush(plate) or 0
-        local y = debuffY + cpPush + yOff
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            PP.Point(frames[i], "BOTTOM", anchor, "TOP",
-                (i - (count + 1) / 2) * spacing + xOff, y)
-        end
-    elseif slot == "left" then
-        -- Classic WoW UI: gap off the border art, not the bare bar edge.
-        local sideOff = GetSideAuraXOffset() + ns.NP_ClassicSide("left")
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            PP.Point(frames[i], "BOTTOMRIGHT", plate.health, "BOTTOMLEFT",
-                -sideOff - (i - 1) * spacing + xOff, yOff)
-        end
-    elseif slot == "right" then
-        local sideOff = GetSideAuraXOffset() + ns.NP_ClassicSide("right")
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            PP.Point(frames[i], "BOTTOMLEFT", plate.health, "BOTTOMRIGHT",
-                sideOff + (i - 1) * spacing + xOff, yOff)
-        end
-    elseif slot == "topleft" then
-        local debuffY = GetDebuffYOffset()
-        local cpPush = GetClassPowerTopPush(plate)
-        local growth = (p and p.topleftSlotGrowth) or defaults.topleftSlotGrowth
-        -- Icon 1 is always flush with the health bar's top-left corner; growth only moves icons
-        -- 2+. PP borders are inset, so the bar corner IS the nameplate's outer edge.
-        local baseX = xOff
-        local baseY = debuffY + cpPush + yOff
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            local idx = i - 1  -- 0 for icon 1, so it never moves
-            if growth == "up" then
-                PP.Point(frames[i], "BOTTOMLEFT", plate.health, "TOPLEFT",
-                    baseX, baseY + idx * spacingV)
-            elseif growth == "right" then
-                PP.Point(frames[i], "BOTTOMLEFT", plate.health, "TOPLEFT",
-                    baseX + idx * spacing, baseY)
-            else
-                -- Default: grow left
-                PP.Point(frames[i], "BOTTOMLEFT", plate.health, "TOPLEFT",
-                    baseX - idx * spacing, baseY)
-            end
-        end
-    elseif slot == "topright" then
-        local debuffY = GetDebuffYOffset()
-        local cpPush = GetClassPowerTopPush(plate)
-        local growth = (p and p.toprightSlotGrowth) or defaults.toprightSlotGrowth
-        -- Icon 1 is always flush with the health bar's top-right corner; growth only moves
-        -- icons 2+ (PP borders are inset, so offset 0 is true flush).
-        local baseX = xOff
-        local baseY = debuffY + cpPush + yOff
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            local idx = i - 1  -- 0 for icon 1, so it never moves
-            if growth == "up" then
-                PP.Point(frames[i], "BOTTOMRIGHT", plate.health, "TOPRIGHT",
-                    baseX, baseY + idx * spacingV)
-            elseif growth == "left" then
-                PP.Point(frames[i], "BOTTOMRIGHT", plate.health, "TOPRIGHT",
-                    baseX - idx * spacing, baseY)
-            else
-                -- Default: grow right
-                PP.Point(frames[i], "BOTTOMRIGHT", plate.health, "TOPRIGHT",
-                    baseX + idx * spacing, baseY)
-            end
-        end
-    elseif slot == "bottom" then
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            -- Anchor below the cast bar, centered
-            PP.Point(frames[i], "TOP", plate.cast, "BOTTOM",
-                (i - (count + 1) / 2) * spacing + xOff, -2 + yOff)
-        end
-    else
-        -- Unknown slot: clear points, re-anchor nothing.
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-        end
-    end
-end
-ns.PositionAuraSlot = PositionAuraSlot
 
 -- XY offset for an aura slot key ("debuffSlot", "raidMarker", "classification").
 local auraSlotToDBKey = {
@@ -1499,36 +1423,12 @@ function ns.GetActiveCastLockout(plate)
     return lockout
 end
 
--- Position target arrows OUTSIDE the outermost side auras; call after all aura positioning is complete.
-local PositionArrowsOutsideAuras
-do
-    -- Hoisted out of PositionArrowsOutsideAuras so no closure is allocated per call on the
-    -- target plate: extents accumulate through params/returns (allocation-free, no shared state).
-    local function AddSideExtent(slot, frames, maxIdx, sz, slotKey, gap, sideOff, leftExtent, rightExtent)
-        local shown = 0
-        for i = 1, maxIdx do
-            if frames[i] and frames[i]:IsShown() then shown = shown + 1 end
-        end
-        if shown == 0 then return leftExtent, rightExtent end
-        local sp = gap + sz
-        local xOff = slotKey and (select(1, GetAuraSlotOffsets(slotKey))) or 0
-        -- Classic WoW UI: the rows themselves sit past the border art, so the
-        -- extent the arrow clears counts it too (same term the rows use).
-        if slot == "left" then
-            -- Left edge of leftmost icon: -(sideOff + (shown-1)*sp + sz) + xOff
-            local ext = sideOff + ns.NP_ClassicSide("left") + (shown - 1) * sp + sz - xOff
-            leftExtent = math.max(leftExtent, ext)
-        elseif slot == "right" then
-            local ext = sideOff + ns.NP_ClassicSide("right") + (shown - 1) * sp + sz + xOff
-            rightExtent = math.max(rightExtent, ext)
-        end
-        return leftExtent, rightExtent
-    end
-
-PositionArrowsOutsideAuras = function(plate)
+-- Position target arrows outside the side-slot elements (cast icon, raid marker,
+-- classification, faction). A side holding an aura container is re-pointed at the
+-- container's engine-sized edge by EUI_Nameplates_AuraContainers' ReanchorArrows.
+local function PositionArrowsOutsideAuras(plate)
     if not plate.leftArrow then return end
     if not plate.leftArrow:IsShown() then return end
-    local debuffSlot, buffSlot, ccSlot = GetAuraSlots()
     local sideOff = GetSideAuraXOffset()
     -- Track the furthest pixel extent on each side (accounts for per-slot X offsets)
     local leftExtent, rightExtent = 0, 0
@@ -1544,12 +1444,6 @@ PositionArrowsOutsideAuras = function(plate)
     leftPush, rightPush = leftPush + classicL, rightPush + classicR
     if leftPush > 0 then leftExtent = math.max(leftExtent, leftPush) end
     if rightPush > 0 then rightExtent = math.max(rightExtent, rightPush) end
-    local debuffSz = GetDebuffIconSize()
-    local buffSz = GetBuffIconSize()
-    local ccSz = GetCCIconSize()
-    leftExtent, rightExtent = AddSideExtent(debuffSlot, plate.debuffs or {}, 6, debuffSz, "debuffSlot", GetAuraSpacing("debuffs"), sideOff, leftExtent, rightExtent)
-    leftExtent, rightExtent = AddSideExtent(buffSlot, plate.buffs or {}, 4, buffSz, "buffSlot", GetAuraSpacing("buffs"), sideOff, leftExtent, rightExtent)
-    leftExtent, rightExtent = AddSideExtent(ccSlot, plate.cc or {}, 2, ccSz, "ccSlot", GetAuraSpacing("ccs"), sideOff, leftExtent, rightExtent)
     -- Account for raid marker in side slots
     local rmPos = GetRaidMarkerPos()
     if rmPos == "left" and plate.raidFrame and plate.raidFrame:IsShown() then
@@ -1608,17 +1502,15 @@ PositionArrowsOutsideAuras = function(plate)
     PP.Point(plate.rightArrow, "BOTTOM", plate.health, "BOTTOMRIGHT", rox, -dy)
     PP.Width(plate.rightArrow, aw)
 end
-end -- do (AddSideExtent scope)
 ns.PositionArrowsOutsideAuras = PositionArrowsOutsideAuras
 
 I.EstimateHealthTextWidth, I.GetAuraSlotOffsets = EstimateHealthTextWidth, GetAuraSlotOffsets
-I.GetAuraSlots, I.GetAuraSpacing = GetAuraSlots, GetAuraSpacing
-I.GetBorderColor, I.GetBuffIconSize = GetBorderColor, GetBuffIconSize
+I.GetBorderColor = GetBorderColor
 I.GetCastBarHeight, I.GetCastScale = GetCastBarHeight, GetCastScale
-I.GetCCIconSize, I.GetClassificationSlot = GetCCIconSize, GetClassificationSlot
+I.GetClassificationSlot = GetClassificationSlot
 I.GetClassPowerClassColors = GetClassPowerClassColors
-I.GetClassPowerCustomColor, I.GetDebuffIconSize = GetClassPowerCustomColor, GetDebuffIconSize
-I.GetDebuffTextColor, I.GetDebuffYOffset = GetDebuffTextColor, GetDebuffYOffset
+I.GetClassPowerCustomColor = GetClassPowerCustomColor
+I.GetDebuffYOffset = GetDebuffYOffset
 I.GetEnemyNameTextSize, I.GetFocusCastHeight = GetEnemyNameTextSize, GetFocusCastHeight
 I.GetHealthBarHeight, I.GetHealthBarWidth = GetHealthBarHeight, GetHealthBarWidth
 I.GetHideEnemyNameWhileCasting = GetHideEnemyNameWhileCasting
@@ -1633,7 +1525,7 @@ I.GetTextSlot, I.GetTextSlotColor = GetTextSlot, GetTextSlotColor
 I.GetTextSlotOffsets, I.GetTextSlotSize = GetTextSlotOffsets, GetTextSlotSize
 I.IsBorderEnabled, I.IsComboHealthText = IsBorderEnabled, IsComboHealthText
 I.PANDEMIC_GLOW_STYLES = PANDEMIC_GLOW_STYLES
-I.PositionArrowsOutsideAuras, I.PositionAuraSlot = PositionArrowsOutsideAuras, PositionAuraSlot
+I.PositionArrowsOutsideAuras = PositionArrowsOutsideAuras
 I.SetCombinedHealthText = SetCombinedHealthText
 I.SetClassPowerTopPush = function(f) GetClassPowerTopPush = f end
 I.broken = false

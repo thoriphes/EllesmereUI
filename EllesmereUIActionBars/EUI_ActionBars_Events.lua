@@ -22,6 +22,64 @@ local I = ns._internals
 local BAR_CONFIG, BINDING_MAP, BUTTON_EVENT_LISTS = I.BAR_CONFIG, I.BINDING_MAP, I.BUTTON_EVENT_LISTS
 local ReRegisterButtonEvents, barFrames = I.ReRegisterButtonEvents, I.barFrames
 
+-- Melee and auto-repeat state from their own events (the dispatcher's attack
+-- branch; reset to nil at each loading screen). Once one has fired it decides,
+-- as on Blizzard's own buttons: when the event fires, IsCurrentAction and
+-- IsAutoRepeatAction can still report the old state (a stop clicked with the
+-- mouse), which left the flash running. nil = read the action instead.
+local meleeOn, repeatOn
+
+-- Keep attack flashing out of Blizzard's shared OnUpdate frame registry.
+function ns.AB_SetAttackFlash(btn, flashing)
+    local fd = ns._eabFD[btn]
+    local flash = btn.Flash
+    if flashing and flash then
+        fd = fd or EFD(btn)
+        local anim = fd.attackFlashAnim
+        if not anim then
+            anim = flash:CreateAnimationGroup()
+            anim:SetLooping("REPEAT")
+            for order = 1, 2 do
+                local phase = anim:CreateAnimation("Alpha")
+                local alpha = 2 - order
+                phase:SetOrder(order)
+                phase:SetFromAlpha(alpha)
+                phase:SetToAlpha(alpha)
+                phase:SetDuration(ATTACK_BUTTON_FLASH_TIME)
+            end
+            fd.attackFlashAnim = anim
+        end
+        flash:Show()
+        if not anim:IsPlaying() then anim:Play() end
+        fd.attackFlashing = true
+    elseif fd and fd.attackFlashing then
+        fd.attackFlashAnim:Stop()
+        flash:Hide()
+        fd.attackFlashing = nil
+    end
+end
+
+-- Content/reveal passes reconcile all slots; attack events only touch candidates.
+function ns.AB_SyncAttackState(btn, action, onlyAttacks)
+    local hasAction = action and C_ActionBar.HasAction(action)
+    local attacking = hasAction and C_ActionBar.IsAttackAction(action)
+    local repeating = hasAction and C_ActionBar.IsAutoRepeatAction(action)
+    -- A stop event outranks a read that still reports auto-repeat.
+    if repeatOn == false then repeating = false end
+    local fd = ns._eabFD[btn]
+    local checked = btn:GetChecked()
+    if issecretvalue and issecretvalue(checked) then checked = nil end
+    if onlyAttacks and not (attacking or repeating or checked or (fd and fd.attackFlashing)) then
+        return
+    end
+    local current = hasAction and C_ActionBar.IsCurrentAction(action)
+    -- An Attack action follows the melee events once one has fired.
+    if attacking and meleeOn ~= nil then current = meleeOn end
+    ns.AB_SetAttackFlash(btn, repeating or (attacking and current))
+    local wanted = (current or repeating) and true or false
+    if checked ~= wanted then btn:SetChecked(wanted) end
+end
+
 -------------------------------------------------------------------------------
 --  Central Event Dispatcher: registers action bar events on a SINGLE frame
 --  and dispatches to all buttons, avoiding the per-button registration that
@@ -30,7 +88,7 @@ local ReRegisterButtonEvents, barFrames = I.ReRegisterButtonEvents, I.barFrames
 
 -- Usable-tint mirror for ForceButtonRefresh, a named function so pcall passes
 -- args instead of allocating a closure per call (runs in the
--- ACTIONBAR_SLOT_CHANGED storm path). On ns: file at the 200-local cap.
+-- ACTIONBAR_SLOT_CHANGED storm path). On ns.
 ns._TintUsableIcon = function(icon, action)
     local isUsable, noMana
     if C_ActionBar and C_ActionBar.IsUsableAction then
@@ -442,7 +500,7 @@ end
 --
 --  Alpha-0 mouseover bars are SHOWN frames and deliberately count as
 --  visible: gating on alpha would move reconcile work onto the hover-in edge
---  -- the exact spike the mouseover fix removed. (On ns: 200-local cap.)
+--  -- the exact spike the mouseover fix removed. (On ns.)
 -------------------------------------------------------------------------------
 ns._eabBarDormant = {}
 -- HARD dormancy: bars whose visibility mode is "Never" (or disabled, or hidden by
@@ -552,6 +610,7 @@ ns.ApplyBarDormancy = function(key, dormant)
         local list = BUTTON_EVENT_LISTS.action
         for _, btn in ipairs(btns) do
             local fd = EFD(btn)
+            ns.AB_SetAttackFlash(btn, false)
             if not fd.evGated then
                 fd.evGated = true
                 for _, ev in ipairs(list) do
@@ -571,10 +630,9 @@ ns.ApplyBarDormancy = function(key, dormant)
         if a and HasAction(a) then
             -- Icon/count/name/cooldown/desat/usable in one existing helper.
             EAB_VTABLE.ForceButtonRefresh(btn, a)
-            -- Checked state: a channel ForceButtonRefresh doesn't own, whose
-            -- events were gated.
-            btn:SetChecked((IsCurrentAction(a) or IsAutoRepeatAction(a)) and true or false)
         end
+        -- Attack visuals include slots emptied while the bar was dormant.
+        ns.AB_SyncAttackState(btn, a)
         -- The equipped-item border too, empty slots included: one emptied
         -- while the bar was Never kept its border.
         if a then ns.AB_SyncEquippedBorder(btn, a) end
@@ -988,6 +1046,12 @@ do
         -- outside active casting; the branch is a nil-check otherwise.
         dispatcher:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player")
         dispatcher:RegisterEvent("CURRENT_SPELL_CAST_CHANGED")
+        -- QuietBroadcasters disables ActionBarActionEventsFrame, which normally
+        -- delivers these edges and updates attack flash/checked state.
+        dispatcher:RegisterEvent("START_AUTOREPEAT_SPELL")
+        dispatcher:RegisterEvent("STOP_AUTOREPEAT_SPELL")
+        dispatcher:RegisterEvent("PLAYER_ENTER_COMBAT")
+        dispatcher:RegisterEvent("PLAYER_LEAVE_COMBAT")
         -- ACTIONBAR_UPDATE_STATE deliberately NOT registered: every button's own
         -- Blizzard mixin receives it per button (BUTTON_EVENT_LISTS.action) and drives
         -- SetChecked natively -- a central checked walk is redundant (field-verified).
@@ -1022,7 +1086,7 @@ do
         dispatcher:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
         -- Per-button content refresh for a changed slot. Shared by the
         -- dispatcher's SLOT_CHANGED full walk (arg1 == 0) and the
-        -- slot->buttons fast path; on ns because this chunk is at the 200-local cap.
+        -- slot->buttons fast path; on ns.
         ns._eabSlotRefreshBtn = function(btn, action)
             -- Assisted-combat slot: its "content changes" are the manager
             -- re-stamping the suggestion (idle spam plus per rotation step in
@@ -1040,6 +1104,7 @@ do
                 -- Slot CONTENTS changed while slot number stayed (spec swap,
                 -- drag-drop): needs the forced refresh path (ForceButtonRefresh).
                 EAB_VTABLE.ForceButtonRefresh(btn, action)
+                ns.AB_SyncAttackState(btn, action)
                 -- Content changed: drop this slot's memos so every cached visual re-derives fresh.
                 local mfd = EFD(btn)
                 mfd.lastCountText = nil
@@ -1222,7 +1287,7 @@ do
         -- the deliberate exception -- they paint the SUGGESTED spell's
         -- texture, not the action's, and stamping that would clobber them.
         -- Used by the full walk below and the payload-targeted
-        -- SPELL_UPDATE_ICON fast path; ns-hosted (200-local cap).
+        -- SPELL_UPDATE_ICON fast path; on ns.
         ns._cdIconHeal = function(btn)
             local action = btn:GetAttribute("action")
             if action and HasAction(action) then
@@ -1360,17 +1425,19 @@ do
                         if C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCategorySet
                             and C_CooldownViewer.GetCooldownViewerCooldownInfo and Enum.CooldownViewerCategory then
                             local essential = Enum.CooldownViewerCategory.Essential
+                            -- One marker per rebuild, reading the category being walked.
+                            local isEss
+                            local function mark(id)
+                                if not id or id <= 0 then return end
+                                if isEss or curated[id] == nil then curated[id] = isEss end
+                            end
                             for _, cat in pairs(Enum.CooldownViewerCategory) do
-                                local isEss = (cat == essential)
+                                isEss = (cat == essential)
                                 local okS, set = pcall(C_CooldownViewer.GetCooldownViewerCategorySet, cat)
                                 if okS and type(set) == "table" then
                                     for _, cdID in ipairs(set) do
                                         local okI, ci = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cdID)
                                         if okI and ci and ci.spellID then
-                                            local function mark(id)
-                                                if not id or id <= 0 then return end
-                                                if isEss or curated[id] == nil then curated[id] = isEss end
-                                            end
                                             mark(ci.spellID)
                                             mark(ci.overrideSpellID)
                                             if type(ci.linkedSpellIDs) == "table" then
@@ -1386,6 +1453,8 @@ do
                         end
                     end
                     local haveCurated = next(curated) ~= nil
+                    local GetSpell = C_ActionBar.GetSpell
+                    local GetBaseSpell = C_Spell and C_Spell.GetBaseSpell
                     for _, info in ipairs(BAR_CONFIG) do
                         if not info.isStance and not info.isPetBar then
                             -- Dormant (driver-hidden) bars are excluded from lists
@@ -1405,9 +1474,11 @@ do
                                     if a and HasAction(a) then
                                         list[#list + 1] = btn
                                         local aType = GetActionInfo(a)
-                                        local sid = C_ActionBar.GetSpell and C_ActionBar.GetSpell(a)
-                                        if aType == "spell" and sid and sid > 0 then
-                                            local base = C_Spell and C_Spell.GetBaseSpell and C_Spell.GetBaseSpell(sid)
+                                        -- Spell lookups only for spell slots (nothing
+                                        -- else reads them).
+                                        local sid = aType == "spell" and GetSpell and GetSpell(a)
+                                        if sid and sid > 0 then
+                                            local base = GetBaseSpell and GetBaseSpell(sid)
                                             -- Essential (true) -> fast; any other
                                             -- curated (false) or uncurated (nil)
                                             -- -> slow. No curated data at all ->
@@ -1625,9 +1696,26 @@ do
             -- event fire, ahead of the cap, for 3s after their cast -- the first event
             -- after the data turns real paints the swipe. Cost: a couple of fetches per
             -- cooldown event inside the window; one nil-check outside it.
-            if ns._cdRecentBtn1 and (event == "ACTIONBAR_UPDATE_COOLDOWN"
-                or event == "SPELL_UPDATE_COOLDOWN") then
-                HotPushRecent()
+            if event == "ACTIONBAR_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_COOLDOWN" then
+                if ns._cdRecentBtn1 then HotPushRecent() end
+            elseif event == "START_AUTOREPEAT_SPELL" or event == "STOP_AUTOREPEAT_SPELL"
+                or event == "PLAYER_ENTER_COMBAT" or event == "PLAYER_LEAVE_COMBAT" then
+                if event == "PLAYER_ENTER_COMBAT" then meleeOn = true
+                elseif event == "PLAYER_LEAVE_COMBAT" then meleeOn = false
+                elseif event == "START_AUTOREPEAT_SPELL" then repeatOn = true
+                else repeatOn = false end
+                for _, info in ipairs(BAR_CONFIG) do
+                    if not info.isStance and not info.isPetBar
+                        and not ns._eabBarNever[info.key] and not ns._eabBarDormant[info.key] then
+                        local btns = barButtons[info.key]
+                        if btns then
+                            for _, btn in ipairs(btns) do
+                                ns.AB_SyncAttackState(btn, btn:GetAttribute("action"), true)
+                            end
+                        end
+                    end
+                end
+                return
             end
             -- TARGETED SPELL PROBE: SPELL_UPDATE_COOLDOWN names the changed
             -- spell (spellID, baseSpellID; nil spellID means "update
@@ -2045,6 +2133,37 @@ do
             -- event) can only skip, never wrongly refresh -- the paging event's own
             -- full pass repaints anything a stale map missed.
             local _slotFast, _infreqStampNew
+            -- A spell override flip names its base and override spell (arg1, arg2)
+            -- and can only change buttons holding one of them, or a macro (its icon
+            -- can follow the spell): the infrequent branch refreshes exactly those
+            -- (C_ActionBar.FindSpellActionButtons) instead of every button. A secret
+            -- or missing payload keeps the full pass.
+            local _ovrSlots
+            if event == "COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED" and arg1
+                and C_ActionBar.FindSpellActionButtons
+                and not (issecretvalue and (issecretvalue(arg1)
+                    or (arg2 ~= nil and issecretvalue(arg2)))) then
+                _ovrSlots = ns._eabOvrSlots
+                if _ovrSlots then wipe(_ovrSlots) else _ovrSlots = {}; ns._eabOvrSlots = _ovrSlots end
+                local ok1, found1 = pcall(C_ActionBar.FindSpellActionButtons, arg1)
+                local ok2, found2 = true, nil
+                if arg2 then ok2, found2 = pcall(C_ActionBar.FindSpellActionButtons, arg2) end
+                local usable = ok1 and ok2
+                for pass = 1, 2 do
+                    local found = (pass == 1) and found1 or found2
+                    if usable and found then
+                        if issecretvalue and issecretvalue(found) then
+                            usable = false
+                        else
+                            for _, s in ipairs(found) do
+                                if issecretvalue and issecretvalue(s) then usable = false; break end
+                                _ovrSlots[s] = true
+                            end
+                        end
+                    end
+                end
+                if not usable then _ovrSlots = nil end -- lookup refused or secret: the full pass
+            end
             if event == "ACTIONBAR_SLOT_CHANGED" and arg1 and arg1 ~= 0 then
                 local smap = ns._slotBtnMap
                 if not smap or ns._slotBtnMapDirty then
@@ -2149,9 +2268,13 @@ do
                             -- events always gets a final pass: correctness never rides
                             -- on skipped dupes. Target changes keep their own cheap
                             -- path and neither stamp nor skip.
+                            -- A targeted override pass (_ovrSlots) neither stamps
+                            -- nor skips: it is not the full pass a dupe would repeat.
                             local nowI = GetTime()
+                            -- A loading screen: the actions read true again.
+                            if event == "PLAYER_ENTERING_WORLD" then meleeOn, repeatOn = nil, nil end
                             if not ns._eabNoBtns then ns._eabNoBtns = {} end
-                            local _infreqDup = event ~= "PLAYER_TARGET_CHANGED"
+                            local _infreqDup = event ~= "PLAYER_TARGET_CHANGED" and not _ovrSlots
                                 and ns._infreqPassAt == nowI and not _infreqStampNew
                             if _infreqDup then
                                 ns._infreqFlushEvent = event
@@ -2171,12 +2294,37 @@ do
                                     end
                                     C_Timer.After(0, ns._infreqFlushFn)
                                 end
-                            elseif event ~= "PLAYER_TARGET_CHANGED" then
+                            elseif event ~= "PLAYER_TARGET_CHANGED" and not _ovrSlots then
                                 ns._infreqPassAt = nowI
                                 _infreqStampNew = true
                             end
                             local canSetAttr = not InCombatLockdown()
-                            for _, btn in ipairs(_infreqDup and ns._eabNoBtns or btns) do
+                            local infreqBtns = _infreqDup and ns._eabNoBtns or btns
+                            if _ovrSlots then
+                                local pick = ns._eabOvrPick
+                                if pick then wipe(pick) else pick = {}; ns._eabOvrPick = pick end
+                                for _, b in ipairs(btns) do
+                                    local a = b:GetAttribute("action")
+                                    if a then
+                                        local take = _ovrSlots[a]
+                                        if not take then
+                                            local aType = GetActionInfo(a)
+                                            if issecretvalue and issecretvalue(aType) then
+                                                -- Instanced combat: the content token the
+                                                -- SPELLS_CHANGED gate cached ("macro..."),
+                                                -- unknown refreshes.
+                                                local tok = EFD(b).spellsTok
+                                                take = tok == nil or tok == "?" or tok:find("^macro") ~= nil
+                                            else
+                                                take = aType == "macro"
+                                            end
+                                        end
+                                        if take then pick[#pick + 1] = b end
+                                    end
+                                end
+                                infreqBtns = pick
+                            end
+                            for _, btn in ipairs(infreqBtns) do
                                 -- Covers SPELL_UPDATE_CHARGES (a regained charge must
                                 -- re-evaluate desat) plus form/stance/world entries;
                                 -- early-outs when both features are off. Target changes
@@ -2192,11 +2340,10 @@ do
                                     local infreqAction = btn:GetAttribute("action")
                                     EAB_VTABLE.ForceButtonRefresh(btn, infreqAction)
                                     RefreshCooldownVisuals(btn)
-                                    -- Two channels ForceButtonRefresh doesn't own (same
-                                    -- pairing as the bar-reveal path): checked state +
-                                    -- equipped border, both stale after page/form flips.
+                                    -- Reconcile attack visuals even when the new page's
+                                    -- slot is empty; the old page may have been flashing.
+                                    ns.AB_SyncAttackState(btn, infreqAction)
                                     if infreqAction then
-                                        btn:SetChecked((IsCurrentAction(infreqAction) or IsAutoRepeatAction(infreqAction)) and true or false)
                                         ns.AB_SyncEquippedBorder(btn, infreqAction)
                                     end
                                     -- Classic WoW UI: a third such channel, the slot ring
@@ -2263,10 +2410,11 @@ do
             -- off under secrecy, so the cooldown is painted from here directly.
             -- Blizzard's own SLOT_CHANGED registration reaches it untainted as
             -- well (the broadcaster quieting keeps that one); the slot refresh
-            -- here is our painter's pass on top of it.
+            -- here is our painter's pass on top of it. Gated on Blizzard's own
+            -- answer: the button itself is created shown and only its bar hides.
             if event == "ACTIONBAR_UPDATE_COOLDOWN" or event == "ACTIONBAR_SLOT_CHANGED" then
                 local eab1 = ExtraActionButton1
-                if eab1 and eab1:IsShown() then
+                if eab1 and C_ActionBar.HasExtraActionBar() then
                     if event == "ACTIONBAR_SLOT_CHANGED" then
                         local action = eab1:GetAttribute("action")
                         if action and (arg1 == 0 or arg1 == action) then
@@ -2277,6 +2425,20 @@ do
                     else
                         ForceCooldownPaint(eab1)
                     end
+                end
+            end
+            -- WoW Forever never adds the tick set back, so a shown vehicle or
+            -- override bar takes its cooldowns from here too.
+            if event == "ACTIONBAR_UPDATE_COOLDOWN" and EllesmereUI.IS_FOREVER then
+                local ob = OverrideActionBar
+                if ob and ob:IsShown() then
+                    local list = ns._abOverrideBtns
+                    if not list then
+                        list = { ob.SpellButton1, ob.SpellButton2, ob.SpellButton3,
+                                 ob.SpellButton4, ob.SpellButton5, ob.SpellButton6 }
+                        ns._abOverrideBtns = list
+                    end
+                    for i = 1, #list do ForceCooldownPaint(list[i]) end
                 end
             end
 

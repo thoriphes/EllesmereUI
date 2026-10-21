@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 
@@ -79,6 +80,13 @@ end
 
 
 
+function BagShare:ShouldWatch()
+    return IsInGroup() and addon.Loot ~= nil and addon.Loot.handling == true
+        and BagShare:IsSharing()
+end
+
+
+
 local function MayShow(owner)
     if not owner then return false end
     if addon.IsMasterLooter and addon.IsMasterLooter(owner) then return true end
@@ -136,12 +144,12 @@ function BagShare:AddToQueue(link, owner)
                 item.bagItem = true
                 addon.Callbacks:Fire("SessionChanged", index, "item")
 
-                if BagShare:IsSharing() then BagShare:PushSoon() end
+                BagShare:StagedSoon(owner)
                 return index
             end
         end
     end
-    if BagShare:IsSharing() then BagShare:PushSoon() end
+    BagShare:StagedSoon(owner)
     return nil, held > 0 and "queued" or "gone"
 end
 
@@ -200,9 +208,12 @@ end
 
 
 
+local watching = false
+
+
 local function BuildPayload()
     local items = {}
-    for _, entry in ipairs(addon.Storage:GetTradeableItems()) do
+    for _, entry in ipairs(addon.Storage:GetTradeableItems(watching)) do
         items[#items + 1] = {
             l = entry.link,
             s = entry.secondsLeft and math.floor(entry.secondsLeft) or nil,
@@ -265,10 +276,16 @@ end
 
 local pushForce = false
 
-local function PushAfterCombat() BagShare:PushSoon() end
+
+local function PushAfterCombat() BagShare:PushSoon(pushForce) end
+
 
 function BagShare:PushSoon(force)
-    if force then pushForce = true end
+    if force then
+        pushForce = true
+    elseif not BagShare:ShouldWatch() then
+        return
+    end
     if pushPending then return end
     pushPending = true
     C_Timer.After(PUSH_DELAY, function()
@@ -279,7 +296,27 @@ function BagShare:PushSoon(force)
         end
         local forced = pushForce
         pushForce = false
+        if not forced and not BagShare:ShouldWatch() then return end
         BagShare:Push(forced)
+    end)
+end
+
+
+
+local ownPending = false
+
+function BagShare:StagedSoon(owner)
+    if not BagShare:IsSharing() then return end
+    if BagShare:ShouldWatch() then
+        BagShare:PushSoon()
+        return
+    end
+    local me = addon.Player:GetFullName("player")
+    if ownPending or not addon.Player:IsSame(owner, me) then return end
+    ownPending = true
+    C_Timer.After(PUSH_DELAY, function()
+        ownPending = false
+        BagShare:Apply(BuildPayload(), me)
     end)
 end
 
@@ -390,7 +427,7 @@ end
 
 
 
-function BagShare:Holders()
+function BagShare:Holders(readOwn)
     local me = addon.Player:GetFullName("player")
     local ml = addon.PlayerIsMasterLooter() and me
         or (addon.GetMasterLooter and addon.GetMasterLooter())
@@ -398,7 +435,8 @@ function BagShare:Holders()
 
     local function Add(owner, isML)
         if addon.Player:IsSame(owner, me) then
-            out[#out + 1] = { owner = me, items = addon.Storage:GetTradeableItems(),
+            out[#out + 1] = { owner = me,
+                items = readOwn and readOwn() or addon.Storage:GetTradeableItems(),
                 mine = true, lootMaster = isML }
         else
             local shared = BagShare:Get(owner)
@@ -444,6 +482,45 @@ end
 
 
 
+local MISSING_SETTLE = 5
+local MISSING_COOLDOWN = 30
+local missingDue, missingAskedAt = nil, {}
+
+local function NoOwnScan() return {} end
+
+local function AskMissingNow()
+    if not IsInGroup() then return end
+    local now = GetTime()
+    for _, holder in ipairs(BagShare:Holders(NoOwnScan)) do
+        local owner = holder.owner
+        local at = missingAskedAt[owner]
+        if not holder.mine and not holder.known and (not at or now - at >= MISSING_COOLDOWN) then
+            missingAskedAt[owner] = now
+            addon.Log:D("BagShare", "no list from", tostring(owner), "- asking for it")
+            addon.Comms:Send("bags_request", {}, owner)
+        end
+    end
+end
+
+function BagShare:AskMissing()
+    local armed = missingDue ~= nil
+    missingDue = GetTime() + MISSING_SETTLE
+    if armed then return end
+    local function Due()
+        local wait = missingDue - GetTime()
+        if wait > 0 then
+            C_Timer.After(wait, Due)
+            return
+        end
+        missingDue = nil
+        AskMissingNow()
+    end
+    C_Timer.After(MISSING_SETTLE, Due)
+end
+
+
+
+
 local seenMembers = nil
 
 local function Joined()
@@ -462,13 +539,66 @@ local function Joined()
     return joined
 end
 
-function BagShare:OnRosterChanged(_, gained)
+
+
+local UpdateWatch = function() end
+
+
+
+local MOST_WHISPERED = 2
+
+local function WhisperTo(names)
+    if InCombatLockdown() then
+        BagShare:PushSoon(true)
+        return
+    end
+    local wire = BagShare.WirePayload(BuildPayload())
+    for _, name in ipairs(names) do
+        addon.Log:D("BagShare", "sharing", #wire.items, "items with", tostring(name))
+        addon.Comms:Send("bags", wire, name)
+    end
+end
+
+function BagShare:OnRosterChanged(_, gained, newly, joiners)
+    UpdateWatch()
 
 
     local joined = Joined()
     if not (gained or joined) or not BagShare:IsSharing() then return end
+    if not newly and joiners and #joiners > 0 and #joiners <= MOST_WHISPERED then
+        WhisperTo(joiners)
+        return
+    end
     lastDigest = nil
     BagShare:PushSoon()
+end
+
+
+
+local REQUEST_COOLDOWN = 10
+local answeredAt, answerHeld = {}, false
+
+local function AnswerRequest(sender)
+    local now = GetTime()
+    for who, at in pairs(answeredAt) do
+        if now - at >= REQUEST_COOLDOWN then answeredAt[who] = nil end
+    end
+    local last = answeredAt[sender]
+    if not last then
+        answeredAt[sender] = now
+        addon.Log:D("BagShare", "bags requested by", tostring(sender))
+        PushNow()
+        return
+    end
+    if answerHeld then return end
+    answerHeld = true
+    addon.Log:D("BagShare", "bags requested again by", tostring(sender),
+        "- answering when the cooldown ends")
+    C_Timer.After(REQUEST_COOLDOWN - (now - last), function()
+        answerHeld = false
+        answeredAt[sender] = GetTime()
+        if BagShare:IsSharing() then PushNow() end
+    end)
 end
 
 
@@ -479,6 +609,8 @@ function BagShare:Init()
 
 
     addon.Comms:Register("bags", "council", function(args, sender)
+
+        if addon.Player:IsSame(sender, addon.Player:GetFullName("player")) then return end
         local record = addon.Player:Get(sender)
         local owner = record.fullName or sender
         if not MayShow(owner) then
@@ -495,23 +627,48 @@ function BagShare:Init()
 
     addon.Comms:Register("bags_request", "any", function(_, sender)
         if not BagShare:IsSharing() then return end
-        addon.Log:D("BagShare", "bags requested by", tostring(sender))
-        PushNow()
+        AnswerRequest(addon.Player:Get(sender).fullName or sender)
+    end)
+
+
+    local f = CreateFrame("Frame")
+    f:SetScript("OnEvent", function(_, event, bagID)
+        if event == "BAG_UPDATE" then
+            addon.Storage:InvalidateBags(bagID)
+        elseif BagShare:ShouldWatch() then
+            BagShare:PushSoon()
+        else
+            UpdateWatch()
+        end
     end)
 
 
 
-    local wasSharing = false
-    addon.Callbacks:Register("CouncilChanged", function()
-        local sharing = BagShare:IsSharing()
-        if sharing and not wasSharing then
+    UpdateWatch = function()
+        local want = BagShare:ShouldWatch()
+        if want == watching then return end
+        watching = want
+        addon.Storage:InvalidateBags()
+        if want then
+            f:RegisterEvent("BAG_UPDATE")
+            f:RegisterEvent("BAG_UPDATE_DELAYED")
             seenMembers = addon.GetCandidates()
             lastDigest = nil
             BagShare:PushSoon()
-        elseif not sharing then
+        else
+            f:UnregisterEvent("BAG_UPDATE")
+            f:UnregisterEvent("BAG_UPDATE_DELAYED")
             seenMembers = nil
         end
-        wasSharing = sharing
+        addon.Log:D("BagShare", want and "watching the bags" or "not watching the bags")
+    end
+    addon.Callbacks:Register("HandlingChanged", function() UpdateWatch() end)
+    addon.Callbacks:Register("LootMasterChanged", function() UpdateWatch() end)
+    addon.Callbacks:Register("SharedConfigChanged", function() UpdateWatch() end)
+
+
+    addon.Callbacks:Register("CouncilChanged", function()
+        UpdateWatch()
         for owner in pairs(caches) do
             if not MayShow(owner) and not addon.Player:IsSelf(owner) then
                 caches[owner] = nil
@@ -525,16 +682,8 @@ function BagShare:Init()
     addon.Callbacks:Register("StorageChanged", function() BagShare:PushSoon() end)
 
 
-
-    local f = CreateFrame("Frame")
-    f:RegisterEvent("BAG_UPDATE_DELAYED")
-    f:SetScript("OnEvent", function()
-        if not IsInGroup() or not BagShare:IsSharing() then return end
-        BagShare:PushSoon()
-    end)
-
-
     addon.Callbacks:Register("ItemDelivered", function() BagShare:PushSoon() end)
 
+    UpdateWatch()
     addon.Log:I("BagShare", "ready")
 end

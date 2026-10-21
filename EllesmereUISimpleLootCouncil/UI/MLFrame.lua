@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 SimpleLootCouncil = SimpleLootCouncil or {}
@@ -119,8 +120,9 @@ function MLFrame:ConfirmAward(session, winner, reason, viaRoute)
     local identity = item.id or item.link
     local itemText = ItemText(item.link)
     local short = Ambiguate(winner, "short")
-    local reasonEntry = reason and addon.db.awardReasons
-        and addon.db.awardReasons[reason]
+
+    local reasonEntry = type(reason) == "string" and { text = reason }
+        or reason and addon.db.awardReasons and addon.db.awardReasons[reason]
 
 
     local question = reasonEntry
@@ -284,7 +286,7 @@ function MLFrame:ConfirmRetract(entryId)
                 return
             end
             if not addon.Session:RetractAward(args.runId, args.session, args.recipient) then
-                print(addon.Log.CHAT_PREFIX.accent .. addon.Locale.Format(
+                addon.Chat.Print(addon.Locale.Format(
                     T["could not undo the award of %s - see /slc log."], entry.link or "?"))
             end
         end,
@@ -323,7 +325,7 @@ function MLFrame:ConfirmRetractOthers(key)
                 return
             end
             if not addon.Session:RetractAward(record.runId, record.session, record.winner) then
-                print(addon.Log.CHAT_PREFIX.accent .. addon.Locale.Format(
+                addon.Chat.Print(addon.Locale.Format(
                     T["could not undo the award of %s - see /slc log."], record.link or "?"))
             end
         end,
@@ -480,7 +482,8 @@ end
 
 
 function MLFrame:FitTextWidths()
-    local probe = UIParent:CreateFontString(nil, "ARTWORK")
+
+    local probe = CM.itemInfo:CreateFontString(nil, "ARTWORK")
 
     local function Widest(text, floor, pad)
         probe:SetText(text)
@@ -615,6 +618,13 @@ local function ResolveResponse(candidate, sortOnly)
         return "-", S.color.textFaint, 999
     end
 
+
+    local boe = candidate.status == "RESPONDED" and candidate.boe
+    if boe then
+        if sortOnly then return nil, nil, 0.5 end
+        return boe.t, { boe.r, boe.g, boe.b }, 0.5
+    end
+
     if candidate.status == "RESPONDED" and candidate.response then
         local response = addon.Config:Responses()[candidate.response]
         if response then
@@ -722,13 +732,13 @@ local function BuildColumns(forCompact)
                 local coinText = ""
                 if item and addon.BonusRoll then
                     local coin, spent = addon.BonusRoll:StatusFor(row.name, item)
-                    if coin then
-                        coinText = S.Colorize(S.color.accent, T["coined"])
-                    elseif spent > 0 then
-                        coinText = S.Colorize(S.color.accent,
-                            addon.Locale.Format(addon.Locale.Plural{
-                                one = "spent %d coin", other = "spent %d coins",
-                            }, spent, spent))
+                    spent = spent + (coin and 1 or 0)
+                    if spent > 0 then
+
+                        local possible = addon.BonusRoll:PossibleFor(row.name, item)
+                        coinText = S.Colorize(S.color.accent, possible
+                            and addon.Locale.Format(T["Bonus rolls: %d of %d"], spent, possible)
+                            or addon.Locale.Format(T["Bonus rolls: %d"], spent))
                     end
                 end
 
@@ -754,8 +764,8 @@ local function BuildColumns(forCompact)
                 local text, colour = ResolveResponse(row.candidate)
                 local candidate = row.candidate
                 local isResponse = candidate and candidate.status == "RESPONDED"
-                    and candidate.response
-                    and addon.Config:Responses()[candidate.response]
+                    and (candidate.boe or candidate.response
+                        and addon.Config:Responses()[candidate.response])
 
                 if isResponse then
                     if not cell.Chip then
@@ -939,9 +949,43 @@ local function BuildColumns(forCompact)
             value = function(row) return row.votes end,
             render = function(cell, row)
 
-                if addon.Config:Vote().hideVotes
+                if not cell.hooked then
+                    cell.hooked = true
+                    cell:EnableMouse(true)
+                    cell:SetScript("OnEnter", function(self)
+                        local voters = not self.votesHidden and self.voters
+                        if not voters or not next(voters) then return end
+                        local names = {}
+                        for name in pairs(voters) do names[#names + 1] = name end
+                        table.sort(names, function(a, b)
+                            return Ambiguate(a, "short") < Ambiguate(b, "short")
+                        end)
+                        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                        S.TooltipSection(GameTooltip, T["Votes"])
+                        for _, name in ipairs(names) do
+                            local r, g, b = S.ClassColor(addon.Player:Get(name).classFile)
+                            if r then
+                                GameTooltip:AddLine(Ambiguate(name, "short"), r, g, b)
+                            else
+                                GameTooltip:AddLine(Ambiguate(name, "short"), 1, 1, 1)
+                            end
+                        end
+                        GameTooltip:Show()
+                    end)
+                    cell:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+                    cell:SetScript("OnMouseUp", function(self, button)
+                        if button ~= "RightButton" then return end
+                        local parent = self:GetParent()
+                        if parent and parent.rowData then ShowRowMenu(parent, parent.rowData) end
+                    end)
+                end
+                cell.voters = row.candidate and row.candidate.voters
+
+                cell.votesHidden = addon.Config:Vote().hideVotes
                     and not addon.Session:HasVoted(selectedSession,
-                        addon.Player:GetFullName("player")) then
+                        addon.Player:GetFullName("player")) or false
+                if cell.votesHidden then
                     cell.Text:SetText("?")
                     cell.Text:SetTextColor(S.Unpack(S.color.textFaint))
                     return
@@ -1147,12 +1191,16 @@ local function BuildColumns(forCompact)
 
         font = S.fontHint,
 
-        compare = function(a, b)
+
+        prepare = function(rows)
             local item = addon.Session:GetItem(selectedSession)
-            local pa = addon.Wishlist:For(a.name, item)
-            local pb = addon.Wishlist:For(b.name, item)
-            local ka = pa and pa.priorityId or math.huge
-            local kb = pb and pb.priorityId or math.huge
+            for _, row in ipairs(rows) do
+                local pick = addon.Wishlist:For(row.name, item)
+                row.wishlistKey = pick and pick.priorityId or math.huge
+            end
+        end,
+        compare = function(a, b)
+            local ka, kb = a.wishlistKey or math.huge, b.wishlistKey or math.huge
             if ka == kb then return 0 end
             return ka < kb and -1 or 1
         end,
@@ -1171,12 +1219,15 @@ local function BuildColumns(forCompact)
 
         sub = true, font = S.fontNumLarge, subFont = S.fontNumHint,
 
-        compare = function(a, b)
+        prepare = function(rows)
             local item = addon.Session:GetItem(selectedSession)
-            local sa = addon.Wishlist:SimFor(a.name, item)
-            local sb = addon.Wishlist:SimFor(b.name, item)
-            local ka = sa and sa.pct or -math.huge
-            local kb = sb and sb.pct or -math.huge
+            for _, row in ipairs(rows) do
+                local sim = addon.Wishlist:SimFor(row.name, item)
+                row.simKey = sim and sim.pct or -math.huge
+            end
+        end,
+        compare = function(a, b)
+            local ka, kb = a.simKey or -math.huge, b.simKey or -math.huge
             if ka == kb then return 0 end
             return ka < kb and -1 or 1
         end,
@@ -1200,6 +1251,12 @@ end
 
 
 
+local function RoleName(role)
+    if role == "TANK" then return T["Tank"] end
+    if role == "HEALER" then return T["Healer"] end
+    if role == "DAMAGER" then return T["DPS"] end
+end
+
 local function ShowMoreInfo(anchor, name)
     if not addon.db.showMoreInfo then return end
 
@@ -1210,10 +1267,9 @@ local function ShowMoreInfo(anchor, name)
     local stats = addon.History:GetStats(isAlt and main or name)
     local item = addon.Session:GetItem(selectedSession)
     local previous = item and addon.History:GetWinnersOfItem(item.link) or {}
-    local attendance = addon.Attendance
-        and addon.Attendance:For(name, addon.RaidTeam and addon.RaidTeam:GetSeasonStart())
     local notes = addon.RaidTeam and addon.RaidTeam:NoteFor(name)
-    local hasNotes = notes and (notes.note or notes.officerNote)
+    local shift = IsShiftKeyDown()
+    local hasNotes = notes and (notes.note or (shift and notes.officerNote))
 
 
 
@@ -1222,7 +1278,8 @@ local function ShowMoreInfo(anchor, name)
         coin, spentAtBoss = addon.BonusRoll:StatusFor(name, item)
     end
 
-    if not stats and #previous == 0 and not (attendance and attendance.nights > 0)
+
+    if not stats and #previous == 0 and not (notes and notes.officerNote)
         and not hasNotes and not coin and spentAtBoss == 0 then
         return
     end
@@ -1237,7 +1294,7 @@ local function ShowMoreInfo(anchor, name)
         local info = addon.Specs:Info(addon.Specs:Get(record.guid))
         if info and info.name then
             GameTooltip:AddLine(
-                info.role and addon.Locale.Format(T["%s - %s"], info.name, info.role)
+                RoleName(info.role) and addon.Locale.Format(T["%s - %s"], info.name, RoleName(info.role))
                     or info.name,
                 0.55, 0.55, 0.55)
         end
@@ -1257,72 +1314,13 @@ local function ShowMoreInfo(anchor, name)
             GameTooltip:AddLine(addon.Locale.Format(T["Note: %s"], notes.note),
                 0.55, 0.55, 0.55, true)
         end
-        if notes.officerNote then
+        if shift and notes.officerNote then
             GameTooltip:AddLine(addon.Locale.Format(T["Officer: %s"], notes.officerNote),
                 0.55, 0.55, 0.55, true)
         end
     end
 
-
-    if attendance then
-        S.TooltipSection(GameTooltip, T["Attendance"])
-        local seasonal = addon.RaidTeam and addon.RaidTeam:GetSeasonStart()
-        if attendance.nights > 0 then
-            GameTooltip:AddLine(addon.Locale.Format(seasonal
-                and T["%d/%d nights this season"] or T["%d/%d nights"],
-                attendance.attended, attendance.nights), 0.64, 0.63, 0.60)
-        else
-            GameTooltip:AddLine(T["No raids recorded"], 0.45, 0.44, 0.42)
-        end
-    end
-
     if stats then
-        S.TooltipSection(GameTooltip, T["Loot history"])
-        GameTooltip:AddLine(addon.Locale.Format(addon.Locale.Plural{
-            one = "Received %d item", other = "Received %d items",
-        }, stats.total, stats.total), 1, 1, 1)
-
-
-        if (stats.imported or 0) > 0 then
-            local sources = {}
-            for source, count in pairs(stats.importedBySource or {}) do
-                sources[#sources + 1] = {
-                    label = addon.HistoryImport:Label(source), count = count,
-                }
-            end
-            table.sort(sources, function(a, b) return a.label < b.label end)
-            for _, source in ipairs(sources) do
-                GameTooltip:AddLine(addon.Locale.Format(T["  %d imported from %s"],
-                    source.count, source.label), 0.45, 0.44, 0.42)
-            end
-        end
-
-
-        if (stats.fromAlts or 0) > 0 then
-            GameTooltip:AddLine(addon.Locale.Format(addon.Locale.Plural{
-                one = "  incl. %d on alt", other = "  incl. %d on alts",
-            }, stats.fromAlts, stats.fromAlts),
-                0.45, 0.44, 0.42)
-        end
-
-
-        if (stats.reasons or 0) > 0 then
-            GameTooltip:AddLine(addon.Locale.Format(T["  plus %d held for the guild (not counted)"],
-                stats.reasons), 0.45, 0.44, 0.42)
-        end
-
-
-
-        local ordered = {}
-        for text, count in pairs(stats.counts) do
-            ordered[#ordered + 1] = { text = text, count = count }
-        end
-        table.sort(ordered, function(a, b) return a.count > b.count end)
-        for _, row in ipairs(ordered) do
-            GameTooltip:AddDoubleLine(addon.Locale.Format(T["  %s"], row.text), row.count,
-                0.8, 0.8, 0.8, 1, 1, 1)
-        end
-
         S.TooltipSection(GameTooltip, T["Most Recent Loot"])
         for i = 1, math.min(5, #stats.recent) do
             local entry = stats.recent[i]
@@ -1374,9 +1372,19 @@ local function ShowMoreInfo(anchor, name)
         }, spentAtBoss, spentAtBoss,
             addon.Encounter:DisplayName(item.boss, item.encounterID) or T["this boss"]),
             0.8, 0.8, 0.8)
+        local possible, bySpec = addon.BonusRoll:PossibleFor(name, item)
+        if possible then
+            GameTooltip:AddLine(addon.Locale.Format(bySpec and addon.Locale.Plural{
+                one = "  %d item there for their spec", other = "  %d items there for their spec",
+            } or addon.Locale.Plural{
+                one = "  %d item there for their class", other = "  %d items there for their class",
+            }, possible, possible), 0.8, 0.8, 0.8)
+        end
     end
 
     GameTooltip:Show()
+
+    S.WatchTooltipModifiers(anchor)
 end
 
 
@@ -1563,6 +1571,20 @@ local function HaveVotedOn(item)
     if not me then return false end
     for _, candidate in pairs(item.candidates) do
         if candidate.voters[me] then return true end
+    end
+    return false
+end
+
+
+
+
+function CM.HasWork()
+    local master = addon.PlayerIsMasterLooter()
+    for _, item in ipairs(addon.Session:GetItems()) do
+        if not item.awarded and not item.removed
+            and (master or not HaveVotedOn(item)) then
+            return true
+        end
     end
     return false
 end
@@ -1770,7 +1792,7 @@ local function LowerEquipped(candidate)
     return best, bestName, bestQuality, bestLevel
 end
 
-local function RefreshAgainst(name)
+local function PaintAgainst(name)
     if not againstName or not againstDetail then return end
     againstFor = name
     CM.againstLoading = false
@@ -1846,17 +1868,21 @@ local function RefreshAgainst(name)
 end
 
 
+local function RefreshAgainst(name)
+    PaintAgainst(name)
+    CM.WatchItemInfo()
+end
+
+
 
 local function BoERouteTagText(route)
     if not route then return nil end
 
-    local reasonEntry = route.reason and addon.db.awardReasons
-        and addon.db.awardReasons[route.reason]
     local shortName = Ambiguate(route.winner, "short")
 
     if route.state == "routed" then
         return S.Colorize(S.color.accent, addon.Locale.Format(T["route -> %s (%s)"],
-            shortName, reasonEntry and reasonEntry.text or "?"))
+            shortName, route.reason or "?"))
     elseif route.state == "absent" then
         return addon.Locale.Format(T["route -> %s (not here)"], shortName)
     end
@@ -2120,6 +2146,7 @@ function MLFrame:Paint(scope)
         RefreshAgainst(hovered)
     end
     CM.namesMissing = stripMissing or CM.featuredMissing
+    CM.WatchItemInfo()
 
     if not scope then MLFrame:UpdateTimer() end
 end
@@ -2133,6 +2160,7 @@ end
 
 
 function MLFrame:Present()
+    if not CM.Ensure() then return end
     addon.Callbacks:Invalidate("council")
     frame:Show()
     addon.Callbacks:PaintNow("council")
@@ -2179,11 +2207,12 @@ end
 
 
 
-function MLFrame:Init()
+
+
+
+function CM.Build()
     local T = addon.Locale.Text
-    S, Tbl = addon.Style, UI.Table
-    L, P = addon.Layout, addon.Pixel
-    self:FitTextWidths()
+    MLFrame:FitTextWidths()
 
 
     hasWishlist = (addon.Wishlist and addon.Wishlist:IsAvailable()) or false
@@ -2488,42 +2517,16 @@ function MLFrame:Init()
     end
 
 
-    addon.Callbacks:RegisterView("council", {
-        frame = frame,
-        interval = CM.PAINT_INTERVAL,
-        paint = function(scope) MLFrame:Paint(scope) end,
-    })
 
-    addon.Callbacks:Register("RunStarted", function()
-        selectedSession = 1
-        paintedSession = nil
-        CM.dismissedRun = nil
-
-
-        local me = addon.Player:GetFullName("player")
-        if addon.PlayerIsMasterLooter() or addon.Council:Contains(me) then
-            MLFrame:Present()
-        end
-    end)
-
-    addon.Callbacks:Register("SessionChanged", function(session, kind, candidate)
-        addon.Callbacks:Invalidate("council", session, kind, candidate)
-    end)
-    addon.Callbacks:Register("RunEnded", function() if frame then frame:Hide() end end)
-
-
-    addon.Callbacks:Register("CouncilChanged", function()
-        if not addon.Session:IsRunning() or frame:IsShown()
-            or CM.dismissedRun == addon.Session:GetRunId() then return end
-        local me = addon.Player:GetFullName("player")
-        if addon.PlayerIsMasterLooter() or addon.Council:Contains(me) then
-            MLFrame:Open()
-        end
+    frame:HookScript("OnShow", function()
+        addon.Callbacks:PaintNow("council")
+        addon.Callbacks:PaintNow("councilAgainst")
     end)
 
 
 
     frame:HookScript("OnHide", function()
+        CM.WatchItemInfo()
         local hiddenRun = addon.Session:IsRunning()
             and addon.Session:GetRunId() or nil
         if hiddenRun then CM.dismissedRun = hiddenRun end
@@ -2539,21 +2542,52 @@ function MLFrame:Init()
             end
         end)
     end)
-    addon.Restrictions:OnChange(function() addon.Callbacks:Invalidate("council") end)
-
-    C_Timer.NewTicker(1, function() MLFrame:UpdateTimer() end)
 
 
-    addon.Callbacks:RegisterView("councilAgainst", {
-        frame = frame,
-        interval = CM.PAINT_INTERVAL,
-        paint = function() RefreshAgainst(againstFor) end,
-    })
+    CM.ticker:SetParent(frame)
+    CM.ticker:Show()
+
+    CM.apply()
+    return frame
+end
 
 
-    local itemInfo = CreateFrame("Frame")
-    itemInfo:RegisterEvent("GET_ITEM_INFO_RECEIVED")
-    itemInfo:SetScript("OnEvent", function()
+
+function CM.WatchItemInfo()
+    local want = (CM.againstLoading or CM.namesMissing)
+        and frame ~= nil and frame:IsShown() and true or false
+    if want == CM.itemInfoOn then return end
+    CM.itemInfoOn = want
+    if want then
+        CM.itemInfo:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+    else
+        CM.itemInfo:UnregisterEvent("GET_ITEM_INFO_RECEIVED")
+    end
+end
+
+
+function CM.Ensure()
+    if not frame and CM.ready then CM.Build() end
+    return frame
+end
+
+function MLFrame:Init()
+    S, Tbl = addon.Style, UI.Table
+    L, P = addon.Layout, addon.Pixel
+
+
+
+
+    CM.ticker = CreateFrame("Frame", nil, UIParent)
+    CM.ticker:Hide()
+    CM.ticker:SetScript("OnUpdate", function(_, elapsed)
+        CM.sinceTick = (CM.sinceTick or 0) + elapsed
+        if CM.sinceTick < 1 then return end
+        CM.sinceTick = CM.sinceTick % 1
+        MLFrame:UpdateTimer()
+    end)
+    CM.itemInfo = CreateFrame("Frame", nil, UIParent)
+    CM.itemInfo:SetScript("OnEvent", function()
         if CM.againstLoading then
             addon.Callbacks:Invalidate("councilAgainst")
         end
@@ -2562,8 +2596,49 @@ function MLFrame:Init()
         end
     end)
 
-    CM.apply()
 
+    local function Shown() return frame ~= nil and frame:IsShown() end
+    addon.Callbacks:RegisterView("council", {
+        shown = Shown,
+        interval = CM.PAINT_INTERVAL,
+        paint = function(scope) MLFrame:Paint(scope) end,
+    })
+
+    addon.Callbacks:RegisterView("councilAgainst", {
+        shown = Shown,
+        interval = CM.PAINT_INTERVAL,
+        paint = function() RefreshAgainst(againstFor) end,
+    })
+
+    addon.Callbacks:Register("RunStarted", function()
+        selectedSession = 1
+        paintedSession = nil
+        CM.dismissedRun = nil
+
+
+        local me = addon.Player:GetFullName("player")
+        if (addon.PlayerIsMasterLooter() or addon.Council:Contains(me)) and CM.HasWork() then
+            MLFrame:Present()
+        end
+    end)
+
+    addon.Callbacks:Register("SessionChanged", function(session, kind, candidate)
+        addon.Callbacks:Invalidate("council", session, kind, candidate)
+    end)
+    addon.Callbacks:Register("RunEnded", function() if frame then frame:Hide() end end)
+
+
+    addon.Callbacks:Register("CouncilChanged", function()
+        if not addon.Session:IsRunning() or (frame and frame:IsShown())
+            or CM.dismissedRun == addon.Session:GetRunId() then return end
+        local me = addon.Player:GetFullName("player")
+        if (addon.PlayerIsMasterLooter() or addon.Council:Contains(me)) and CM.HasWork() then
+            MLFrame:Open()
+        end
+    end)
+    addon.Restrictions:OnChange(function() addon.Callbacks:Invalidate("council") end)
+
+    CM.ready = true
     addon.Log:I("UI", "council frame ready")
 end
 
@@ -2580,7 +2655,7 @@ end
 
 
 function MLFrame:SelectSession(session)
-    if not frame or not session then return end
+    if not CM.ready or not session then return end
 
     if not addon.Session:IsRunning() then return end
     if not addon.Session:GetItems()[session] then return end
@@ -2592,14 +2667,14 @@ end
 
 
 function MLFrame:Open()
-    if not frame then return end
+    if not CM.ready then return end
     CM.dismissedRun = nil
     MLFrame:Present()
 end
 
 function MLFrame:Toggle()
-    if not frame then return end
-    if frame:IsShown() then
+    if not CM.ready then return end
+    if frame and frame:IsShown() then
         CM.dismissedRun = addon.Session:GetRunId()
         frame:Hide()
     else

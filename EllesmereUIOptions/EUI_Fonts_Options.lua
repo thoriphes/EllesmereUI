@@ -21,6 +21,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local PAGE_FONTS = "Fonts"
 local GLOBAL_KEY = "_EUIGlobal"
 
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host are reset and dressed again by the next build instead of made anew;
+-- elsewhere this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 -- Session-only card expand state (never saved).
 local _ftExpanded = {}
 
@@ -1405,7 +1410,7 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
             { key = "actionBars", label = "Action Bars Icons" },
             { key = "unitFrames", label = "Unit Frames Icons" },
             { key = "cdm",        label = "CDM Icons" },
-            { key = "raidFrames", label = "Raid Frames Icons" },
+            { key = "raidFrames", label = "Raid & Party Frames Icons" },
             { key = "bags",       label = "Bags Icons" },
         }
         local rgn = oitRow._leftRegion

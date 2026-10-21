@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 
@@ -288,6 +289,8 @@ local function OnSlotCleared(slot)
 
     local link = slotCache[slot]
     if not link then return end
+
+    if not (Loot.handling and IsInGroup()) then return end
     if WasViaRoll(link) then return end
     if not Loot:IsCouncilItem(link) then return end
 
@@ -302,42 +305,40 @@ end
 
 
 
-
-local sweeper
-
-local function SweepStuckRollFrames()
+local function ScanRollFrames()
+    local ended, open = {}, 0
     local container = GroupLootContainer
-    if not container or not container.rollFrames then return end
+    if not container or type(container.rollFrames) ~= "table" then return ended, open end
 
-    local anyShown = false
     for _, rollFrame in pairs(container.rollFrames) do
         if type(rollFrame) == "table" and rollFrame.rollID and rollFrame.IsShown
             and rollFrame:IsShown() then
-
-            local name = GetLootRollItemInfo(rollFrame.rollID)
-            local left = GetLootRollTimeLeft(rollFrame.rollID)
-
-
-            if not name and (left or 0) <= 0 then
-                addon.Log:I("Loot", "removing stuck roll frame", rollFrame.rollID)
-                GroupLootFrame_Remove(rollFrame)
+            if GetLootRollItemInfo(rollFrame.rollID) or rollFrame.NeedRollAnimFinishedCallback then
+                open = open + 1
             else
-                anyShown = true
+                ended[#ended + 1] = rollFrame
             end
         end
     end
-
-
-
-    if not anyShown and sweeper then
-        sweeper:Cancel()
-        sweeper = nil
-    end
+    return ended, open
 end
 
-local function StartRollFrameSweeper()
-    if sweeper then return end
-    sweeper = C_Timer.NewTicker(2, SweepStuckRollFrames)
+
+
+
+function Loot:ClearRollFrames()
+    if InCombatLockdown() then return nil, "combat" end
+
+    local ended = ScanRollFrames()
+    for _, rollFrame in ipairs(ended) do
+        addon.Log:I("Loot", "clearing roll frame", rollFrame.rollID)
+        GroupLootFrame_Remove(rollFrame)
+    end
+
+
+    local _, open = ScanRollFrames()
+    addon.Log:I("Loot", "clearframe:", #ended, "cleared,", open, "still open")
+    return #ended, open
 end
 
 
@@ -422,6 +423,14 @@ Loot.IsGuildGroup = IsGuildGroup
 
 
 
+local function InInstance()
+    if type(IsInInstance) ~= "function" then return true end
+    return IsInInstance() and true or false
+end
+Loot.InInstance = InInstance
+
+
+
 function Loot:GetGuildPartyCounts()
     RefreshGuildParty()
     return guildPresent, guildRequired
@@ -447,7 +456,20 @@ function Loot:SharesLootMasterGuild()
     if issecretvalue and (issecretvalue(theirs) or issecretvalue(theirRealm)) then theirs = nil end
     if not theirs then
         local known = lootMasterGuild[lootMaster]
-        if not known then return nil end
+        if not known then
+
+            if not addon.RaidTeam then return nil end
+            local member, why = addon.RaidTeam:FindMember(lootMaster)
+            if member then
+                lootMasterGuild[lootMaster] = { name = mine, realm = myRealm }
+                return true
+            end
+            if why then return nil end
+
+            local list, readable = addon.RaidTeam:GetRoster()
+            if not readable or not list or #list == 0 then return nil end
+            return false
+        end
         theirs, theirRealm = known.name, known.realm
     else
         lootMasterGuild[lootMaster] = { name = theirs, realm = theirRealm }
@@ -459,7 +481,7 @@ end
 
 function Loot:GuardReason()
     if not addon.db.funnel or not addon.db.funnel.guildGroupOnly then return nil end
-    if not IsGuildGroup() then return "group" end
+    if InInstance() and not IsGuildGroup() then return "group" end
     if Loot:SharesLootMasterGuild() ~= true then return "guild" end
     return nil
 end
@@ -484,10 +506,6 @@ end
 local deferredRolls = {}
 
 local function OnStartLootRoll(rollID, resumed)
-
-
-    if not resumed then StartRollFrameSweeper() end
-
 
     local role = FunnelRole()
     if not role then
@@ -525,6 +543,11 @@ local function OnStartLootRoll(rollID, resumed)
 
 
 
+
+    if not C_Item.IsItemDataCachedByID(link) and resumed then
+        addon.Log:W("Loot", "funnel: item data still not cached after one wait, giving up", link)
+        return
+    end
     if not C_Item.IsItemDataCachedByID(link) and not deferredRolls[rollID] then
         deferredRolls[rollID] = link
         addon.Log:D("Loot", "funnel: item data not cached, waiting", link)
@@ -757,10 +780,10 @@ function Loot:ApplyHandling(on, sender, armed, quiet)
 
     if not quiet and Loot.handling and FunnelRole() == "pass" then
 
-        print(addon.Log.CHAT_PREFIX.accent .. addon.Locale.Format(T["loot council is active - this addon will PASS group loot rolls on your behalf, and %s will collect them for the council to distribute."],
+        addon.Chat.Print(addon.Locale.Format(T["loot council is active - this addon will PASS group loot rolls on your behalf, and %s will collect them for the council to distribute."],
             tostring(addon.GetMasterLooter())))
     elseif not quiet and Loot.handling and FunnelRole() == "need" then
-        print(addon.Log.CHAT_PREFIX.accent .. T["you are collecting loot for the council - this addon will roll Need on group loot for you."])
+        addon.Chat.Print(T["you are collecting loot for the council - this addon will roll Need on group loot for you."])
     end
 end
 
@@ -821,11 +844,28 @@ function Loot:EnsureHandling(why)
 end
 
 
-function Loot:PushHandling(why)
+local MOST_WHISPERED = 2
+
+
+local HANDLING_WHISPER_GRACE = 8
+local whisperedAt = {}
+
+
+
+function Loot:PushHandling(why, joiners)
     if not addon.PlayerIsMasterLooter() then return end
     if not Loot.handling then return end
+    local args = { on = true, funnel = Loot.funnelArmed == true }
+    if joiners and #joiners > 0 and #joiners <= MOST_WHISPERED then
+        for _, name in ipairs(joiners) do
+            addon.Log:D("Loot", "sending handling to", tostring(name), "-", tostring(why))
+            addon.Comms:Send("handling", args, name, true)
+            whisperedAt[addon.Player:NameKey(name) or name] = GetTime()
+        end
+        return
+    end
     addon.Log:D("Loot", "re-sending handling -", tostring(why))
-    addon.Comms:Send("handling", { on = true, funnel = Loot.funnelArmed == true }, nil, true)
+    addon.Comms:Send("handling", args, nil, true)
 end
 
 
@@ -906,7 +946,7 @@ end
 
 
 
-function Loot:OnRosterChanged(why, gained, leaderChanged)
+function Loot:OnRosterChanged(why, gained, leaderChanged, joiners)
     if not IsInGroup() then
         ForgetHandling("left the group")
         if seenGroupThisLoad then ForgetDecision("left the group") end
@@ -920,7 +960,7 @@ function Loot:OnRosterChanged(why, gained, leaderChanged)
 
 
     Loot:CheckLootMaster(why)
-    if gained then Loot:PushHandling(why) end
+    if gained then Loot:PushHandling(why, joiners) end
     Loot:EnsureHandling(why)
 end
 
@@ -972,6 +1012,7 @@ function Loot:Init()
         end
     end
 
+    local wasInInstance = nil
     local f = CreateFrame("Frame")
     f:RegisterEvent("LOOT_READY")
     f:RegisterEvent("LOOT_OPENED")
@@ -980,6 +1021,9 @@ function Loot:Init()
     f:RegisterEvent("START_LOOT_ROLL")
 
     f:RegisterEvent("GUILD_PARTY_STATE_UPDATED")
+
+    f:RegisterEvent("INSTANCE_GROUP_SIZE_CHANGED")
+    f:RegisterEvent("UPDATE_INSTANCE_INFO")
 
     f:RegisterEvent("PLAYER_GUILD_UPDATE")
     f:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -996,8 +1040,15 @@ function Loot:Init()
             local _, present, required = ReadGuildParty()
             guildPresent, guildRequired = present, required
             return
+        elseif event == "INSTANCE_GROUP_SIZE_CHANGED" or event == "UPDATE_INSTANCE_INFO" then
+            if IsInGroup() and IsInGuild() then RequestGuildPartyState() end
+            return
         elseif event == "PLAYER_ENTERING_WORLD" then
             GroupChanged(true)
+
+            local inside = InInstance()
+            if wasInInstance ~= nil and inside ~= wasInInstance then GuildStateChanged() end
+            wasInInstance = inside
             return
         elseif event == "PLAYER_GUILD_UPDATE" then
             if Loot.handling and addon.db.funnel and addon.db.funnel.guildGroupOnly then
@@ -1055,11 +1106,17 @@ function Loot:Init()
                 "- held until the remembered Yes re-arms")
             return
         end
+        local at = whisperedAt[addon.Player:NameKey(sender) or sender]
+        if at and GetTime() - at < HANDLING_WHISPER_GRACE then
+            addon.Log:D("Loot", "handling requested by", tostring(sender),
+                "- whispered a moment ago, not again")
+            return
+        end
         addon.Log:D("Loot", "handling requested by", tostring(sender))
         addon.Comms:Send("handling", {
             on = Loot.handling and true or false,
             funnel = Loot.funnelArmed == true,
-        }, nil, true)
+        }, sender, true)
     end)
 
 

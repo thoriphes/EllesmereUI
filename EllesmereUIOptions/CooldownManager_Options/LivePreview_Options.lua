@@ -8,6 +8,12 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUICooldownManager"]
 if not ns then return end  -- module disabled: no options page
 
+-- The options page pool (EllesmereUI_FramePool.lua): a frame made under a pool
+-- host (a reused header) is handed out again reset to fresh; anywhere else this
+-- is the plain CreateFrame. The drag ghost is one kept frame for the session.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+local PoolKept, PoolGen = EllesmereUI._Pool.Kept, EllesmereUI._Pool.Gen
+
 --- Build the live CDM bar preview in the content header (interactive)
 local function BuildCDMLivePreview(parent, yOff)
     local env = ns._CDMO_OptEnv
@@ -159,7 +165,9 @@ local function BuildCDMLivePreview(parent, yOff)
 
     local function EnsureDragGhost()
         if dragGhost then return dragGhost end
-        local g = CreateFrame("Frame", nil, UIParent)
+        -- One ghost frame for the session, dressed again by the first drag of
+        -- each preview build.
+        local g = PoolKept(optState, "cdmDragGhost", "Frame", UIParent)
         g:SetFrameStrata("TOOLTIP")
         g:SetSize(36, 36)
         g:SetAlpha(0.7)
@@ -171,14 +179,21 @@ local function BuildCDMLivePreview(parent, yOff)
         return g
     end
 
-    -- Insertion line indicator (vertical accent line between icons)
+    -- Insertion line indicator (accent line between icons; horizontal on a vertical bar)
     local insertLine = pf:CreateTexture(nil, "OVERLAY", nil, 7)
     local eg = EllesmereUI.ELLESMERE_GREEN
     insertLine:SetColorTexture(eg.r, eg.g, eg.b, 0.9)
     insertLine:SetWidth(2)
     insertLine:Hide()
 
-    -- Animation: each slot has _targetOffX, _currentOffX; lerped inside drag OnUpdate
+    -- Two preview slots stacked in one column (a vertical bar: same X, one per row)
+    local function StackedSlots(a, b)
+        return a and b and a._baseX and b._baseX and a._baseY and b._baseY
+            and math.abs(a._baseX - b._baseX) < 1 and math.abs(a._baseY - b._baseY) >= 1
+    end
+
+    -- Animation: each slot has _targetOffX, _currentOffX (and _targetOffY, _currentOffY on a
+    -- vertical bar); lerped inside drag OnUpdate
     local ANIM_SPEED = 48
     local animRunning = false
 
@@ -203,9 +218,18 @@ local function BuildCDMLivePreview(parent, yOff)
                     s._currentOffX = s._currentOffX + diff * math.min(ANIM_SPEED * dt, 1)
                     allDone = false
                 end
+                local curY = s._currentOffY or 0
+                local diffY = (s._targetOffY or 0) - curY
+                if math.abs(diffY) < 0.3 then
+                    curY = s._targetOffY or 0
+                else
+                    curY = curY + diffY * math.min(ANIM_SPEED * dt, 1)
+                    allDone = false
+                end
+                s._currentOffY = curY
                 if s._baseX then
                     s:ClearAllPoints()
-                    PP.Point(s, "TOPLEFT", pf, "TOPLEFT", s._baseX + s._currentOffX, s._baseY)
+                    PP.Point(s, "TOPLEFT", pf, "TOPLEFT", s._baseX + s._currentOffX, s._baseY + curY)
                 end
             end
         end
@@ -232,6 +256,8 @@ local function BuildCDMLivePreview(parent, yOff)
             if s and s._baseX then
                 s._targetOffX = 0
                 s._currentOffX = 0
+                s._targetOffY = nil
+                s._currentOffY = nil
                 s:ClearAllPoints()
                 PP.Point(s, "TOPLEFT", pf, "TOPLEFT", s._baseX, s._baseY)
             end
@@ -371,6 +397,7 @@ local function BuildCDMLivePreview(parent, yOff)
                     if s and s._baseX then
                         s._targetOffX = 0
                         if not s._currentOffX then s._currentOffX = 0 end
+                        s._targetOffY = 0
                         if i ~= fromIdx then s:SetAlpha(1) end
                     end
                 end
@@ -456,6 +483,40 @@ local function BuildCDMLivePreview(parent, yOff)
                 end
             end
         end
+        -- A vertical bar stacks its icons (same X, one per row, so the row shift above
+        -- moves only the target): the gap opens up and down within its column instead.
+        local first, second = previewSlots[1], previewSlots[2]
+        if StackedSlots(first, second) then
+            -- Later slots sit further along the column (down, or up on a bar growing up).
+            local towardEndY = (second._baseY < first._baseY) and -nudge or nudge
+            local ts = previewSlots[targetIdx] or previewSlots[targetIdx - 1]
+            local colX = ts and ts._baseX
+            local virtualInsert = targetIdx
+            if targetIdx > fromIdx then virtualInsert = targetIdx - 1 end
+            for i = 1, slotCount do
+                local s = previewSlots[i]
+                if s and s._baseX then
+                    s._targetOffX = 0
+                    if not s._currentOffX then s._currentOffX = 0 end
+                    if i == fromIdx then
+                        s:SetAlpha(0.3)
+                        s._targetOffY = 0
+                    else
+                        s:SetAlpha(1)
+                        if colX and math.abs(s._baseX - colX) < 1 then
+                            local virtualPos = i
+                            if i > fromIdx then virtualPos = i - 1 end
+                            s._targetOffY = (virtualPos >= virtualInsert) and towardEndY or -towardEndY
+                        else
+                            s._targetOffY = 0
+                        end
+                    end
+                elseif s then
+                    s:SetAlpha(i == fromIdx and 0.3 or 1)
+                end
+            end
+        end
+
         StartAnimTicker()
 
         -- Position the insertion line between the two logical neighbors
@@ -493,8 +554,36 @@ local function BuildCDMLivePreview(parent, yOff)
                 end
             end
 
+            -- A vertical bar stacks its icons (same X, one per row): there the line runs
+            -- across the gap between the neighbors instead of down through an icon.
+            -- Decided by the two neighbors, or at either end by the first two icons.
+            local stacked
+            if leftSlot and rightSlot then
+                stacked = StackedSlots(leftSlot, rightSlot)
+            else
+                stacked = StackedSlots(previewSlots[1], previewSlots[2])
+            end
+
             local lineX, lineY
-            if leftSlot and leftSlot:IsShown() and leftSlot._baseX
+            if stacked then
+                local gap = math.floor(spacing / 2) + 1
+                if leftSlot and leftSlot:IsShown() and leftSlot._baseX
+                   and rightSlot and rightSlot:IsShown() and rightSlot._baseX then
+                    local upper, lower = leftSlot, rightSlot
+                    if lower._baseY > upper._baseY then upper, lower = lower, upper end
+                    -- Centered in the gap the icons are opening (their shifted positions; the
+                    -- drawn height, which a cropped icon shape makes shorter than the size).
+                    lineX = upper._baseX
+                    lineY = ((upper._baseY + (upper._targetOffY or 0) - upper:GetHeight())
+                        + (lower._baseY + (lower._targetOffY or 0))) / 2
+                elseif rightSlot and rightSlot:IsShown() and rightSlot._baseX then
+                    lineX = rightSlot._baseX
+                    lineY = rightSlot._baseY + (rightSlot._targetOffY or 0) + gap
+                elseif leftSlot and leftSlot:IsShown() and leftSlot._baseX then
+                    lineX = leftSlot._baseX
+                    lineY = leftSlot._baseY + (leftSlot._targetOffY or 0) - leftSlot:GetHeight() - gap
+                end
+            elseif leftSlot and leftSlot:IsShown() and leftSlot._baseX
                and rightSlot and rightSlot:IsShown() and rightSlot._baseX then
                 local leftRight = leftSlot._baseX + iconSz2 - nudge
                 local rightLeft = rightSlot._baseX + nudge
@@ -510,8 +599,18 @@ local function BuildCDMLivePreview(parent, yOff)
 
             if lineX and lineY then
                 insertLine:ClearAllPoints()
-                PP.Point(insertLine, "TOP", pf, "TOPLEFT", lineX, lineY)
-                PP.Point(insertLine, "BOTTOM", pf, "TOPLEFT", lineX, lineY - iconSz2)
+                if stacked then
+                    insertLine:SetHeight(2)
+                    PP.Point(insertLine, "LEFT", pf, "TOPLEFT", lineX, lineY)
+                    PP.Point(insertLine, "RIGHT", pf, "TOPLEFT", lineX + iconSz2, lineY)
+                else
+                    -- As tall as the icons are drawn (a cropped shape is shorter than the size).
+                    local ref = rightSlot or leftSlot
+                    local lineH = (ref and ref:GetHeight()) or iconSz2
+                    insertLine:SetWidth(2)
+                    PP.Point(insertLine, "TOP", pf, "TOPLEFT", lineX, lineY)
+                    PP.Point(insertLine, "BOTTOM", pf, "TOPLEFT", lineX, lineY - lineH)
+                end
                 insertLine:Show()
             else
                 insertLine:Hide()
@@ -545,6 +644,10 @@ local function BuildCDMLivePreview(parent, yOff)
 
     local function CreatePreviewSlot(idx)
         local slot = CreateFrame("Button", nil, pf)
+        -- A reused header hands this slot out again for a new build: what the
+        -- live icon passes cached on its previous dress (shape and stock style
+        -- frames, the keybind badge) went with that dress, so they start anew.
+        ns._ecmeFC[slot] = nil
         slot:SetSize(1, 1)
         slot:RegisterForClicks("LeftButtonUp", "RightButtonDown", "MiddleButtonDown")
         -- Expand hit area so small icons are easier to click/drag
@@ -603,6 +706,7 @@ local function BuildCDMLivePreview(parent, yOff)
 
         -- Keybind text (mirrors _keybindText on real CDM icons)
         local kbTxt = pvTextOvr:CreateFontString(nil, "OVERLAY")
+        ns.CdmForgetKeybindBadge(kbTxt)
         SetPVFont(kbTxt, FONT_PATH, 9)
         kbTxt:SetPoint("TOPLEFT", pvTextOvr, "TOPLEFT", 2, -2)
         kbTxt:SetJustifyH("LEFT")
@@ -657,14 +761,6 @@ local function BuildCDMLivePreview(parent, yOff)
                 return
             end
             EllesmereUI.HideWidgetTooltip()
-            -- Override editing sessions: per-spell settings and spell
-            -- placement are never part of the override system -- refuse
-            -- the interaction with an explanatory tooltip.
-            if EllesmereUI.SpecOverrides_EditSessionActive() then
-                EllesmereUI.ShowWidgetTooltip(self,
-                    "Per-spell settings are not part of the override system.")
-                return
-            end
             local bd = SelectedCDMBar()
             if not bd then return end
             local isDefaultBuffs = (bd.key == "buffs")
@@ -892,7 +988,10 @@ local function BuildCDMLivePreview(parent, yOff)
 
                     for i = 1, MAX_PREVIEW_ICONS do
                         local s = previewSlots[i]
-                        if s then s._targetOffX = nil; s._currentOffX = nil end
+                        if s then
+                            s._targetOffX = nil; s._currentOffX = nil
+                            s._targetOffY = nil; s._currentOffY = nil
+                        end
                     end
                     animRunning = false
 
@@ -1044,12 +1143,6 @@ local function BuildCDMLivePreview(parent, yOff)
 
         slot:SetScript("OnMouseDown", function(self, button)
             if button ~= "LeftButton" then return end
-            -- Override editing sessions: spell placement never overrides.
-            if EllesmereUI.SpecOverrides_EditSessionActive() then
-                EllesmereUI.ShowWidgetTooltip(self,
-                    "Per-spell settings are not part of the override system.")
-                return
-            end
             -- Buff-family drag-reorder: extra/custom buff bars reorder via
             -- assignedSpells (1:1 preview), the default buffs bar via its
             -- dedicated buffDisplayOrder (stable cooldownID-keyed, reconciled
@@ -1143,9 +1236,13 @@ local function BuildCDMLivePreview(parent, yOff)
         -- immediate reanchor so source bars (where the spell got auto-removed from) re-render without waiting for the throttled queue. Then schedules a +0.05s preview refresh.
         local function FinalizeAdd()
             if ns.CollectAndReanchor then ns.CollectAndReanchor() end
+            -- pf's own pass only while it is still this build's preview (a
+            -- reused header dresses the frame again for a new build); the
+            -- current preview is updated either way.
+            local pfGen = PoolGen(pf)
             C_Timer.After(0.05, function()
                 if ns.CDMApplyVisibility then ns.CDMApplyVisibility() end
-                if pf.Update then pf:Update() end
+                if PoolGen(pf) == pfGen and pf.Update then pf:Update() end
                 UpdateCDMPreviewAndResize()
             end)
         end
@@ -1230,10 +1327,12 @@ local function BuildCDMLivePreview(parent, yOff)
         ns.CDMO_ShowBuffToCDPicker(self, bd.key, function()
             if ns.CollectAndReanchor then ns.CollectAndReanchor() end
             -- The buff-mirror walk (10Hz) binds to the freshly-created icon on
-            -- its own next tick; no re-arm needed.
+            -- its own next tick; no re-arm needed. pf's own pass only while it
+            -- is still this build's preview (as in FinalizeAdd).
+            local pfGen = PoolGen(pf)
             C_Timer.After(0.05, function()
                 if ns.CDMApplyVisibility then ns.CDMApplyVisibility() end
-                if pf.Update then pf:Update() end
+                if PoolGen(pf) == pfGen and pf.Update then pf:Update() end
                 UpdateCDMPreviewAndResize()
             end)
         end)
@@ -1903,6 +2002,10 @@ local function BuildCDMLivePreview(parent, yOff)
             self._reorderHintText = rh
         end
         local function ShowReorderHint(text)
+            -- Override editing sessions: the per-icon menu is Remove Spell only.
+            if EllesmereUI.SpecOverrides_EditSessionActive() then
+                text = "Drag to Reorder. Click to remove spells. Per-spell settings are not part of the override system."
+            end
             local rh = self._reorderHintText
             rh:SetText(EllesmereUI.L(text))
             rh:ClearAllPoints()
@@ -1921,7 +2024,7 @@ local function BuildCDMLivePreview(parent, yOff)
             end
             if self._hiddenHeader then self._hiddenHeader:Hide() end
             if self._focusKickInfoText then self._focusKickInfoText:Hide() end
-            ShowReorderHint("Drag to Reorder. Click to override display settings and add custom effects per icon")
+            ShowReorderHint("Drag to Reorder. Click to override display settings and add custom effects per icon.")
         elseif isFocusKick then
             if self._buffInfoText then self._buffInfoText:Hide() end
             if self._buffInfoClick then self._buffInfoClick:Hide() end
@@ -1990,6 +2093,10 @@ local function BuildCDMLivePreview(parent, yOff)
     pf._previewSlots = previewSlots
     optState._cdmPreview = pf
     pf:Update()
+    -- This module's own header preview slot (its readers: the CDM options and
+    -- the reanchor's preview pass); the shared slot is still written for the
+    -- readers that have not moved to their own.
+    EllesmereUI._cdmHeaderPreview = pf
     EllesmereUI._contentHeaderPreview = pf
     -- Start active state preview if toggled on
     if _cdmActivePreviewOn then

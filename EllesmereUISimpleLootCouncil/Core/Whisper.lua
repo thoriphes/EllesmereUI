@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 
@@ -9,15 +10,7 @@ local T = addon.Locale.Text
 local Whisper = {}
 addon.Whisper = Whisper
 
-local issecretvalue = issecretvalue
-
-local function IsSecret(...)
-    if not issecretvalue then return false end
-    for i = 1, select("#", ...) do
-        if issecretvalue((select(i, ...))) then return true end
-    end
-    return false
-end
+local IsSecret = addon.IsSecret
 
 
 
@@ -275,13 +268,31 @@ local function Pump()
     lastSent = GetTime()
 end
 
-local function Say(to, lines)
+
+
+
+local OUTBOX_MAX = 40
+
+local function Say(to, lines, help)
     if not to then return end
     if type(lines) == "string" then lines = { lines } end
 
+    if help then
+        for _, queued in ipairs(outbox) do
+            if queued.help and queued.to == to then
+                addon.Log:D("Whisper", "guide already queued for", to)
+                return
+            end
+        end
+    end
+
     for _, line in ipairs(lines) do
         if line and line ~= "" then
-            outbox[#outbox + 1] = { to = to, text = line }
+            if #outbox >= OUTBOX_MAX then
+                addon.Log:D("Whisper", "outbox full, dropping a reply to", to)
+                break
+            end
+            outbox[#outbox + 1] = { to = to, text = line, help = help }
         end
     end
 
@@ -485,7 +496,8 @@ local function Handle(text, sender)
     end
 
 
-    if not addon.PlayerIsMasterLooter() then return end
+
+    if not IsInGroup() or not addon.PlayerIsMasterLooter() then return end
 
 
     if IsSecret(text, sender) then
@@ -507,7 +519,7 @@ local function Handle(text, sender)
     if not parsed then return end
 
     if parsed.kind == "help" then
-        if CanReply(who) then Say(who, Whisper:HelpLines()) end
+        if CanReply(who) then Say(who, Whisper:HelpLines(), true) end
         return
     end
 

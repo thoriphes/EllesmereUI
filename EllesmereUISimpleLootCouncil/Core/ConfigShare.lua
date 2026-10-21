@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 SimpleLootCouncil = SimpleLootCouncil or {}
@@ -8,9 +9,7 @@ local ConfigShare = {}
 addon.ConfigShare = ConfigShare
 
 local OPCODE = "config_offer"
-local MAX_RESPONSES = 7
 local MAX_COUNCIL = 40
-local MAX_TEXT = 100
 
 
 local pending
@@ -124,18 +123,9 @@ end
 
 
 
-local function Text(value)
-    if type(value) ~= "string" then return nil end
-    value = value:trim()
-    if value == "" or #value > MAX_TEXT then return nil end
-    return value
-end
 
-local function Channel(value)
-    value = tonumber(value)
-    if not value or value ~= value then return nil end
-    return math.max(0, math.min(1, value))
-end
+local function Text(value) return addon.Config.CleanText(value) end
+local function Channel(value) return addon.Config.CleanChannel(value) end
 
 local function ParseCouncil(part)
     if type(part) ~= "table" or type(part.m) ~= "table" then return nil end
@@ -164,7 +154,7 @@ local function ParseResponses(part)
     if type(part) ~= "table" then return nil end
     local out = {}
     for _, entry in ipairs(part) do
-        if #out >= MAX_RESPONSES then break end
+        if #out >= addon.Config.MAX_RESPONSES then break end
         local text = type(entry) == "table" and Text(entry.t)
         local r, g, b = text and Channel(entry.r), text and Channel(entry.g), text and Channel(entry.b)
         if text and r and g and b then

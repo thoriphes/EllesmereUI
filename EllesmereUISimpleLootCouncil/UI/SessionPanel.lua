@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 
@@ -120,13 +121,12 @@ local function CreateRow(parent, index)
     P.Point(r.icon, "LEFT", r, "LEFT", 0, 0)
 
 
-    r.winner = S.Label(r, S.fontSmall, "LEFT")
+    r.winner = S.Label(r, S.fontSmall, "CENTER")
     P.Point(r.winner, "RIGHT", r, "RIGHT", 0, 0)
     r.winner:SetWidth(WINNER_W)
 
 
-
-    r.roll = S.Label(r, S.fontNumSmall, "LEFT")
+    r.roll = S.Label(r, S.fontNumSmall, "CENTER")
     P.Point(r.roll, "RIGHT", r.winner, "LEFT", -CELL_GAP, 0)
     r.roll:SetWidth(ROLL_W)
 
@@ -177,6 +177,10 @@ local function DrawRow(r, entry)
 
         r.response:SetLabel(T["Auto-pass"])
         r.response:SetColour(nil)
+    elseif status == "RESPONDED" and candidate and type(candidate.boe) == "table" then
+
+        r.response:SetLabel(candidate.boe.t)
+        r.response:SetColour({ candidate.boe.r, candidate.boe.g, candidate.boe.b })
     elseif status == "RESPONDED" and response then
         local def = addon.Config:Responses()[response]
         if def then
@@ -256,20 +260,18 @@ local function FitColumns(parent)
         return math.max(floor, math.ceil(w) + (pad or 2))
     end
 
-    RESPONSE_W = Widest(T["RESPONSE"], RESPONSE_W)
-    ROLL_W     = Widest(T["ROLL"],     ROLL_W)
+
+
+    local responseHead = Widest(T["RESPONSE"], 0)
+    if responseHead > 0 then RESPONSE_W = responseHead end
     WINNER_W   = Widest(T["AWARDED"],  WINNER_W)
 
 
 
-    probe:SetFontObject(S.fontSmall)
-    for _, def in ipairs(addon.Config:Responses()) do
-        RESPONSE_W = Widest(def.text, RESPONSE_W, 14)
-    end
-    for _, def in pairs(addon.Session.STATUS) do
-        RESPONSE_W = Widest(def.text, RESPONSE_W, 14)
-    end
-    RESPONSE_W = Widest(T["Auto-pass"], RESPONSE_W, 14)
+    local rollHead = Widest(T["ROLL"], 0)
+    probe:SetFontObject(S.fontNumSmall)
+    local rollBody = Widest("100", 0, 6)
+    if rollHead > 0 and rollBody > 0 then ROLL_W = math.max(rollHead, rollBody) end
 
     probe:SetText("")
     probe:Hide()
@@ -394,9 +396,9 @@ local function Build()
     if panel then return panel end
 
 
-    FitColumns(UIParent)
 
     panel = CreateFrame("Frame", "SimpleLootCouncilSessionFrame", UIParent)
+    FitColumns(panel)
     panel:SetFrameStrata("DIALOG")
     panel:SetToplevel(true)
     panel:EnableMouse(true)
@@ -407,9 +409,10 @@ local function Build()
     panel:SetWidth(PANEL_W)
     panel.slcWidth = PANEL_W
 
+    S.FollowWindowAlpha(panel)
 
-    tinsert(UISpecialFrames, "SimpleLootCouncilSessionFrame")
-    panel:SetScript("OnHide", function()
+
+    panel:HookScript("OnHide", function()
         if suppressDismiss then return end
 
         local wasFloating, wasDismissed = floating, dismissed
@@ -423,6 +426,9 @@ local function Build()
             SessionPanel:Refresh()
         end)
     end)
+
+
+    tinsert(UISpecialFrames, "SimpleLootCouncilSessionFrame")
 
 
 
@@ -496,22 +502,22 @@ local function Build()
             return fs
         end
 
-        local winner = Head("LEFT")
+        local winner = Head("CENTER")
         P.Point(winner, "RIGHT", h, "RIGHT", 0, 0)
         winner:SetWidth(WINNER_W)
         winner:SetText(T["AWARDED"])
 
-        local roll = Head("LEFT")
+        local roll = Head("CENTER")
         P.Point(roll, "RIGHT", winner, "LEFT", -CELL_GAP, 0)
         roll:SetWidth(ROLL_W)
         roll:SetText(T["ROLL"])
 
-        local response = Head("LEFT")
+        local response = Head("CENTER")
         P.Point(response, "RIGHT", roll, "LEFT", -CELL_GAP, 0)
         response:SetWidth(RESPONSE_W)
         response:SetText(T["RESPONSE"])
 
-        local itemLabel = Head("LEFT")
+        local itemLabel = Head("CENTER")
         P.Point(itemLabel, "LEFT", h, "LEFT", 0, 0)
         P.Point(itemLabel, "RIGHT", response, "LEFT", -CELL_GAP, 0)
         itemLabel:SetText(T["ITEM"])

@@ -1,17 +1,19 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 
 SimpleLootCouncil = SimpleLootCouncil or {}
 local addon = SimpleLootCouncil
 local T = addon.Locale.Text
+local IsSecret = addon.IsSecret
 
 local Council = {}
 addon.Council = Council
 
 
 
-local active = {}
+local seats, active, activeFor = {}, {}, nil
 
 
 
@@ -22,20 +24,47 @@ local activeRankDetailsKnown = false
 
 
 
+
+local function Present(fullName)
+    if addon.GetCandidates()[fullName] then return true end
+    return addon.Roster and addon.Roster.IsMember and addon.Roster:IsMember(fullName) or false
+end
+
+
+local function RefreshActive(force)
+    local candidates = addon.GetCandidates()
+    if not force and candidates == activeFor then return false end
+    activeFor = candidates
+    local now, moved = {}, false
+    for fullName in pairs(seats) do
+        if candidates[fullName] then
+            now[fullName] = true
+            if not active[fullName] then moved = true end
+        end
+    end
+    for fullName in pairs(active) do
+        if not now[fullName] then moved = true end
+    end
+    active = now
+    return moved
+end
+
 function Council:Contains(who)
 
     if addon.IsMasterLooter(who) then return true end
 
     local record = addon.Player:Get(who)
     if not record.fullName then return false end
-    return active[record.fullName] == true
+    return seats[record.fullName] == true and Present(record.fullName)
 end
 
 function Council:GetActive()
+    RefreshActive()
     return active
 end
 
 function Council:GetCount()
+    RefreshActive()
     local n = 0
     for _ in pairs(active) do n = n + 1 end
     return n
@@ -138,6 +167,11 @@ local function RanksConfigured()
 end
 
 
+function Council:HasRankRule()
+    return addon.db ~= nil and RanksConfigured()
+end
+
+
 
 local lastRankMembers, lastRankNames = {}, {}
 
@@ -178,6 +212,19 @@ end
 
 
 
+local function UnitRank(unit, guild, guildRealm)
+    if not unit then return nil end
+    local name, rankName, _, realm = GetGuildInfo(unit)
+    if IsSecret(name, rankName, realm) or type(name) ~= "string" or name == "" then return nil end
+    if name ~= guild then return false end
+    if (realm or "") ~= (guildRealm or "") or type(rankName) ~= "string" or rankName == "" then
+        return nil
+    end
+    return rankName
+end
+
+
+
 
 function Council:RankMembers()
     local candidates = addon.GetCandidates()
@@ -193,14 +240,33 @@ function Council:RankMembers()
         return {}, true
     end
 
-    local roster, readable = addon.RaidTeam:GetRoster()
-    if readable == false then return LastRankMembers(candidates), false end
 
-    local out = {}
-    for _, member in ipairs(roster) do
-        if member.fullName and member.rank and set[member.rank]
-            and candidates[member.fullName] then
-            out[member.fullName] = member.rank
+
+    local out, unknown = {}, nil
+    local guild = addon.RaidTeam:GetGuildName()
+    local _, _, _, guildRealm = GetGuildInfo("player")
+    for fullName in pairs(candidates) do
+        local rank
+        if guild and not IsSecret(guildRealm) then
+            rank = UnitRank(addon.Roster and addon.Roster:UnitForName(fullName), guild, guildRealm)
+        end
+        if rank == nil then
+            unknown = unknown or {}
+            unknown[#unknown + 1] = fullName
+        elseif rank and set[rank] then
+            out[fullName] = rank
+        end
+    end
+
+    if unknown then
+        local byName, readable = addon.RaidTeam:GetRosterIndex()
+        if readable == false then return LastRankMembers(candidates), false end
+
+        for _, fullName in ipairs(unknown) do
+            local member = byName[fullName]
+            if member and member.rank and set[member.rank] then
+                out[fullName] = member.rank
+            end
         end
     end
     lastRankMembers = out
@@ -305,6 +371,10 @@ end
 
 
 
+local heldSeats = {}
+
+
+
 
 function Council:Resolve()
     local candidates = addon.GetCandidates()
@@ -360,9 +430,6 @@ function Council:Resolve()
         end
     end
 
-
-    table.sort(rankPayload)
-
     local rankNames = {}
     for _, rank in ipairs(Council:GetConfiguredRanks()) do
         rankNames[#rankNames + 1] = rank.name
@@ -374,6 +441,33 @@ function Council:Resolve()
         lastRankNames = rankNames
     end
     if rankKnown then SaveKeptRanks() end
+
+
+
+    local configured, ticked, nextHeld = {}, {}, {}
+    for _, identity in ipairs(addon.db.council) do
+        if addon.Player:IsGUID(identity) then configured[addon.Player:ForTransmit(identity)] = true end
+    end
+    for _, name in ipairs(rankNames) do ticked[name] = true end
+    for _, short in ipairs(payload) do
+        if configured[short] then nextHeld[short] = false
+        elseif rankOf[short] then nextHeld[short] = rankOf[short] end
+    end
+    for short, rank in pairs(heldSeats) do
+        local record = not named[short] and addon.Player:Get(short)
+        if record and not (record.fullName and candidates[record.fullName]) then
+            if configured[short] then
+                payload[#payload + 1], nextHeld[short] = short, false
+            elseif rank and ticked[rank] then
+                payload[#payload + 1], nextHeld[short] = short, rank
+                rankPayload[#rankPayload + 1], rankOf[short] = short, rank
+            end
+        end
+    end
+    heldSeats = nextHeld
+
+
+    table.sort(rankPayload)
 
 
     table.sort(payload)
@@ -442,34 +536,48 @@ end
 local lastDigest = ""
 
 
+local function Joined(list)
+    local out = {}
+    if type(list) == "table" then
+        for _, value in ipairs(list) do
+            if type(value) == "string" then out[#out + 1] = value end
+        end
+    end
+    return table.concat(out, ",")
+end
+
+
+
 
 
 local function Digest(payload, config, ranks, rankPayload, rankOf)
-    local parts = { table.concat(payload, ",") }
+    local parts = { Joined(payload) }
 
 
 
-    parts[#parts + 1] = table.concat(ranks or {}, ",")
-    parts[#parts + 1] = table.concat(rankPayload or {}, ",")
+    parts[#parts + 1] = Joined(ranks)
+    parts[#parts + 1] = Joined(rankPayload)
 
 
-    for _, short in ipairs(rankPayload or {}) do
-        parts[#parts + 1] = short .. "=" .. tostring(rankOf and rankOf[short])
+    if type(rankPayload) == "table" then
+        for _, short in ipairs(rankPayload) do
+            if type(short) == "string" then
+                parts[#parts + 1] = short .. "=" .. tostring(type(rankOf) == "table" and rankOf[short])
+            end
+        end
     end
 
-    local names = {}
-    for name in pairs(addon.GetCandidates()) do names[#names + 1] = name end
-    table.sort(names)
-    parts[#parts + 1] = table.concat(names, ",")
+    config = type(config) == "table" and config or {}
 
-
-    for _, response in ipairs(config.responses) do
-        parts[#parts + 1] = ("%s~%s~%s~%s~%s~%s"):format(
-            tostring(response.t), tostring(response.r), tostring(response.g),
-            tostring(response.b), tostring(response.s), tostring(response.w))
+    for _, response in ipairs(type(config.responses) == "table" and config.responses or {}) do
+        if type(response) == "table" then
+            parts[#parts + 1] = ("%s~%s~%s~%s~%s~%s"):format(
+                tostring(response.t), tostring(response.r), tostring(response.g),
+                tostring(response.b), tostring(response.s), tostring(response.w))
+        end
     end
 
-    local vote = config.vote
+    local vote = type(config.vote) == "table" and config.vote or {}
     parts[#parts + 1] = ("%s~%s~%s~%s~%s"):format(
         tostring(vote.selfVote), tostring(vote.multiVote), tostring(vote.hideVotes),
         tostring(config.noteMax), tostring(config.lootMaster))
@@ -480,6 +588,7 @@ local function Digest(payload, config, ranks, rankPayload, rankOf)
 
     return table.concat(parts, ";")
 end
+Council.Digest = Digest
 
 
 
@@ -535,7 +644,10 @@ end
 
 
 
-local lastForcedAt = -math.huge
+local lastPushAt = -math.huge
+
+
+local appliedDigest
 
 
 
@@ -586,7 +698,7 @@ function Council:Broadcast(force, target)
     local digest = Digest(payload, config, rankNames, rankPayload, rankOf)
     if not force and digest == lastDigest then return false end
     lastDigest = digest
-    if force then lastForcedAt = GetTime() end
+    lastPushAt = GetTime()
 
     addon.Log:I("Council", relaying and "relaying the leader's council," or "broadcasting",
         #payload, "members", #(rankNames or {}), "rank(s)")
@@ -594,7 +706,9 @@ function Council:Broadcast(force, target)
     addon.Comms:Send("council", message, nil, true)
 
 
-    Council:Apply(payload, addon.Player:GetFullName("player"), rankNames, rankPayload, rankOf)
+    if Council:Apply(payload, addon.Player:GetFullName("player"), rankNames, rankPayload, rankOf) then
+        appliedDigest = digest
+    end
     return true
 end
 
@@ -740,8 +854,10 @@ function Council:RequestBroadcast(force)
     end)
 end
 
+
 function Council:Apply(guids, sender, ranks, rankGuids, rankOf)
-    if type(guids) ~= "table" then return end
+    if type(guids) ~= "table" then return false end
+    local complete = true
 
 
 
@@ -753,16 +869,17 @@ function Council:Apply(guids, sender, ranks, rankGuids, rankOf)
             addon.Player:SetCouncil(identity, true)
         end
     end
-    active = {}
+    seats = {}
     activeRanks, activeByRank = {}, {}
     activeRankDetailsKnown = type(rankOf) == "table"
 
     for _, short in ipairs(guids) do
         local record = addon.Player:Get(short)
         if record.fullName then
-            active[record.fullName] = true
+            seats[record.fullName] = true
             if record.guid then addon.Player:SetCouncil(record.guid, true) end
         end
+        if not record.guid then complete = false end
     end
 
 
@@ -779,7 +896,7 @@ function Council:Apply(guids, sender, ranks, rankGuids, rankOf)
         for _, short in ipairs(rankGuids) do
             local record = addon.Player:Get(short)
 
-            if record.fullName and active[record.fullName] then
+            if record.fullName and seats[record.fullName] then
                 local rank = type(rankOf) == "table" and rankOf[short]
                 if type(rank) == "string" and validRanks[rank] then
                     activeByRank[record.fullName] = rank
@@ -792,10 +909,12 @@ function Council:Apply(guids, sender, ranks, rankGuids, rankOf)
         end
     end
 
+    RefreshActive(true)
     addon.Log:I("Council", "applied", Council:GetCount(), "members",
         #activeRanks, "rank(s), from", tostring(sender))
 
     if addon.Callbacks then addon.Callbacks:Fire("CouncilChanged") end
+    return complete
 end
 
 
@@ -810,16 +929,17 @@ local broadcaster = false
 local function RosterGained(diff)
     if not diff.inGroup or not MayBroadcast() then
         broadcaster = false
-        return false
+        return false, false
     end
     local newly = not broadcaster
     broadcaster = true
-    return newly or next(diff.joined) ~= nil
+    return newly or next(diff.joined) ~= nil, newly
 end
 
 
 Council.RosterGained = RosterGained
 Council.ResetSyncAsks = ResetSyncAsks
+Council.ForgetHeldSeats = function() heldSeats = {} end
 
 
 
@@ -829,14 +949,40 @@ Council.ResetSyncAsks = ResetSyncAsks
 local ASK_WINDOW = 1
 local ASK_CROSSING = 1
 local MOST_WHISPERED = 2
+
+
+local ANSWER_COOLDOWN = 8
 local askers, asked, firstAskAt = {}, {}, nil
+local answeredAt, answeredCount = {}, 0
+
+local function AskKey(name)
+    return addon.Player:NameKey(name) or name
+end
+
+local function MarkAnswered(list)
+    local now = GetTime()
+
+    if answeredCount > 80 then
+        for key, at in pairs(answeredAt) do
+            if now - at >= ANSWER_COOLDOWN then answeredAt[key] = nil end
+        end
+        answeredCount = 0
+        for _ in pairs(answeredAt) do answeredCount = answeredCount + 1 end
+    end
+    for _, name in ipairs(list) do
+        local key = AskKey(name)
+        if not answeredAt[key] then answeredCount = answeredCount + 1 end
+        answeredAt[key] = now
+    end
+end
 
 local function AnswerAsks()
     local list, since = askers, firstAskAt
     askers, asked, firstAskAt = {}, {}, nil
     if #list == 0 or not MayBroadcast() then return end
+    MarkAnswered(list)
 
-    if since and lastForcedAt >= since - ASK_CROSSING then
+    if since and lastPushAt >= since - ASK_CROSSING then
         addon.Log:D("Council", #list, "council ask(s) answered by the group push")
         return
     end
@@ -853,22 +999,44 @@ local function AnswerAsks()
     for _, name in ipairs(list) do Council:Broadcast(true, name) end
 end
 
-local function OnSyncRequest(_, sender)
-    addon.Log:D("Council", "council requested by", sender)
 
-    if not sender or addon.Player:IsSelf(sender) then return end
-
-
-    if not MayBroadcast() or asked[sender] then return end
-    asked[sender] = true
-    askers[#askers + 1] = sender
+local function Collect(name)
+    local key = AskKey(name)
+    if asked[key] then return false end
+    local at = answeredAt[key]
+    if at and GetTime() - at < ANSWER_COOLDOWN then
+        addon.Log:D("Council", "answered", tostring(name), "moments ago - not again")
+        return false
+    end
+    asked[key] = true
+    askers[#askers + 1] = name
     if not firstAskAt then
         firstAskAt = GetTime()
         C_Timer.After(ASK_WINDOW, AnswerAsks)
     end
+    return true
+end
+
+local function OnSyncRequest(_, sender)
+
+    if not sender or addon.Player:IsSelf(sender) then return end
+    addon.Log:D("Council", "council requested by", sender)
+
+
+    if not MayBroadcast() then return end
+    Collect(sender)
 end
 
 Council.OnSyncRequest = OnSyncRequest
+
+
+
+local function CollectJoiners(joined)
+    local me = addon.Player:GetFullName("player")
+    for name in pairs(joined) do
+        if not addon.Player:IsSame(name, me) then Collect(name) end
+    end
+end
 
 
 
@@ -879,10 +1047,12 @@ Council.OnSyncRequest = OnSyncRequest
 local function OnCouncil(args, sender)
     if type(args) ~= "table" then return end
 
+    if addon.Player:IsSelf(sender) then return end
+
 
 
     local leader = IsInGroup() and addon.GetGroupLeader()
-    if leader and not addon.Player:IsSelf(sender) then
+    if leader then
         if addon.Player:IsSame(sender, leader) then
             heardFrom = sender
 
@@ -900,12 +1070,23 @@ local function OnCouncil(args, sender)
 
 
 
+    local digest = Digest(args.guids, args.config, args.ranks, args.rguids, args.rankOf)
+    if digest == appliedDigest and (IsAuthor() or addon.Config:HasShared()) then
+        if args.config then ResetSyncAsks() end
+        addon.Log:D("Council", "council from", tostring(sender), "unchanged - nothing applied")
+        return
+    end
+
+
+
     if args.config then
         ApplySharedConfig(args.config, sender)
 
         ResetSyncAsks()
     end
-    Council:Apply(args.guids, sender, args.ranks, args.rguids, args.rankOf)
+
+    local complete = Council:Apply(args.guids, sender, args.ranks, args.rguids, args.rankOf)
+    appliedDigest = (complete and type(args.config) == "table") and digest or nil
     if addon.Callbacks then addon.Callbacks:Fire("SessionChanged") end
 end
 
@@ -975,34 +1156,51 @@ function Council:Init()
 
     addon.Callbacks:Register("RosterChanged", function(diff)
 
+
+        for name in pairs(diff.left or {}) do answeredAt[AskKey(name)] = nil end
         if not diff.inGroup then
             addon.Config:ClearShared("left the group")
             ForgetDelegation("left the group")
-            relayed, heardFrom = nil, nil
+            relayed, heardFrom, appliedDigest = nil, nil, nil
+            answeredAt, answeredCount = {}, 0
         elseif addon.Player:IsSame(addon.Player:GetFullName("player"),
             addon.GetGroupLeader()) then
 
 
             InheritDelegation()
             addon.Config:ClearShared("we are the group leader now")
+            appliedDigest = nil
         end
 
 
 
         if diff.leaderChanged or not diff.inGroup then
             ResetSyncAsks()
+            heldSeats = {}
         end
 
-        local gained = RosterGained(diff)
-        Council:RequestBroadcast(gained)
+        if RefreshActive() and addon.Callbacks then addon.Callbacks:Fire("CouncilChanged") end
+
+
+
+        local gained, newly = RosterGained(diff)
+        Council:RequestBroadcast(newly)
+        if gained and not newly then CollectJoiners(diff.joined) end
         Council:EnsureShared(diff.leaderChanged and "leader changed" or "roster changed")
 
 
+
+        local joiners = {}
+        local me = addon.Player:GetFullName("player")
+        for name in pairs(diff.joined) do
+            if not addon.Player:IsSame(name, me) then joiners[#joiners + 1] = name end
+        end
         if addon.Loot and addon.Loot.OnRosterChanged then
-            addon.Loot:OnRosterChanged("roster", gained, diff.leaderChanged)
+            addon.Loot:OnRosterChanged("roster", gained, diff.leaderChanged,
+                gained and not newly and joiners or nil)
         end
         if addon.BagShare and addon.BagShare.OnRosterChanged then
-            addon.BagShare:OnRosterChanged("roster", gained)
+            addon.BagShare:OnRosterChanged("roster", gained, newly, joiners)
         end
     end)
 

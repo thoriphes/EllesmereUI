@@ -503,6 +503,11 @@ local function Skin_PlayerSpells()
     if f.SpellBookFrame and f.SpellBookFrame.CategoryTabSystem then
         WSkin.TabSystem(f.SpellBookFrame.CategoryTabSystem, { darkActive = true })
     end
+    -- WoW Forever's talents page carries its own dual-spec tabs (Primary /
+    -- Secondary): the same tab treatment, also ahead of the button sweep.
+    if f.TalentsFrame and f.TalentsFrame.TabSystem then
+        WSkin.TabSystem(f.TalentsFrame.TabSystem, { darkActive = true })
+    end
     -- Collapse/restore control: quest-tracker collapse/expand atlas pair,
     -- 16x16, desaturated white. Atlas-guarded: a missing name keeps Blizzard's art.
     local function MaxMinGlyph(btn, atlas)
@@ -555,6 +560,24 @@ local function Skin_PlayerSpells()
                 -- Tree background is content: exempt from art sweeps, shown at 75%.
                 WSkin.ExemptArt(sub)
                 DimTalentArt(sub)
+                -- WoW Forever keeps the spec art in ClassBackground and draws a
+                -- backdrop of its own as Background, 20px taller than the page,
+                -- over the shell's top bar: off, so the shell shows round the tree.
+                if sub.ClassBackground and sub.Background and sub.Background.SetAlpha then
+                    sub.Background:SetAlpha(0)
+                end
+                -- WoW Forever's search options button beside the search box: our
+                -- arrow alone, no block, on the search box's centre line (Blizzard
+                -- seats the button 2px below it). One-shot.
+                local sod = sub.SearchOptionsDropdown
+                if sod and not sod:IsForbidden() and not GetFFD(sod).arrow then
+                    WSkin.FadeRegions(sod)
+                    local arrow = sod:CreateTexture(nil, "OVERLAY")
+                    arrow:SetAtlas("Azerite-PointingArrow")
+                    arrow:SetSize(14, 10)
+                    arrow:SetPoint("CENTER", sod, "CENTER", 0, 2)
+                    GetFFD(sod).arrow = arrow
+                end
                 -- Search box matches loadout dropdown height (one-shot, retries until laid out).
                 local dd = sub.LoadSystem and sub.LoadSystem.Dropdown
                 local sbx = sub.SearchBox
@@ -9769,12 +9792,11 @@ local function DimSlot(btn) DimSlotArt(btn, btn:GetRegions()) end
 
 -- Name-and-icon picker popup (IconSelectorPopupFrameTemplate): house panel,
 -- themed name input + buttons + type dropdown, white texts, icon grid slot art
--- at 50% (matching the main selector grid).
-local _macroPopupHooked = false
-local function Skin_MacroPopup()
-    local p = _G.MacroPopupFrame
-    if not p then return end
-    WSkin.Panel(p)
+-- at 50% (matching the main selector grid). Used by the Macro popup and the
+-- Equipment Manager popup: backdrop(p) lays the frame's own backdrop, reskin
+-- is the caller's entry point, re-run on every show (HookShow is once per frame).
+local function Skin_IconSelectorPopup(p, backdrop, reskin)
+    backdrop(p)
     if p.NineSlice then WSkin.FadeNineSlice(p.NineSlice) end
     if p.Bg and p.Bg.SetAlpha then p.Bg:SetAlpha(0) end
     local bb = p.BorderBox
@@ -9824,12 +9846,19 @@ local function Skin_MacroPopup()
         end
         if gBox.GetView and gBox:GetView() then pcall(gd.iconDim) end
     end
-    if not _macroPopupHooked then
-        _macroPopupHooked = true
+    -- Built only while the frame has no show hook (HookShow keeps the first).
+    if not GetFFD(p).showHook then
         WSkin.HookShow(p, WSkin.Debounce(function()
-            if p:IsVisible() then Skin_MacroPopup() end
+            if p:IsVisible() then reskin() end
         end))
     end
+end
+
+-- Macro popup (MacroPopupFrame): uses the shared icon selector popup skin.
+local function Skin_MacroPopup()
+    local p = _G.MacroPopupFrame
+    if not p then return end
+    Skin_IconSelectorPopup(p, WSkin.Panel, Skin_MacroPopup)
 end
 
 local _macroHooked = false
@@ -9979,6 +10008,25 @@ WSkin.RegisterWindow({
     key = "macros",
     addons = { Blizzard_MacroUI = true },
     apply = Skin_Macros,
+})
+
+-- Equipment Manager popup (GearManagerPopupFrame, built with PaperDollFrame at load)
+-- wears the sheet's own shell under the sheet's "charsheet" key, so it follows that
+-- card's on/off, style and Modern swap. Blizzard Default keeps the stock popup, like
+-- the sheet itself, and so does WoW Forever. The sheet skin raises the popup's icon
+-- grid a strata above the shell (PreSkinCharacterSheet).
+local GEAR_SHELL_OPTS = { noTopBar = true }
+local function GearPopupBackdrop(f) WSkin.Shell("charsheet", f, GEAR_SHELL_OPTS) end
+local function Skin_GearPopup()
+    if EllesmereUI.IS_FOREVER or ns.CharSheetStock() then return end
+    local p = _G.GearManagerPopupFrame
+    if not p then return end
+    Skin_IconSelectorPopup(p, GearPopupBackdrop, Skin_GearPopup)
+end
+
+WSkin.RegisterWindow({
+    key = "charsheet",
+    apply = Skin_GearPopup,
 })
 end
 
@@ -12230,7 +12278,7 @@ end
 --  application: group title, activity, your role, Accept/Decline) and
 --  LFGInvitePopup (invited to a group finder party, with role checks).
 --
---  EllesmereUIBlizzardSkin.lua also skins LFGListInviteDialog, gated on
+--  EUI_BlizzardSkin_Dialogs.lua also skins LFGListInviteDialog, gated on
 --  EllesmereUIDB.reskinQueuePopup (a plain truthiness test, unlike the Queue
 --  Popup's `~= false`, so it only runs for users who toggled the option ON).
 --  When it does, it lays a flat BACKGROUND texture at sublevel 0 over this

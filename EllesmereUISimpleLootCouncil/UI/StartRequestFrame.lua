@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 SimpleLootCouncil = SimpleLootCouncil or {}
@@ -46,7 +47,7 @@ local function Build()
         GameTooltip:Show()
     end
     list.onLeave = function() GameTooltip:Hide() end
-    list.onClick = function(_, item) HandleModifiedItemClick(item.link) end
+    list.onClick = function(_, item) S.ItemModifiedClick(item.link) end
     y = y + list.headerHeight + VISIBLE_ROWS * ROW_HEIGHT + S.size.GAP
     local hint = S.Label(content, S.fontSmall, "LEFT")
     P.Point(hint, "TOPLEFT", 0, -y)

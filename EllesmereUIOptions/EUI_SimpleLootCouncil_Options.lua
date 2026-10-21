@@ -13,9 +13,20 @@ initFrame:RegisterEvent("PLAYER_LOGIN")
 initFrame:SetScript("OnEvent", function(self)
     self:UnregisterEvent("PLAYER_LOGIN")
 
-    if not EllesmereUI or not EllesmereUI.RegisterModule then return end
 
-    local PAGE_SETTINGS = "Settings"
+
+
+    local CreateFrame = EllesmereUI._Pool.CreateFrame
+
+
+
+    local PAGE_LOOT, PAGE_COUNCIL, PAGE_DATA = "Loot and Sessions", "Loot Council", "Data and Diagnostics"
+    local PAGES = { PAGE_LOOT, PAGE_COUNCIL, PAGE_DATA }
+    local PAGE_SECTIONS = {
+        [PAGE_LOOT] = { "lootHandling", "session", "alts" },
+        [PAGE_COUNCIL] = { "council", "voting", "responses", "announcements" },
+        [PAGE_DATA] = { "history", "diagnostics" },
+    }
     local SUGGEST_MAX, SUGGEST_MIN_CHARS = 8, 2
     local CLOSE_ICON = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-close.png"
 
@@ -52,13 +63,29 @@ initFrame:SetScript("OnEvent", function(self)
 
 
 
+    local councilEntries, councilDirty = nil, true
+    local councilEvents = {}
+    local function CouncilEntries(spec)
+        if councilDirty or not councilEntries then
+            councilEntries, councilDirty = spec.entries(), false
+        end
+        return councilEntries
+    end
+
+
+
     local subscribed
     local gameEvents = {}
-    local watcher = CreateFrame("Frame")
-    watcher:SetScript("OnEvent", Invalidate)
+    local function Heard(event)
+        if councilEvents[event] then councilDirty = true end
+        Invalidate()
+    end
+    local watcher = _G.CreateFrame("Frame")
+    watcher:SetScript("OnEvent", function(_, event) Heard(event) end)
     local function Subscribe(slc, Schema)
         if subscribed then return end
         subscribed = true
+        for _, event in ipairs(Schema.Row("council").refreshOn) do councilEvents[event] = true end
         for _, event in ipairs(Schema.Events()) do
             if event:find("^%u[%u_]*$") then
                 gameEvents[#gameEvents + 1] = event
@@ -67,7 +94,7 @@ initFrame:SetScript("OnEvent", function(self)
                     if kind == nil or Schema.SESSION_KINDS[kind] then Invalidate() end
                 end)
             else
-                slc.Callbacks:Register(event, Invalidate)
+                slc.Callbacks:Register(event, function() Heard(event) end)
             end
         end
     end
@@ -114,26 +141,17 @@ initFrame:SetScript("OnEvent", function(self)
 
 
 
+    local function BoETooltip(row)
+        return row.help .. "\n\n" .. (row.status())
+    end
     local function BoECfg(row)
-        local values, order = { [0] = row.placeholder }, {}
-        for index, reason in ipairs(row.reasons()) do
-            values[index] = reason.text
-            order[#order + 1] = index
-        end
-        values._noLoc = true
-        local cfg = { type = "dropdown", text = row.text, values = values, order = order,
-            tooltip = (row.status()), noCapture = true,
-            getValue = function() return row.current() or 0 end,
-            setValue = function(index)
-                row.choose(index)
+        return { type = "input", text = row.text, inputStyle = "popup",
+            inputWidth = row.inputWidth, tooltip = BoETooltip(row), noCapture = true,
+            getValue = row.getValue,
+            setValue = function(text)
+                row.setValue(text)
                 Invalidate()
             end }
-        if #order == 0 then
-            cfg.disabled = function() return true end
-            cfg.disabledTooltip = row.emptyText
-            cfg.rawTooltip = true
-        end
-        return cfg
     end
 
 
@@ -142,28 +160,26 @@ initFrame:SetScript("OnEvent", function(self)
 
 
 
-    local function TagButton(region, width, onClick)
-        local PP = EllesmereUI.PanelPP
-        local btn = CreateFrame("Button", nil, region)
-        PP.Size(btn, width, 24)
-        local anchor = region._lastInline or region._control
-        if anchor then
-            PP.Point(btn, "RIGHT", anchor, "LEFT", -8, 0)
-        else
-            PP.Point(btn, "RIGHT", region, "RIGHT", -20, 0)
-        end
-        region._lastInline = btn
-        btn:SetFrameLevel(region:GetFrameLevel() + 5)
+
+    local function StyledTag(parent, width, onClick, make)
+        local btn = (make or CreateFrame)("Button", nil, parent)
+        EllesmereUI.PanelPP.Size(btn, width, 24)
+        btn:SetFrameLevel(parent:GetFrameLevel() + 5)
         local _, _, label = EllesmereUI.MakeStyledButton(btn, "", 11, EllesmereUI.WB_COLOURS)
         btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
         btn:SetScript("OnClick", function(_, button)
             EllesmereUI.HideWidgetTooltip()
             onClick(button)
         end)
-        btn:HookScript("OnEnter", function(b)
+        local hoverOn, hoverOff = btn:GetScript("OnEnter"), btn:GetScript("OnLeave")
+        btn:SetScript("OnEnter", function(b)
+            hoverOn(b)
             if b.tip then EllesmereUI.ShowWidgetTooltip(b, b.tip) end
         end)
-        btn:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        btn:SetScript("OnLeave", function(b)
+            hoverOff(b)
+            EllesmereUI.HideWidgetTooltip()
+        end)
         btn.Label = label
         return btn
     end
@@ -190,23 +206,195 @@ initFrame:SetScript("OnEvent", function(self)
         return btn
     end
 
+    local function CloseSuggestions(box)
+        if EllesmereUI.ContextMenuOwner() == box then EllesmereUI.CloseContextMenu() end
+    end
 
 
 
-    local function InputBox(parent, width)
-        local box = CreateFrame("EditBox", nil, parent)
-        box:SetSize(width, 28)
-        box:SetAutoFocus(false)
-        box:SetFont(EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
-        box:SetTextColor(1, 1, 1, 0.9)
-        box:SetJustifyH("LEFT")
-        box:SetTextInsets(10, 10, 0, 0)
-        local bg = box:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        bg:SetColorTexture(0, 0, 0, 0.5)
-        EllesmereUI.MakeBorder(box, 1, 1, 1, 0.2)
-        box:SetScript("OnEscapePressed", function(b) b:ClearFocus() end)
-        return box
+
+
+    local addHolder, addBox, addButton
+    local addHandlers = {}
+    local function AddBox(row, width, buttonText)
+        if not addHolder then
+            addHolder = _G.CreateFrame("Frame", nil, row)
+            addBox = _G.CreateFrame("EditBox", nil, addHolder)
+            addBox:SetHeight(28)
+            addBox:SetAutoFocus(false)
+            addBox:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
+            addBox:SetTextColor(1, 1, 1, 0.9)
+            addBox:SetJustifyH("LEFT")
+            addBox:SetTextInsets(10, 10, 0, 0)
+            local bg = addBox:CreateTexture(nil, "BACKGROUND")
+            bg:SetAllPoints()
+            bg:SetColorTexture(0, 0, 0, 0.5)
+            EllesmereUI.MakeBorder(addBox, 1, 1, 1, 0.2)
+            addButton = _G.CreateFrame("Button", nil, addHolder)
+            EllesmereUI.PanelPP.Size(addButton, 90, 28)
+            EllesmereUI.PanelPP.Point(addButton, "LEFT", addBox, "RIGHT", 8, 0)
+            local function Add() if addHandlers.add then addHandlers.add() end end
+            EllesmereUI.MakeStyledButton(addButton, buttonText, 12, EllesmereUI.WB_COLOURS, Add)
+            addBox:SetScript("OnEnterPressed", Add)
+            addBox:SetScript("OnEscapePressed", function(b)
+                CloseSuggestions(b)
+                b:ClearFocus()
+            end)
+            addBox:SetScript("OnHide", CloseSuggestions)
+            addBox:SetScript("OnTextChanged", function(b, userInput)
+                if addHandlers.typed then addHandlers.typed(b, userInput) end
+            end)
+        end
+        addHolder:SetParent(row)
+        addHolder:ClearAllPoints()
+        addHolder:SetAllPoints(row)
+        addHolder:SetFrameLevel(row:GetFrameLevel() + 1)
+        addButton:SetFrameLevel(addHolder:GetFrameLevel() + 2)
+        addBox:SetWidth(width)
+        addBox:ClearAllPoints()
+        addBox:SetPoint("LEFT", addHolder, "LEFT", 20, 0)
+        addHolder:Show()
+        return addBox
+    end
+
+
+
+
+
+
+
+    local ART = "Interface\\AddOns\\" .. ADDON_NAME .. "\\art\\"
+    local LOGO = { path = ART .. "logo", u = 396 / 512, w = 396 }
+    local LOGO_PRIDE = { path = ART .. "logo-pride", u = 398 / 512, w = 398 }
+    local LOGO_H, LOGO_V = 36, 36 / 64
+    local MODULE_TITLE = "Simple Loot Council"
+
+
+    local function FindTitle(frame, depth)
+        for _, region in ipairs({ frame:GetRegions() }) do
+
+            if region.GetText and region:GetText() == MODULE_TITLE
+                and (select(2, region:GetFont()) or 0) >= 30 then
+                return region
+            end
+        end
+        if depth == 0 then return nil end
+        for _, child in ipairs({ frame:GetChildren() }) do
+            local found = FindTitle(child, depth - 1)
+            if found then return found end
+        end
+    end
+
+    local bannerTitle, bannerTexture, bannerVersion, bannerActive, bannerLive
+
+
+
+    local function RefreshHeaderTags()
+        local slc = SLC()
+        if not (slc and bannerActive) then return end
+        local tags, S = slc.UI.OptionsSchema.Row("statusTags"), slc.Style
+        local title, tone, lines = tags.activeTooltip()
+        bannerActive.Label:SetText(S.Colorize(S.color[tone], title))
+        bannerActive.tip = table.concat(lines, "\n")
+        local live = bannerActive:IsShown() and tags.live()
+        bannerLive:SetShown(live)
+        if live then
+            local _, liveTone, liveLines = tags.liveTooltip()
+            bannerLive.Label:SetText(S.Colorize(S.color[liveTone], tags.liveText))
+            bannerLive.tip = table.concat(liveLines, "\n")
+        end
+    end
+
+    local function ApplyBanner(slc)
+        local pride = slc and slc.Style.PrideActive() or false
+        local logo = pride and LOGO_PRIDE or LOGO
+        bannerTexture:SetTexture(logo.path)
+        bannerTexture:SetTexCoord(0, logo.u, 0, LOGO_V)
+        EllesmereUI.PanelPP.Size(bannerTexture, logo.w, LOGO_H)
+    end
+
+
+
+    local function ShowBanner()
+        local slc = SLC()
+        local main = EllesmereUI._mainFrame
+        if not (slc and main) then return end
+        if not bannerTitle then
+            bannerTitle = FindTitle(main, 6)
+        end
+        if not bannerTitle then return end
+        if not bannerTexture then
+            bannerTexture = bannerTitle:GetParent():CreateTexture(nil, "ARTWORK")
+            bannerTexture:SetPoint("TOPLEFT", bannerTitle, "TOPLEFT", 0, 0)
+
+            local slot = { ApplyLogo = function() ApplyBanner(SLC()) end }
+            slc.Style.logoWindows[#slc.Style.logoWindows + 1] = slot
+        end
+
+        if not bannerVersion then
+            bannerVersion = bannerTitle:GetParent():CreateFontString(nil, "OVERLAY")
+            bannerVersion:SetFontObject(slc.Style.fontBadge)
+            bannerVersion:SetJustifyH("LEFT")
+            bannerVersion:SetPoint("BOTTOMLEFT", bannerTexture, "BOTTOMRIGHT", 12, 4)
+        end
+        bannerVersion:SetText("v" .. tostring(slc.VERSION))
+
+        if not bannerActive then
+            bannerActive = StyledTag(bannerTitle:GetParent(), 86, function(button)
+                local tags = SLC() and SLC().UI.OptionsSchema.Row("statusTags")
+                if button == "LeftButton" and tags and tags.clickActive() then Invalidate() end
+            end, _G.CreateFrame)
+            EllesmereUI.PanelPP.Point(bannerActive, "LEFT", bannerVersion, "RIGHT", 12, 0)
+            bannerLive = StyledTag(bannerTitle:GetParent(), 60, function(button)
+                local tags = SLC() and SLC().UI.OptionsSchema.Row("statusTags")
+                if tags and tags.clickLive(button) then Invalidate() end
+            end, _G.CreateFrame)
+            EllesmereUI.PanelPP.Point(bannerLive, "LEFT", bannerActive, "RIGHT", 8, 0)
+        end
+        ApplyBanner(slc)
+        bannerTexture:Show()
+        bannerVersion:Show()
+        bannerActive:Show()
+        bannerTitle:SetAlpha(0)
+        RefreshHeaderTags()
+    end
+
+    local function HideBanner()
+        if bannerTexture then bannerTexture:Hide() end
+        if bannerVersion then bannerVersion:Hide() end
+        if bannerActive then bannerActive:Hide() end
+        if bannerLive then bannerLive:Hide() end
+        if bannerTitle then bannerTitle:SetAlpha(1) end
+    end
+
+
+    local function PageSections(Schema, pageName)
+        local byId, list = {}, {}
+        for _, section in ipairs(Schema.Sections()) do byId[section.id] = section end
+        for _, id in ipairs(PAGE_SECTIONS[pageName] or {}) do
+            if byId[id] then list[#list + 1] = byId[id] end
+        end
+        return list
+    end
+
+
+
+
+
+
+    local STATUS_MAX_ROWS, STATUS_ROW_H, STATUS_TOP, STATUS_BOTTOM, STATUS_MASTER_H = 6, 20, 36, 12, 22
+
+    local STATUS_BTN_H, STATUS_BTN_FONT, STATUS_EUI_BTN_W, STATUS_BTN_ROWS, STATUS_MIN_GAP = 37, 12, 205, 3, 10
+
+
+    local function StatusHeight(entries)
+        local shown = math.min(math.max(entries, 1), STATUS_MAX_ROWS)
+        local card = STATUS_TOP + shown * STATUS_ROW_H + STATUS_MASTER_H + STATUS_BOTTOM
+        return math.max(card, STATUS_BTN_ROWS * STATUS_BTN_H + (STATUS_BTN_ROWS + 1) * STATUS_MIN_GAP)
+    end
+    local function StatusCapacity(height)
+        local rows = math.floor((height - STATUS_TOP - STATUS_MASTER_H - STATUS_BOTTOM) / STATUS_ROW_H)
+        return math.max(1, math.min(rows, STATUS_MAX_ROWS))
     end
 
 
@@ -218,36 +406,33 @@ initFrame:SetScript("OnEvent", function(self)
         local PP = EllesmereUI.PanelPP
         local PAD = EllesmereUI.CONTENT_PAD
 
-        local prebuild = EllesmereUI.IsSearchPrebuild and EllesmereUI.IsSearchPrebuild()
+        local prebuild = EllesmereUI.IsSearchPrebuild()
         local y = yOffset
         local _, h
 
         EllesmereUI:ClearContentHeader()
 
-
-        if ns.slcInert then
-            _, h = W:SectionHeader(parent, "STANDALONE COPY RUNNING", y);  y = y - h
-            _, h = W:WideButton(parent, "Switch To The EllesmereUI Module", y, function()
-                if ns.AskSwitch then ns.AskSwitch() end
-            end);  y = y - h
-            return math.abs(y)
-        end
-
         local slc = SLC()
         if not slc then return math.abs(y) end
+
+        if not prebuild then parent._showRowDivider = true end
+        councilDirty = true
         local Schema, S = slc.UI.OptionsSchema, slc.Style
 
         local T, Format = slc.Locale.Text, slc.Locale.Format
         local refreshes = {}
         local function OnRefresh(fn) refreshes[#refreshes + 1] = fn end
 
-        local function Width() return parent:GetWidth() - PAD * 2 end
+
+        local colX, colW = 0, nil
+        local function Width() return colW or (parent:GetWidth() - PAD * 2) end
 
 
         local function Row(height)
             local row = CreateFrame("Frame", nil, parent)
             PP.Size(row, Width(), height)
-            PP.Point(row, "TOPLEFT", parent, "TOPLEFT", PAD, y)
+            PP.Point(row, "TOPLEFT", parent, "TOPLEFT", PAD + colX, y)
+            row._skipRowDivider = true
             EllesmereUI.RowBg(row, parent)
             y = y - height
             return row
@@ -268,7 +453,7 @@ initFrame:SetScript("OnEvent", function(self)
             if type(textH) ~= "number" or (issecretvalue and issecretvalue(textH)) then textH = 14 end
             local height = math.max(34, math.ceil(textH) + 20)
             PP.Size(row, Width(), height)
-            PP.Point(row, "TOPLEFT", parent, "TOPLEFT", PAD, y)
+            PP.Point(row, "TOPLEFT", parent, "TOPLEFT", PAD + colX, y)
             y = y - height
             return label
         end
@@ -285,10 +470,10 @@ initFrame:SetScript("OnEvent", function(self)
         local faint = S.ColorStart(S.Flatten(S.color.textFaint))
 
 
-        local pending
-        local function Place(cfg, decorate)
+        local pending, lastRightId
+        local function Place(cfg, decorate, id, dependsOn)
             if not pending then
-                pending = { cfg = cfg, decorate = decorate }
+                pending = { cfg = cfg, decorate = decorate, id = id, dependsOn = dependsOn }
                 return
             end
             local frame
@@ -297,14 +482,21 @@ initFrame:SetScript("OnEvent", function(self)
                 if pending.decorate then pending.decorate(frame._leftRegion) end
                 if decorate then decorate(frame._rightRegion) end
             end
-            pending = nil
+            pending, lastRightId = nil, id
         end
+
+
         local function Flush()
             if not pending then return end
             local frame
-            frame, h = W:DualRow(parent, y, pending.cfg, EllesmereUI.BlankRowCfg());  y = y - h
-            if not prebuild and pending.decorate then pending.decorate(frame._leftRegion) end
-            pending = nil
+            if pending.dependsOn and pending.dependsOn == lastRightId then
+                frame, h = W:DualRow(parent, y, EllesmereUI.BlankRowCfg(), pending.cfg);  y = y - h
+                if not prebuild and pending.decorate then pending.decorate(frame._rightRegion) end
+            else
+                frame, h = W:DualRow(parent, y, pending.cfg, EllesmereUI.BlankRowCfg());  y = y - h
+                if not prebuild and pending.decorate then pending.decorate(frame._leftRegion) end
+            end
+            pending, lastRightId = nil, nil
         end
 
 
@@ -324,82 +516,163 @@ initFrame:SetScript("OnEvent", function(self)
 
 
 
+
+
         local tags, lootMaster = Schema.Row("statusTags"), Schema.Row("lootMaster")
         local inForce = Schema.Row("councilInForce")
-        _, h = W:SectionHeader(parent, tags.heading:upper(), y);  y = y - h
+        local actions = Schema.Actions()
 
-        local stateCfg = { type = "label", text = "", noCapture = true }
-        local masterCfg = { type = "label", text = "", noCapture = true }
-        local frame
-        frame, h = W:DualRow(parent, y, stateCfg, masterCfg);  y = y - h
-        if not prebuild then
-            local stateRegion = frame._leftRegion
-            local activeBtn = TagButton(stateRegion, 86, function(button)
-                if button == "LeftButton" and tags.clickActive() then Invalidate() end
-            end)
-            local liveBtn = TagButton(stateRegion, 60, function(button)
-                if tags.clickLive(button) then Invalidate() end
-            end)
+        local withStatus = pageName == PAGE_LOOT
+        if withStatus then
+            _, h = W:SectionHeader(parent, tags.heading:upper(), y);  y = y - h
+        end
+        if not prebuild then OnRefresh(RefreshHeaderTags) end
 
-            stateRegion._label:SetPoint("RIGHT", liveBtn, "LEFT", -8, 0)
-            local masterLabel = frame._rightRegion._label
-            masterLabel:SetPoint("RIGHT", frame._rightRegion, "RIGHT", -20, 0)
+
+
+        local function Open(action)
+            return function()
+                EllesmereUI:Hide()
+                action.onClick()
+            end
+        end
+
+        if not withStatus then
+
+        elseif prebuild then
+
+            for i = 1, #actions, 3 do
+                local a, b, c = actions[i], actions[i + 1], actions[i + 2]
+                _, h = W:WideTripleButton(parent, a.text, b and b.text, c and c.text, y);  y = y - h
+            end
+        else
+            local GAP = 20
+            local full = parent:GetWidth() - PAD * 2
+            local half = math.floor((full - GAP) / 2)
+            local top = y
+            local height = StatusHeight(#inForce.entries(PlayerText, RankText))
+
+            local block = CreateFrame("Frame", nil, parent)
+            PP.Size(block, full, height)
+            PP.Point(block, "TOPLEFT", parent, "TOPLEFT", PAD, top)
+            block._skipRowDivider = true
+            EllesmereUI.RowBg(block, parent)
+            local rule = block:CreateTexture(nil, "ARTWORK")
+            rule:SetColorTexture(1, 1, 1, 0.08)
+            rule:SetWidth(1)
+            rule:SetPoint("TOPLEFT", block, "TOPLEFT", half + GAP / 2, -4)
+            rule:SetPoint("BOTTOMLEFT", block, "BOTTOMLEFT", half + GAP / 2, 4)
+            y = top - height
+
+
+            local card = CreateFrame("Frame", nil, block)
+            PP.Size(card, half, height)
+            PP.Point(card, "TOPLEFT", block, "TOPLEFT", 0, 0)
+            local heading = EllesmereUI.MakeFont(card, 11, nil, 1, 1, 1)
+            heading:SetAlpha(0.45)
+            heading:SetPoint("TOPLEFT", card, "TOPLEFT", 20, -14)
+            heading:SetText(inForce.heading)
+            local voters = EllesmereUI.MakeFont(card, 12, nil, 1, 1, 1)
+            voters:SetPoint("LEFT", heading, "RIGHT", 8, 0)
+            local entryRows = {}
+            for i = 1, STATUS_MAX_ROWS do
+                local row = CreateFrame("Frame", nil, card)
+                row:SetPoint("TOPLEFT", card, "TOPLEFT", 20, -STATUS_TOP - (i - 1) * STATUS_ROW_H)
+                row:SetPoint("TOPRIGHT", card, "TOPRIGHT", -20, -STATUS_TOP - (i - 1) * STATUS_ROW_H)
+                row:SetHeight(STATUS_ROW_H)
+                row.label = EllesmereUI.MakeFont(row, 13, nil, 1, 1, 1)
+                row.label:SetJustifyH("LEFT")
+                row.label:SetPoint("LEFT", row, "LEFT", 0, 0)
+                row.count = EllesmereUI.MakeFont(row, 12, nil, 1, 1, 1)
+                row.count:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+                row:EnableMouse(true)
+                row:SetScript("OnEnter", function(self)
+                    if self.tip then EllesmereUI.ShowWidgetTooltip(self, self.tip) end
+                end)
+                row:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                entryRows[i] = row
+            end
+            local masterLabel = EllesmereUI.MakeFont(card, 12, nil, 1, 1, 1)
+            masterLabel:SetAlpha(0.85)
+            masterLabel:SetJustifyH("LEFT")
+            masterLabel:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 20, STATUS_BOTTOM)
+            masterLabel:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", -20, STATUS_BOTTOM)
+
             OnRefresh(function()
-                local title, tone, lines = tags.activeTooltip()
-                stateRegion._label:SetText(lines[1] or "")
-                activeBtn.Label:SetText(S.Colorize(S.color[tone], title))
-                activeBtn.tip = table.concat(lines, "\n")
-                local live = tags.live()
-                liveBtn:SetShown(live)
-                if live then
-                    local _, liveTone, liveLines = tags.liveTooltip()
-                    liveBtn.Label:SetText(S.Colorize(S.color[liveTone], tags.liveText))
-                    liveBtn.tip = table.concat(liveLines, "\n")
-                end
                 masterLabel:SetText(Format(lootMaster.line, lootMaster.name(), lootMaster.role()))
             end)
-        end
-
-        local councilCfg = { type = "label", text = "", tooltip = inForce.emptyText, noCapture = true }
-        frame, h = W:DualRow(parent, y, councilCfg, EllesmereUI.BlankRowCfg());  y = y - h
-        if not prebuild then
-            local region = frame._leftRegion
-
-            region._label:SetPoint("RIGHT", region, "RIGHT", -20, 0)
             OnRefresh(function()
-                local entries = inForce.entries(PlayerText, RankText)
-                local shown, lines = {}, {}
-                for _, entry in ipairs(entries) do
-                    local text = entry.count and Format(T["%s (%s)"], entry.text, entry.count)
-                        or entry.text
-                    shown[#shown + 1] = text
-                    lines[#lines + 1] = text
-                    for _, member in ipairs(entry.rank and entry.tooltip or {}) do
-                        lines[#lines + 1] = "  " .. member
+                local entries, count = inForce.entries(PlayerText, RankText)
+                count = tonumber(count) or 0
+                voters:SetText(S.Colorize(count == 0 and S.color.bad or S.color.accentPale, tostring(count)))
+                if #entries == 0 then entries[1] = { text = S.Colorize(S.color.bad, inForce.emptyText) } end
+                local capacity = StatusCapacity(height)
+
+
+                if #entries > capacity then
+                    local hidden, members, ranksHidden = {}, 0, false
+                    for i = capacity, #entries do
+                        local entry = entries[i]
+                        hidden[#hidden + 1] = entry.count and Format(T["%s (%s)"], entry.text, entry.count)
+                            or entry.text
+                        for _, line in ipairs(entry.rank and entry.tooltip or {}) do
+                            hidden[#hidden + 1] = "  " .. line
+                        end
+                        if entry.rank then ranksHidden = true else members = members + 1 end
+                    end
+                    local overflow = #entries - capacity + 1
+                    entries[capacity] = { tooltip = hidden, overflow = true,
+                        text = ranksHidden
+                            and Format(slc.Locale.Plural{ one = "%d entries hidden", other = "%d entries hidden" },
+                                overflow, overflow)
+                            or Format(slc.Locale.Plural{ one = "%d member hidden", other = "%d members hidden" },
+                                members, members) }
+                end
+                for i, row in ipairs(entryRows) do
+                    local entry = i <= capacity and entries[i]
+                    row:SetShown(entry and true or false)
+                    if entry then
+                        row.label:SetText(entry.text)
+                        row.count:SetText(entry.count or "")
+                        row.label:SetPoint("RIGHT", row, "RIGHT", entry.count and -34 or 0, 0)
+                        local tip = entry.tooltip and #entry.tooltip > 0
+                            and ((entry.overflow and "" or entry.text .. "\n") .. table.concat(entry.tooltip, "\n"))
+                        row.tip = tip or nil
                     end
                 end
-                if #shown == 0 then
-                    shown[1] = S.Colorize(S.color.bad, inForce.emptyText)
-                    lines[1] = inForce.emptyText
-                end
-                region._label:SetText(Format(inForce.line, table.concat(shown, ", ")))
-                councilCfg.tooltip = table.concat(lines, "\n")
             end)
-        end
 
 
 
-        local actions = Schema.Actions()
-        for i = 1, #actions, 3 do
-            local a, b, c = actions[i], actions[i + 1], actions[i + 2]
-            local function Open(action)
-                return action and function()
-                    EllesmereUI:Hide()
-                    action.onClick()
+
+
+            local grid = CreateFrame("Frame", nil, block)
+            PP.Size(grid, half, height)
+            PP.Point(grid, "TOPLEFT", block, "TOPLEFT", half + GAP, 0)
+            local buttons, widest = {}, 0
+            for i, action in ipairs(actions) do
+                local btn = CreateFrame("Button", nil, grid)
+                btn:SetFrameLevel(grid:GetFrameLevel() + 1)
+                local _, _, label = EllesmereUI.MakeStyledButton(btn, action.text, STATUS_BTN_FONT,
+                    EllesmereUI.WB_COLOURS, Open(action))
+                local w = label and label:GetStringWidth()
+                if type(w) ~= "number" or (issecretvalue and issecretvalue(w)) then
+                    w = #action.text * STATUS_BTN_FONT * 0.55
                 end
+                widest = math.max(widest, w)
+                buttons[i] = btn
             end
-            _, h = W:WideTripleButton(parent, a.text, b and b.text, c and c.text, y,
-                Open(a), Open(b), Open(c));  y = y - h
+            local sidePad = math.max(0, (STATUS_EUI_BTN_W - widest) / 2) * 0.2
+            local btnW = math.ceil(widest + sidePad * 2)
+            local rows = math.ceil(#buttons / 2)
+            local gapX = math.max(0, (half - 2 * btnW) / 3)
+            local gapY = math.max(0, (height - rows * STATUS_BTN_H) / (rows + 1))
+            for i, btn in ipairs(buttons) do
+                local col, line = (i - 1) % 2, math.floor((i - 1) / 2)
+                PP.Size(btn, btnW, STATUS_BTN_H)
+                PP.Point(btn, "TOPLEFT", grid, "TOPLEFT", gapX + col * (btnW + gapX),
+                    -(gapY + line * (STATUS_BTN_H + gapY)))
+            end
         end
 
 
@@ -410,7 +683,11 @@ initFrame:SetScript("OnEvent", function(self)
 
 
         function custom.responses(spec)
-            for index, entry in ipairs(spec.list()) do
+            for index, built in ipairs(spec.list()) do
+
+
+                local entry = built
+                OnRefresh(function() entry = spec.list()[index] or entry end)
                 local nameCfg = { type = "input", text = Format(spec.nameLabel, index),
                     inputStyle = "popup", inputWidth = 180, noCapture = true,
                     getValue = function() return entry.text or "" end,
@@ -420,6 +697,7 @@ initFrame:SetScript("OnEvent", function(self)
                     inputStyle = "popup", inputWidth = 180, noCapture = true,
                     getValue = function() return entry.whisper or "" end,
                     setValue = function(text) spec.setKeys(index, text) end }
+                local frame
                 frame, h = W:DualRow(parent, y, nameCfg, keysCfg);  y = y - h
                 if not prebuild then
                     local region = frame._leftRegion
@@ -443,7 +721,7 @@ initFrame:SetScript("OnEvent", function(self)
                         local copy = spec.confirmDelete()
                         S.Confirm({ title = copy.title, body = copy.body, accept = copy.accept,
                             onAccept = function()
-                                if spec.remove(index) then RequestRebuild() end
+                                if spec.remove(index) then Invalidate() end
                             end })
                     end, { width = 70, disabled = function() return requirement() ~= nil end,
                         disabledTooltip = requirement, rawTooltip = true })
@@ -455,7 +733,7 @@ initFrame:SetScript("OnEvent", function(self)
                     local index = spec.add(accent.r, accent.g, accent.b)
                     if index then
                         focusResponse = index
-                        RequestRebuild()
+                        Invalidate()
                     end
                 end })
                 Flush()
@@ -463,6 +741,39 @@ initFrame:SetScript("OnEvent", function(self)
             if not prebuild then
                 for _, hint in ipairs(spec.hints()) do Note(hint) end
             end
+        end
+
+
+
+
+        local PRIDE_ON = { ["i am gay"] = true, ["im gay"] = true }
+        local PRIDE_OFF = { ["i am not gay"] = true, ["im not gay"] = true }
+        local function PrideRequest(text)
+            if text:find("-", 1, true) then return nil end
+            local phrase = slc.Locale.Fold(text):gsub("\226\128\153", ""):gsub("'", "")
+                :gsub("%s+", " "):gsub("^%s*(.-)%s*$", "%1")
+            if PRIDE_ON[phrase] then return true end
+            if PRIDE_OFF[phrase] then return false end
+            return nil
+        end
+
+        local function TryPride(text)
+            local wanted = PrideRequest(text)
+            if wanted == nil then return false end
+            local current = slc.db and slc.db.pride and true or false
+            if wanted == current then
+                S.Confirm({ title = "Gay Mode", acknowledge = true,
+                    body = wanted and S.Rainbow("You're already gay") or "You're already straight" })
+                return true
+            end
+            S.Confirm({ title = "Gay Mode", accept = "Yes",
+                body = wanted and S.Rainbow("Are you sure you're gay?") or "Are you sure you're not gay?",
+                onAccept = function()
+                    slc.db.pride = wanted
+                    S.RefreshLogos()
+                    slc.Log:I("UI", "pride mode " .. (wanted and "on" or "off"))
+                end })
+            return true
         end
 
 
@@ -477,38 +788,31 @@ initFrame:SetScript("OnEvent", function(self)
             end)
 
             Note(spec.hint())
-            local addRow = Row(50)
-            local box = InputBox(addRow, 260)
-            box:SetPoint("LEFT", addRow, "LEFT", 20, 0)
-            local addBtn = CreateFrame("Button", nil, addRow)
-            PP.Size(addBtn, 90, 28)
-            PP.Point(addBtn, "LEFT", box, "RIGHT", 8, 0)
-            addBtn:SetFrameLevel(addRow:GetFrameLevel() + 2)
+            local box = AddBox(Row(50), math.min(260, Width() - 20 - 8 - 90 - 20), spec.addText())
 
-            local function CloseSuggestions()
-                if EllesmereUI.ContextMenuOwner and EllesmereUI.ContextMenuOwner() == box then
-                    EllesmereUI.CloseContextMenu()
-                end
-            end
             local function AddTyped()
-                CloseSuggestions()
+                CloseSuggestions(box)
                 local name = box:GetText():trim()
                 if name == "" then return end
+
+                if TryPride(name) then
+                    box:SetText("")
+                    box:ClearFocus()
+                    return
+                end
                 if spec.add(name) then box:SetText("") end
                 box:ClearFocus()
-                RequestRebuild()
+                councilDirty = true
+                Invalidate()
             end
-            EllesmereUI.MakeStyledButton(addBtn, spec.addText(), 12, EllesmereUI.WB_COLOURS, AddTyped)
-            box:SetScript("OnEnterPressed", AddTyped)
-            box:HookScript("OnEscapePressed", CloseSuggestions)
-            box:HookScript("OnHide", CloseSuggestions)
 
-            box:HookScript("OnTextChanged", function(b, userInput)
+            local function Typed(b, userInput)
                 if not userInput then return end
-                CloseSuggestions()
+                CloseSuggestions(b)
                 local text = (b:GetText() or ""):trim()
 
                 if select(2, text:gsub("[^\128-\191]", "")) < SUGGEST_MIN_CHARS then return end
+                if PrideRequest(text) ~= nil then return end
                 local items = {}
                 for _, entry in ipairs(spec.suggest(text, SUGGEST_MAX)) do
                     local name = (tostring(entry.name):gsub("|", "||"))
@@ -527,12 +831,14 @@ initFrame:SetScript("OnEvent", function(self)
                     EllesmereUI.ShowContextMenu(b, items, { below = true, minWidth = b:GetWidth(),
                         pickOnDown = true, scaleToAnchor = true })
                 end
-            end)
+            end
+            addHandlers.add, addHandlers.typed = AddTyped, Typed
 
 
 
-            local entries, here = spec.entries(), slc.GetCandidates()
-            OnRefresh(function() entries, here = spec.entries(), slc.GetCandidates() end)
+
+            local entries, here = CouncilEntries(spec), slc.GetCandidates()
+            OnRefresh(function() entries, here = CouncilEntries(spec), slc.GetCandidates() end)
             for index = 1, #entries do
                 local row = Row(34)
                 local label = EllesmereUI.MakeFont(row, 13, nil, 1, 1, 1)
@@ -582,31 +888,78 @@ initFrame:SetScript("OnEvent", function(self)
                 CloseButton(row, T["Remove"], function()
                     if not entry then return end
                     spec.remove(entry)
-                    RequestRebuild()
+                    councilDirty = true
+                    Invalidate()
                 end)
             end
             if #entries == 0 then Note(spec.emptyText()) end
         end
 
 
+
         function custom.councilRanks(spec)
-            _, h = W:SectionHeader(parent, spec.heading:upper(), y);  y = y - h
             if not prebuild then
+                Note(S.Colorize(S.color.accent, spec.heading:upper()), 0.85)
                 for _, hint in ipairs(spec.hints()) do Note(hint) end
             end
             local ranks = spec.ranks()
             for index = 1, math.min(#ranks, spec.maxRows) do
                 local name = ranks[index].name
-                Place({ type = "toggle", text = name, noCapture = true,
-                    getValue = function() return spec.isEmpowered(name) end,
-                    setValue = function(value)
-                        spec.setEmpowered(name, value)
+                if prebuild then
+                    y = y - 36
+                else
+                    local row = Row(36)
+                    local btn = CreateFrame("Button", nil, row)
+                    btn:SetAllPoints(row)
+                    local box, _, _, apply = EllesmereUI.BuildCheckboxControl(btn, row:GetFrameLevel() + 1)
+                    PP.Point(box, "LEFT", btn, "LEFT", 20, 0)
+                    local label = EllesmereUI.MakeFont(btn, 14, nil, 1, 1, 1)
+                    label:SetPoint("LEFT", box, "RIGHT", 10, 0)
+                    label:SetPoint("RIGHT", btn, "RIGHT", -20, 0)
+                    label:SetJustifyH("LEFT")
+                    label:SetWordWrap(false)
+                    label:SetText(RankText(name))
+                    local hovering = false
+                    local function Paint() apply(spec.isEmpowered(name) and true or false, hovering) end
+                    btn:SetScript("OnEnter", function() hovering = true Paint() end)
+                    btn:SetScript("OnLeave", function() hovering = false Paint() end)
+                    btn:SetScript("OnClick", function()
+                        spec.setEmpowered(name, not spec.isEmpowered(name))
+                        Paint()
+
+                        councilDirty = true
                         Invalidate()
-                    end })
+                    end)
+                    OnRefresh(Paint)
+                    Paint()
+                end
             end
-            Flush()
             local empty = spec.empty()
             if empty and not prebuild then Note(empty) end
+        end
+
+
+        function custom.councilPair(councilSpec, rankSpec)
+            local GAP = 20
+            local full = parent:GetWidth() - PAD * 2
+            local half = math.floor((full - GAP) / 2)
+            local top = y
+            colX, colW = 0, half
+            custom.council(councilSpec)
+            local leftEnd = y
+            y = top
+            colX = half + GAP
+            custom.councilRanks(rankSpec)
+            local rightEnd = y
+            colX, colW = 0, nil
+            y = math.min(leftEnd, rightEnd)
+            if not prebuild then
+                local rule = parent:CreateTexture(nil, "ARTWORK")
+                rule:SetColorTexture(1, 1, 1, 0.08)
+                rule:SetWidth(1)
+                rule:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD + half + GAP / 2, top - 4)
+                rule:SetPoint("BOTTOMLEFT", parent, "TOPLEFT", PAD + half + GAP / 2, y + 4)
+            end
         end
 
 
@@ -638,7 +991,7 @@ initFrame:SetScript("OnEvent", function(self)
                     setValue = function(value)
                         local done = submit(value)
                         kept = done == false and value or ""
-                        if done then RequestRebuild() end
+                        if done then Invalidate() end
                     end }
             end
             local showAlts = spec.showAlts
@@ -651,19 +1004,22 @@ initFrame:SetScript("OnEvent", function(self)
             Place(showCfg)
             Flush()
             if prebuild then return end
-            for _, alt in ipairs(alts) do
+
+            OnRefresh(function() alts = spec.alts(spec.main()) end)
+            for index = 1, #alts do
                 local row = Row(34)
 
                 local label = EllesmereUI.MakeFont(row, 13, nil, 1, 1, 1)
                 label:SetPoint("LEFT", row, "LEFT", 20, 0)
 
-                OnRefresh(function() label:SetText(Qualified(alt)) end)
+                OnRefresh(function() label:SetText(Qualified(alts[index])) end)
                 local copy = spec.confirmRemove()
                 CloseButton(row, copy.accept, function()
+                    local alt = alts[index]
                     S.Confirm({ title = copy.title, body = copy.body, accept = copy.accept,
                         onAccept = function()
                             spec.removeAlt(alt)
-                            RequestRebuild()
+                            Invalidate()
                         end })
                 end)
             end
@@ -672,22 +1028,36 @@ initFrame:SetScript("OnEvent", function(self)
 
 
 
-        for _, section in ipairs(Schema.Sections()) do
+        local sections = PageSections(Schema, pageName)
+        for _, section in ipairs(sections) do
             _, h = W:SectionHeader(parent, section.title:upper(), y);  y = y - h
             for _, row in ipairs(section.rows) do
                 if row.hidden and row.hidden() then
 
                 elseif row.id == "boeReason" then
                     local cfg = BoECfg(row)
-                    Place(cfg, function()
-                        OnRefresh(function() cfg.tooltip = (row.status()) end)
+                    Place(cfg, function(region)
+                        if region._control then region._control:SetMaxLetters(row.maxLetters) end
+                        EllesmereUI.BuildInlineSwatches(region, { {
+                            getValue = function()
+                                local r, g, b = row.colour()
+                                return r, g, b, 1
+                            end,
+                            setValue = function(r, g, b) row.setColour(r, g, b) Invalidate() end,
+                        } })
+                        OnRefresh(function() cfg.tooltip = BoETooltip(row) end)
                     end)
+                elseif row.id == "council" then
+                    Flush()
+                    custom.councilPair(row, Schema.Row("councilRanks"))
+                elseif row.id == "councilRanks" then
+
                 elseif row.custom then
                     Flush()
                     custom[row.id](row)
                 else
                     local cfg = Cfg(row)
-                    Place(cfg, Decorator(row, cfg))
+                    Place(cfg, Decorator(row, cfg), row.id, row.dependsOn)
                 end
             end
             Flush()
@@ -696,9 +1066,11 @@ initFrame:SetScript("OnEvent", function(self)
         if prebuild then return math.abs(y) end
 
 
+
+
         local function Shape()
             local parts = {}
-            for _, section in ipairs(Schema.Sections()) do
+            for _, section in ipairs(sections) do
                 for _, row in ipairs(section.rows) do
                     parts[#parts + 1] = (row.hidden and row.hidden()) and "h" or "v"
                 end
@@ -706,11 +1078,14 @@ initFrame:SetScript("OnEvent", function(self)
             local ranks = Schema.Row("councilRanks")
             local alts = Schema.Row("alts")
             parts[#parts + 1] = #Schema.Row("responses").list()
-            parts[#parts + 1] = #Schema.Row("council").entries()
+            parts[#parts + 1] = #CouncilEntries(Schema.Row("council"))
             parts[#parts + 1] = math.min(#ranks.ranks(), ranks.maxRows)
             parts[#parts + 1] = ranks.empty() or ""
             parts[#parts + 1] = #alts.alts(alts.main())
-            parts[#parts + 1] = #(slc.db.awardReasons or {})
+
+            if withStatus then
+                parts[#parts + 1] = StatusHeight(#Schema.Row("councilInForce").entries(tostring, tostring))
+            end
             return table.concat(parts, ",")
         end
         local built = Shape()
@@ -725,9 +1100,11 @@ initFrame:SetScript("OnEvent", function(self)
         RefreshAll()
 
         Subscribe(slc, Schema)
-        parent:HookScript("OnShow", function() Listen(true) end)
-        parent:HookScript("OnHide", function() Listen(false) end)
+
+        parent:SetScript("OnShow", function() Listen(true) end)
+        parent:SetScript("OnHide", function() Listen(false) end)
         if parent:IsVisible() then Listen(true) end
+        ShowBanner()
 
         return math.abs(y)
     end
@@ -738,12 +1115,18 @@ initFrame:SetScript("OnEvent", function(self)
     EllesmereUI:RegisterModule(ADDON_NAME, {
         title       = "Simple Loot Council",
         description = "Loot council voting for your raid, synced over addon messages.",
-        pages       = { PAGE_SETTINGS },
+        pages       = PAGES,
         buildPage   = function(pageName, parent, yOffset)
-            if pageName == PAGE_SETTINGS then return BuildSettingsPage(pageName, parent, yOffset) end
+            if PAGE_SECTIONS[pageName] then return BuildSettingsPage(pageName, parent, yOffset) end
         end,
 
-        onPageCacheRestore = function() EllesmereUI:RefreshPage() end,
+        onPageCacheRestore = function()
+            ShowBanner()
+            councilDirty = true
+            EllesmereUI:RefreshPage()
+        end,
+
+        onModuleLeave = HideBanner,
     })
 end)
 

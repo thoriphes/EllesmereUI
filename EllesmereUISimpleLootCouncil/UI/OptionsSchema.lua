@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 
@@ -63,7 +64,8 @@ local function SwitchRow(id, text, help, get, set, extra)
 end
 
 local function Chat(prefix, text)
-    print(addon.Log.CHAT_PREFIX[prefix] .. text)
+    local say = prefix == "error" and addon.Chat.Error or prefix == "warn" and addon.Chat.Warn or addon.Chat.Print
+    say(text)
 end
 
 local function WishlistChanged()
@@ -130,7 +132,7 @@ local function Responses()
                 id = NextResponseID(), text = T["New response"],
                 r = r, g = g, b = b, sort = index,
             }
-            addon.Council:Broadcast()
+            addon.Council:RequestBroadcast()
             return index
         end,
         deleteRequirement = DeleteRequirement,
@@ -150,7 +152,7 @@ local function Responses()
             if not responses[index] then return false end
             table.remove(responses, index)
             for i, entry in ipairs(responses) do entry.sort = i end
-            addon.Council:Broadcast()
+            addon.Council:RequestBroadcast()
             return true
         end,
 
@@ -159,7 +161,7 @@ local function Responses()
             text = text:trim()
             if not entry or text == "" then return false end
             entry.text = text
-            addon.Council:Broadcast()
+            addon.Council:RequestBroadcast()
             return true
         end,
 
@@ -168,7 +170,7 @@ local function Responses()
             if not entry then return end
             text = text:trim()
             entry.whisper = text ~= "" and text or nil
-            addon.Council:Broadcast()
+            addon.Council:RequestBroadcast()
         end,
 
 
@@ -231,6 +233,25 @@ end
 
 
 
+function Schema.ClassFileFor(text)
+    if type(text) ~= "string" then return nil end
+    text = text:match("^%s*(.-)%s*$")
+    if text == "" or addon.IsSecret(text) then return nil end
+    local record = addon.Player:Peek(text)
+    if record and record.classFile then return record.classFile end
+    if addon.RaidTeam and addon.RaidTeam.FindMember then
+        local member = addon.RaidTeam:FindMember(text)
+        if member and member.classFile then return member.classFile end
+    end
+    if addon.History and addon.History.ClassesFor and addon.Player:NameKey(text) then
+        local class = (addon.History:ClassesFor(addon.Player:Qualify(text)) or {})[1]
+        if class then return class:upper() end
+    end
+    return nil
+end
+
+
+
 function Schema.QualifiedName(fullName, colourOf)
     fullName = addon.Player:CanonicalName(fullName) or fullName
     local character, realm = fullName:match("^([^-]+)(%-.*)$")
@@ -240,13 +261,10 @@ function Schema.QualifiedName(fullName, colourOf)
     local colour = record and record.classFile and colourOf(record.classFile)
 
 
-    if not colour and addon.History and addon.History.GetForWinner then
-        for _, entry in ipairs(addon.History:GetForWinner(fullName)) do
-            local historicalClass = entry and entry.class
-            if type(historicalClass) == "string" then
-                colour = colourOf(historicalClass:upper())
-                if colour then break end
-            end
+    if not colour and addon.History and addon.History.ClassesFor then
+        for _, historicalClass in ipairs(addon.History:ClassesFor(fullName) or {}) do
+            colour = colourOf(historicalClass:upper())
+            if colour then break end
         end
     end
     return character, realm or "", colour
@@ -333,7 +351,7 @@ local function Council()
         add = function(name)
             local ok, err = addon.Council:Add(name)
             if ok then
-                addon.Council:Broadcast()
+                addon.Council:RequestBroadcast()
                 return true
             end
             Chat("warn", tostring(err or T["could not add"]))
@@ -346,7 +364,7 @@ local function Council()
             else
                 addon.Council:Remove(entry.identity or entry.fullName or entry.guid or "?")
             end
-            addon.Council:Broadcast()
+            addon.Council:RequestBroadcast()
         end,
     }
 end
@@ -367,7 +385,7 @@ local function CouncilRanks()
 
         setEmpowered = function(name, value)
             addon.Council:SetRankEmpowered(name, value)
-            addon.Council:Broadcast()
+            addon.Council:RequestBroadcast()
         end,
 
         empty = function()
@@ -386,33 +404,34 @@ end
 local function BoEReason()
     return {
         id = "boeReason", custom = true,
-        text = T["...and for that reason"],
-        buttonText = function()
+        text = T["...and for this reason:"],
+        help = T["Shown as the routed player's response on a BoE item, in the colour on the left, with the note BoE. Guild Bank unless you type your own; clear the box to go back to Guild Bank."],
+
+        inputWidth = 160,
+        maxLetters = Schema.MAX_RESPONSE_LETTERS,
+        colour = function() return addon.BoERoute.ColourFor(addon.db.boeRoute) end,
+        setColour = function(r, g, b)
             local rule = addon.db.boeRoute
-            local entry = rule.reason and addon.db.awardReasons
-                and addon.db.awardReasons[rule.reason]
-            return entry and entry.text or T["Choose a reason"]
+            rule.r, rule.g, rule.b = r, g, b
         end,
-        menuTitle = T["Award reason"],
+        getValue = function() return addon.BoERoute.ReasonFor(addon.db.boeRoute) end,
+        setValue = function(text)
+            local reason = addon.BoERoute.CleanReason(text)
+            if reason == addon.BoERoute.DefaultReason() then reason = nil end
+            addon.db.boeRoute.reasonText = reason
+        end,
 
-        current = function() return addon.db.boeRoute.reason end,
-        placeholder = T["Choose a reason"],
-
-        offText = T["Off - set both a recipient and a reason to enable one-click BoE awards."],
-        emptyText = T["(none configured)"],
-        reasons = function() return addon.db.awardReasons or {} end,
-        choose = function(index) addon.db.boeRoute.reason = index end,
+        offText = T["Off - set a recipient to enable one-click BoE awards."],
 
         status = function()
             local rule = addon.db.boeRoute
             local _, requirement = addon.BoERoute.RouteFor(nil, rule, nil, nil)
             if requirement then return requirement, "accent" end
-            if not rule.winner and not rule.reason then
-                return T["Off - set both a recipient and a reason to enable one-click BoE awards."]
+            if not rule.winner then
+                return T["Off - set a recipient to enable one-click BoE awards."]
             end
-            local reasonEntry = addon.db.awardReasons and addon.db.awardReasons[rule.reason]
             return addon.Locale.Format(T["Live: routes Bind-on-Equip items to %s (%s)."],
-                Ambiguate(rule.winner, "short"), reasonEntry and reasonEntry.text or "?"), "good"
+                Ambiguate(rule.winner, "short"), addon.BoERoute.ReasonFor(rule)), "good"
         end,
     }
 end
@@ -679,6 +698,165 @@ local function Build()
     local db = function() return addon.db end
 
     sections = {
+        { id = "lootHandling", title = T["Loot handling"], rows = {
+
+
+            Setting({ id = "guildGroupOnly", type = "dropdown", danger = true,
+                text = T["Loot funnel in which groups?"],
+                help = T["When do you want to auto-pass on boss loot?"],
+                values = { all = T["All Groups"], guild = T["Guild Groups"] },
+                order = { "all", "guild" },
+                getValue = function() return db().funnel.guildGroupOnly and "guild" or "all" end,
+                setValue = function(value)
+                    local v = value == "guild"
+                    db().funnel.guildGroupOnly = v
+
+                    if v then addon.Loot:KeepGuard()
+                    elseif addon.UI.RaidPrompt then addon.UI.RaidPrompt:Evaluate() end
+                end }),
+
+
+            SwitchRow("neverLead", T["Never prompt to lead SLC groups?"],
+                T["Never ask to run an SLC group when you are group leader"],
+                function() return db().raidPrompt.neverLead end,
+                function(v)
+                    db().raidPrompt.neverLead = v
+                    if addon.UI.RaidPrompt then addon.UI.RaidPrompt:Evaluate() end
+                end,
+                { danger = true }),
+            SwitchRow("masterAutoLoot", T["Auto-loot to bags as Master Looter"],
+                T["As the group's Master Looter, a boss's whole corpse goes to your bags. In a raid, so do trash items at the loot threshold."],
+                function() return db().masterAutoLoot end,
+                function(v) db().masterAutoLoot = v end,
+                { hidden = function() return not addon.Loot.MasterLootAvailable() end }),
+
+            SwitchRow("autoOpenQueue", T["Automatically open loot queue on boss kill"],
+                T["As the Loot Master with SLC active, opens the Loot Queue when your group kills a boss, so the loot can be queued as it reaches the bags."],
+                function() return db().autoOpenQueue end,
+                function(v)
+                    db().autoOpenQueue = v
+                    addon.Callbacks:Fire("AutoOpenQueueChanged")
+                end,
+
+                { refreshOn = { "AutoOpenQueueChanged" } }),
+
+            SwitchRow("autoAddBags", T["Add all items when opening the loot queue"],
+                T["Adds every tradeable item in your bags when the Loot Queue opens, and after a boss kill keeps adding loot as it arrives. Never during a run."],
+                function() return db().autoAddBags end,
+                function(v)
+                    db().autoAddBags = v
+                    addon.Callbacks:Fire("AutoAddBagsChanged")
+                end,
+
+                { refreshOn = { "AutoAddBagsChanged" } }),
+
+            SwitchRow("autoJoin", T["Automatically join SLC sessions?"],
+                T["Skip the question about taking part and join as soon as the Loot Master starts using Simple Loot Council. You are still told in chat. Never applies while you are the Loot Master."],
+                function() return db().raidPrompt.silence end,
+                function(v)
+                    db().raidPrompt.silence = v
+                    addon.UI.RaidPrompt:SyncSilence()
+                end),
+
+
+            SwitchRow("inGroups", T["Use SLC in groups?"],
+                T["Enable this to use SLC in groups instead of only raids"],
+                function() return db().raidPrompt.inGroups end,
+                function(v)
+                    db().raidPrompt.inGroups = v
+                    if v and addon.UI.RaidPrompt then addon.UI.RaidPrompt:Evaluate() end
+                end),
+
+
+            Setting({ id = "boeWinner", type = "input", text = T["Route BoE items to"],
+                help = T["One-click award target for a Bind-on-Equip item, with the reason below. This never awards anything by itself - it only pre-fills the Award button on this player's row, and the Loot Master still has to click it."],
+                inputWidth = 160, repaints = { "boeReason" },
+
+                suggest = function(text, limit)
+                    if not (addon.RaidTeam and addon.RaidTeam.Suggest) then return {} end
+                    return addon.RaidTeam:Suggest(text, limit)
+                end,
+                suggestionText = Schema.SuggestionText,
+                classFile = Schema.ClassFileFor,
+                getValue = function() return db().boeRoute.winner or "" end,
+                setValue = function(text)
+                    text = text:trim()
+                    if text == "" then
+                        db().boeRoute.winner = nil
+                        return
+                    end
+                    local record = addon.Player:Get(text)
+                    local nameKey = addon.Player:NameKey(text)
+                    if not record.guid and not nameKey then
+                        Chat("warn", addon.Player:NameHint())
+                        return
+                    end
+                    db().boeRoute.winner = addon.Player:Qualify(text)
+                end }),
+            BoEReason(),
+
+            SwitchRow("autoHandover", T["Keep SLC active when you are passed lead?"],
+                T["When lead or Loot Master passes to you in a group already using Simple Loot Council, carry on without asking. You are still told in chat. A group not using it asks as normal."],
+                function() return db().raidPrompt.autoHandover end,
+                function(v)
+                    db().raidPrompt.autoHandover = v
+                    if v and addon.UI.RaidPrompt then addon.UI.RaidPrompt:Evaluate() end
+                end),
+
+            SwitchRow("dropDelegationOnLead", T["Drop prior Loot Master delegation when passed lead"],
+                T["Become the Loot Master yourself when made group leader. Off: the previous leader's delegate keeps loot until you run /slc lootmaster clear."],
+                function() return db().raidPrompt.dropDelegationOnLead end,
+                function(v) db().raidPrompt.dropDelegationOnLead = v end),
+        } },
+
+        { id = "session", title = T["Session"], rows = {
+            SwitchRow("autopass", T["Auto-pass on unusable items in SLC sessions"],
+                T["Acts only on definite class or armour restrictions."],
+                function() return db().autopass end,
+                function(v) db().autopass = v end),
+
+            SwitchRow("autopassTransmog", T["Don't auto-pass on transmog"],
+                T["Prevents auto-pass when this source would teach you a new appearance, whatever its armour type."],
+                function() return db().autopassTransmog end,
+                function(v) db().autopassTransmog = v end,
+                { hidden = function() return addon.IsForever end }),
+            SwitchRow("whispers", T["Allow whispered loot responses"],
+                T["Allow loot responses to be sent to you via whisper during a session."],
+                function() return db().whispers.enabled end,
+                function(v) db().whispers.enabled = v end),
+            SwitchRow("showMoreInfo", T["Show the council hover panel"],
+                T["Shows recent awards and other winners for the hovered item."],
+                function() return db().showMoreInfo end,
+                function(v) db().showMoreInfo = v end),
+            SwitchRow("sessionFrame", T["Show the session frame"],
+                T["Display the session frame to the left of the options panel during a session."],
+                function() return db().sessionFrame end,
+                function(v)
+                    db().sessionFrame = v
+
+                    addon.UI.SessionPanel:SetDocked(v)
+                end),
+            SwitchRow("timer", T["Session timer"],
+                T["Display only; expiry never closes a run or rejects a response."],
+                function() return db().timer.enabled end,
+                function(v) db().timer.enabled = v end),
+            Setting({ id = "timerDuration", type = "input", numeric = true, inputWidth = 78,
+                text = T["Session timer length (seconds)"],
+                help = T["Clamped to 10 seconds - 1 hour."],
+                dependsOn = "timer",
+                disabled = function()
+                    if db().timer.enabled then return nil end
+                    return addon.Locale.Format(T["Requires the session timer."])
+                end,
+                getValue = function() return tostring(db().timer.duration or 120) end,
+                setValue = function(text)
+                    local value = tonumber(text) or db().timer.duration
+                    db().timer.duration = math.max(10, math.min(3600, math.floor(value)))
+                end }),
+        } },
+
+        { id = "council", title = T["Loot council"], rows = { Council(), CouncilRanks() } },
+
         { id = "voting", title = T["Voting"], rows = {
             SwitchRow("selfVote", T["Council may vote for themselves"],
                 T["Off: a member cannot vote on their own row."],
@@ -747,141 +925,7 @@ local function Build()
                     refreshOn = LOCK_EVENTS }),
         } },
 
-        { id = "lootHandling", title = T["Loot handling"], rows = {
-            SwitchRow("autopass", T["Auto-pass on unusable items"],
-                T["Acts only on definite class or armour restrictions."],
-                function() return db().autopass end,
-                function(v) db().autopass = v end),
-
-            SwitchRow("autopassTransmog", T["Don't auto pass on items you can gain an appearance from"],
-                T["Prevents auto-pass when this source would teach you a new appearance, whatever its armour type."],
-                function() return db().autopassTransmog end,
-                function(v) db().autopassTransmog = v end,
-                { hidden = function() return addon.IsForever end }),
-            SwitchRow("masterAutoLoot", T["Auto-loot to bags as Master Looter"],
-                T["As the group's Master Looter, a boss's whole corpse goes to your bags. In a raid, so do trash items at the loot threshold."],
-                function() return db().masterAutoLoot end,
-                function(v) db().masterAutoLoot = v end,
-                { hidden = function() return not addon.Loot.MasterLootAvailable() end }),
-
-
-            SwitchRow("guildGroupOnly", T["Guild loot funnel guard"],
-                T["Asks before passing your loot when this is not a guild group or the Loot Master is not in your guild."],
-                function() return db().funnel.guildGroupOnly end,
-                function(v)
-                    db().funnel.guildGroupOnly = v
-
-                    if v then addon.Loot:KeepGuard()
-                    elseif addon.UI.RaidPrompt then addon.UI.RaidPrompt:Evaluate() end
-                end,
-                { danger = true,
-
-                    status = function()
-                        if not db().funnel.guildGroupOnly or not IsInGroup() then
-                            return T["Asks before passing your loot when this is not a guild group or the Loot Master is not in your guild."]
-                        end
-                        if addon.Loot.IsGuildGroup() then
-                            if addon.Loot:GuardReason() == "guild" then
-                                return T["The Loot Master is not in your guild."], "accent"
-                            end
-                            return T["This is a guild group - the funnel can act."]
-                        end
-
-                        local present, required = addon.Loot:GetGuildPartyCounts()
-                        if not required then
-                            return T["Waiting for the game to report this group."], "accent"
-                        end
-                        return addon.Locale.Format(T["Not a guild group: %d in guild, %d needed."],
-                            present, required), "accent"
-                    end }),
-
-
-            SwitchRow("inGroups", T["Use SLC in groups?"],
-                T["Enable this to use SLC in groups instead of only raids"],
-                function() return db().raidPrompt.inGroups end,
-                function(v)
-                    db().raidPrompt.inGroups = v
-                    if v and addon.UI.RaidPrompt then addon.UI.RaidPrompt:Evaluate() end
-                end),
-
-
-            Setting({ id = "boeWinner", type = "input", text = T["Route BoE items to"],
-                help = T["One-click award target for a Bind-on-Equip item, once a reason is chosen below too. This never awards anything by itself - it only pre-fills the Award button on this player's row, and the Loot Master still has to click it."],
-                inputWidth = 160, repaints = { "boeReason" },
-                getValue = function() return db().boeRoute.winner or "" end,
-                setValue = function(text)
-                    text = text:trim()
-                    if text == "" then
-                        db().boeRoute.winner = nil
-                        return
-                    end
-                    local record = addon.Player:Get(text)
-                    local nameKey = addon.Player:NameKey(text)
-                    if not record.guid and not nameKey then
-                        Chat("warn", addon.Player:NameHint())
-                        return
-                    end
-                    db().boeRoute.winner = addon.Player:Qualify(text)
-                end }),
-            BoEReason(),
-
-            SwitchRow("autoJoin", T["Automatically join SLC sessions in groups you join?"],
-                T["Skip the question about taking part and join as soon as the Loot Master starts using Simple Loot Council. You are still told in chat. Never applies while you are the Loot Master."],
-                function() return db().raidPrompt.silence end,
-                function(v)
-                    db().raidPrompt.silence = v
-                    addon.UI.RaidPrompt:SyncSilence()
-                end),
-
-            SwitchRow("autoHandover", T["Automatically keep SLC active when lead or Loot Master changes?"],
-                T["When lead or Loot Master passes to you in a group already using Simple Loot Council, carry on without asking. You are still told in chat. A group not using it asks as normal."],
-                function() return db().raidPrompt.autoHandover end,
-                function(v)
-                    db().raidPrompt.autoHandover = v
-                    if v and addon.UI.RaidPrompt then addon.UI.RaidPrompt:Evaluate() end
-                end),
-
-            SwitchRow("dropDelegationOnLead", T["Don't maintain prior Loot Master delegations when receiving group leader"],
-                T["Become the Loot Master yourself when made group leader. Off: the previous leader's delegate keeps loot until you run /slc lootmaster clear."],
-                function() return db().raidPrompt.dropDelegationOnLead end,
-                function(v) db().raidPrompt.dropDelegationOnLead = v end),
-        } },
-
-        { id = "session", title = T["Session"], rows = {
-            SwitchRow("whispers", T["Allow whispered loot responses"],
-                T["Allow loot responses to be sent to you via whisper during a session."],
-                function() return db().whispers.enabled end,
-                function(v) db().whispers.enabled = v end),
-            SwitchRow("showMoreInfo", T["Show the council hover panel"],
-                T["Shows recent awards and other winners for the hovered item."],
-                function() return db().showMoreInfo end,
-                function(v) db().showMoreInfo = v end),
-            SwitchRow("sessionFrame", T["Show the session frame"],
-                T["Display the session frame to the left of the options panel during a session."],
-                function() return db().sessionFrame end,
-                function(v)
-                    db().sessionFrame = v
-
-                    addon.UI.SessionPanel:SetDocked(v)
-                end),
-            SwitchRow("timer", T["Session timer"],
-                T["Display only; expiry never closes a run or rejects a response."],
-                function() return db().timer.enabled end,
-                function(v) db().timer.enabled = v end),
-            Setting({ id = "timerDuration", type = "input", numeric = true, inputWidth = 78,
-                text = T["Session timer length (seconds)"],
-                help = T["Clamped to 10 seconds - 1 hour."],
-                dependsOn = "timer",
-                disabled = function()
-                    if db().timer.enabled then return nil end
-                    return addon.Locale.Format(T["Requires the session timer."])
-                end,
-                getValue = function() return tostring(db().timer.duration or 120) end,
-                setValue = function(text)
-                    local value = tonumber(text) or db().timer.duration
-                    db().timer.duration = math.max(10, math.min(3600, math.floor(value)))
-                end }),
-        } },
+        { id = "responses", title = T["Response buttons"], rows = { Responses() } },
 
         { id = "announcements", title = T["Announcements"], rows = {
             SwitchRow("announceAwards", T["Announce awards in raid chat"],
@@ -897,10 +941,6 @@ local function Build()
                 function() return db().announce.rolls end,
                 function(v) db().announce.rolls = v end),
         } },
-
-        { id = "responses", title = T["Response buttons"], rows = { Responses() } },
-
-        { id = "council", title = T["Loot council"], rows = { Council(), CouncilRanks() } },
 
         { id = "history", title = T["Data & history"], rows = {
             SwitchRow("recordHistory", T["Record award history"],
@@ -943,8 +983,8 @@ local function Build()
             Setting({ id = "wishlistSource", type = "dropdown",
                 text = T["Wishlist and Sim source"],
                 help = T["The addon whose imported wishlists and sims the council reads."],
-                values = { wowutils = "WowUtils", gow = "Guilds of WoW" },
-                order = { "wowutils", "gow" },
+                values = { wowutils = "WowUtils", gow = "Guilds of WoW", wowaudit = "wowaudit" },
+                order = { "wowutils", "gow", "wowaudit" },
                 hidden = function() return addon.IsForever end,
                 dependsOn = "wishlistEnabled",
                 disabled = function()
@@ -967,6 +1007,13 @@ local function Build()
                 T["Echoes the diagnostic log while reproducing a problem."],
                 function() return db().debug end,
                 function(v) db().debug = v addon.Log:SetEcho(v) end),
+            Setting({ id = "logDetail", type = "dropdown",
+                text = T["Detail level of logging"],
+                help = T["Quiet records warnings and errors; Normal adds main events; Verbose records everything."],
+                values = { quiet = T["Quiet"], normal = T["Normal"], verbose = T["Verbose"] },
+                order = { "quiet", "normal", "verbose" },
+                getValue = function() return addon.Log:GetDetail() end,
+                setValue = function(value) db().logDetail = addon.Log:SetDetail(value) end }),
         } },
 
         { id = "alts", title = T["Alts"], rows = { Alts() } },

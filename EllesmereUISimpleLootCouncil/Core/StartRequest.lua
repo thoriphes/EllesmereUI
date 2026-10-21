@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+
 
 
 
@@ -49,10 +50,21 @@ local function StartRefusal()
 end
 
 
+
+local PROPOSAL_MAX = 32
+local MAX_LINK_LENGTH = 512
+
+
 local function Sanitise(proposed, who)
     local items = {}
-    for _, entry in ipairs(type(proposed) == "table" and proposed or {}) do
-        if type(entry) == "table" and type(entry.l) == "string" then
+    if type(proposed) ~= "table" then return items end
+    if #proposed > PROPOSAL_MAX then
+        addon.Log:D("StartRequest", "proposal from", tostring(who), "cut from", #proposed, "to", PROPOSAL_MAX)
+    end
+    for index, entry in ipairs(proposed) do
+        if index > PROPOSAL_MAX then break end
+        if type(entry) == "table" and type(entry.l) == "string"
+            and #entry.l <= MAX_LINK_LENGTH and entry.l:find("|Hitem:", 1, true) then
             items[#items + 1] = {
                 link = entry.l,
                 owner = type(entry.o) == "string" and entry.o or who,

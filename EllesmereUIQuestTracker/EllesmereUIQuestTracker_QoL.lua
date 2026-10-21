@@ -400,4 +400,8 @@ function EQT.InitQoL()
     InstallSplashFrameFix()
     InstallAutoQuests()
     InstallQuestItemHotkey()
+    -- WoW Forever's quest tools (EllesmereUIQuestTracker_Forever.lua; nil on retail).
+    if EQT.ApplyQuestWatches then EQT.ApplyQuestWatches() end
+    if EQT.ApplyQuestProgress then EQT.ApplyQuestProgress() end
+    if EQT.ApplyQuestLinks then EQT.ApplyQuestLinks() end
 end
