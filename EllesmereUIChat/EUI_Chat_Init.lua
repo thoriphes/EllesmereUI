@@ -91,6 +91,7 @@ initFrame:SetScript("OnEvent", function(self)
     if p.classColorNames == true then
         ECHAT.ApplyClassColorNames(true)
     end
+    if ECHAT.StampColumnSeed then ECHAT.StampColumnSeed() end
     if ECHAT.EngineIntegrateAll then ECHAT.EngineIntegrateAll() end
     -- Owned tab strip: hides Blizzard's strip, builds ours from the same
     -- window storage, and starts mirroring selection/flash from the engine.
@@ -750,16 +751,36 @@ initFrame:SetScript("OnEvent", function(self)
             end)
             fmt = (ok and type(f) == "string" and f ~= "" and f ~= "none") and f or nil
         end
-        ECHAT.EngineSetStampAll(cfg.timestampAll == true and fmt ~= nil, fmt)
+        -- The Timestamp Column stamps every line itself (text untouched).
+        local col = ECHAT.StampColumnOn and ECHAT.StampColumnOn()
+        ECHAT.EngineSetStampAll(not col and cfg.timestampAll == true and fmt ~= nil, fmt)
     end
     ECHAT.ApplyStampAll = ApplyStampAll
 
     local function ApplyTimestampCVar()
-        ApplyStampAll()
         local cfg = ECHAT.DB()
         local fmt = cfg.timestampFormat or "%I:%M "
-        if fmt == "__blizzard" then return end
-        EllesmereUI.SetCVar("showTimestamps", fmt, "EllesmereUIChat")
+        -- Timestamp Column: stamps leave the text, so Blizzard's formatter is
+        -- parked at "none" while the column draws them. Under "Use Blizzard
+        -- Setting" the value it parked stands in for Blizzard's choice, and
+        -- goes back to the CVar when the column is turned off.
+        if fmt ~= "__blizzard" then cfg.timestampColumnParked = nil end
+        local col = ECHAT.StampColumnOn and ECHAT.StampColumnOn()
+        if col then
+            if fmt == "__blizzard" and not cfg.timestampColumnParked then
+                cfg.timestampColumnParked = GetCVar("showTimestamps")
+            end
+            EllesmereUI.SetCVar("showTimestamps", "none", "EllesmereUIChat")
+        elseif fmt == "__blizzard" then
+            if cfg.timestampColumnParked then
+                EllesmereUI.SetCVar("showTimestamps", cfg.timestampColumnParked, "EllesmereUIChat")
+                cfg.timestampColumnParked = nil
+            end
+        else
+            EllesmereUI.SetCVar("showTimestamps", fmt, "EllesmereUIChat")
+        end
+        ApplyStampAll()
+        if ECHAT.StampColumnApply then ECHAT.StampColumnApply() end
     end
     ApplyTimestampCVar()
     C_Timer.After(2, ApplyTimestampCVar)
