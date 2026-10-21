@@ -22,6 +22,13 @@ local I = ns._internals
 local BAR_CONFIG, BINDING_MAP, BUTTON_EVENT_LISTS = I.BAR_CONFIG, I.BINDING_MAP, I.BUTTON_EVENT_LISTS
 local ReRegisterButtonEvents, barFrames = I.ReRegisterButtonEvents, I.barFrames
 
+-- Melee and auto-repeat state from their own events (the dispatcher's attack
+-- branch; reset to nil at each loading screen). Once one has fired it decides,
+-- as on Blizzard's own buttons: when the event fires, IsCurrentAction and
+-- IsAutoRepeatAction can still report the old state (a stop clicked with the
+-- mouse), which left the flash running. nil = read the action instead.
+local meleeOn, repeatOn
+
 -- Keep attack flashing out of Blizzard's shared OnUpdate frame registry.
 function ns.AB_SetAttackFlash(btn, flashing)
     local fd = ns._eabFD[btn]
@@ -57,6 +64,8 @@ function ns.AB_SyncAttackState(btn, action, onlyAttacks)
     local hasAction = action and C_ActionBar.HasAction(action)
     local attacking = hasAction and C_ActionBar.IsAttackAction(action)
     local repeating = hasAction and C_ActionBar.IsAutoRepeatAction(action)
+    -- A stop event outranks a read that still reports auto-repeat.
+    if repeatOn == false then repeating = false end
     local fd = ns._eabFD[btn]
     local checked = btn:GetChecked()
     if issecretvalue and issecretvalue(checked) then checked = nil end
@@ -64,6 +73,8 @@ function ns.AB_SyncAttackState(btn, action, onlyAttacks)
         return
     end
     local current = hasAction and C_ActionBar.IsCurrentAction(action)
+    -- An Attack action follows the melee events once one has fired.
+    if attacking and meleeOn ~= nil then current = meleeOn end
     ns.AB_SetAttackFlash(btn, repeating or (attacking and current))
     local wanted = (current or repeating) and true or false
     if checked ~= wanted then btn:SetChecked(wanted) end
@@ -1689,6 +1700,10 @@ do
                 if ns._cdRecentBtn1 then HotPushRecent() end
             elseif event == "START_AUTOREPEAT_SPELL" or event == "STOP_AUTOREPEAT_SPELL"
                 or event == "PLAYER_ENTER_COMBAT" or event == "PLAYER_LEAVE_COMBAT" then
+                if event == "PLAYER_ENTER_COMBAT" then meleeOn = true
+                elseif event == "PLAYER_LEAVE_COMBAT" then meleeOn = false
+                elseif event == "START_AUTOREPEAT_SPELL" then repeatOn = true
+                else repeatOn = false end
                 for _, info in ipairs(BAR_CONFIG) do
                     if not info.isStance and not info.isPetBar
                         and not ns._eabBarNever[info.key] and not ns._eabBarDormant[info.key] then
@@ -2256,6 +2271,8 @@ do
                             -- A targeted override pass (_ovrSlots) neither stamps
                             -- nor skips: it is not the full pass a dupe would repeat.
                             local nowI = GetTime()
+                            -- A loading screen: the actions read true again.
+                            if event == "PLAYER_ENTERING_WORLD" then meleeOn, repeatOn = nil, nil end
                             if not ns._eabNoBtns then ns._eabNoBtns = {} end
                             local _infreqDup = event ~= "PLAYER_TARGET_CHANGED" and not _ovrSlots
                                 and ns._infreqPassAt == nowI and not _infreqStampNew
