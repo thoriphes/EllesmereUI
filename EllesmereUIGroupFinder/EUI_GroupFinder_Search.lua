@@ -1024,8 +1024,8 @@ local function IconLayer(icon)
     d.crown:SetAtlas("groupfinder-icon-leader", false)
     d.crown:SetSize(10, 6)
     d.crown:SetPoint("BOTTOM", icon, "TOP", 0, 1)
-    -- blizzard's leaver mark lives on the icon under this layer, so it gets
-    -- drawn again up here (same atlas, size and spot)
+    -- Blizzard's leaver mark sits on the icon under this layer, so it is drawn
+    -- again up here (same atlas, size and spot).
     d.leaver = f:CreateTexture(nil, "OVERLAY", nil, 1)
     d.leaver:SetAtlas("groupfinder-icon-leaver", false)
     d.leaver:SetSize(12, 12)
@@ -1191,7 +1191,7 @@ local function DecorateIcons(entry, resultID, info, ai)
                 end
                 local lv = icon.LeaverIcon
                 local leaver = lv and lv:IsShown()
-                if leaver and not IsSecret(leaver) then
+                if not IsSecret(leaver) and leaver then
                     d.leaver:SetDesaturated(disabled)
                     d.leaver:SetAlpha(disabled and 0.5 or 1)
                     d.leaver:Show()
@@ -2930,28 +2930,38 @@ function XF.Abbr(name)
     local abbr = table.concat(out)
     if abbr == "" then abbr = Abbrev(name) end
     if abbr == "" then abbr = name end
+    local ov = EllesmereUI._dungeonAbbrevOverride
+    if ov and ov[abbr] then abbr = ov[abbr] end
     return abbr
 end
 
--- Short name on a square (Dungeon Names setting). Stacked with the keystone
--- level (top: name, bottom: level) when Dungeon Keystone Level is also on,
--- else centred.
-function XF.SquareAbbr(sq, d, size)
-    local on = Cfg().dungeonAbbr == true and d ~= nil
-    if on and not sq.abbr then
-        local f = CreateFrame("Frame", nil, sq)
+-- Text layer over a square for its short name and keystone level, above the
+-- square's border; built on first use.
+function XF.SquareOverlay(sq)
+    local f = sq.overlay
+    if not f then
+        f = CreateFrame("Frame", nil, sq)
         f:SetAllPoints(sq)
         f:SetFrameLevel(sq:GetFrameLevel() + 3)
         f:EnableMouse(false)
-        sq.abbr = f:CreateFontString(nil, "OVERLAY")
+        sq.overlay = f
+    end
+    return f
+end
+
+-- Short name on a square (Dungeon Names setting): at the top when Dungeon
+-- Keystone Level is also on (the level sits under it), else centred.
+function XF.SquareAbbr(sq, d, size)
+    local on = Cfg().dungeonAbbr == true and d ~= nil
+    if on and not sq.abbr then
+        sq.abbr = XF.SquareOverlay(sq):CreateFontString(nil, "OVERLAY")
         sq.abbr:SetJustifyH("CENTER")
         sq.abbr:SetWordWrap(false)
     end
     if not sq.abbr then return end
     if on then
-        local stacked = Cfg().dungeonScore == true
         sq.abbr:ClearAllPoints()
-        if stacked then
+        if Cfg().dungeonScore == true then
             sq.abbr:SetPoint("TOPLEFT", sq, "TOPLEFT", -4, -2)
             sq.abbr:SetPoint("TOPRIGHT", sq, "TOPRIGHT", 4, -2)
             sq.abbr:SetJustifyV("TOP")
@@ -2974,37 +2984,38 @@ function XF.SquareAbbr(sq, d, size)
     sq.abbr:SetShown(on)
 end
 
--- Rarity-coloured hex prefix for a keystone score (white if Blizzard has no
--- colour for it, e.g. score 0).
-local function KeystoneHexColor(score)
-    local color = C_ChallengeMode.GetSpecificDungeonOverallScoreRarityColor(score)
-    return color and ("|c" .. color:GenerateHexColor()) or "|cffffffff"
-end
-
--- Best keystone level on a square, coloured by that dungeon's score rarity
--- (Dungeon Keystone Level setting). Stacked below the dungeon name (top:
--- name, bottom: level) when Dungeon Names is also on, else centred.
+-- Best keystone level on a square (Dungeon Keystone Level setting), as the
+-- Mythic+ tab shows it: the better of the timed and overtime runs by score,
+-- coloured by the dungeon's overall score, nothing for a dungeon not run yet.
+-- Under the short name when Dungeon Names is also on, else centred.
 function XF.SquareScore(sq, d, size)
-    local on = Cfg().dungeonScore == true and d ~= nil
-    if on then
-        local info = C_MythicPlus.GetSeasonBestForMap(d.cmID)
-        local level = info and info.level or 0
-        local score = info and info.dungeonScore or 0
-        sq:SetText(KeystoneHexColor(score) .. level .. "|r")
-        local fs = sq:GetFontString()
-        if fs then
-            local _, _, flags = fs:GetFont()
-            XF.Font(fs, math.max(8, math.floor(size * 0.42)), flags)
-            fs:ClearAllPoints()
-            if Cfg().dungeonAbbr == true then
-                fs:SetPoint("BOTTOM", sq, "BOTTOM", 0, 2)
-            else
-                fs:SetPoint("CENTER", sq, "CENTER", 0, 0)
-            end
-        end
-    else
-        sq:SetText("")
+    local best
+    if Cfg().dungeonScore == true and d ~= nil then
+        local intime, overtime = C_MythicPlus.GetSeasonBestForMap(d.cmID)
+        best = intime
+        if overtime and (not best or overtime.dungeonScore >= best.dungeonScore) then best = overtime end
+        if best and best.level <= 0 then best = nil end
     end
+    if best and not sq.score then
+        sq.score = XF.SquareOverlay(sq):CreateFontString(nil, "OVERLAY")
+        sq.score:SetWordWrap(false)
+    end
+    local fs = sq.score
+    if not fs then return end
+    if best then
+        local _, overall = C_MythicPlus.GetSeasonBestAffixScoreInfoForMap(d.cmID)
+        local color = C_ChallengeMode.GetSpecificDungeonOverallScoreRarityColor(overall or best.dungeonScore)
+        XF.Font(fs, math.max(8, math.floor(size * 0.42)), "")
+        fs:ClearAllPoints()
+        if Cfg().dungeonAbbr == true then
+            fs:SetPoint("BOTTOM", sq, "BOTTOM", 0, 2)
+        else
+            fs:SetPoint("CENTER", sq, "CENTER", 0, 0)
+        end
+        fs:SetText(best.level)
+        if color then fs:SetTextColor(color.r, color.g, color.b, 1) else fs:SetTextColor(1, 1, 1, 1) end
+    end
+    fs:SetShown(best ~= nil)
 end
 
 -- Dungeon squares after the reset.
