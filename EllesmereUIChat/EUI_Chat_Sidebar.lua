@@ -557,13 +557,18 @@ function ECHAT.ApplyInputPosition()
             local eb = _G[name .. "EditBox"]
             local bg = CFD(cf).bg
             local div = CFD(cf).inputDiv
+            -- Timestamp Column: the panel (and the input across it) grows
+            -- left by the column's width; the text area never moves, so
+            -- Blizzard's invisible hit-zones stay under our lines.
+            local colW = ECHAT.StampGutterWidth and ECHAT.StampGutterWidth(cf) or 0
+            local edgeX = -10 - colW
 
             if fv then
                 ECHAT.FV_SeatInput(cf, eb, inputHeight)
                 ECHAT.ApplyInputTopStrip(cf)
                 if ECHAT.PositionChatPanel then ECHAT.PositionChatPanel(cf) end
             elseif stock then
-                CFD(cf)._bgIns = { l = -stockX, r = stockX, t = 7, b = -10 }
+                CFD(cf)._bgIns = { l = -stockX - colW, r = stockX, t = 7, b = -10 }
                 ECHAT.ApplyInputTopStrip(cf)
                 if ECHAT.PositionChatPanel then ECHAT.PositionChatPanel(cf) end
             else
@@ -579,14 +584,14 @@ function ECHAT.ApplyInputPosition()
                     -- unaffected because chat renders bottom-up from a
                     -- shared bottom edge, and the input covers the
                     -- hit-zones of the lines it hides.
-                    eb:SetPoint("TOPLEFT", cf, "TOPLEFT", -10, -INPUT_TOP_DROP)
+                    eb:SetPoint("TOPLEFT", cf, "TOPLEFT", edgeX, -INPUT_TOP_DROP)
                     eb:SetPoint("TOPRIGHT", cf, "TOPRIGHT", 5, -INPUT_TOP_DROP)
                     local bgLvl = CFD(cf).bg:GetFrameLevel() or 1
                     if eb:GetFrameLevel() < bgLvl + 5 then
                         eb:SetFrameLevel(bgLvl + 5)
                     end
                 else
-                    eb:SetPoint("TOPLEFT", cf, "BOTTOMLEFT", -10, -8)
+                    eb:SetPoint("TOPLEFT", cf, "BOTTOMLEFT", edgeX, -8)
                     eb:SetPoint("TOPRIGHT", cf, "BOTTOMRIGHT", 5, -8)
                 end
                 eb:SetHeight(inputHeight)
@@ -599,10 +604,10 @@ function ECHAT.ApplyInputPosition()
                     -- INPUT_TOP_DROP down from cf's top and runs inputHeight
                     -- tall -- miss the drop and the line cuts through the box.
                     local divY = -(inputHeight + INPUT_TOP_DROP)
-                    div:SetPoint("TOPLEFT", cf, "TOPLEFT", -10, divY)
+                    div:SetPoint("TOPLEFT", cf, "TOPLEFT", edgeX, divY)
                     div:SetPoint("TOPRIGHT", cf, "TOPRIGHT", 10, divY)
                 else
-                    div:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", -10, -8)
+                    div:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", edgeX, -8)
                     div:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", 10, -8)
                 end
             end
@@ -616,7 +621,7 @@ function ECHAT.ApplyInputPosition()
                 -- edge may expand; horizontal geometry stays independent.
                 local d = CFD(cf)
                 d._bgIns = {
-                    l = -10,
+                    l = edgeX,
                     r = 10,
                     t = 3,
                     b = onTop and -6 or (eb and -(12 + inputHeight) or -6),
