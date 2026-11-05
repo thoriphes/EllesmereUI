@@ -455,11 +455,14 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     -- Resolve preview text for a content key
     local function PreviewTextForContent(content, s, prefix)
         -- Mirror "Show Decimal on Text": one decimal on abbrevs/percents when the
-        -- global flag is on, integer otherwise.
-        local function _pvAbbrev(v)
+        -- global flag is on, else the Number Format for valueType like the live
+        -- tags (boss frames read "bossHealth" for health).
+        local function _pvAbbrev(v, valueType)
             local cfg = _G._EUI_AbbrevDecimalCfg
             -- The live tags' function (WoW Forever: none under 10,000 abbreviates).
-            return cfg and ns.AbbreviateNumbers(v, cfg) or ns.AbbreviateNumbers(v)
+            if cfg then return ns.AbbreviateNumbers(v, cfg) end
+            if valueType ~= "absorb" and unitKey:match("^boss") then valueType = "bossHealth" end
+            return ns.AbbreviateValue(v, valueType)
         end
         local function _pvPct(p01)
             if not _G._EUI_TextDecimals then return tostring(math.floor(p01 * 100)) end
@@ -471,9 +474,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             -- The player's name as the live frame shows it (Forever surname).
             local n = (unitKey == "player") and (EllesmereUI.WithSurname(UnitName("player")) or "Player")
                 or (_previewCreatureNames[unitKey] or unitKey)
-            -- Name Format (WoW Forever only; nil on retail).
-            if EllesmereUI.ForeverShortName and prefix and s then
-                n = EllesmereUI.ForeverShortName(n, s[prefix .. "NameFormat"])
+            -- The slot's Name Format.
+            if prefix and s then
+                n = EllesmereUI.ShortName(n, s[prefix .. "NameFormat"])
             end
             return n
         end
@@ -536,14 +539,14 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local pct = optState._previewHealthPct or 0.70
             local curHP = math.floor(maxHP * pct)
             if content == "healthshort" then return ns.AbbreviateShortHealth(curHP)
-            elseif content == "curhpshort" then return _pvAbbrev(curHP)
-            elseif content == "curmaxhp" then return _pvAbbrev(curHP) .. " / " .. _pvAbbrev(maxHP)
+            elseif content == "curhpshort" then return _pvAbbrev(curHP, "health")
+            elseif content == "curmaxhp" then return _pvAbbrev(curHP, "health") .. " / " .. _pvAbbrev(maxHP, "maxHealth")
             elseif content == "perhp" then return _pvPct(pct) .. "%"
             elseif content == "perhpnosign" then return _pvPct(pct)
-            elseif content == "perhpnum" then return _pvPct(pct) .. "% | " .. _pvAbbrev(curHP)
-            elseif content == "perhpnumdash" then return _pvPct(pct) .. "% - " .. _pvAbbrev(curHP)
-            elseif content == "bothdash" then return _pvAbbrev(curHP) .. " - " .. _pvPct(pct) .. "%"
-            else return _pvAbbrev(curHP) .. " | " .. _pvPct(pct) .. "%" end
+            elseif content == "perhpnum" then return _pvPct(pct) .. "% | " .. _pvAbbrev(curHP, "health")
+            elseif content == "perhpnumdash" then return _pvPct(pct) .. "% - " .. _pvAbbrev(curHP, "health")
+            elseif content == "bothdash" then return _pvAbbrev(curHP, "health") .. " - " .. _pvPct(pct) .. "%"
+            else return _pvAbbrev(curHP, "health") .. " | " .. _pvPct(pct) .. "%" end
         elseif content == "perpp" then
             local ppPct = optState._previewPowerPct or 0.85
             return math.floor(ppPct * 100) .. "%"
@@ -561,7 +564,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local curHP = math.floor(maxHP * pct)
             local maxPP = UnitPowerMax("player") or 100
             local ppPct2 = optState._previewPowerPct or 0.85
-            return _pvAbbrev(curHP) .. " | " .. ns.AbbreviateNumbers(math.floor(maxPP * ppPct2))
+            return _pvAbbrev(curHP, "health") .. " | " .. ns.AbbreviateNumbers(math.floor(maxPP * ppPct2))
         elseif content == "perhp_perpp" then
             local pct = optState._previewHealthPct or 0.70
             local ppPct3 = optState._previewPowerPct or 0.85
@@ -571,15 +574,50 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             return string.format("%d", math.floor(maxHP * 0.14))
         elseif content == "absorbshort" then
             local maxHP = UnitHealthMax("player") or 1
-            return _pvAbbrev(math.floor(maxHP * 0.14))
+            return _pvAbbrev(math.floor(maxHP * 0.14), "absorb")
         elseif content == "healabsorb" then
             local maxHP = UnitHealthMax("player") or 1
             return string.format("%d", math.floor(maxHP * 0.08))
         elseif content == "healabsorbshort" then
             local maxHP = UnitHealthMax("player") or 1
-            return _pvAbbrev(math.floor(maxHP * 0.08))
+            return _pvAbbrev(math.floor(maxHP * 0.08), "absorb")
         elseif content == "group" then
             return "3"
+        elseif content == "custom" then
+            -- Live twin: ns.ContentToZone's custom branch, the engine's parse
+            -- filled with one sample per schema key.
+            local str = prefix and s and s[prefix .. "CustomFormat"]
+            local parsed = EllesmereUI.TextTags.Parse(ns.UF_TextTags, str)
+            if not parsed then return "" end
+            local keys, vals = parsed.keys, {}
+            local maxHP = UnitHealthMax("player") or 1
+            local curHP = math.floor(maxHP * (optState._previewHealthPct or 0.70))
+            local maxPP = UnitPowerMax("player") or 100
+            local ppPct = optState._previewPowerPct or 0.85
+            local curPP = math.floor(maxPP * ppPct)
+            for i = 1, #keys do
+                local key, v = keys[i]
+                if key == "name" then v = _pvName()
+                elseif key == "target" then v = "Target"
+                elseif key == "group" then v = "3"
+                elseif key == "level" then v = PreviewTextForContent("level", s, prefix)
+                elseif key == "hp" then v = tostring(curHP)
+                elseif key == "hp:abr" then v = _pvAbbrev(curHP, "health")
+                elseif key == "hp:max" then v = tostring(maxHP)
+                elseif key == "hp:max:abr" then v = _pvAbbrev(maxHP, "maxHealth")
+                elseif key == "hp:pct" then v = _pvPct(optState._previewHealthPct or 0.70)
+                elseif key == "pp" then v = tostring(curPP)
+                elseif key == "pp:abr" then v = ns.AbbreviateNumbers(curPP)
+                elseif key == "pp:max" then v = tostring(maxPP)
+                elseif key == "pp:max:abr" then v = ns.AbbreviateNumbers(maxPP)
+                elseif key == "pp:pct" then v = tostring(math.floor(ppPct * 100))
+                elseif key == "absorb" then v = PreviewTextForContent("absorb", s, prefix)
+                elseif key == "absorb:abr" then v = PreviewTextForContent("absorbshort", s, prefix)
+                elseif key == "healabsorb" then v = PreviewTextForContent("healabsorb", s, prefix)
+                else v = PreviewTextForContent("healabsorbshort", s, prefix) end
+                vals[i] = v
+            end
+            return string.format(parsed.fmt, unpack(vals, 1, #keys))
         else
             return ""
         end
@@ -604,9 +642,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
 
 
     -- Power color override for preview (takes priority over class color for power-related text)
-    local function PreviewPowerColor(fs, contentKey, usePowerColor)
+    local function PreviewPowerColor(fs, contentKey, usePowerColor, customFmt)
         if not fs or not usePowerColor then return end
-        if contentKey == "perpp" or contentKey == "curpp" or contentKey == "curmaxpp" or contentKey == "curhp_curpp" or contentKey == "perhp_perpp" then
+        if ns.UF_IsPowerContent(contentKey, customFmt) then
             local pcR, pcG, pcB = EllesmereUI.ResolveUnitPowerColor("player")
             local info = pcR and { r = pcR, g = pcG, b = pcB }
             if info then fs:SetTextColor(info.r, info.g, info.b)
@@ -682,6 +720,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 local UF_TEXT_PADDING = 10
                 local ufTW = { both = 75, curhpshort = 38, healthshort = 38, curmaxhp = 75, curmaxpp = 75, perhp = 38, perpp = 38, curpp = 38, curhp_curpp = 75, perhp_perpp = 75, level = 24 }
                 local rightUsed = (ufTW[rc] or 0) + UF_TEXT_PADDING
+                if rc == "custom" then
+                    rightUsed = ns.UF_EstimateTextWidth(rc, s.rightTextCustomFormat, true)
+                end
                 PP.Width(leftFS, math.max(barW - rightUsed - 10, 20))
             else
                 leftFS:SetWidth(0)
@@ -728,7 +769,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         local customPFill = settings.customPowerFillColor
         local customPBg = settings.customPowerBgColor
         local pfR, pfG, pfB
-        if isPowerColored then
+        if isPowerColored and settings.powerClassColored then
+            local _, ct = UnitClass("player")
+            local cc = EllesmereUI.GetClassColor(ct)
+            pfR, pfG, pfB = cc.r, cc.g, cc.b
+        elseif isPowerColored then
             local _, pToken = UnitPowerType("player")
             local info = EllesmereUI.GetPowerColor(pToken or "MANA")
             pfR, pfG, pfB = info.r, info.g, info.b
@@ -801,7 +846,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         if pf._powerFill and powerH > 0 then
             local txR, txG, txB
             local isPwrC = settings.powerPercentPowerColor ~= false
-            if isPwrC then
+            if isPwrC and settings.powerClassColored then
+                local _, ct = UnitClass("player")
+                local cc = EllesmereUI.GetClassColor(ct)
+                txR, txG, txB = cc.r, cc.g, cc.b
+            elseif isPwrC then
                 local _, pToken = UnitPowerType("player")
                 local info = EllesmereUI.GetPowerColor(pToken or "MANA")
                 txR, txG, txB = info.r, info.g, info.b
@@ -1058,7 +1107,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 btbLeftFS:SetText(PreviewTextForContent(lc, s, "btbLeft"))
                 btbLeftFS:Show()
                 PreviewClassColor(btbLeftFS, s.btbLeftClassColor, s.btbLeftColorR, s.btbLeftColorG, s.btbLeftColorB)
-                PreviewPowerColor(btbLeftFS, lc, s.btbLeftPowerColor)
+                PreviewPowerColor(btbLeftFS, lc, s.btbLeftPowerColor, s.btbLeftCustomFormat)
             else btbLeftFS:Hide() end
 
             btbRightFS:SetFont(PREVIEW_FONT, rsz, GetUFOptOutline())
@@ -1069,7 +1118,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 btbRightFS:SetText(PreviewTextForContent(rc, s, "btbRight"))
                 btbRightFS:Show()
                 PreviewClassColor(btbRightFS, s.btbRightClassColor, s.btbRightColorR, s.btbRightColorG, s.btbRightColorB)
-                PreviewPowerColor(btbRightFS, rc, s.btbRightPowerColor)
+                PreviewPowerColor(btbRightFS, rc, s.btbRightPowerColor, s.btbRightCustomFormat)
             else btbRightFS:Hide() end
 
             btbCenterFS:SetFont(PREVIEW_FONT, csz, GetUFOptOutline())
@@ -1080,7 +1129,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 btbCenterFS:SetText(PreviewTextForContent(cc, s, "btbCenter"))
                 btbCenterFS:Show()
                 PreviewClassColor(btbCenterFS, s.btbCenterClassColor, s.btbCenterColorR, s.btbCenterColorG, s.btbCenterColorB)
-                PreviewPowerColor(btbCenterFS, cc, s.btbCenterPowerColor)
+                PreviewPowerColor(btbCenterFS, cc, s.btbCenterPowerColor, s.btbCenterCustomFormat)
             else btbCenterFS:Hide() end
 
             -- Class icon in BTB preview
@@ -1209,7 +1258,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     if bdrSize == 0 and bdrTexKey == "solid" then border:Hide() end
 
     -- Position an absorb StatusBar per edge mode (mirrors UpdateAbsorbBarReverseFill
-    -- in EllesmereUIUnitFrames.lua): overlay = fills missing-health from the
+    -- in EUI_UnitFrames_Absorb.lua): overlay = fills missing-health from the
     -- current-HP edge (backfills over filled health only for overshields);
     -- right/left = pinned to that edge, fills toward center, ignoring reverse fill.
     local function PositionPreviewAbsorb(bar, mode, isRev, isVert)
@@ -1317,7 +1366,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         local PREV_ABS_ALPHA = { striped = 0.8, stripedReversed = 0.8, clean = (settings.absorbCleanAlpha or 30) / 100, blizzard = 0.8 }
         -- SharedMedia keys fall through to the health-bar texture lookup.
         local tex   = ns.ResolveAbsorbStyleTex(absStyle, PREV_ABS_TEX.striped)
-        -- Effective opacity/color: mirrors GetAbsorbOpacity in EllesmereUIUnitFrames.lua
+        -- Effective opacity/color: mirrors GetAbsorbOpacity in EUI_UnitFrames_Absorb.lua
         local alpha = settings.absorbOpacity and (settings.absorbOpacity / 100) or PREV_ABS_ALPHA[absStyle] or 0.8
         local ac = settings.absorbColor or { r = 1, g = 1, b = 1 }
         absorbBar = CreateFrame("StatusBar", nil, absClip)
@@ -1367,6 +1416,16 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         haBgPv:SetColorTexture(0, 0, 0, ((settings.healAbsorbBgOpacity) or 15) / 100)
         haBgPv:SetAllPoints(healAbsorbBar:GetStatusBarTexture())
         healAbsorbBar._bg = haBgPv
+
+        -- Max Health Style preview (its eyeball): a fixed reduced maximum on the
+        -- bar's far end, styled by the live frames' function. Driven in pf:Update.
+        pf._pvMaxHp = CreateFrame("StatusBar", nil, health)
+        pf._pvMaxHp:SetAllPoints(health)
+        pf._pvMaxHp:SetFrameLevel(health:GetFrameLevel() + 2)
+        pf._pvMaxHp:SetMinMaxValues(0, 1)
+        pf._pvMaxHp:SetValue(0.2)
+        pf._pvMaxHp._bg = pf._pvMaxHp:CreateTexture(nil, "ARTWORK", nil, 2)
+        pf._pvMaxHp:Hide()
 
         -- Heal prediction preview (Heal Prediction eyeball): others' heals at the
         -- full incoming total underneath, yours on top, from the HP edge. The
@@ -2451,7 +2510,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 if pf._powerFill then
                     local pvFR, pvFG, pvFB
                     local isPwrC2 = s.powerPercentPowerColor ~= false
-                    if isPwrC2 then
+                    if isPwrC2 and s.powerClassColored then
+                        local _, ct = UnitClass("player")
+                        local cc = EllesmereUI.GetClassColor(ct)
+                        pvFR, pvFG, pvFB = cc.r, cc.g, cc.b
+                    elseif isPwrC2 then
                         local _, pToken = UnitPowerType("player")
                         local info = EllesmereUI.GetPowerColor(pToken or "MANA")
                         pvFR, pvFG, pvFB = info.r, info.g, info.b
@@ -2574,7 +2637,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
 
             local pvPfR, pvPfG, pvPfB
             local pvUsePowerColor = s.powerPercentPowerColor ~= false
-            if pvUsePowerColor then
+            if pvUsePowerColor and s.powerClassColored then
+                local _, ct = UnitClass("player")
+                local cc = EllesmereUI.GetClassColor(ct)
+                pvPfR, pvPfG, pvPfB = cc.r, cc.g, cc.b
+            elseif pvUsePowerColor then
                 local _, pToken = UnitPowerType("player")
                 local info = EllesmereUI.GetPowerColor(pToken or "MANA")
                 pvPfR, pvPfG, pvPfB = info.r, info.g, info.b
@@ -2684,7 +2751,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 local ppSuffix = (s.powerShowPercent == false) and "" or "%"
                 local ppCurFake = ns.AbbreviateNumbers(18200)
                 local ppTxt
-                if ppFmt == "smart" then
+                if ppFmt == "custom" then
+                    ppTxt = PreviewTextForContent("custom", s, "powerText")
+                elseif ppFmt == "smart" then
                     ppTxt = ppPctRaw .. ppSuffix  -- preview always shows percent for smart
                 elseif ppFmt == "curpp" then
                     ppTxt = ppCurFake
@@ -3107,7 +3176,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     largeStripesR         = "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\large-absorb-right.png",
                 }
                 local _paAlpha = { striped = 0.8, stripedReversed = 0.8, clean = (s.absorbCleanAlpha or 30) / 100, blizzard = 0.8 }
-                -- Effective opacity/color: mirrors GetAbsorbOpacity in EllesmereUIUnitFrames.lua
+                -- Effective opacity/color: mirrors GetAbsorbOpacity in EUI_UnitFrames_Absorb.lua
                 local _paA = s.absorbOpacity and (s.absorbOpacity / 100) or _paAlpha[absS] or 0.8
                 local _paC = s.absorbColor or { r = 1, g = 1, b = 1 }
                 absorbBar:SetStatusBarTexture(ns.ResolveAbsorbStyleTex(absS, _paTex.striped))
@@ -3174,6 +3243,17 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 end
             else
                 healAbsorbBar:Hide()
+            end
+        end
+        local mhPv = pf._pvMaxHp
+        if mhPv then
+            local mhS = s.maxHealthStyle or "none"
+            if optState.showMaxHealthPreview and mhS ~= "none" and ns.UF_ApplyMaxHealthStyle then
+                ns.UF_ApplyMaxHealthStyle(mhPv, mhS, s)
+                ns.UF_OrientMaxHealth(mhPv, s.healthReverseFill, s.healthVerticalFill)
+                mhPv:Show()
+            else
+                mhPv:Hide()
             end
         end
 
@@ -3247,14 +3327,16 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 local alpha = (db.profile.dispelOverlayOpacity or 100) / 100
                 dispelOverlayPreview:ClearAllPoints()
                 dispelOverlayPreview:SetVertexColor(1, 1, 1, 1)
+                dispelOverlayPreview:SetTexCoord(0, 1, 0, 1)
                 if mode == "full" then
                     dispelOverlayPreview:SetAllPoints(health)
                     dispelOverlayPreview:SetColorTexture(c.r, c.g, c.b, alpha)
-                elseif mode == "gradient" or mode == "gradient_sharp" then
+                elseif mode == "gradient" or mode == "gradient_sharp" or mode == "gradient_reverse" then
                     dispelOverlayPreview:SetAllPoints(health)
-                    dispelOverlayPreview:SetTexture(mode == "gradient_sharp"
-                        and "Interface\\AddOns\\EllesmereUI\\media\\textures\\gradient-sharp.tga"
-                        or "Interface\\AddOns\\EllesmereUI\\media\\textures\\gradient-tb.tga")
+                    dispelOverlayPreview:SetTexture(mode == "gradient"
+                        and "Interface\\AddOns\\EllesmereUI\\media\\textures\\gradient-tb.tga"
+                        or "Interface\\AddOns\\EllesmereUI\\media\\textures\\gradient-sharp.tga")
+                    if mode == "gradient_reverse" then dispelOverlayPreview:SetTexCoord(0, 1, 1, 0) end
                     dispelOverlayPreview:SetVertexColor(c.r, c.g, c.b, alpha)
                 else
                     dispelOverlayPreview:SetAllPoints(healthFill)
@@ -3307,6 +3389,40 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 tiPv:Show()
             elseif tiPv then
                 tiPv:Hide()
+            end
+            -- Growth Direction: Poison and Bleed icons follow Magic along the row, as live.
+            local grow = dp.dispelIconGrowth or "none"
+            local growOn = tiPv and tiPv:IsShown() and grow ~= "none"
+            local extra = pf._pvDispelIconRow
+            if growOn and not extra then
+                extra = {}
+                local atlases = { "RaidFrame-Icon-DebuffPoison", "RaidFrame-Icon-DebuffBleed" }
+                for i = 1, #atlases do
+                    local f = CreateFrame("Frame", nil, pf)
+                    local tex = f:CreateTexture(nil, "ARTWORK")
+                    tex:SetAllPoints(f)
+                    tex:SetAtlas(atlases[i])
+                    extra[i] = f
+                end
+                pf._pvDispelIconRow = extra
+            end
+            if extra then
+                local sz = dp.dispelIconSize or 16
+                local step = sz + EllesmereUI.PP.FromPixels(1)
+                local dx = (grow == "left" and -step) or (grow == "right" and step) or 0
+                local dy = (grow == "down" and -step) or (grow == "up" and step) or 0
+                for i = 1, #extra do
+                    local f = extra[i]
+                    if growOn then
+                        f:SetFrameLevel(tiPv:GetFrameLevel())
+                        f:SetSize(sz, sz)
+                        f:ClearAllPoints()
+                        f:SetPoint("CENTER", tiPv, "CENTER", dx * i, dy * i)
+                        f:Show()
+                    else
+                        f:Hide()
+                    end
+                end
             end
         end
 

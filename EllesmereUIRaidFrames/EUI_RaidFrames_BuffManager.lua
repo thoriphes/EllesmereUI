@@ -775,7 +775,9 @@ local function ApplyEffectBorder(borderFrame, ind, r, g, b, a, w, h)
     local Glows = EllesmereUI.Glows
     local parent = borderFrame:GetParent()
     local baseLvl = (parent and parent:GetFrameLevel()) or borderFrame:GetFrameLevel()
-    borderFrame:SetFrameLevel(baseLvl + 11)   -- default border level (matches creation)
+    -- One under the raise (+9: solid strips +10, textured +9): over the base border,
+    -- under the hover/target/aggro raise and the text band. Matches creation.
+    borderFrame:SetFrameLevel(baseLvl + ns.LVL_RAISE - 1)
     if style == "dashed" then
         EllesmereUI.HideBorderStyle(borderFrame)
         Glows.StartProceduralAnts(borderFrame, ind.borderDashCount or 8, bw, nil, nil,
@@ -804,10 +806,10 @@ function ns.BM_ApplyEffectBorder(borderFrame, ind, r, g, b, a, w, h)
     local Glows = EllesmereUI.Glows
     if w and (ind.borderStyle or "solid") == "dashed" then
         EllesmereUI.HideBorderStyle(borderFrame)
-        -- Same +11 as the static styles (this branch returns first): otherwise the host stays at slot+1, one level BELOW the health bar (unit+2).
+        -- Same level as the static styles (this branch returns first): otherwise the host stays at slot+1, one level BELOW the health bar (unit+2).
         local parent = borderFrame:GetParent()
         local baseLvl = (parent and parent:GetFrameLevel()) or borderFrame:GetFrameLevel()
-        borderFrame:SetFrameLevel(baseLvl + 11)
+        borderFrame:SetFrameLevel(baseLvl + ns.LVL_RAISE - 1)
         Glows.StartAnimatedAnts(borderFrame, ind.borderDashCount or 8,
             ind.borderWidth or 2, nil, r, g, b, w, h, a)
         return
@@ -1021,7 +1023,7 @@ function ns.BM_CreatePreviewIndicators(f, health, PP)
 
     local effectBorder = CreateFrame("Frame", nil, f)
     effectBorder:SetAllPoints(f)
-    effectBorder:SetFrameLevel(f:GetFrameLevel() + 11)
+    effectBorder:SetFrameLevel(f:GetFrameLevel() + ns.LVL_RAISE - 1)
     effectBorder:Hide()
     if PP then PP.CreateBorder(effectBorder, 0, 1, 0, 1, 2) end
 
@@ -1279,6 +1281,7 @@ function ns.BM_ApplyPreviewIndicators(f, index, s)
                                 f._bmHCOverlay:Show()
                             elseif indType == "bgcolor" and f._bmBGOverlay then
                                 local c = ind.color or { r=0, g=1, b=0 }
+                                ns.RF_TexBgTint(f._bmBGOverlay, ns.RF_TexBgPath(s), ns.RF_IsVerticalFill(s))
                                 f._bmBGOverlay:SetColorTexture(c.r, c.g, c.b, (ind.opacity or 100) / 100)
                                 f._bmBGOverlay:Show()
                             elseif indType == "border" and f._bmEffectBorder and PP then
@@ -1764,6 +1767,8 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
     local cc = EllesmereUI.GetClassColor(previewClass)
     local mode = s.healthColorMode or "class"
     local fillTex = health:GetStatusBarTexture()
+    -- Textured Background, as on the live frames.
+    ns.RF_TexBgLayer(health, bg, ns.RF_TexBgOpaque(s, mode == "dark") and ns.RF_TexBgPath(s) or nil)
     if mode == "dark" then
         local dfr, dfg, dfb, dfa = EllesmereUI.GetDarkModeFill()
         health:SetStatusBarColor(dfr, dfg, dfb, 1)
@@ -1812,6 +1817,7 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
         pwBg:SetAllPoints()
         local pbc = (s.powerBgPowerColored and pInfo) or s.powerBgColor or { r=0, g=0, b=0 }
         local pbF = (s.powerBgPowerColored and pInfo) and EllesmereUI.GetPowerBgDarkenFactor() or 1
+        ns.RF_TexBgTint(pwBg, ns.RF_TexBgPath(s))
         pwBg:SetColorTexture(pbc.r * pbF, pbc.g * pbF, pbc.b * pbF, (s.powerBgDarkness or 70) / 100)
         -- Classic WoW UI: the stock edge and divider stand in (as live).
         if PP and ns.RF_Classic and ns.RF_Classic() then
@@ -1859,59 +1865,18 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
         end
     end
 
-    -- Name text on a carrier in the live text band (ns.LVL_TEXT) so it draws above the +8 main border, exactly like real frames.
-    local nameCarrier = CreateFrame("Frame", nil, pvFrame)
-    nameCarrier:SetAllPoints(pvFrame)
-    nameCarrier:SetFrameLevel(pvFrame:GetFrameLevel() + (ns.LVL_TEXT or 12))
-    local nameFS = nameCarrier:CreateFontString(nil, "OVERLAY")
+    -- The texts on a carrier in the live text band (ns.LVL_TEXT) so they draw above the +8 main border, exactly like real
+    -- frames; the name's Show Above Icons lifts it over the aura band as live (texts set otherwise get their own carrier).
+    local textCarrier = CreateFrame("Frame", nil, pvFrame)
+    textCarrier:SetAllPoints(pvFrame)
+    textCarrier:SetFrameLevel(pvFrame:GetFrameLevel()
+        + (s.nameTextAboveIcons and (ns.LVL_AURA + 6) or (ns.LVL_TEXT or 12)))
     local outline = (EllesmereUI.GetFontOutlineFlag("raidFrames")) or ""
-    EllesmereUI.PrimeFontShadow(nameFS, outline == "" and EllesmereUI.GetFontUseShadow("raidFrames"))
-    nameFS:SetFont(fontPath, s.nameSize or 10, outline)
-    nameFS:SetWordWrap(false)
-    local npos = s.namePosition or "center"
-    nameFS:SetShown(npos ~= "none" and not s.topNameBarEnabled)
-    local nox = s.nameOffsetX or 0
-    local noy = s.nameOffsetY or 0
-    nameFS:SetPoint("LEFT", health, "LEFT", 2 + nox, 0)
-    nameFS:SetPoint("RIGHT", health, "RIGHT", -floor(rawW * 0.25) + nox, 0)
-    if npos == "topleft" then
-        nameFS:SetPoint("TOP", health, "TOP", 0, -2 + noy); nameFS:SetJustifyH("LEFT"); nameFS:SetJustifyV("TOP")
-    elseif npos == "top" then
-        nameFS:SetPoint("TOP", health, "TOP", 0, -2 + noy); nameFS:SetJustifyH("CENTER"); nameFS:SetJustifyV("TOP")
-    elseif npos == "topright" then
-        nameFS:SetPoint("TOP", health, "TOP", 0, -2 + noy); nameFS:SetJustifyH("RIGHT"); nameFS:SetJustifyV("TOP")
-    elseif npos == "left" then
-        nameFS:SetPoint("CENTER", health, "CENTER", 0, noy); nameFS:SetJustifyH("LEFT"); nameFS:SetJustifyV("MIDDLE")
-    elseif npos == "right" then
-        nameFS:SetPoint("CENTER", health, "CENTER", 0, noy); nameFS:SetJustifyH("RIGHT"); nameFS:SetJustifyV("MIDDLE")
-    elseif npos == "bottomleft" then
-        nameFS:SetPoint("BOTTOM", health, "BOTTOM", 0, 2 + noy); nameFS:SetJustifyH("LEFT"); nameFS:SetJustifyV("BOTTOM")
-    elseif npos == "bottom" then
-        nameFS:SetPoint("BOTTOM", health, "BOTTOM", 0, 2 + noy); nameFS:SetJustifyH("CENTER"); nameFS:SetJustifyV("BOTTOM")
-    else
-        nameFS:SetPoint("CENTER", health, "CENTER", 0, noy); nameFS:SetJustifyH("CENTER"); nameFS:SetJustifyV("MIDDLE")
-    end
     local playerName = UnitName("player") or "Player"
     if Ambiguate then playerName = Ambiguate(playerName, "short") end
-    if ns.RF_FormatName then playerName = ns.RF_FormatName(playerName, s) end
-    -- Level Position "Attach to Name" (either format): the level in front of the name.
-    local lvlPos = s.levelTextPosition or ns.RF_LEVEL_DEFAULT
-    local lvlAttach = ns.RF_LEVEL_ATTACH[lvlPos]
-    if lvlAttach then
-        nameFS:SetFormattedText(lvlAttach[1], ns._RFPreviewLevel(), playerName)
-    else
-        nameFS:SetText(playerName)
-    end
-    local nameMode = s.nameColorMode or "class"
-    if nameMode == "accent" then
-        local ar, ag, ab = EllesmereUI.ResolveActiveAccent()
-        if ar then nameFS:SetTextColor(ar, ag, ab) else nameFS:SetTextColor(1, 1, 1) end
-    elseif nameMode == "custom" then
-        local c = s.nameCustomColor or { r=1, g=1, b=1 }
-        nameFS:SetTextColor(c.r, c.g, c.b)
-    else
-        if cc then nameFS:SetTextColor(cc.r, cc.g, cc.b) else nameFS:SetTextColor(1, 1, 1) end
-    end
+    playerName = ns.RF_FormatName(playerName, s)
+    -- Level Position "Attach to Name" (either format): the Top Name Bar shows the level too.
+    local lvlAttach = ns.RF_TextNameAttach(s)
 
     -- Top Name Bar band (preview replica)
     if s.topNameBarEnabled then
@@ -1937,17 +1902,9 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
         else
             tnbText:SetText(playerName)
         end
-        local talign = s.topNameBarTextAlign or "center"
-        local tox = s.topNameBarTextOffsetX or 0
-        local toy = s.topNameBarTextOffsetY or 0
-        if talign == "left" then
-            tnbText:SetPoint("LEFT", tnb, "LEFT", 4 + tox, toy); tnbText:SetJustifyH("LEFT")
-        elseif talign == "right" then
-            tnbText:SetPoint("RIGHT", tnb, "RIGHT", -4 + tox, toy); tnbText:SetJustifyH("RIGHT")
-        else
-            tnbText:SetPoint("CENTER", tnb, "CENTER", tox, toy); tnbText:SetJustifyH("CENTER")
-        end
-        tnbText:SetJustifyV("MIDDLE")
+        -- This preview draws no role icon, so the name keeps its full width.
+        tnb._euiRoleIcon = false
+        ns.RF_PlaceTopNameText(tnbText, tnb, s)
         if (s.topNameBarTextColorMode or "class") == "custom" then
             local c = s.topNameBarTextColor or { r=1, g=1, b=1 }
             tnbText:SetTextColor(c.r, c.g, c.b)
@@ -1959,62 +1916,14 @@ function ns.BM_BuildSimplePreview(parent, s, fontPath, PP, centerX, topY, opts)
         if s.topNameBarDivider == true then ns.RF_ApplyTopNameDivider(tnb, s, true) end
     end
 
-    local htMode = s.healthTextMode or "none"
-    if htMode ~= "none" then
-        local htFS = health:CreateFontString(nil, "OVERLAY")
-        htFS:SetFont(fontPath, s.healthTextSize or 9, outline)
-        htFS:SetTextColor(1, 1, 1, 0.9)
-        local htPos = s.healthTextPosition or "center"
-        local htOX = s.healthTextOffsetX or 0
-        local htOY = s.healthTextOffsetY or 0
-        htFS:SetWidth(rawW * 0.75); htFS:SetHeight(0)
-        if htPos == "topleft" then
-            htFS:SetPoint("TOPLEFT", health, "TOPLEFT", 2 + htOX, -2 + htOY); htFS:SetJustifyH("LEFT"); htFS:SetJustifyV("TOP")
-        elseif htPos == "top" then
-            htFS:SetPoint("TOP", health, "TOP", htOX, -2 + htOY); htFS:SetJustifyH("CENTER"); htFS:SetJustifyV("TOP")
-        elseif htPos == "topright" then
-            htFS:SetPoint("TOPRIGHT", health, "TOPRIGHT", -2 + htOX, -2 + htOY); htFS:SetJustifyH("RIGHT"); htFS:SetJustifyV("TOP")
-        elseif htPos == "left" then
-            htFS:SetPoint("LEFT", health, "LEFT", 2 + htOX, htOY); htFS:SetJustifyH("LEFT"); htFS:SetJustifyV("MIDDLE")
-        elseif htPos == "right" then
-            htFS:SetPoint("RIGHT", health, "RIGHT", -2 + htOX, htOY); htFS:SetJustifyH("RIGHT"); htFS:SetJustifyV("MIDDLE")
-        elseif htPos == "bottomleft" then
-            htFS:SetPoint("BOTTOMLEFT", health, "BOTTOMLEFT", 2 + htOX, 2 + htOY); htFS:SetJustifyH("LEFT"); htFS:SetJustifyV("BOTTOM")
-        elseif htPos == "bottom" then
-            htFS:SetPoint("BOTTOM", health, "BOTTOM", htOX, 2 + htOY); htFS:SetJustifyH("CENTER"); htFS:SetJustifyV("BOTTOM")
-        else
-            htFS:SetPoint("CENTER", health, "CENTER", htOX, htOY); htFS:SetJustifyH("CENTER"); htFS:SetJustifyV("MIDDLE")
-        end
-        if htMode == "percent" then htFS:SetText("85%")
-        elseif htMode == "percentNoSign" then htFS:SetText("85")
-        elseif htMode == "number" then htFS:SetText(AbbreviateNumbers(1020000)) end
-    end
-
-    -- Power text on the replica's power sample (72% mana), shown only with it like the live frames.
-    if rawPowerH > 0 and (s.powerTextMode or "none") ~= "none" then
-        local ptFS = nameCarrier:CreateFontString(nil, "OVERLAY")
-        EllesmereUI.PrimeFontShadow(ptFS, outline == "" and EllesmereUI.GetFontUseShadow("raidFrames"))
-        ptFS:SetFont(fontPath, s.powerTextSize or 8, outline)
-        ptFS:SetWordWrap(false)
-        ns.AnchorRFText(ptFS, health, s.powerTextPosition or "bottom",
-            s.powerTextOffsetX or 0, s.powerTextOffsetY or 0, rawW * 0.75)
-        ns.RF_PowerTextInto(ptFS, s.powerTextMode, 72, nil, nil, 2500)
-        local pr, pg, pb = ns.RF_PreviewTextColor(s.powerTextColorMode or "custom",
-            s.powerTextCustomColor, previewClass, 1, 1, 1, "MANA")
-        ptFS:SetTextColor(pr, pg, pb, 0.9)
-    end
-
-    -- Level text on its own spot, in the name's colour, like the live frames.
-    if lvlPos ~= "none" and not lvlAttach then
-        local lvFS = nameCarrier:CreateFontString(nil, "OVERLAY")
-        EllesmereUI.PrimeFontShadow(lvFS, outline == "" and EllesmereUI.GetFontUseShadow("raidFrames"))
-        lvFS:SetFont(fontPath, s.levelTextSize or 10, outline)
-        lvFS:SetWordWrap(false)
-        ns.AnchorRFText(lvFS, health, lvlPos, s.levelTextOffsetX or 0, s.levelTextOffsetY or 0)
-        lvFS:SetFormattedText("%d", ns._RFPreviewLevel())
-        lvFS:SetTextColor(ns.RF_PreviewTextColor(s.nameColorMode or "class",
-            s.nameCustomColor, previewClass, 1, 1, 1))
-    end
+    -- The texts as live, from this replica's sample values (85% health, 72% mana,
+    -- shown with the power sample only). A fresh state per build: the carrier's pooled
+    -- FontStrings come back through the pool.
+    ns.RF_TextPreview({ textCarrier = textCarrier, _health = health, _txW = rawW }, s, {
+        hpPct = 85, hpPer = 12000, ppPct = 72, ppPer = 2500, ha = 85 * 3000,
+        name = ns.CapName(playerName, s), power = rawPowerH > 0 or nil,
+        class = previewClass, pToken = "MANA",
+    })
 
     pvFrame._health = health
     -- Settings source for every later indicator pass on this replica (nil = the caller's).

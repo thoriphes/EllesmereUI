@@ -16,6 +16,7 @@ local GetTime = GetTime
 local pcall = pcall
 local abs = math.abs
 local min = math.min
+local ANTI_CLIP = ns.CDM_ANTI_CLIP
 
 local _pandemicState, FormatTime = I._pandemicState, I.FormatTime
 local LifebloomPandemic, _tbbWake = I.LifebloomPandemic, I._tbbWake
@@ -443,7 +444,10 @@ function ns.UpdateTrackedBuffBarTimers()
                     --     family (exact config ids or the bound slot's
                     --     cooldownInfo override/spellID/linkedSpellIDs).
                     --  3. The configured spell's name (deterministic).
-                    if content and bar._nameText and bar._nameText:IsShown() then
+                    -- None of it runs for a bar with a custom name: the build painted
+                    -- that, and nothing else writes the label.
+                    if content and bar._nameText and bar._nameText:IsShown()
+                       and not ns.TBBCustomName(cfg) then
                         local nameStr
                         -- auraInstanceID may itself be SECRET on the active frame
                         -- (probe-confirmed): type() reads the tag without touching
@@ -587,13 +591,19 @@ function ns.UpdateTrackedBuffBarTimers()
 
                     -- Pandemic glow: the ShowPandemicStateFrame hook sets _pandemicState.
                     -- Requires the user to enable pandemic alerts in Blizzard CDM settings.
+                    -- WoW Forever: the anti-clip glow instead (EUI_CDM_ForeverAntiClip.lua).
                     if _anyPandemic and cfg.pandemicGlow then
-                        local inPandemic = blzChild and _pandemicState[blzChild]
-                        -- Fallback for auras Blizzard never pandemic-flags (currently only
-                        -- Lifebloom). bar._isLifebloom is cached after the first resolve, so a
-                        -- bar known not to be Lifebloom costs one table read and skips.
-                        if not inPandemic and blzChild and bar._isLifebloom ~= false then
-                            inPandemic = LifebloomPandemic(bar, blzChild)
+                        local inPandemic
+                        if ANTI_CLIP then
+                            inPandemic = blzChild and ns.CDM_AntiClip and ns.CDM_AntiClip(blzChild)
+                        else
+                            inPandemic = blzChild and _pandemicState[blzChild]
+                            -- Fallback for auras Blizzard never pandemic-flags (currently only
+                            -- Lifebloom). bar._isLifebloom is cached after the first resolve, so a
+                            -- bar known not to be Lifebloom costs one table read and skips.
+                            if not inPandemic and blzChild and bar._isLifebloom ~= false then
+                                inPandemic = LifebloomPandemic(bar, blzChild)
+                            end
                         end
                         -- TBBs always show OUR glow (Blizzard Default included): the native
                         -- PandemicIcon lives on the hidden blzChild frame, not our visible TBB bar.
@@ -721,14 +731,15 @@ function ns.UpdateTrackedBuffBarTimers()
                 -- unavailable, and for override/variant spells the build-time saved-form
                 -- icon can be the wrong form, so the live aura is the truth. Icon passes
                 -- through even when secret (SetTexture accepts secrets); name applies
-                -- only on a clean read (font strings need a plain string).
+                -- only on a clean read (font strings need a plain string) and never
+                -- over a bar's custom name.
                 if bar._icon and bar._icon:IsShown() and fbAura.icon then
                     bar._icon._tex:SetTexture(fbAura.icon)
                     bar._lastIconSID = nil
                 end
                 local fbName = fbAura.name
                 if bar._nameText and bar._nameText:IsShown() and fbName
-                   and not (isSec and isSec(fbName)) then
+                   and not (isSec and isSec(fbName)) and not ns.TBBCustomName(cfg) then
                     bar._nameText:SetText(fbName)
                     bar._nameSet = true
                 end
@@ -772,11 +783,17 @@ function ns.UpdateTrackedBuffBarTimers()
     -- Deferred name fill: retry each tick when BuildTrackedBuffBars could not resolve the spell name (spell data not loaded yet).
     for i, cfg in ipairs(bars) do
         local bar = tbbFrames[i]
-        if bar and bar._nameText and not bar._nameSet and cfg.spellID and cfg.spellID > 0 then
-            local si = C_Spell.GetSpellInfo(cfg.spellID)
-            if si and si.name then
-                bar._nameText:SetText(si.name)
+        if bar and bar._nameText and not bar._nameSet then
+            local customName = ns.TBBCustomName(cfg)
+            if customName then
+                bar._nameText:SetText(customName)
                 bar._nameSet = true
+            elseif cfg.spellID and cfg.spellID > 0 then
+                local si = C_Spell.GetSpellInfo(cfg.spellID)
+                if si and si.name then
+                    bar._nameText:SetText(si.name)
+                    bar._nameSet = true
+                end
             end
         end
     end

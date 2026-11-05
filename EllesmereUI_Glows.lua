@@ -1415,14 +1415,6 @@ do
         tex:SetVertexColor(cr or 1, cg or 1, cb or 1)
         tex:Show()
     end
-
-    function G.HideStealableBorder(host)
-        local tex = host and host._euiStealTex
-        if tex then tex:Hide() end
-        -- StartSpecGlow's change check must not skip showing it again.
-        local s = host and host._euiSpecSig
-        if s and s.idx == G.STEALABLE_BORDER then s.idx = nil end
-    end
 end
 
 -------------------------------------------------------------------------------
@@ -1460,14 +1452,6 @@ do
         tex:SetPoint("TOPLEFT", host, "TOPLEFT", -out, out)
         tex:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", out, -out)
         tex:Show()
-    end
-
-    function G.HidePandemicBorder(host)
-        local tex = host and host._euiPanTex
-        if tex then tex:Hide() end
-        -- StartSpecGlow's change check must not skip showing it again.
-        local s = host and host._euiSpecSig
-        if s and s.idx == PANDEMIC_BORDER then s.idx = nil end
     end
 end
 
@@ -1616,6 +1600,48 @@ do
         out.lines, out.thickness, out.speed = t[k.lines], t[k.th], t[k.speed]
         if t[k.bg] then
             out.bg, out.bgR, out.bgG, out.bgB = true, t[k.bgR] or 0, t[k.bgG] or 0, t[k.bgB] or 0
+        else
+            -- out is the caller's reused scratch: clear the colour too.
+            out.bg, out.bgR, out.bgG, out.bgB = nil, nil, nil, nil
+        end
+        return out
+    end
+
+    -- The flat key schema most module glows save: <p>Color, <p>Lines,
+    -- <p>Thickness, <p>Speed, <p>Background, <p>BackgroundColor (colors as
+    -- {r,g,b} tables), plus <p>Style and <p>ColorMode where a site keeps them.
+    -- Keys are built once per prefix; the options' FlatGet / FlatSet read them.
+    local _flatKeys = {}
+    function G.FlatKeys(p)
+        local k = _flatKeys[p]
+        if not k then
+            k = { style = p .. "Style", mode = p .. "ColorMode", color = p .. "Color",
+                  lines = p .. "Lines", thickness = p .. "Thickness", speed = p .. "Speed",
+                  bg = p .. "Background", bgColor = p .. "BackgroundColor" }
+            _flatKeys[p] = k
+        end
+        return k
+    end
+
+    -- Spec from a flat-schema settings table, all but the style: sites number
+    -- their styles and store their color modes their own way, so the caller
+    -- passes the mode and sets out.style. k: the prefix's FlatKeys table.
+    -- defs: fallbacks under the same keys (a module's defaults table).
+    local function FlatVal(t, defs, key)
+        local v = t[key]
+        if v == nil and defs then v = defs[key] end
+        return v
+    end
+    function G.SpecFromFlat(out, t, k, mode, defs)
+        local c = FlatVal(t, defs, k.color)
+        out.r, out.g, out.b = G.ResolveColor(mode, c and c.r, c and c.g, c and c.b)
+        out.lines = FlatVal(t, defs, k.lines)
+        out.thickness = FlatVal(t, defs, k.thickness)
+        out.speed = FlatVal(t, defs, k.speed)
+        if FlatVal(t, defs, k.bg) == true then
+            local bc = FlatVal(t, defs, k.bgColor)
+            out.bg = true
+            out.bgR, out.bgG, out.bgB = bc and bc.r or 0, bc and bc.g or 0, bc and bc.b or 0
         else
             -- out is the caller's reused scratch: clear the colour too.
             out.bg, out.bgR, out.bgG, out.bgB = nil, nil, nil, nil
@@ -1811,15 +1837,6 @@ do
 
     function G.IsEngineHostBound(wrapper)
         return wrapper ~= nil and BOUND[wrapper] ~= nil
-    end
-
-    -- The groups shared style idx (as ResolveStyle returned it) plays on an
-    -- engine host, in out[1..n] (the rest of out cleared; pass a reused
-    -- table); returns n. A static border, or a family the host has no regions
-    -- for yet, lists none.
-    function G.EngineGroups(wrapper, idx, out)
-        if not (wrapper and out) then return 0 end
-        return EngineGroupsInto(wrapper, idx, out)
     end
 end
 

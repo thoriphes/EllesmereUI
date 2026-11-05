@@ -16,7 +16,7 @@ I.broken = true
 local GetItemInfoInstant = C_Item.GetItemInfoInstant
 local EUI = EllesmereUI
 
-local BP, GetFont, SetBagFont, SLOT_SIZE = I.BP, I.GetFont, I.SetBagFont, I.SLOT_SIZE
+local BP, GetFont, SetBagFont = I.BP, I.GetFont, I.SetBagFont
 
 -- Shared state: one copy per file. A write goes through the Set<Name>
 -- function of ns._bagsInternals, which hands the value to every copy.
@@ -75,6 +75,68 @@ ns.CreateInsetBorder = CreateInsetBorder
 ns.SetBagFont = SetBagFont
 ns.SetInsetBorderColor = SetInsetBorderColor
 
+-- Item buttons (ContainerFrameItemButtonTemplate) carry frameLevel="10" in
+-- Blizzard's XML, a fixed level that never follows their window: under a window
+-- raised past it (High starts at 100) the window takes the clicks. So each one
+-- sits at its window's level + 9: the template's own 10 over a window at level 1,
+-- under Compact's drop zones (window + 22). The text overlay (+3, above the
+-- cooldown swipe) and the warbank dim (+6) are fixed levels too and move with it.
+local function PinItemButtonLevel(btn, level)
+    btn:SetFrameLevel(level)
+    if btn._textOverlay then btn._textOverlay:SetFrameLevel(level + 3) end
+    if btn._warbankDim then btn._warbankDim:SetFrameLevel(level + 6) end
+end
+
+-- background color/opacity for bags and bank: the texture fades with the
+-- opacity, the tint on top takes the color
+function ns.ApplyWindowBackground(bg, overlay)
+    if not (bg and overlay) then return end
+    local p = BP()
+    local o = (p.bagBgOpacity or 100) / 100
+    local c = p.bagBgColor
+    bg:SetAlpha(o)
+    overlay:SetColorTexture(c and c.r or 0, c and c.g or 0, c and c.b or 0, c and c.a or 0.25)
+    overlay:SetAlpha(o)
+end
+
+-- slot background: tint over an empty slot's backdrop, alpha is the slot's
+-- own base opacity. each painted one is kept (weakly) so a color change can
+-- retint them without a relayout
+local slotBgs = setmetatable({}, { __mode = "k" })
+function ns.PaintSlotBackground(tex, alpha)
+    tex._slotBgAlpha = alpha
+    slotBgs[tex] = true
+    local c = BP().bagSlotBgColor
+    if c then
+        tex:SetVertexColor(c.r, c.g, c.b)
+        tex:SetAlpha(alpha * (c.a or 1))
+    else
+        tex:SetVertexColor(1, 1, 1)
+        tex:SetAlpha(alpha)
+    end
+end
+
+-- the slot background picker: just the shown ones (hidden ones get painted when they show)
+function ns.RetintSlotBackgrounds()
+    for tex in pairs(slotBgs) do
+        if tex:IsVisible() then ns.PaintSlotBackground(tex, tex._slotBgAlpha) end
+    end
+end
+
+function ns.PinItemButton(btn, window)
+    PinItemButtonLevel(btn, window:GetFrameLevel() + 9)
+end
+
+-- Re-pins a pool after its window's level moved (a strata change, a raise), once
+-- per level: window[memoKey] holds the level the pool was last pinned at. Nothing
+-- else moves these buttons, and new ones are pinned at creation from the live level.
+function ns.PinItemPool(pool, window, memoKey)
+    local level = window:GetFrameLevel() + 9
+    if window[memoKey] == level then return end
+    window[memoKey] = level
+    for _, btn in pairs(pool) do PinItemButtonLevel(btn, level) end
+end
+
 -- Flat look for a ContainerFrameItemButtonTemplate slot, plus the text overlay
 -- (above the cooldown swipe) with Count, ItemLevelText and BindTypeText.
 -- Methods only: writing properties onto Blizzard template sub-objects taints.
@@ -87,7 +149,7 @@ function ns.SkinItemButton(btn, opts)
     if btn.flash then btn.flash:Hide(); btn.flash:SetAlpha(0) end
     if btn.newitemglowAnim then btn.newitemglowAnim:Stop() end
 
-    btn:SetSize(SLOT_SIZE, SLOT_SIZE)
+    ns.SizeSlot(btn)
     if btn.icon then
         local z = BP().bagItemIconZoom or 0.08
         btn.icon:SetTexCoord(z, 1 - z, z, 1 - z)
@@ -138,7 +200,7 @@ function ns.SkinItemButton(btn, opts)
 
     local textOverlay = CreateFrame("Frame", nil, btn)
     textOverlay:SetAllPoints()
-    textOverlay:SetFrameLevel((btn.Cooldown and btn.Cooldown:GetFrameLevel() or btn:GetFrameLevel()) + 2)
+    textOverlay:SetFrameLevel(btn:GetFrameLevel() + 3)
     btn._textOverlay = textOverlay
 
     local fontPath = GetFont()

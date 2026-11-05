@@ -29,8 +29,8 @@ local _isDruid = (_playerClass == "DRUID")
 
 ns._spellOrderDirty = true  -- start dirty so first reanchor builds caches
 
--- Per-frame decoration state (weak-keyed)
-local hookFrameData = setmetatable({}, { __mode = "k" })
+-- Per-frame decoration state (weak-keyed; FD(frame) makes a frame's record)
+local hookFrameData, FD = EllesmereUI.NewFrameData()
 ns._hookFrameData = hookFrameData
 
 -- Glow at Stacks (per-spell): REPLACES the Buff Glow for icons with a stack
@@ -108,6 +108,9 @@ do
             end
         end
         local ad = frame.auraDataCached
+        -- The whole cached aura can be a secret table (restricted unit
+        -- auras): indexing it is a hard error, so it reads as unknown.
+        if issecretvalue and issecretvalue(ad) then return nil end
         local apps = ad and ad.applications
         if (issecretvalue and issecretvalue(apps)) or apps ~= nil then
             return apps
@@ -372,11 +375,6 @@ function ns._PandemicWindowSet(self)
     if fd then fd._panStale = nil end
 end
 
-local function FD(f)
-    local d = hookFrameData[f]
-    if not d then d = {}; hookFrameData[f] = d end
-    return d
-end
 ns.FD = FD
 
 -------------------------------------------------------------------------------
@@ -390,11 +388,14 @@ ns.FD = FD
 do
     -- The buff's expiration time and time rate, read the way Blizzard's
     -- GetCooldownValues reads them (a totem item's data first); nil when
-    -- unknown or secret.
+    -- unknown or secret. The cached aura can itself be a SECRET TABLE:
+    -- Blizzard fills it from aura queries that hide the whole aura while the
+    -- unit's auras are restricted, and indexing one is a hard error.
     local function ReadExpiration(frame)
         local td = frame.totemData
         local src = td or frame.auraDataCached
-        local exp = src and src.expirationTime
+        if issecretvalue(src) or not src then return nil end
+        local exp = src.expirationTime
         -- Secret probe first: any other test on a secret is a hard error.
         if issecretvalue(exp) or type(exp) ~= "number" or exp <= 0 then return nil end
         local rate
@@ -402,6 +403,8 @@ do
         if issecretvalue(rate) or type(rate) ~= "number" or rate <= 0 then rate = 1 end
         return exp, rate
     end
+    -- The WoW Forever anti-clip glow reads it too (EUI_CDM_ForeverAntiClip.lua).
+    ns.ReadAuraExpiration = ReadExpiration
 
     local function Disarm(fc)
         if fc._missingTimer then fc._missingTimer:Cancel(); fc._missingTimer = nil end
@@ -588,7 +591,7 @@ local function IsCDMSettingsOpen()
 end
 
 -- Main-chunk locals the EUI_CDM_Hook*.lua files re-import by name.
-ns._NewInternals("_hookInternals", {
+EllesmereUI.NewInternals(ns, "_hookInternals", {
     _isDruid = _isDruid, FD = FD, GetViewerFrame = GetViewerFrame,
     hookFrameData = hookFrameData, IsCDMSettingsOpen = IsCDMSettingsOpen,
     VIEWER_NAMES = VIEWER_NAMES, VIEWER_TO_BAR = VIEWER_TO_BAR,

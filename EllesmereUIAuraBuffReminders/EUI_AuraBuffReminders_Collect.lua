@@ -83,8 +83,33 @@ local function ResizeAnchorCentered(newW, newH)
 end
 
 local _layoutScratch = {}  -- reused each call
+-- The last out-of-combat row: its anchor point, first slot, text offset,
+-- icon size, spacing, opacity and how many of its slots the secure buttons
+-- take (the beacon icons follow them).
+local _layoutGeom = {}
 local function LayoutIcons()
-    if InCombatLockdown() then return end
+    if InCombatLockdown() then
+        -- The reminder buttons are secure, so the row stays as the last pass
+        -- left it. The beacon icons are plain frames, and one that shows in
+        -- combat (a Solo Shuffle round) would otherwise keep the spot an
+        -- earlier row gave it, over whatever sits there now: the shown beacons
+        -- hang after that row at its pitch until the next pass lays it out again.
+        local g = _layoutGeom
+        if not g.pt or not _B.icons then return end
+        if db and CursorAttachActive(db.profile.display) and cursorAnchor then return end
+        local i = g.fixed
+        for _, id in ipairs(_B.ALL or {}) do
+            local f = _B.iconState and _B.iconState[id] and _B.icons[id]
+            if f then
+                i = i + 1
+                f:SetSize(g.sz, g.iconH or g.sz)
+                f:SetAlpha(g.alpha)
+                f:ClearAllPoints()
+                f:SetPoint(g.pt, iconAnchor, g.pt, g.startX + (i - 1) * (g.sz + g.spacing), g.yOff)
+            end
+        end
+        return
+    end
     -- Merges beacon icons into the layout (one continuous row); beacon logic itself is untouched, just included here for positioning.
     local allIcons = _layoutScratch
     wipe(allIcons)
@@ -94,6 +119,7 @@ local function LayoutIcons()
         allIcons[#allIcons+1] = EABR._providerCastBtn
     end
     for _, btn in ipairs(activeIcons) do allIcons[#allIcons+1] = btn end
+    local fixed = #allIcons
     local beaconsOnCursor = db and CursorAttachActive(db.profile.display) and cursorAnchor
     if _B.icons and not beaconsOnCursor then
         for _, id in ipairs(_B.ALL or {}) do
@@ -102,11 +128,13 @@ local function LayoutIcons()
             end
         end
     end
-    local count = #allIcons; if count == 0 then return end
+    local count = #allIcons; if count == 0 then _layoutGeom.fixed = 0; return end
     local p = db.profile.display
     local spacing = p.iconSpacing or 8
     local baseScale = p.scale or 1.0
     local sz = floor(ICON_SIZE * baseScale + 0.5)
+    local iconH = sz
+    if p.iconShape and p.iconShape ~= "none" then sz, iconH = ns.IconDimensions(sz, p) end
     local totalW = (count * sz) + ((count-1) * spacing)
     local textH = 0
     if p.showText then textH = (p.textSize or 11) + abs(p.textYOffset or -2) end
@@ -119,8 +147,12 @@ local function LayoutIcons()
     elseif p.growDirection == "LEFT" then
         pt, startX, yOff = "TOPRIGHT", -(count - 1) * (sz + spacing), 0
     end
+    local g = _layoutGeom
+    g.pt, g.startX, g.yOff, g.sz, g.spacing, g.alpha, g.fixed = pt, startX, yOff, sz, spacing, p.opacity or 1.0, fixed
+    if p.iconShape and p.iconShape ~= "none" then g.iconH = iconH
+    elseif g.iconH then g.iconH = nil end
     for i, btn in ipairs(allIcons) do
-        btn:SetSize(sz, sz)
+        btn:SetSize(sz, iconH)
         btn:SetAlpha(p.opacity or 1.0)
         -- This layout is OOC-only, so treating every entry as protected also
         -- covers the provider/main secure buttons without needing pool scans.
@@ -131,28 +163,38 @@ local function LayoutIcons()
         btn:SetPoint(pt, iconAnchor, pt, startX + (i-1)*(sz+spacing), yOff)
     end
     -- Size the anchor to the row so the unlock mode overlay covers it.
-    ResizeAnchorCentered(totalW, sz + textH)
+    ResizeAnchorCentered(totalW, iconH + textH)
 end
 
 local function ShowIcon(iconIdx, m)
     local btn = GetOrCreateIcon(iconIdx)
     btn._dismissKey = m.dismissKey or nil
     btn._petCycleTotal = m.petCycleTotal or nil
+    btn._requestKey = m.requestKey or nil
+    btn._requestName = m.requestName or nil
     -- Right-click is passed through to whatever's behind (e.g. camera drag)
     -- for every other reminder; only a multi-pet cycle button claims it.
-    -- Click-routing changes are combat-protected, same as the attribute
-    -- writes below, so this only ever runs OOC.
+    -- Left-click is passed through too on a groupmate's raid buff the player
+    -- cannot cast, unless Click to Request Buff gives it one (the
+    -- middle-click dismiss stays). Click-routing changes are combat-protected,
+    -- same as the attribute writes below, so this only ever runs OOC.
+    local receiver = EABR.IsReceiverRaidBuff(m) and not m.requestKey
     if not InCombat() then
-        local wantRightCapture = m.petCycleTotal and true or false
-        if btn._petCycleRightCapture ~= wantRightCapture then
-            btn._petCycleRightCapture = wantRightCapture
-            if wantRightCapture then
-                securecallfunction(btn.SetPassThroughButtons, btn)
-            else
+        local pass = (receiver and 1 or 0) + (m.petCycleTotal and 0 or 2)
+        if btn._passButtons ~= pass then
+            btn._passButtons = pass
+            if pass == 3 then
+                securecallfunction(btn.SetPassThroughButtons, btn, "LeftButton", "RightButton")
+            elseif pass == 2 then
                 securecallfunction(btn.SetPassThroughButtons, btn, "RightButton")
+            elseif pass == 1 then
+                securecallfunction(btn.SetPassThroughButtons, btn, "LeftButton")
+            else
+                securecallfunction(btn.SetPassThroughButtons, btn)
             end
         end
     end
+    EABR.SetIconHighlight(btn, not receiver)
     ApplySetup(btn, m)
     local p = db.profile.display
     local baseScale = p.scale or 1.0
@@ -242,8 +284,9 @@ do
                     end
                     if isMissing then
                         local e = AcquireEntry()
+                        local sname = _G._EABR_SpellName(buff.castSpell, buff.name)
                         e.spellID = buff.castSpell
-                        e.label = ShortLabel(_G._EABR_SpellName(buff.castSpell, buff.name))
+                        e.label = ShortLabel(sname)
                         if buff.check == "huntersMark" then e.unit = "target" end
                         e.cat = "raidbuff"; e.data = buff
                         e.dismissKey = buff.key and ("raidbuff:" .. buff.key) or nil
@@ -252,10 +295,14 @@ do
                             e.groupTotal = groupTotal
                         end
                         if doReceiver then
-                            -- Receiver reminders are informational: texture
-                            -- mode, no click action.
+                            -- Receiver reminders: texture mode, no cast; a
+                            -- left-click may ask the group for the buff.
                             e.mode = "texture"
                             e.texture = Tex(buff.castSpell)
+                            if rb.requestOnClick then
+                                e.requestKey = buff.key
+                                e.requestName = sname
+                            end
                         else
                             e.mode = "spell"
                         end
@@ -456,11 +503,53 @@ function EABR.EmitWeaponEnchantReminders(missing, co)
     end
 end
 
-local function CollectConsumables(missing, playerClass, specID, inInstance, inKeystone, inCombat)
+-- The Inky Black Potion reminder's zone test reads the player's map from
+-- PLAYER_MAP_CHANGED, so a refresh never asks the game for it (the game's
+-- own map lookup misbehaves in places, Murder Row on 12.1.5). The watch runs
+-- only while that reminder has zones listed and can show; it reads the map
+-- once when it starts and after each loading screen, and a map change that
+-- moves the player into or out of the listed zones asks for one refresh.
+local inkyMap = { on = false, key = "0", inZone = false }
+
+local function InkyMapRead(mapID)
+    inkyMap.key = tostring(mapID or 0)
+    local nowIn = (inkyMap.set and inkyMap.set[inkyMap.key]) and true or false
+    if nowIn ~= inkyMap.inZone then
+        inkyMap.inZone = nowIn
+        I.RequestRefresh()
+    end
+end
+
+local function InkyMapWatch(want)
+    if want == inkyMap.on then return end
+    inkyMap.on = want
+    local f = inkyMap.frame
+    if not want then
+        f:UnregisterAllEvents()
+        return
+    end
+    if not f then
+        f = CreateFrame("Frame")
+        f:SetScript("OnEvent", function(_, event, _, newMapID)
+            if event == "PLAYER_MAP_CHANGED" then
+                InkyMapRead(newMapID)
+            else
+                InkyMapRead(C_Map.GetBestMapForUnit("player"))
+            end
+        end)
+        inkyMap.frame = f
+    end
+    f:RegisterEvent("PLAYER_MAP_CHANGED")
+    f:RegisterEvent("PLAYER_ENTERING_WORLD")
+    inkyMap.key = tostring(C_Map.GetBestMapForUnit("player") or 0)
+end
+
+local function CollectConsumables(missing, playerClass, specID, inInstance, inKeystone, inCombat, inPvP)
 local co = db.profile.consumables
--- Class specials (poisons/rites/imbues/shields) share one "Where to Show"
--- set (they are class-exclusive; per-spell visibility would be meaningless).
-local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
+-- Class specials (poisons/rites/imbues/shields) follow the "Where to Show"
+-- of the player's class section.
+local specialFields = EABR.SPECIALS[playerClass]
+local specialsActive = EABR.SectionShows(EABR.SpecialsWhere(co, specialFields and specialFields.where), inInstance)
 -- The trackable subset (weapon enchants, poisons, rites, imbues, Earth
 -- Shield) runs in combat / M+ too; where reminders appear is governed
 -- per-section by "Where to Show". Non-trackable emitters below either
@@ -469,14 +558,14 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
     do
 
         -- Rebuilds the bag/equip-derived item cache only when inputs changed (bags, weapon, preferred-item setting); a clean refresh is 3 scalar compares. Resolved inside instances, or in the open world when the consumables section shows there; the dirty flag persists until the next eligible refresh consumes it.
-        local needResolve = inInstance
-        if not needResolve then
+        local needResolve = inInstance and not inPvP
+        if not needResolve and not inPvP then
             local ow = co.whereToShow
             needResolve = (not ow) or (ow.open_world ~= false)
         end
         if needResolve then EABR.ResolveConsumables() end
 
-        -- === SPECIALS (share the class-specials "Where to Show") ===
+        -- === SPECIALS (per-class "Where to Show") ===
         if specialsActive then
             -- Rogue Poisons: unified scan counts active per category vs required (1 each, 2 with Dragon-Tempered Blades); shows the first enabled+known+missing poison per deficient category.
             if playerClass == "ROGUE" then
@@ -606,6 +695,13 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
         end -- end specialsActive
 
         -- === CONSUMABLES (visibility via the section "Where to Show") ===
+        -- None in a PvP instance: flasks, food, runes and oils do nothing
+        -- there, and their presence cannot be read; the class specials above
+        -- (poisons, rites, imbues, shields) are the player's own spells and
+        -- still run.
+        if inPvP then
+            InkyMapWatch(false)
+        else
 
         -- Augment Runes: presence unverifiable in combat/M+ (suppress);
         -- otherwise try the read and remind when missing.
@@ -687,9 +783,11 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
         end
 
         -- Inky Black Potion (zone-specific)
+        local inkyWatch = false
         if co.enabled.inky_black and EABR.ConsumableShows(co, "inky_black", inInstance) then
             local zones = co.inkyBlackZones or ""
             if zones ~= "" then
+                inkyWatch = true
                 -- Cache parsed zone set on the string itself
                 if not co._inkyZoneSet or co._inkyZoneSrc ~= zones then
                     local s = {}
@@ -697,8 +795,10 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                     co._inkyZoneSet = s
                     co._inkyZoneSrc = zones
                 end
-                local currentZone = tostring(C_Map.GetBestMapForUnit("player") or 0)
-                if co._inkyZoneSet[currentZone] then
+                InkyMapWatch(true)
+                inkyMap.set = co._inkyZoneSet
+                inkyMap.inZone = co._inkyZoneSet[inkyMap.key] or false
+                if inkyMap.inZone then
                     local hasPotion = EABR._resolved.inky.hasPotion
                     if not PlayerHasInkyBlackness() and hasPotion then
                         local e = AcquireEntry()
@@ -714,6 +814,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                 end
             end
         end
+        if not inkyWatch then InkyMapWatch(false) end
+        end -- not inPvP
     end -- consumables block
 
     -- Earth Shield self-buff (383648), only with Elemental Orbit. NOT
@@ -791,6 +893,10 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                 e.label = EllesmereUI.L("HS")
                 e.cat = "consumable"
                 e.dismissKey = "consumable:healthstone"
+                if db.profile.raidBuffs.requestOnClick and GetPlayerClass() ~= "WARLOCK" then
+                    e.requestKey = "healthstone"
+                    e.requestName = EllesmereUI.L("Healthstones")
+                end
                 missing[#missing+1] = e
             end
         end
@@ -849,6 +955,7 @@ end
 -- CollectTalentReminders moved to EllesmereUIABR_TalentReminders.lua
 
 I.CollectAuras, I.CollectConsumables = CollectAuras, CollectConsumables
-I.CollectRaidBuffs, I.HideAllIcons, I.LayoutIcons = CollectRaidBuffs, HideAllIcons, LayoutIcons
+I.CollectRaidBuffs, I.HideAllIcons, I.InkyMapWatch = CollectRaidBuffs, HideAllIcons, InkyMapWatch
+I.LayoutIcons = LayoutIcons
 I.ResizeAnchorCentered, I.ShowIcon = ResizeAnchorCentered, ShowIcon
 I.broken = false

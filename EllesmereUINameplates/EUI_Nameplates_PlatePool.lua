@@ -217,7 +217,22 @@ local frameCache = CreateFramePool("Frame", UIParent, nil, nil, false, function(
     plate.nameRaid = plate.nameRaidFrame:CreateTexture(nil, "ARTWORK")
     plate.nameRaid:SetAllPoints()
     plate.nameRaid:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
-    plate.raidFrame = CreateFrame("Frame", nil, plate)
+    -- Core Positions chains (ns.NP_CoreChain) anchor the raid marker, the Rare/Quest
+    -- indicator, the faction badge and the cast-lockout icon to aura containers, which only
+    -- aspect-bearing objects may anchor to (EnsureArrows), and the aspect is inherited at
+    -- creation alone: the four are born inside one template holder per plate, a child of the
+    -- plate so they show, fade and scale as before. Without the template they stay plain
+    -- children, and a chain leaves an icon that would follow a row at its own spot.
+    local coreHost = plate
+    do
+        local ok, holder = pcall(CreateFrame, "Frame", nil, plate, "DisableUntrustedLayoutScriptsTemplate")
+        if ok and holder then
+            holder:SetAllPoints(plate.health)
+            plate.coreHost = holder
+            coreHost = holder
+        end
+    end
+    plate.raidFrame = CreateFrame("Frame", nil, coreHost)
     local rmSize = GetRaidMarkerSize()
     PP.Size(plate.raidFrame, rmSize, rmSize)
     -- INDICATOR TIER (bottom of the three groups). Explicit MEDIUM strata like the aura icons
@@ -230,7 +245,7 @@ local frameCache = CreateFramePool("Frame", UIParent, nil, nil, false, function(
     plate.raid = plate.raidFrame:CreateTexture(nil, "ARTWORK")
     plate.raid:SetAllPoints()
     plate.raid:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
-    plate.classFrame = CreateFrame("Frame", nil, plate)
+    plate.classFrame = CreateFrame("Frame", nil, coreHost)
     local _reIconSz = GetRareEliteIconSize()
     PP.Size(plate.classFrame, _reIconSz, _reIconSz)
     PP.Point(plate.classFrame, "LEFT", plate.health, "LEFT", 2, 0)
@@ -602,6 +617,11 @@ local frameCache = CreateFramePool("Frame", UIParent, nil, nil, false, function(
         -- Rounded corners, Join Cast Bar: the health bar's bottom corners follow the cast bar
         -- (a corners-only pass while nothing else about the health bar's rounding moved).
         if owner and owner._npJoinCast then ns.NP_ApplyRounding(owner, "health", true) end
+        -- A cast end may turn the caster back (cast starts repaint in Cast.lua). The
+        -- unit check skips a plate ClearUnit is releasing.
+        if ns._npTgtTexts and owner and owner.unit and not self:IsShown() then
+            owner:RefreshTargetTexts()
+        end
     end
     plate.cast:HookScript("OnShow", OnCastVisibilityChanged)
     plate.cast:HookScript("OnHide", OnCastVisibilityChanged)
@@ -846,6 +866,8 @@ function ns.RefreshAllSettings()
     -- Bump the appearance generation so SetUnit re-runs ApplyAppearance per plate; without it,
     -- cache-hit re-spawns skip the static appearance work and new settings never apply.
     ns._npAppearanceGen = (ns._npAppearanceGen or 0) + 1
+    -- Color Casting Enemies tint colors, before the loop below repaints the plates.
+    if ns.NP_CastTintsDirty then ns.NP_CastTintsDirty() end
     for _, plate in pairs(ns.plates) do
         if plate.unit and plate.nameplate then
             plate:SetUnit(plate.unit, plate.nameplate)
@@ -858,6 +880,7 @@ function ns.RefreshAllSettings()
     -- (the enemy plates followed through the appearance pass above).
     if ns._npForever and ns.NP_ForeverWatchLevels() then ns.NP_ForeverFriendlyBoxes() end
     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+    if ns.NP_RefreshTypeScaleSetting then ns.NP_RefreshTypeScaleSetting() end
     if ns.RangeText_Apply then ns.RangeText_Apply() end
     if ns.ApplyClassPowerSetting then ns.ApplyClassPowerSetting() end
     if ns.DebuffColors_Refresh then ns.DebuffColors_Refresh() end
@@ -881,9 +904,9 @@ function ns.RefreshAllSettings()
     -- Friendly bar and name colours: a profile or override flip of the class colour
     -- toggles reaches the live full plates.
     if ns.RefreshFriendlyColors then ns.RefreshFriendlyColors() end
-    -- WoW Forever: a profile or override flip of the friendly Name Format, the
-    -- Subtitle Text mode or its guild brackets reaches the live friendly names
-    -- (one compare while they are unchanged).
+    -- A profile or override flip of the friendly Name Format, the Subtitle Text
+    -- mode or its guild brackets reaches the live friendly names (one compare
+    -- while they are unchanged).
     if ns.NP_SyncFriendlyNameFormat then ns.NP_SyncFriendlyNameFormat() end
 end
 
