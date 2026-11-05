@@ -38,14 +38,17 @@ local REACTIVE_PREVIEW = {
 
 -- After a change to Use Blizzard's Rep Bars or the XP Bar Style: the page
 -- re-reads its values, and a change that leaves our bars wanted but never
--- built (they are built at login only while Blizzard's are off) asks for the
--- reload that creates them.
+-- built (they are built at login only while Blizzard's are off), or brings
+-- Blizzard's bars back after their events were dropped, asks for the reload
+-- that applies it.
 local function AfterDataBarSwitch(needsReload)
     EllesmereUI:RefreshPage()
     if needsReload then
         EllesmereUI:ShowConfirmPopup({
             title       = "Reload Required",
-            message     = "Your own XP and reputation bars are created on reload.",
+            message     = ns.EAB.db.profile.useBlizzardDataBars
+                and "Blizzard's XP and reputation bars return after a UI reload."
+                or "Your own XP and reputation bars are created on reload.",
             confirmText = "Reload Now",
             cancelText  = "Later",
             reload      = true,
@@ -284,6 +287,7 @@ local function DataBarKit(parent)
     local function RefreshDataBar(bk)
         local f = ns.dataBarFrames and ns.dataBarFrames[bk]
         if f and f._updateFunc then f._updateFunc() end
+        ns.RefreshDataBarPreview(bk, true)
     end
 
     -- Custom Border (each data-bar section's opt-in). Its two sync links copy
@@ -442,7 +446,7 @@ local function DataBarKit(parent)
                   if defTh then s.borderThickness = defTh end
                   Done()
               end) },
-            EllesmereUI.BorderPxSliderCfg{ text="Border Size", tooltip=false,
+            EllesmereUI.BorderPxSliderCfg{ text="Border Size",
               disabled=_blizzDis, disabledTooltip=BLIZZ_DIS_TIP, rawTooltip=true,
               -- The step the bar renders with (ResolveBorderThickness): an
               -- unknown thickness is thin.
@@ -739,10 +743,13 @@ local function DataBarKit(parent)
     -- Click Through | Text Size. While Never only the rows up to Visibility
     -- are built. Returns the new y and the Visibility row.
     function K.Section(y, barKey, sectionTitle, visLabel, lead)
-        local _, h
+        local _, h, hdr
         local function S() return EAB.db.profile.bars[barKey] end
 
-        _, h = W:SectionHeader(parent, sectionTitle, y);  y = y - h
+        hdr, h = W:SectionHeader(parent, sectionTitle, y);  y = y - h
+        -- The Move in Unlock Mode button on this bar's section: greyed while
+        -- Blizzard's bars are in use, since our bar (and its mover) is not built then.
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = barKey, disabled = _blizzDis, disabledTooltip = BLIZZ_DIS_TIP, rawTooltip = true })
         if lead then y = lead(y) end
         -- Custom Border, the opt-in for this bar's own border style, size and
         -- color, fills the Visibility row's free slot. Its rows below are built
@@ -807,10 +814,18 @@ local function BuildMenuBagsRepPage(pageName, parent, yOffset)
         microOpts.rightVis = VisOpts("BagBar", "Bag Bar Visibility")
         _, h = EllesmereUI.BuildVisibilityRow(W, parent, y, microOpts);  y = y - h
     end
-    -- Their end caps, as an action bar's (sized from Action Bar 1's
-    -- buttons). No Apply to All link: a first-install span makes the two
-    -- differ on purpose.
+    -- Their skins: the Blizzard Skins+ Micro Menu and Bag Bar cards' style,
+    -- mirrored (one setting; none while that module is off, and no Bag Bar
+    -- skin off WoW Forever). Then their end caps, as an action bar's (sized
+    -- from Action Bar 1's buttons; no Apply to All link: a first-install span
+    -- makes the two differ on purpose). Without the Bag Bar skin the slots
+    -- fill in order, so no blank is left mid-section.
     do
+        local SkinCfg = EllesmereUI.WindowSkinStyleCfg
+        local microSkin = SkinCfg and SkinCfg("micromenu", "Micro Menu Skin",
+            "Same setting as the Micro Menu card on Blizzard Skins+ > Window Skins.")
+        local bagSkin = SkinCfg and SkinCfg("bagbar", "Bag Bar Skin",
+            "Same setting as the Bag Bar card on Blizzard Skins+ > Window Skins.")
         local function Ctl(key, label)
             return EndCapsCtl({
                 key = function() return key end,
@@ -825,10 +840,20 @@ local function BuildMenuBagsRepPage(pageName, parent, yOffset)
             })
         end
         local mc, bc = Ctl("MicroBar", "Micro Menu End Caps"), Ctl("BagBar", "Bag Bar End Caps")
-        local capsRow
-        capsRow, h = W:DualRow(parent, y, mc.Cfg(), bc.Cfg());  y = y - h
-        mc.Build(capsRow._leftRegion)
-        bc.Build(capsRow._rightRegion)
+        local row
+        if microSkin and bagSkin then
+            _, h = W:DualRow(parent, y, microSkin, bagSkin);  y = y - h
+        end
+        if microSkin and not bagSkin then
+            row, h = W:DualRow(parent, y, microSkin, mc.Cfg());  y = y - h
+            mc.Build(row._rightRegion)
+            row, h = W:DualRow(parent, y, bc.Cfg(), EllesmereUI.BlankRowCfg());  y = y - h
+            bc.Build(row._leftRegion)
+        else
+            row, h = W:DualRow(parent, y, mc.Cfg(), bc.Cfg());  y = y - h
+            mc.Build(row._leftRegion)
+            bc.Build(row._rightRegion)
+        end
     end
 
     _, h = W:Spacer(parent, y, 12);  y = y - h

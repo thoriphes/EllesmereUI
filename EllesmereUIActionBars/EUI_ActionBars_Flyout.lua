@@ -219,7 +219,12 @@ local function OnBlizzardFlyoutShow(flyout)
 end
 
 -------------------------------------------------------------------------------
---  Hook Installation (deferred -- SpellFlyout may not exist at load time)
+--  Hook Installation (at login, with PLAYER_ENTERING_WORLD as the retry when
+--  SpellFlyout is not there yet). WoW Forever's Gamepad interface style shows
+--  and hides the flyout from secure code, where a hook of ours would taint
+--  it on a client whose navigation still can be (EllesmereUI.PadTaintStandDown):
+--  there the flyout keeps Blizzard's look for the session, decided once
+--  logged in.
 -------------------------------------------------------------------------------
 local function InstallBlizzFlyoutHook()
     local sf = _G.SpellFlyout
@@ -229,14 +234,14 @@ local function InstallBlizzFlyoutHook()
     sf:HookScript("OnShow", OnBlizzardFlyoutShow)
     return true
 end
-if not InstallBlizzFlyoutHook() then
+do
     -- Shell from the main file's pool: born at ActionBars' file scope so the
     -- handler work bills this addon (see the pool note there).
     local hookFrame = ns.TakeShell()
     hookFrame:RegisterEvent("PLAYER_LOGIN")
     hookFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
     hookFrame:SetScript("OnEvent", function(self)
-        if InstallBlizzFlyoutHook() then
+        if EllesmereUI.PadTaintStandDown() or InstallBlizzFlyoutHook() then
             self:UnregisterAllEvents()
             self:SetScript("OnEvent", nil)
         end

@@ -9,6 +9,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUINameplates"]
 if not ns then return end  -- module disabled: no options page
 
+-- The options page frame pool (EllesmereUI_FramePool.lua): frames made under a
+-- pooled page part are handed back to the page's next build.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 -- The nameplate Threat % cog's rows (WoW Forever): get(key) reads the
 -- profile, set(key, v) writes it and refreshes the text.
 if EllesmereUI.IS_FOREVER then
@@ -44,14 +48,14 @@ if EllesmereUI.IS_FOREVER then
             GapColor("threatGapAheadColor", "Ahead Color", "When your threat is higher."),
             GapColor("threatGapBehindColor", "Behind Color", "When theirs is higher."),
             Slider("threatPctSize", "Size", 6, 20),
-            Slider("threatPctXOffset", "X Offset", -100, 100),
-            Slider("threatPctYOffset", "Y Offset", -100, 100),
+            Slider("threatPctXOffset", "X Offset", -300, 300),
+            Slider("threatPctYOffset", "Y Offset", -300, 300),
         }
     end
 end
 
 -- EUI_DEBUFF_COLORS: the per-class debuff lists (the list kit lives in
--- EllesmereUINameplates_DebuffColors.lua). Under CLASSES one expandable card
+-- EllesmereUINameplates_DebuffColors.lua). One expandable card
 -- per class that holds an entry, its icon and its name in its class color on
 -- the header; Add Class, one wide button below them, starts one. Inside, the debuffs run down the left column
 -- and the combos down the right, each with up/down arrows beside its name
@@ -86,9 +90,12 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
             ns.DebuffColors_RequestRefresh()
         end
     end
+    -- rgn: the row reporting the write to Spec Overrides, its slot read before the
+    -- write (a structure change then rebuilds the page, dressing the row again).
     local function Write(class, singles, combos, rgn)
+        local snap = rgn and EllesmereUI._SOAttribution(rgn)
         ns.db.profile[DC.Key(class)] = DC.Encode(singles, combos)
-        if rgn then EllesmereUI._NotifySettingWrite(rgn) end
+        if rgn then EllesmereUI._NotifySettingWrite(rgn, snap) end
         Apply()
     end
     local function Rebuild() EllesmereUI:RefreshPage(true) end
@@ -191,6 +198,10 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         if cell.kind == "combo" then return EllesmereUI.Lf("%1$d. Combo", cell.n) end
         return EllesmereUI.Lf("%1$d. Debuff", cell.n)
     end
+    local function MissingOf(cell)
+        local e = Read(cell.class)[cell.n]
+        return e ~= nil and e.missing == true
+    end
     local function FullLabel(cell)
         if cell.kind == "combo" then
             return EllesmereUI.Lf("%1$s Combo %2$d", NAME[cell.class], cell.n)
@@ -201,15 +212,30 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         local e = Read(cell.class)[cell.n]
         return e and e.spell or 0
     end
-    -- A spell another debuff of the class already holds: picking it again
-    -- would only duplicate that row, so its menu item is greyed with the
-    -- reason and Custom Spell... refuses it (the arrows move a debuff).
+    -- A spell another debuff of the class already holds in the same state:
+    -- picking it again would only duplicate that row, so its menu item is greyed
+    -- with the reason and Custom Spell... refuses it (the arrows move a debuff).
     local IN_USE = "Already in use. Use the arrows to reorder."
-    local function HeldElsewhere(cell, id)
-        for n, e in ipairs((Read(cell.class))) do
-            if n ~= cell.n and e.spell == id then return true end
+    local function HeldElsewhere(cell, id, missing, singles)
+        if missing == nil then missing = MissingOf(cell) end
+        for n, e in ipairs(singles or Read(cell.class)) do
+            if n ~= cell.n and e.spell == id and (e.missing == true) == missing then return true end
         end
         return false
+    end
+    -- Whether MAX_MISSING other rows already color a chosen debuff while it is
+    -- missing (the plates draw no more). above: only rows higher in the list
+    -- count, as the plates keep the first MAX_MISSING.
+    local MISSING_FULL = EllesmereUI.Lf("Up to %1$d debuffs can be Missing.", DC.MAX_MISSING)
+    local function MissingFull(cell, singles, above)
+        local ids, n = {}, 0
+        for i, e in ipairs(singles or Read(cell.class)) do
+            if above and i >= cell.n then break end
+            if i ~= cell.n and e.missing and e.spell > 0 and not ids[e.spell] then
+                ids[e.spell], n = true, n + 1
+            end
+        end
+        return n >= DC.MAX_MISSING
     end
     local function ComboSpells(cell)
         local _, combos = Read(cell.class)
@@ -225,6 +251,12 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         if not e or e.spell == id then return end
         e.spell = id
         Write(cell.class, singles, combos, rgn)
+        EllesmereUI:RefreshPage()
+    end
+    local function SetMissing(cell, missing)
+        local singles, combos = Read(cell.class)
+        singles[cell.n].missing = missing or nil
+        Write(cell.class, singles, combos, cell.rgn)
         EllesmereUI:RefreshPage()
     end
     local function Move(cell, dir)
@@ -271,13 +303,14 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
     end
 
     -- Debuff Coloring: a pure view over debuffColorsEnabled (off = None) and
-    -- debuffColorsBorder (on = Color Border, else Color Nameplate). Color
-    -- Border's cog (Extra Border Size) shows only over a Basic or Custom Solid
-    -- border; a textured custom border is recolored as it is. Both checks
-    -- follow the runtime's border reading (BorderSpec in the module).
+    -- the module's mode (DC.Mode: Texture Nameplate and Color Name in
+    -- debuffColorsMode, else debuffColorsBorder picks Color Border or Color
+    -- Nameplate). Color Border's cog (Extra Border Size) shows only over a
+    -- Basic or Custom Solid border; a textured custom border is recolored as it
+    -- is. Both checks follow the runtime's border reading (BorderSpec in the module).
     local function Mode()
         if Off() then return "none" end
-        return Get("debuffColorsBorder") == true and "border" or "nameplate"
+        return DC.Mode(Get)
     end
     local function NoBorder()
         if EllesmereUI.BlizzStyle.Get("nameplates") then return true end
@@ -303,19 +336,25 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
     _, h = W:SectionHeader(parent, "DEBUFF BASED NAMEPLATE COLORING", y); y = y - h
     modeRow, h = W:DualRow(parent, y,
         { type="dropdown", text="Debuff Coloring",
-          values={ none = "None", nameplate = "Color Nameplate", border = "Color Border" },
-          order={ "none", "nameplate", "border" },
+          values={ none = "None", nameplate = "Color Nameplate", texture = "Texture Nameplate",
+                   border = "Color Border", name = "Color Name" },
+          order={ "none", "nameplate", "texture", "border", "name" },
           disabledValues=function(key)
               if key == "border" and NoBorder() then return "This option requires a Border to be selected" end
+              if key == "name" and not ns.FindNameSlot() then return "This option requires the enemy name to be shown" end
               return false
           end,
           getValue=Mode,
           setValue=EllesmereUI.SectionToggleSetValue(function(v)
-              ns.db.profile.debuffColorsEnabled = v ~= "none"
-              if v ~= "none" then ns.db.profile.debuffColorsBorder = v == "border" end
+              local db = ns.db.profile
+              db.debuffColorsEnabled = v ~= "none"
+              if v ~= "none" then
+                  db.debuffColorsBorder = v == "border"
+                  db.debuffColorsMode = (v == "texture" or v == "name") and v or nil
+              end
               ns.DebuffColors_Refresh()
           end),
-          tooltip="Colors enemy health bars, or their borders, while the chosen debuffs are on them." },
+          tooltip="Colors enemy health bars, their borders or their names while the chosen debuffs are on them." },
         { type="toggle", text="Only My Debuffs",
           getValue=function() return Get("debuffColorsPlayerOnly") ~= false end,
           setValue=function(v)
@@ -344,6 +383,21 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         local function ShowCog() cog:SetShown(StripBorder()) end
         ShowCog()
         EllesmereUI.RegisterWidgetRefresh(ShowCog)
+    end
+
+    -- Texture Nameplate's texture, the row below while it is picked (unset reads
+    -- the health bar's own).
+    if Mode() == "texture" then
+        local env = ns._NPO_OptEnv
+        _, h = W:DualRow(parent, y,
+            { type="dropdown", text="Texture", values=env.hbtValues, order=env.hbtOrder,
+              tooltip="The texture the debuff color is drawn in.",
+              getValue=function() return Get("debuffColorsTexture") or Get("healthBarTexture") or "none" end,
+              setValue=function(v)
+                  ns.db.profile.debuffColorsTexture = v
+                  Apply()
+              end },
+            EllesmereUI.BlankRowCfg()); y = y - h
     end
 
     -- Section gate: the rows below exist only while Debuff Coloring is on (the
@@ -400,6 +454,15 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
 
     local SINGLE_TIP = "Higher in the list wins when several are up."
     local COMBO_TIP = "Combos win over single debuffs; higher in the list wins."
+    local STATE_ORDER = { "applied", "missing" }
+    local STATE_VALUES = { applied = "Applied", missing = "Missing", _menuOpts = {
+        onItemHover = function(key, item)
+            if key == "missing" then
+                EllesmereUI.ShowWidgetTooltip(item, EllesmereUI.L("Colors enemies you fight without this debuff."))
+            end
+        end,
+        onItemLeave = function() EllesmereUI.HideWidgetTooltip() end,
+    } }
 
     -- A debuff: its spell menu (Remove, Custom Spell..., the class's presets,
     -- then its custom spells) with its color inline. The custom tail follows
@@ -449,6 +512,10 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
                         EllesmereUI.PrintError(EllesmereUI.L("Already in use. Use the arrows to reorder."))
                         return
                     end
+                    if MissingOf(cell) and MissingFull(cell, nil, SpellOf(cell) > 0) then
+                        EllesmereUI.PrintError(MISSING_FULL)
+                        return
+                    end
                     SetSpell(cell, value, cell.rgn)
                 end,
             })
@@ -480,13 +547,35 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
                 if id then SetSpell(cell, id) end
             end,
             -- Never the row's own spell (a list saved with a duplicate keeps
-            -- its label lit).
+            -- its label lit). A Missing row past MAX_MISSING shows why it colors
+            -- nothing; an unchosen one may not take a spell once the rest are full.
             disabledValues=function(key)
-                local id = tonumber(key)
-                if id and id ~= SpellOf(cell) and HeldElsewhere(cell, id) then return IN_USE end
-                return false
+                local id, singles = tonumber(key), Read(cell.class)
+                local e = singles[cell.n]
+                if not id or (e and e.spell == id) then return false end
+                local missing = e ~= nil and e.missing == true
+                if HeldElsewhere(cell, id, missing, singles) then return IN_USE end
+                return missing and MissingFull(cell, singles, e.spell > 0) and MISSING_FULL or false
             end,
             tooltip=SINGLE_TIP }
+    end
+    -- Applied / Missing, beside the spell menu; a state a same-spell row holds is
+    -- greyed, and Missing once MAX_MISSING rows use it.
+    local function StateDropdown(rgn, cell)
+        local dd = EllesmereUI.BuildDropdownControl(rgn, 90, rgn:GetFrameLevel() + 3, STATE_VALUES, STATE_ORDER,
+            function() return MissingOf(cell) and "missing" or "applied" end,
+            function(v) SetMissing(cell, v == "missing") end,
+            function(key)
+                local singles, missing = Read(cell.class), key == "missing"
+                local e = singles[cell.n]
+                if not e or missing == (e.missing == true) then return false end
+                if missing and MissingFull(cell, singles) then return MISSING_FULL end
+                return e.spell > 0 and HeldElsewhere(cell, e.spell, missing, singles)
+                    and "Another row already uses this debuff this way." or false
+            end)
+        PP.Point(dd, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = dd
+        EllesmereUI.RegisterWidgetRefresh(dd._refreshLabel)
     end
     local function SingleChrome(rgn, cell)
         ReorderArrows(rgn, cell)
@@ -498,6 +587,7 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         end
         Sync()
         EllesmereUI.RegisterWidgetRefresh(Sync)
+        StateDropdown(rgn, cell)
         EllesmereUI.BuildInlineSwatches(rgn, { {
             tooltip = "Debuff Color",
             getValue = function()
@@ -679,11 +769,13 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
             rgn._captureCfg = setmetatable({ text = FullLabel(c) }, { __index = rgn._captureCfg })
         end
         if c.kind == "combo" then ComboChrome(rgn, c) else SingleChrome(rgn, c) end
-        -- The entry Add just made: its own row takes the write.
+        -- The entry Add just made: its own row takes the write (its slot read now,
+        -- while this build's row is its dress).
         local a = debuffColorAdded
         if a and a.kind == c.kind and a.class == c.class and a.n == c.n then
             debuffColorAdded = nil
-            EllesmereUI._NotifySettingWrite(rgn)
+            local snap = EllesmereUI._SOAttribution(rgn)
+            EllesmereUI._NotifySettingWrite(rgn, snap)
         end
     end
 
@@ -757,12 +849,9 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         end
     end
 
-    -- The cards (the house module card, as on Global Settings > Fonts).
+    -- The cards (the house module card, as on Global Settings > Fonts), the
+    -- first right under the settings above.
     if debuffColorOpen[playerClass] == nil then debuffColorOpen[playerClass] = true end
-    -- CLASSES sits closer to the mode row than a full header's height.
-    if #listed > 0 then
-        _, h = W:SectionHeader(parent, "CLASSES", y + 12); y = y - h + 12
-    end
     for _, entry in ipairs(listed) do
         local class, singles, combos = entry.class, entry.singles, entry.combos
         local tile = { key = class, display = NAME[class],
@@ -787,7 +876,14 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         wide, h = W:WideButton(parent, "+ Add Class", y,
             function() if openClass then openClass() end end, CLASS_W); y = y - h
         if not EllesmereUI._prebuilding then
-            openClass = AddPicker((wide:GetChildren()), unlisted, AddSingle)
+            -- The row's button: its one shown child (page reuse keeps the row's
+            -- children of its earlier dresses among its children, hidden).
+            local btn
+            local kids = { wide:GetChildren() }
+            for i = 1, #kids do
+                if kids[i]:IsShown() then btn = kids[i]; break end
+            end
+            if btn then openClass = AddPicker(btn, unlisted, AddSingle) end
         end
     end
     _, h = W:Spacer(parent, y, 20); y = y - h
@@ -925,7 +1021,8 @@ local function MakeColorPreviewBar(parentRow, colorType, colorKey, anchorFrame)
                 elseif ns.IsComboHealthText(element) then
                     local valStr = tostring(healthVal):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
                     pctFS:SetTextColor(sc.r, sc.g, sc.b, 1)
-                    ns.SetCombinedHealthText(pctFS, element, healthPct .. "%", valStr)
+                    local maxStr = tostring(FAKE_MAX_HP):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+                    ns.SetCombinedHealthText(pctFS, element, healthPct .. "%", valStr, maxStr)
                     pctFS:SetPoint(slot.anchor, health, slot.anchor, slot.xOff, 0)
                     pctFS:Show()
                 end
@@ -1126,7 +1223,7 @@ local function MakeColorPreviewBar(parentRow, colorType, colorKey, anchorFrame)
             nameFS:Hide()
         else
             local pt, xb, jh = ns.GetCastTextAnchor(colNameSide, colShowTimer and colTimerSide == colNameSide, colTimerW, false)
-            nameFS:SetWidth(colCombine and (BAR_W * 0.80) or colNameW)
+            nameFS:SetWidth(colCombine and (BAR_W * ((dbRef and dbRef.castCombinedWidthPct) or defaults.castCombinedWidthPct) / 100) or colNameW)
             nameFS:SetJustifyH(jh)
             nameFS:SetPoint(pt, cast, pt, xb, 0)
         end
@@ -1309,6 +1406,7 @@ local function BuildColorsPage(pageName, parent, yOffset)
             local db = DB()
             if OOCOn() ~= on then db.darkenEnemiesOOC = on end
             if on and OOCRecolorOn() ~= (v == "color") then db.darkenOOCRecolor = (v == "color") end
+            if ns.NP_CastTintsDirty then ns.NP_CastTintsDirty() end
             for _, plate in pairs(ns.plates) do
                 plate:UpdateHealthColor()
             end
@@ -1328,6 +1426,7 @@ local function BuildColorsPage(pageName, parent, yOffset)
               end,
               setValue = function(r, g, b)
                 DB().darkenOOCColor = { r = r, g = g, b = b }
+                if ns.NP_CastTintsDirty then ns.NP_CastTintsDirty() end
                 for _, plate in pairs(ns.plates) do
                     plate:UpdateHealthColor()
                 end
@@ -1447,6 +1546,63 @@ local function BuildColorsPage(pageName, parent, yOffset)
         })
     end
 
+    -- Color Casting Enemies | (blank, last row of the section)
+    local castingRow
+    castingRow, h = W:DualRow(parent, y,
+        { type="toggle", text="Color Casting Enemies",
+          getValue=function() return DBVal("castingEnemyColors") == true end,
+          setValue=function(v)
+            DB().castingEnemyColors = v
+            RefreshAllPlates()
+            EllesmereUI:RefreshPage()
+          end,
+          tooltip="Enemies not colored as Spell Casters take the Interruptible Caster or Uninterruptible Caster color once they cast a spell that can or cannot be interrupted." },
+        EllesmereUI.BlankRowCfg());  y = y - h
+
+    -- Inline Interruptible / Uninterruptible swatches, then a cog with the mob types each applies to.
+    if not EllesmereUI._prebuilding then
+        local rgn = castingRow._leftRegion
+        local isCastingOff = function() return DBVal("castingEnemyColors") ~= true end
+        EllesmereUI.BuildInlineSwatches(rgn, {
+            { tooltip = "Interruptible Caster",
+              getValue = function() return DBColor("castingIntColor") end,
+              setValue = function(r, g, b)
+                DB().castingIntColor = { r = r, g = g, b = b }
+                RefreshAllPlates()
+              end },
+            { tooltip = "Uninterruptible Caster",
+              getValue = function() return DBColor("castingUnintColor") end,
+              setValue = function(r, g, b)
+                DB().castingUnintColor = { r = r, g = g, b = b }
+                RefreshAllPlates()
+              end },
+        }, { disabled = isCastingOff, disabledTooltip = "Color Casting Enemies" })
+        local typeItems = {
+            { key="Normal",   label="Normal / Trivial", fixed=true },
+            { key="Elite",    label="Elite",            fixed=true },
+            { key="MiniBoss", label="Mini-Bosses",      fixed=true },
+            { key="Boss",     label="Bosses",           fixed=true },
+        }
+        local function TypeRow(label, prefix)
+            -- hint replaces the widget's "Drag to Reorder": every row is fixed.
+            return { type="reordercheck", label=label, ddWidth=170, items=typeItems, hint="Enemy Types",
+              get=function(key) return DBVal(prefix .. key) end,
+              set=function(key, v)
+                DB()[prefix .. key] = v
+                RefreshAllPlates()
+              end }
+        end
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Casting Enemies",
+            disabled = isCastingOff,
+            disabledTooltip = "Color Casting Enemies",
+            rows = {
+                TypeRow("Interruptible Applies To", "castingInt"),
+                TypeRow("Uninterruptible Applies To", "castingUnint"),
+            },
+        })
+    end
+
     _, h = W:Spacer(parent, y, 20);  y = y - h
 
     -----------------------------------------------------------------------
@@ -1455,12 +1611,17 @@ local function BuildColorsPage(pageName, parent, yOffset)
     _, h = W:SectionHeader(parent, SECTION_THREAT, y);  y = y - h
 
     -- Show Threat Colors (threatColorMode): Never / Instances (dungeons, raids and
-    -- delves) / Always; an unknown saved value reads as the default. Never locks every
-    -- threat-color control below. The WoW Forever Threat % rows are their own feature
-    -- and stay live.
+    -- delves) / Group or Pet ("always": everywhere) / Always ("alwaysSolo"); an unknown
+    -- saved value reads as the default. Never locks every threat-color control below.
+    -- The WoW Forever Threat % rows are their own feature and stay live. Under the first
+    -- two, damage dealers and healers get the colors in a group or with a pet out; Always
+    -- drops that rule. On WoW Forever the tank shapes and Righteous Fury count as tanking
+    -- while nobody in the group has the tank role.
     local function threatModeGet()
         local v = DBVal("threatColorMode")
-        if v ~= "never" and v ~= "instances" and v ~= "always" then v = defaults.threatColorMode end
+        if v ~= "never" and v ~= "instances" and v ~= "always" and v ~= "alwaysSolo" then
+            v = defaults.threatColorMode
+        end
         return v
     end
     local function threatNever() return threatModeGet() == "never" end
@@ -1468,9 +1629,9 @@ local function BuildColorsPage(pageName, parent, yOffset)
     -- Row 1: Show Threat Colors (left) ---- Tank Threat (right)
     _, h = W:DualRow(parent, y,
         { type="dropdown", text="Show Threat Colors",
-          tooltip="Where nameplates use the threat colors below. Instances covers dungeons, raids and delves.",
-          values={ never="Never", instances="Instances", always="Always" },
-          order={ "never", "instances", "always" },
+          tooltip="Where nameplates show threat colors.",
+          values={ never="Never", instances="Instances", always="Group or Pet", alwaysSolo="Always" },
+          order={ "never", "instances", "always", "alwaysSolo" },
           getValue=threatModeGet,
           setValue=function(v)
             DB().threatColorMode = v

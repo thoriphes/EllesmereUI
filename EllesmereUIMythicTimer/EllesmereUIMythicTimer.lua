@@ -3,7 +3,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  EllesmereUIMythicTimer.lua  --  M+ Timer overlay for EllesmereUI
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.RegisterNumberFormatCallback) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the run summary redraws through the parent's RegisterNumberFormatCallback)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 local EMT = EllesmereUI.Lite.NewAddon(ADDON_NAME)
@@ -12,12 +12,13 @@ local EMT = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 local floor, min, max, abs = math.floor, math.min, math.max, math.abs
 local format = string.format
 local GetWorldElapsedTime = GetWorldElapsedTime
-local GetTimePreciseSec = GetTimePreciseSec
 local wipe = wipe
 
 -- Constants
 local PLUS_TWO_RATIO   = 0.8
 local PLUS_THREE_RATIO = 0.6
+-- SEASON UPDATE: the affix that adds time to the key timer (Challenger's Peril,
+-- +90 s; the only such affix in the 12.1.5 affix table, build 70575).
 local CHALLENGERS_PERIL_AFFIX_ID = 152
 
 local COMPARE_NONE = "NONE"
@@ -372,6 +373,56 @@ local DB_DEFAULTS = {
             colInterrupts    = true,
             colDeaths        = true,
         },
+        -- Kick Tracker (Mythic+ Tools tab): who in the group kicked each enemy
+        -- and when their interrupt comes back (the kick engine), shown as an
+        -- icon with a cooldown on the kicked enemy's nameplate and as a bar
+        -- per member. Disabled by default; nothing registers until it is
+        -- enabled (zero cost off). Runtime in EUI_MythicTimer_KickEngine.lua /
+        -- _KickPlates.lua / _KickBars.lua over the parent's interrupt data
+        -- (EllesmereUI_KickData.lua).
+        kickTracker = {
+            enabled      = false,     -- off by default
+            -- Where to Show: checked = true. An unchecked default entry is
+            -- stored as false, never nil (a nil reads back as true at login).
+            whereToShow  = { dungeon_mythic = true, arena = true },
+            focusMarker  = 0,         -- Focus Announce: the raid marker (1-8) told to the party in a Mythic dungeon; 0 = none
+            -- announceText: the player's own Focus Announce line (Edit Announce Text), {marker} = the raid marker; unset = the default line
+            showPlates   = true,      -- the nameplate icon
+            aboveOverlap = true,      -- Show Above Overlapping Nameplates: the icons draw over every other nameplate (the plates' lift), never behind one
+            iconStyle    = "kick",    -- "kick" | "spec" | "class": the kicker's interrupt icon, spec icon or classicon
+            size         = 28,        -- icon size in px (16-48)
+            anchor       = "LEFT",    -- "LEFT" | "RIGHT" | "TOP" | "BOTTOM": side of the nameplate
+            offsetX      = -4,        -- EllesmereUI Nameplates: from the health bar (cast bar for BOTTOM) edge
+            offsetY      = 0,         -- EllesmereUI Nameplates: vertical offset
+            otherOffsetX = 0,         -- other nameplates: from the base nameplate edge
+            otherOffsetY = 0,         -- other nameplates: vertical offset
+            classBorder  = true,      -- border in the kicker's class color (black when off or hidden)
+            swipe        = true,      -- the cooldown swipe over the icon
+            desaturate   = false,     -- grey the icon while the kicker's interrupt is on cooldown
+            showTimer    = true,      -- the seconds left on the kicker's interrupt
+            timerSize    = 11,        -- timer text size (6-24)
+            timerPos     = "center",  -- "center" | "topleft" | "topright" | "bottomleft" | "bottomright"
+            timerX       = 0,         -- timer text offsets
+            timerY       = 0,
+            -- The bars: a row per group member with an interrupt.
+            showBars     = true,
+            barWidth     = 200,
+            barHeight    = 22,
+            barSpacing   = 2,
+            barGrowUp    = false,     -- false = rows stack downward
+            texture      = "none",    -- the rows' bar texture (the Textures page's row writes this key)
+            barBgMode    = "class",   -- "class" = a darkened class colour behind each row | "custom" = barBgColor
+            barBgColor   = { r = 0, g = 0, b = 0, a = 0.45 },
+            barBorderSize = 0,
+            barShowIcon  = true,      -- the interrupt's icon at the row's end
+            barIconOnRight = false,
+            barShowName  = true,
+            barNameSize  = 11,
+            barShowTimer = true,      -- seconds left while on cooldown
+            barTimerSize = 11,
+            barIncludeSelf = true,    -- your own row
+            barShowMarker = true,     -- the raid marker of the mob the member interrupted, beside their row
+        },
     },
 }
 
@@ -622,8 +673,9 @@ local function SaveFastestRunSplits()
     local run = currentRun
     local elapsed = run.elapsed
     -- The completion time can come from GetWorldElapsedTime after a
-    -- depletion, which may hand back a secret: no compare on that.
-    if type(elapsed) ~= "number" or (issecretvalue and issecretvalue(elapsed)) then return end
+    -- depletion, which may hand back a secret: no compare on that. A run
+    -- with no known time (0) never replaces the stored one.
+    if type(elapsed) ~= "number" or (issecretvalue and issecretvalue(elapsed)) or elapsed <= 0 then return end
     for _, mode in ipairs(FASTEST_RUN_SCOPES) do
         local scopeKey = GetScopeKey(run, mode)
         if scopeKey then
@@ -632,7 +684,8 @@ local function SaveFastestRunSplits()
             if not previousRunTime or elapsed < previousRunTime then
                 store[scopeKey].overallRunTime = elapsed
                 for objectiveIndex, objective in ipairs(run.objectives) do
-                    store[scopeKey][objectiveIndex] = objective.elapsed
+                    local t = objective.elapsed
+                    store[scopeKey][objectiveIndex] = (t and t > 0) and t or nil
                 end
             end
         end
@@ -718,21 +771,50 @@ local function UpdateObjectives()
             local wasCompleted = obj.completed
             obj.completed = info.completed
 
-            if obj.completed and not wasCompleted then
+            if obj.completed and (not wasCompleted or obj._stampLater) then
                 -- On reload, already-completed objectives would get current elapsed.
-                -- Use persisted split time if available (saved on first completion).
-                local saved = db and db.profile._activeRunSplits and db.profile._activeRunSplits[i]
+                -- Use persisted split time if available (saved on first completion),
+                -- only from the table this run's check passed. Until the timer reads a
+                -- real time nothing is stamped: the objective waits for the first tick
+                -- that does.
+                local splits = db and db.profile._activeRunSplits
+                local saved = splits and splits == currentRun._checkedSplits and splits[i]
                 if saved and saved > 0 then
+                    obj._stampLater = nil
                     obj.elapsed = saved
-                else
-                    obj.elapsed = elapsed
-                    -- Persist for reload survival
-                    if db and db.profile then
-                        if not db.profile._activeRunSplits then db.profile._activeRunSplits = {} end
-                        db.profile._activeRunSplits[i] = elapsed
+                    -- The comparison it had when first stamped: its own banked best must
+                    -- not become its reference. Looked up again when compare is off or the
+                    -- fastest run is the reference (written only at completion).
+                    local refs = (db.profile.objectiveCompareMode or COMPARE_NONE) ~= COMPARE_NONE
+                        and not db.profile.showFastestRunSplits and splits.refs
+                    if refs and refs[i] ~= nil then
+                        local ref = refs[i] or nil
+                        obj.referenceElapsed = ref
+                        obj.compareDelta = ref and (saved - ref) or nil
+                        obj.isNewBest = ref == nil or saved < ref
+                    else
+                        UpdateObjectiveCompletion(obj, i)
                     end
+                elseif elapsed > 0 then
+                    obj._stampLater = nil
+                    obj.elapsed = elapsed
+                    UpdateObjectiveCompletion(obj, i)
+                    -- Persist for reload survival, with the run's server start time and
+                    -- the comparison the split got
+                    if db and db.profile then
+                        if not splits or splits ~= currentRun._checkedSplits then
+                            splits = { mapID = currentRun.mapID, level = currentRun.level,
+                                start = GetServerTime() - elapsed }
+                            db.profile._activeRunSplits = splits
+                            currentRun._checkedSplits = splits
+                        end
+                        splits[i] = elapsed
+                        splits.refs = splits.refs or {}
+                        splits.refs[i] = obj.referenceElapsed or false
+                    end
+                else
+                    obj._stampLater = true
                 end
-                UpdateObjectiveCompletion(obj, i)
             end
 
             obj.quantity = info.quantity or 0
@@ -798,22 +880,58 @@ local function UpdateObjectives()
     end
 end
 
--- Coalesced refresh
-local _refreshTimer
+-- Coalesced refresh (C_Timer.After returns nothing, so a flag marks the pending one)
+local _refreshPending = false
+local function FlushRefresh()
+    _refreshPending = false
+    if _G._EMT_StandaloneRefresh then _G._EMT_StandaloneRefresh() end
+end
 local function NotifyRefresh()
-    if _refreshTimer then return end
-    _refreshTimer = C_Timer.After(0.05, function()
-        _refreshTimer = nil
-        if _G._EMT_StandaloneRefresh then _G._EMT_StandaloneRefresh() end
-    end)
+    if _refreshPending then return end
+    _refreshPending = true
+    C_Timer.After(0.05, FlushRefresh)
 end
 
 -- Elapsed time: read from GetWorldElapsedTime(1) each tick. The Blizzard
--- hook on ChallengeModeBlock.UpdateTime is the primary tick driver (once
--- per second, zero cost outside M+). An OnUpdate fallback on our own
--- standalone frame ensures ticks keep firing even when QT reparents
--- ObjectiveTrackerFrame to a hidden container (which silences the hook).
+-- hook on ChallengeModeBlock.UpdateTime is the tick driver (every frame
+-- while a key's timer runs, zero cost outside M+); OnTimerTick keeps one
+-- pass per whole second.
 local _lastTickedSec = -1
+
+-- StartRun keeps saved splits of the same dungeon and level; the first real
+-- time decides whether they are this run's (a reload or re-entry) or an
+-- earlier key's. The saved start is the run's server start time: a later
+-- key starts at least the earlier run's first split later, while a reload
+-- reads the same run (death penalties only move the estimate earlier), so
+-- 30 s absorbs clock jitter. Tables saved before the stamp fall back to
+-- "no split later than now". The table that passes is the only one saved
+-- splits are read from; a different one (a profile switched in mid-key) is
+-- checked again, map and level included.
+local function CheckSavedSplits(elapsed)
+    currentRun._checkSplits = nil
+    currentRun._checkedSplits = nil
+    local splits = db and db.profile._activeRunSplits
+    if not splits then return end
+    local stale = splits.mapID ~= currentRun.mapID or splits.level ~= currentRun.level
+    if not stale and splits.start then
+        stale = GetServerTime() - elapsed > splits.start + 30
+    elseif not stale then
+        for k, t in pairs(splits) do
+            if type(k) == "number" and t > elapsed then stale = true; break end
+        end
+    end
+    if stale then
+        db.profile._activeRunSplits = nil
+    else
+        currentRun._checkedSplits = splits
+    end
+end
+
+-- A saved table this run has not checked arms the check again
+local function NoteSavedSplits()
+    local splits = db and db.profile._activeRunSplits
+    if splits and splits ~= currentRun._checkedSplits then currentRun._checkSplits = true end
+end
 
 local function OnTimerTick()
     if not currentRun.active then return end
@@ -828,6 +946,9 @@ local function OnTimerTick()
 
     currentRun.elapsed = elapsed
 
+    NoteSavedSplits()
+    if currentRun._checkSplits and elapsed > 0 then CheckSavedSplits(elapsed) end
+
     local deathCount, timeLost = C_ChallengeMode.GetDeathCount()
     currentRun.deaths = deathCount or 0
     currentRun.deathTimeLost = timeLost or 0
@@ -840,7 +961,11 @@ local function OnTimerTick()
     NotifyRefresh()
 end
 
--- Primary driver: hook Blizzard's ChallengeModeBlock.UpdateTime (1/sec).
+-- Primary driver: hook Blizzard's ChallengeModeBlock.UpdateTime. Blizzard's
+-- ScenarioTimerFrame calls it every frame while a key's timer runs; that frame
+-- has no parent and handles its own events, so hiding or reparenting
+-- ObjectiveTrackerFrame does not stop it.
+local _tickHooked = false
 do
     local block = (ScenarioObjectiveTracker and ScenarioObjectiveTracker.ChallengeModeBlock)
         or (ScenarioBlocksFrame and ScenarioBlocksFrame.ChallengeModeBlock)
@@ -848,12 +973,13 @@ do
         hooksecurefunc(block, "UpdateTime", function()
             OnTimerTick()
         end)
+        _tickHooked = true
     end
 end
 
--- Fallback driver: OnUpdate on the standalone frame, throttled to 1/sec.
--- Only runs while the frame is shown (active M+ key). Ensures the timer
--- stays accurate even when the hook is silenced by QT's reparent-to-hidden.
+-- Fallback driver, only when the hook could not be installed: OnUpdate on
+-- the standalone frame, throttled to 1/sec, running only while the frame is
+-- shown (an active M+ key).
 local _onUpdateAccum = 0
 local function OnUpdateFallback(_, dt)
     _onUpdateAccum = _onUpdateAccum + dt
@@ -862,8 +988,11 @@ local function OnUpdateFallback(_, dt)
     OnTimerTick()
 end
 
+local standaloneFrame
+local standaloneCreated = false
 local _timerLoopWanted = false
 local function StartTimerLoop()
+    if _tickHooked then return end
     _timerLoopWanted = true
     if standaloneFrame then
         _onUpdateAccum = 0
@@ -967,6 +1096,16 @@ local function StartRun()
     currentRun.mapID         = mapID
     currentRun.mapName       = mapName or "Unknown"
     currentRun.level         = level or 0
+    local splits = db and db.profile and db.profile._activeRunSplits
+    if splits and (splits.mapID ~= currentRun.mapID or splits.level ~= currentRun.level) then
+        db.profile._activeRunSplits = nil
+        splits = nil
+    end
+    -- A reload mid-key resumes past every saved split; a fresh key starts near 0.
+    -- The timer reads 0 both before a fresh key starts and until it is populated
+    -- after a reload, so the first tick that reads a real time decides.
+    currentRun._checkedSplits = nil
+    currentRun._checkSplits = splits and true or nil
     currentRun.maxTime       = timeLimit or 0
     currentRun.elapsed       = 0
     currentRun.deaths        = 0
@@ -985,8 +1124,6 @@ local function StartRun()
             currentRun.affixNames[i] = name or ""
         end
     end
-    currentRun.preciseStart = GetTimePreciseSec and GetTimePreciseSec() or nil
-    currentRun.preciseCompletedElapsed = nil
     currentRun._lastDungeonComplete = false
     currentRun._weightedObj = nil  -- populated by UpdateObjectives
     wipe(currentRun.objectives)
@@ -1015,8 +1152,12 @@ local function CompleteRun()
         local elapsedTime = select(2, GetWorldElapsedTime(1))
         currentRun.elapsed = elapsedTime or currentRun.elapsed
     end
-    if currentRun.preciseStart and GetTimePreciseSec then
-        currentRun.preciseCompletedElapsed = max(0, GetTimePreciseSec() - currentRun.preciseStart)
+    -- The check can still be waiting for a real time (a reload just before the last kill)
+    local e = currentRun.elapsed
+    NoteSavedSplits()
+    if currentRun._checkSplits and type(e) == "number" and not (issecretvalue and issecretvalue(e))
+            and e > 0 then
+        CheckSavedSplits(e)
     end
     UpdateObjectives()
     if db and db.profile then db.profile._activeRunSplits = nil end
@@ -1037,12 +1178,11 @@ local function ResetRun()
     wipe(playerDeaths)
     _prevDeathCount = 0
     wipe(_partyAlive)
-    currentRun.preciseStart = nil
-    currentRun.preciseCompletedElapsed = nil
     currentRun._lastDungeonComplete = false
     wipe(currentRun.affixes)
     wipe(currentRun.objectives)
-    if db and db.profile then db.profile._activeRunSplits = nil end
+    -- The saved splits stay: re-entering this run uses them again, and the
+    -- next key drops them (StartRun, CheckSavedSplits).
 
     StopTimerLoop()
 
@@ -1050,26 +1190,26 @@ local function ResetRun()
     NotifyRefresh()
 end
 
--- Preview data
+-- Preview data. SEASON UPDATE (cosmetic): a current-season dungeon and affixes,
+-- so LocalizePreview finds their names; shared with the Run Summary preview.
 local PREVIEW_RUN = {
     active        = true,
     completed     = false,
-    mapID         = 2648,
-    mapName       = "The Rookery",
+    mapID         = 585,
+    mapName       = "Voidscar Arena",
     level         = 12,
-    maxTime       = 1920,
+    maxTime       = 1800,
     elapsed       = 1380,
     deaths        = 2,
     deathTimeLost = 10,
     affixes       = {},
-    preciseCompletedElapsed = nil,
-    _previewAffixNames = { "Tyrannical", "Xal'atath's Bargain: Ascendant" },
-    _previewAffixIDs = { 9, 152 },
+    _previewAffixNames = { "Tyrannical", "Fortified" },
+    _previewAffixIDs = { 9, 10 },
     -- Current pull sample: two pulled mobs worth 18 and 14 forces (~13%).
     _previewPullValues = { 18, 14 },
     objectives    = {
-        { name = "Kyrioss",                 completed = true,  elapsed = 510,  quantity = 1,     totalQuantity = 1,   rawQuantity = 1, rawTotalQuantity = 1, percent = 0, isWeighted = false, previewSplit = 528 },
-        { name = "Stormguard Gorren",       completed = true,  elapsed = 1005, quantity = 1,     totalQuantity = 1,   rawQuantity = 1, rawTotalQuantity = 1, percent = 0, isWeighted = false, previewSplit = 972 },
+        { name = "Taz'Rah",                 completed = true,  elapsed = 510,  quantity = 1,     totalQuantity = 1,   rawQuantity = 1, rawTotalQuantity = 1, percent = 0, isWeighted = false, previewSplit = 528 },
+        { name = "Atroxus",                 completed = true,  elapsed = 1005, quantity = 1,     totalQuantity = 1,   rawQuantity = 1, rawTotalQuantity = 1, percent = 0, isWeighted = false, previewSplit = 972 },
         { name = "Lua Error Monstrosity",   completed = false, elapsed = 0,    quantity = 0,     totalQuantity = 1,   rawQuantity = 0, rawTotalQuantity = 1, percent = 0, isWeighted = false, previewSplit = 1500 },
         { name = "|cffff3333Ellesmere|r",    completed = false, elapsed = 0,    quantity = 0,     totalQuantity = 1,   rawQuantity = 0, rawTotalQuantity = 1, percent = 0, isWeighted = false, previewSplit = 1770 },
         { name = "Enemy Forces",            completed = false, elapsed = 0,    quantity = 78.42, totalQuantity = 100, rawQuantity = 188, rawTotalQuantity = 240, percent = 78.42, isWeighted = true },
@@ -1093,12 +1233,32 @@ local function LocalizePreview()
     end
 end
 
-_G._EMT_Apply = function()
+-- The timer's own repaint: the timer's options rows (the Mythic+ Timer page,
+-- its rows on the Fonts and Textures pages) call this on every write.
+_G._EMT_ApplyTimer = function()
     -- Render before CENTER re-apply so height is known (placeholder is 200px).
     if _G._EMT_StandaloneRefresh then _G._EMT_StandaloneRefresh() end
     if _G._EMT_ApplyStandalonePosition then
         _G._EMT_ApplyStandalonePosition()
     end
+end
+
+-- The whole module: a profile switch or a Spec Override flip lands here, and
+-- every Mythic+ Tools feature re-reads its settings from the current profile.
+_G._EMT_Apply = function()
+    _G._EMT_ApplyTimer()
+    if ns.TSB_Refresh then ns.TSB_Refresh() end
+    if ns.TFB_Refresh then ns.TFB_Refresh() end
+    if ns.RS_Apply then ns.RS_Apply() end
+    if ns.RS_Refresh then ns.RS_Refresh() end
+    if ns.KT_Refresh then ns.KT_Refresh() end
+end
+
+-- Whether the Mythic+ timer window itself is on. The parent's incompatible
+-- addon check asks this before naming another Mythic+ timer addon: those only
+-- clash with the timer window, not with the rest of Mythic+ Tools.
+_G._EMT_IsTimerEnabled = function()
+    return (db and db.profile and db.profile.enabled) and true or false
 end
 
 -- Preset system removed. Users tweak settings directly.
@@ -1124,13 +1284,12 @@ _G._EMT_ResetProfile = function()
     return true
 end
 
--- Standalone frame
-local standaloneFrame
-local standaloneCreated = false
+-- Standalone frame (standaloneFrame / standaloneCreated are declared above
+-- StartTimerLoop, which reads them)
 local unlockLayoutActive = false -- force preview layout while Unlock Mode is open
 
--- NOTE: this function must be defined HERE (after the "local standaloneFrame"
--- and "local db" declarations). Placed earlier in the file (before those
+-- NOTE: this function must come after the "local standaloneFrame" and
+-- "local db" declarations. Placed earlier in the file (before those
 -- locals) Lua would bind it to the same-named GLOBALS (which are never set)
 -- instead of the locals, so it would always hit its early return immediately.
 --
@@ -1860,7 +2019,7 @@ local function RenderStandalone()
     f:SetWidth(p.frameWidth or 260)
 
     -- Scale ownership lives in ApplyStandalonePosition (called from
-    -- _EMT_Apply on slider changes). Don't SetScale here -- doing so on
+    -- _EMT_ApplyTimer on slider changes). Don't SetScale here -- doing so on
     -- every render can race the anchor and visually shift the frame.
     local alpha = p.standaloneAlpha or 0.85
     f:SetBackdropColor(0.05, 0.04, 0.08, alpha)
@@ -2016,13 +2175,12 @@ local function RenderStandalone()
     local maxTime = run.maxTime or 0
     local timeLeft = max(0, maxTime - elapsed)
     local plusTwoT, plusThreeT = CalculateBonusTimers(maxTime, run.affixes)
-    local completedElapsed = run.preciseCompletedElapsed or elapsed
-    local colorElapsed = run.completed and completedElapsed or elapsed
+    -- A completed run's elapsed is its completion time (CompleteRun)
     local timerBarR, timerBarG, timerBarB
     if p.timerBarStyle == "SEGMENTS" then
-        timerBarR, timerBarG, timerBarB = GetTimerSegmentFillColor(p, colorElapsed, plusThreeT, plusTwoT)
+        timerBarR, timerBarG, timerBarB = GetTimerSegmentFillColor(p, elapsed, plusThreeT, plusTwoT)
     else
-        timerBarR, timerBarG, timerBarB = GetTimerBarFillColor(p, colorElapsed, plusThreeT, plusTwoT, maxTime)
+        timerBarR, timerBarG, timerBarB = GetTimerBarFillColor(p, elapsed, plusThreeT, plusTwoT, maxTime)
     end
 
     -- Build timer text per user-selected display mode.
@@ -2036,7 +2194,7 @@ local function RenderStandalone()
         -- Completed run: freeze the clock at the final elapsed seconds but preserve the
         -- user's chosen display mode so "/33:00" doesn't vanish on completion.
         local mode = p.timerDisplayMode or "REMAINING_TOTAL"
-        local elaStr = FormatTime(run.elapsed or completedElapsed or 0)
+        local elaStr = FormatTime(elapsed)
         local maxStr = FormatTime(maxTime)
         if mode == "REMAINING_TOTAL" then
             timerText = elaStr .. " / " .. maxStr
@@ -2064,7 +2222,7 @@ local function RenderStandalone()
     end
 
     local tR, tG, tB = 1, 1, 1
-    local depleted = (run.completed and completedElapsed > maxTime)
+    local depleted = (run.completed and elapsed > maxTime)
         or ((not run.completed) and timeLeft <= 0 and maxTime > 0)
     if depleted then
         tR, tG, tB = GetColor(p.timerExpiredColor, 0.9, 0.2, 0.2)
@@ -3035,7 +3193,10 @@ end
 -- so the next RenderStandalone() re-creates them from scratch. Use when a
 -- setting (e.g. text alignment) won't take effect via re-render alone.
 _G._EMT_RebuildStandalone = function()
-    if standaloneFrame then standaloneFrame:Hide() end
+    if standaloneFrame then
+        standaloneFrame:SetScript("OnUpdate", nil)   -- the timer fallback moves to the new frame
+        standaloneFrame:Hide()
+    end
     standaloneFrame = nil
     standaloneCreated = false
     wipe(objRows)
@@ -3176,23 +3337,29 @@ local function _unregisterRunEvents()
     SyncPullEvents()
 end
 
+-- Toggle high-frequency event subscriptions based on whether we're actually in a
+-- key. Outside M+ we don't want to wake on every quest update or subzone change.
+local function SyncRunEvents()
+    if currentRun.active then
+        _registerRunEvents()
+    else
+        _unregisterRunEvents()
+    end
+end
+
 for _, ev in ipairs(_ALWAYS_EVENTS) do runtimeFrame:RegisterEvent(ev) end
 runtimeFrame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_ENTERING_WORLD" then
         ApplyStandalonePosition()
         -- API data isn't fully populated at PEW; retry once after 10s
         -- to catch a /reload mid-key.
-        C_Timer.After(10, function() HandleRuntimeEvent("PLAYER_ENTERING_WORLD_DELAYED") end)
+        C_Timer.After(10, function()
+            HandleRuntimeEvent("PLAYER_ENTERING_WORLD_DELAYED")
+            SyncRunEvents()
+        end)
     end
     HandleRuntimeEvent(event)
-
-    -- Toggle high-frequency event subscriptions based on whether we're actually in a
-    -- key. Outside M+ we don't want to wake on every quest update or subzone change.
-    if currentRun.active then
-        _registerRunEvents()
-    else
-        _unregisterRunEvents()
-    end
+    SyncRunEvents()
 end)
 
 function EMT:OnInitialize()
@@ -3257,6 +3424,7 @@ function EMT:OnEnable()
     if ns.TSB_OnEnable then ns.TSB_OnEnable(db) end
     if ns.TFB_OnEnable then ns.TFB_OnEnable(db) end
     if ns.RS_OnEnable then ns.RS_OnEnable(db) end
+    if ns.KT_OnEnable then ns.KT_OnEnable(db) end
     if not db or not db.profile.enabled then return end
 
     if EllesmereUI and EllesmereUI.RegisterUnlockModeListener then

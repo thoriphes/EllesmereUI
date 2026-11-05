@@ -8,6 +8,13 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local EllesmereUI = _G.EllesmereUI
 EllesmereUI._deferredInits[#EllesmereUI._deferredInits + 1] = function()
+-- Page reuse: the frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it creates as before. PoolGen
+-- (a frame's dress count) lets a handler that runs after a setter tell that
+-- the setter rebuilt the page and dressed its frames again for a new use.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+local PoolGen = EllesmereUI._Pool.Gen
 local PP = EllesmereUI.PanelPP
 local SolidTex = EllesmereUI.SolidTex
 local MakeFont = EllesmereUI.MakeFont
@@ -53,7 +60,7 @@ local LabelTooltipText = WI.LabelTooltipText
 local WidgetFactory = EllesmereUI.Widgets
 local ResolveDisabledTip = EllesmereUI.ResolveDisabledTip
 local BuildDropdownMenu = EllesmereUI.BuildDropdownMenu
-local WireDropdownScripts = EllesmereUI.WireDropdownScripts
+local WireLazyDropdown = WI.WireLazyDropdown
 local WD_DD_COLOURS = EllesmereUI.WD_DD_COLOURS
 local BuildSliderCore = EllesmereUI.BuildSliderCore
 local BuildDropdownControl = EllesmereUI.BuildDropdownControl
@@ -210,7 +217,11 @@ function EllesmereUI.BuildKeybindButton(parent, opts)
     end
     local function Commit(chord)
         Stop()
+        local gen = PoolGen(btn)
         opts.set(chord)
+        -- A setter that rebuilt the page dressed this button again (page
+        -- reuse): that dress painted itself, so this one paints nothing more.
+        if PoolGen(btn) ~= gen then return end
         Refresh()
     end
 
@@ -239,6 +250,10 @@ function EllesmereUI.BuildKeybindButton(parent, opts)
                 -- is consumed down AND up (padHeld): a controller cursor clicks on release, so
                 -- a loose release would click this button again (re-arm, or unbind).
                 self:SetScript("OnGamePadButtonDown", function(s, key)
+                    -- SetPropagateKeyboardInput is blocked in combat on every
+                    -- frame: the key and pad handlers stand aside there, as the
+                    -- popup helpers' do (every host closes as combat starts).
+                    if InCombatLockdown() then return end
                     if not listening then
                         s:SetPropagateKeyboardInput(true)
                         return
@@ -260,6 +275,7 @@ function EllesmereUI.BuildKeybindButton(parent, opts)
                     Commit(CreateKeyChordStringUsingMetaKeyState(k))
                 end)
                 self:SetScript("OnGamePadButtonUp", function(s, key)
+                    if InCombatLockdown() then return end
                     if key ~= padHeld then
                         s:SetPropagateKeyboardInput(true)
                         return
@@ -274,6 +290,7 @@ function EllesmereUI.BuildKeybindButton(parent, opts)
         end
     end)
     btn:SetScript("OnKeyDown", function(self, key)
+        if InCombatLockdown() then return end
         -- Bare modifiers pass through so they can be held for the chord.
         if not listening or IsKeyPressIgnoredForBinding(key) then
             self:SetPropagateKeyboardInput(true)
@@ -444,7 +461,7 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
             local defaultTrackW = isRussian and 120 or 160
             local scfg = PixelizeSliderCfg(cfg)
             local trackFrame, valBox, _, slThumb = BuildSliderCore(region, cfg.trackWidth or defaultTrackW, 4, 14, 40, 26, 13, SL.INPUT_A,
-                scfg.min, scfg.max, scfg.step, scfg.getValue, scfg.setValue, true, cfg.snapPoints)
+                scfg.min, scfg.max, scfg.step, scfg.getValue, scfg.setValue, true, cfg.snapPoints, cfg.valueSnap)
             PP.Point(valBox, "RIGHT", region, "RIGHT", -SIDE_PAD, 0)
             PP.Point(trackFrame, "RIGHT", valBox, "LEFT", -12, 0)
             controlFrame = nil  -- slider owns its disabled state; keep the generic handler off its mouse
@@ -471,7 +488,7 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
             controlAnchor = trackFrame
 
         elseif t == "dropdown" then
-            local DD_W = 170
+            local DD_W = cfg.dropdownWidth or 170
             -- Bridge itemDisabled/itemDisabledTooltip into disabledValuesFn
             local ddDisabledFn = cfg.disabledValues
             if not ddDisabledFn and cfg.itemDisabled then
@@ -591,6 +608,7 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
             MakeStyledButton(btn, cfg.buttonText or cfg.text or "", 13, RB_COLOURS, cfg.onClick)
             controlFrame = btn
             controlAnchor = btn
+            AddControlDisabledTooltip(btn, cfg)
             RegisterWidgetRefresh(function() ApplyDisabledState() end)
             ApplyDisabledState()
 
@@ -687,8 +705,10 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
             local boxBg = box:CreateTexture(nil, "BACKGROUND")
             boxBg:SetAllPoints()
             if isPopupStyle then
+                -- cfg.inputJustify == "CENTER" centers the text and placeholder (default left).
+                local centered = cfg.inputJustify == "CENTER"
                 box:SetFont(EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
-                box:SetJustifyH("LEFT")
+                box:SetJustifyH(centered and "CENTER" or "LEFT")
                 box:SetTextInsets(10, 10, 0, 0)
                 boxBg:SetColorTexture(0, 0, 0, 0.5)
                 MakeBorder(box, 1, 1, 1, 0.2)
@@ -696,7 +716,11 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
                     local ph = box:CreateFontString(nil, "ARTWORK")
                     ph:SetFont(EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
                     ph:SetTextColor(0.7, 0.7, 0.7, 0.45)
-                    ph:SetPoint("LEFT", box, "LEFT", 10, 0)
+                    if centered then
+                        ph:SetPoint("CENTER", box, "CENTER", 0, 0)
+                    else
+                        ph:SetPoint("LEFT", box, "LEFT", 10, 0)
+                    end
                     ph:SetText(EllesmereUI.L(cfg.placeholder))
                     box:SetScript("OnTextChanged", function(self)
                         ph:SetShown((self:GetText() or "") == "")
@@ -713,17 +737,26 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
                 box:SetText((cfg.getValue and cfg.getValue()) or "")
             end
             local committing = false
+            -- A setter that rebuilds the page can dress this box again for
+            -- another row (page reuse): that dress painted itself, so the
+            -- commit's own repaint is skipped (here and after Escape, whose
+            -- focus loss commits too).
             local function CommitInput()
                 if committing then return end
                 committing = true
+                local gen = PoolGen(box)
                 box:ClearFocus()
                 if cfg.setValue then cfg.setValue(box:GetText()) end
-                RefreshInput()
+                if PoolGen(box) == gen then RefreshInput() end
                 committing = false
             end
             box:SetScript("OnEnterPressed", CommitInput)
             box:SetScript("OnEditFocusLost", CommitInput)
-            box:SetScript("OnEscapePressed", function(self) self:ClearFocus(); RefreshInput() end)
+            box:SetScript("OnEscapePressed", function(self)
+                local gen = PoolGen(self)
+                self:ClearFocus()
+                if PoolGen(self) == gen then RefreshInput() end
+            end)
             RefreshInput()
             controlFrame = box
             controlAnchor = box
@@ -882,7 +915,7 @@ function WidgetFactory:TripleRow(parent, yOffset, leftCfg, midCfg, rightCfg, spl
             local defaultTrackW = isRussian and 100 or 130
             local scfg = PixelizeSliderCfg(cfg)
             local trackFrame, valBox, _, slThumb = BuildSliderCore(region, cfg.trackWidth or defaultTrackW, 4, 14, 40, 26, 13, SL.INPUT_A,
-                scfg.min, scfg.max, scfg.step, scfg.getValue, scfg.setValue, true, cfg.snapPoints)
+                scfg.min, scfg.max, scfg.step, scfg.getValue, scfg.setValue, true, cfg.snapPoints, cfg.valueSnap)
             PP.Point(valBox, "RIGHT", region, "RIGHT", -SIDE_PAD, 0)
             PP.Point(trackFrame, "RIGHT", valBox, "LEFT", -12, 0)
             RegisterWidgetRefresh(function()
@@ -966,10 +999,14 @@ function WidgetFactory:TripleRow(parent, yOffset, leftCfg, midCfg, rightCfg, spl
                 local function ApplyLabelOnly()
                     local off = cfg.disabled()
                     label:SetAlpha(1)
-                    -- Gray the button label when the current value is disabled
+                    -- Gray the button label when the current value is disabled,
+                    -- through the text colour's alpha (the label's resting alpha);
+                    -- _valueDimA keeps the hover colours on that alpha too.
                     if cfg.disabledValues then
                         local curVal = cfg.getValue()
-                        ddLbl:SetAlpha(cfg.disabledValues(curVal) and 0.15 or DD_TXT_A)
+                        local dimA = cfg.disabledValues(curVal) and 0.15 or nil
+                        ddBtn._valueDimA = dimA
+                        ddLbl:SetTextColor(1, 1, 1, dimA or DD_TXT_A)
                     end
                 end
                 RegisterWidgetRefresh(function()
@@ -1034,9 +1071,13 @@ function WidgetFactory:TripleRow(parent, yOffset, leftCfg, midCfg, rightCfg, spl
             ApplyCBVisual()
 
             btn:SetScript("OnClick", function()
+                local gen = PoolGen(btn)
                 local v = not cfg.getValue()
                 cfg.setValue(v)
                 EllesmereUI._settingsChanged = true
+                -- A setter that rebuilt the page dressed this checkbox again
+                -- (page reuse): that dress painted itself.
+                if PoolGen(btn) ~= gen then return end
                 ApplyCBVisual()
             end)
             btn:SetScript("OnEnter", function() isHovering = true; ApplyCBVisual() end)
@@ -1261,7 +1302,7 @@ function WidgetFactory:DropdownWithOffsets(parent, yOffset, dropdownCfg, xSlider
         axisLabel:SetText(EllesmereUI.L(slCfg.text or ""))
 
         local trackFrame, valBox, _, slThumb = BuildSliderCore(rightRegion, MINI_TRACK_W, 4, 12, MINI_VALBOX_W, SLIDER_H, 11, SL.INPUT_A,
-            slCfg.min, slCfg.max, slCfg.step, slCfg.getValue, slCfg.setValue, true, slCfg.snapPoints)
+            slCfg.min, slCfg.max, slCfg.step, slCfg.getValue, slCfg.setValue, true, slCfg.snapPoints, slCfg.valueSnap)
 
         if isLeft then
             PP.Point(axisLabel, "LEFT", rightRegion, "LEFT", 4, 0)
@@ -1374,7 +1415,9 @@ function WidgetFactory:WideTripleButton(parent, text1, text2, text3, yOffset, on
     return frame, ROW_H
 end
 
--- WideDropdown: centered, no row background, title above; prominent selectors
+-- WideDropdown: centered, no row background, title above; prominent selectors.
+-- Its menu is built on the first click, as BuildDropdownControl's: a page
+-- build makes none.
 function WidgetFactory:WideDropdown(parent, title, yOffset, values, getValue, setValue, order, btnWidth, disabledValuesFn)
     btnWidth = btnWidth or 450
     local BTN_H, TITLE_H, GAP = 38, 20, 12
@@ -1393,18 +1436,26 @@ function WidgetFactory:WideDropdown(parent, title, yOffset, values, getValue, se
     local bg = SolidTex(ddBtn, "BACKGROUND", DD_BG_R, DD_BG_G, DD_BG_B, DD_BG_A)
     bg:SetAllPoints()
     local brd = MakeBorder(ddBtn, 1, 1, 1, DD_BRD_A, PP)
-    local ddLbl = MakeFont(ddBtn, 13, nil, 1, 1, 1)
-    ddLbl:SetAlpha(DD_TXT_A)
+    -- Resting alpha on the text colour, the channel the hover colours write.
+    local ddLbl = MakeFont(ddBtn, 13, nil, 1, 1, 1, DD_TXT_A)
     ddLbl:SetPoint("LEFT", ddBtn, "LEFT", 14, 0)
     local arrow = MakeDropdownArrow(ddBtn, 14, PP)
     if not order then order = {}; for key in pairs(values) do order[#order + 1] = key end end
-    local menu, menuItems, refresh = BuildDropdownMenu(ddBtn, btnWidth, order, values, getValue, setValue, ddLbl, "wide", disabledValuesFn)
     ddLbl:SetText(DDResolveLabel(values, order, getValue()))
-    WireDropdownScripts(ddBtn, ddLbl, bg, brd, menu, refresh, WD_DD_COLOURS)
+    -- Light hover scripts until the first click builds the menu (the shared
+    -- lazy dropdown wiring of BuildDropdownControl).
+    WireLazyDropdown(ddBtn, ddLbl, bg, brd, WD_DD_COLOURS, function()
+        local m, _, refresh = BuildDropdownMenu(ddBtn, btnWidth, order, values, getValue, setValue, ddLbl, "wide", disabledValuesFn)
+        return m, refresh
+    end)
     RegisterWidgetRefresh(function()
         ddLbl:SetText(DDResolveLabel(values, order, getValue()))
         if disabledValuesFn then
-            ddLbl:SetAlpha(disabledValuesFn(getValue()) and 0.15 or DD_TXT_A)
+            -- A disabled current value rests greyed; _valueDimA keeps the
+            -- hover colours on that alpha too.
+            local dimA = disabledValuesFn(getValue()) and 0.15 or nil
+            ddBtn._valueDimA = dimA
+            ddLbl:SetTextColor(1, 1, 1, dimA or DD_TXT_A)
         end
     end)
     return frame, ROW_H

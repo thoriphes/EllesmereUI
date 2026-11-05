@@ -188,6 +188,7 @@ ns._LayoutPartyFrames = function()
     -- Self button + header slot positioning ran above (ns._PositionPartySlots),
     -- before the attribute pass so a header Hide/Show re-process anchors the
     -- children against the already-correct header position and size.
+    ns.RF_SyncCompact(true)
 
     -- The friendly boss group attaches to this container (and to the growth axis derived above)
     -- while not in a raid, so every layout pass -- Horizontal Frames, Flip Growth, party size,
@@ -254,8 +255,7 @@ end
 ns._UpdatePartyVisibility = function()
     if not ns._partyHeader then return end
     if InCombatLockdown() then return end
-    if ns._partyPvActive then return end
-    if previewActive then return end
+    if ns._partyPvActive or ns._raidPvActive then return end
     -- Defensive: re-assert full opacity unless a size preview is dimming the
     -- real frames (see UpdateVisibility). Out of combat only (bails above).
     if not ns._sizePreviewTier and ns._partyContainerFrame then
@@ -510,41 +510,16 @@ ns.ReloadPartyFrames = function(skipButtons)
             d.powerBg:SetColorTexture((raw.powerBgColor or {}).r or 0, (raw.powerBgColor or {}).g or 0, (raw.powerBgColor or {}).b or 0, (raw.powerBgDarkness or 70) / 100)
             d._pwBgTintType = nil
         end
-        if d.UpdatePowerBorder then d.UpdatePowerBorder() end
+        if d.UpdatePowerBorder then d.UpdatePowerBorder(true) end
 
-        -- Name text
-        if d.nameText then
-            ApplyFont(d.nameText, pp.nameSize or 10)
-            if d.AnchorNameText then d.AnchorNameText() end
-            -- Override width constraint for party button dimensions (the
-            -- kit's name width is its closure's own).
-            if not d.kit then d.nameText:SetWidth(barW * ns.RF_NAME_WIDTH_FRACTION) end
-        end
-
-        -- Health text
-        if d.healthText then
-            ApplyFont(d.healthText, pp.healthTextSize or 9)
-            if d.AnchorHealthText then d.AnchorHealthText() end
-        end
-
-        -- Power text: hidden with the bar above (not under the kit, whose mana bar stays shown)
-        -- until _UpdateAllPartyButtons below shows it again, and restyled.
-        if d.powerText then
-            if not d.kit then d.powerText:Hide(); d._pwtMode = nil end
-            ApplyFont(d.powerText, pp.powerTextSize or 8)
-            ns._RFAnchorPowerText(d)
-        end
-
-        -- Level text: restyled; _UpdateAllPartyButtons below shows or hides it by position.
-        if d.levelText then
-            ApplyFont(d.levelText, pp.levelTextSize or 10)
-            ns._RFAnchorLevelText(d)
-        end
-
-        -- Heal absorb text
-        if d.healAbsorbText then
-            ApplyFont(d.healAbsorbText, pp.healAbsorbTextSize or 9)
-            if d.AnchorHealAbsorbText then d.AnchorHealAbsorbText() end
+        -- The texts: Power Text hidden with the bar above (not under the kit, whose
+        -- mana bar stays shown) until _UpdateAllPartyButtons below shows it again; every
+        -- text restyled and re-anchored, the name on the party bar width (the kit's is
+        -- its own).
+        if d.AnchorTexts then
+            if not d.kit then ns.RF_TextPowerHide(d) end
+            d.AnchorTexts()
+            ns.RF_TextNameWidth(d, barW)
         end
 
         -- Status text
@@ -658,7 +633,7 @@ local function RegisterWithUnlockMode()
         EllesmereUI.MakeUnlockElement({
             key   = "RF_RaidFrames",
             label = "Raid Frames",
-            group = "Raid Frames",
+            group = "Raid & Party Frames",
             order = 500,
             noResize = true,
             -- RF positions its own container via _ApplyTierOffset (base 20-man top-left
@@ -706,7 +681,7 @@ local function RegisterWithUnlockMode()
         EllesmereUI.MakeUnlockElement({
             key   = "RF_PartyFrames",
             label = "Party Frames",
-            group = "Raid Frames",
+            group = "Raid & Party Frames",
             order = 501,
             noResize = true,
 
@@ -742,7 +717,7 @@ local function RegisterWithUnlockMode()
         EllesmereUI.MakeUnlockElement({
             key   = "RF_HealerMana",
             label = "Healer Mana Display",
-            group = "Raid Frames",
+            group = "Raid & Party Frames",
             order = 502,
             noResize = true,
             -- Disabled feature = no mover. Gates on the SETTING (mode none),
@@ -780,6 +755,40 @@ local function RegisterWithUnlockMode()
                     c:ClearAllPoints()
                     c:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
                 end
+            end,
+        }),
+        EllesmereUI.MakeUnlockElement({
+            key   = "RF_PlayerGroup",
+            label = "Player Group Label",
+            group = "Raid & Party Frames",
+            order = 503,
+            noResize = true,
+            isHidden = function()
+                return not ns._PGSet().enabled
+            end,
+            -- Built only while enabled: the saved-position pass calls this
+            -- for every element.
+            getFrame = function()
+                if ns._PGSet().enabled then return ns._PGEnsureFrame() end
+                return ns._pgFrame
+            end,
+            getSize = function()
+                local f = ns._pgFrame
+                if f then return f:GetWidth(), f:GetHeight() end
+                return 50, 25
+            end,
+            savePos = function(_, point, relPoint, x, y)
+                ns._PGSet().unlockPos = { point = point, relPoint = relPoint,
+                    x = snap(ns._pgFrame, x), y = snap(ns._pgFrame, y) }
+            end,
+            loadPos = function()
+                return ns._PGSet().unlockPos
+            end,
+            clearPos = function()
+                ns._PGSet().unlockPos = nil
+            end,
+            applyPos = function()
+                ns._PGApplyPos()
             end,
         }),
     })

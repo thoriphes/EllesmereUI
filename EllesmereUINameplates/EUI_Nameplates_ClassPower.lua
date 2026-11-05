@@ -28,12 +28,9 @@ I.profileSetters[#I.profileSetters + 1] = function(v) p = v end
 
 -- Assigned below; Layout holds the forward declaration its own readers use.
 local GetClassPowerTopPush
--- Name and Cast keep a copy of classPowerType and add a setter here.
-I.classPowerTypeSetters = {}
-local function SetClassPowerType(v)
-    local list = I.classPowerTypeSetters
-    for i = 1, #list do list[i](v) end
-end
+-- Name and Cast keep a copy of classPowerType and add a setter to
+-- I.classPowerTypeSetters.
+local SetClassPowerType = I.SetClassPowerType
 
 -------------------------------------------------------------------------------
 --  Class Power Display (combo points, holy power, chi, etc.). Zero cost when disabled: no
@@ -41,6 +38,7 @@ end
 --  UNIT_POWER_UPDATE and shows pips only on the current target's nameplate.
 -------------------------------------------------------------------------------
 local classPowerWatcher
+local classPowerWatcherFrame  -- created on first enable, reused after every disable
 local classPowerType     -- Enum.PowerType value for the player's class resource, or nil
 local classPowerMax = 0  -- max pips for the resource
 local classPowerFormReq  -- required GetShapeshiftFormID() value, or nil if no form check needed
@@ -487,8 +485,8 @@ local function UpdateClassPowerOnPlate(plate)
     else
         -- Forever combo points belong to the target, and UnitPower still reports
         -- the previous target's count at the moment PLAYER_TARGET_CHANGED fires
-        -- (measured on 1.60.1: up=3 while gcp=0 on the swap), with no later event
-        -- to correct it. Blizzard's own classic ComboFrame reads GetComboPoints.
+        -- (measured on 1.60.1: up=3 while gcp=0 on the swap), with no later power
+        -- event to correct it. Blizzard's own ComboFrame reads GetComboPoints.
         if EllesmereUI.IS_FOREVER == true and classPowerType == Enum.PowerType.ComboPoints
            and GetComboPoints then
             cur = GetComboPoints("player", "target") or 0
@@ -866,7 +864,11 @@ local function EnableClassPowerWatcher()
         local isResto = (PLAYER_CLASS == "DRUID" and specIdx == 4)
         classPowerFormReq = isResto and (DRUID_CAT_FORM or 1) or nil
     end
-    classPowerWatcher = CreateFrame("Frame")
+    -- Every spec change and setting toggle runs Disable + Enable: the one frame is
+    -- reused, since WoW never frees a frame.
+    classPowerWatcherFrame = classPowerWatcherFrame or CreateFrame("Frame")
+    classPowerWatcher = classPowerWatcherFrame
+    classPowerWatcher:Show()  -- Disable hides it; OnUpdate needs it shown
 
     -- String-type resources (custom-tracked): use OnUpdate poll + events
     if type(classPowerType) == "string" then
@@ -916,6 +918,11 @@ local function EnableClassPowerWatcher()
         classPowerWatcher:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
         if classPowerFormReq then
             classPowerWatcher:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
+        end
+        -- WoW Forever: combo points moving to a new target keep their count, so no
+        -- power event fires; the light refresh below repaints the target plate.
+        if EllesmereUI.IS_FOREVER == true and classPowerType == Enum.PowerType.ComboPoints then
+            classPowerWatcher:RegisterEvent("COMBO_TARGET_CHANGED")
         end
         -- Runes need their own event for per-rune cooldown changes
         if classPowerType == Enum.PowerType.Runes then

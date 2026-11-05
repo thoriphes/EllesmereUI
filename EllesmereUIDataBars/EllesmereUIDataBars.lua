@@ -47,17 +47,21 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --   ns.MakePreviewBackdrop(host, themeCfg, showBorder)
 --   ns.BLOCK_TYPES / ns.BLOCK_DEFAULTS / ns.EDB_VIS_CAPS / ns.EDGE_PAD
 --
---  The one call that runs the other way (options file -> runtime): a block
---  whose empty state invites a click can send the player to the control that
---  fills it in. Defined from the options PLAYER_LOGIN handler, hence the nil
---  guard at its call site:
+--  The calls that run the other way (options file -> runtime). Both are
+--  defined from the options PLAYER_LOGIN handler, hence the nil guard at
+--  their call sites:
 --
 --   ns.OpenBlockSettings(barId, blockId, settingKey)
---       deep-links to the "block:<blockId>:<settingKey>" click target the
---       options page registers for that row (see _edbClickTargets).
+--       a block whose empty state invites a click sends the player to the
+--       control that fills it in: deep-links to the
+--       "block:<blockId>:<settingKey>" click target the options page
+--       registers for that row (see _edbClickTargets).
+--   ns.OnBarLaidOut(barId)
+--       called at the end of every layout pass of a bar: the options page's
+--       preview strip re-solves from the block measurements that pass settled.
 
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -68,11 +72,14 @@ ns.WB = WB
 local L = {
     LEFT_CLICK           = "|cffFFFFFFLeft Click:|r",
     RIGHT_CLICK          = "|cffFFFFFFRight Click:|r",
+    MIDDLE_CLICK         = "|cffFFFFFFMiddle Click:|r",
     SHIFT_MIDDLE_CLICK   = "|cffFFFFFFShift + Middle Click:|r",
     SHIFT_LEFT_CLICK     = "|cffFFFFFFShift + Left Click:|r",
     CTRL_LEFT_CLICK      = "|cffFFFFFFCtrl + Left Click:|r",
     CTRL_RIGHT_CLICK     = "|cffFFFFFFCtrl + Right Click:|r",
-    CTRL_ALT_LEFT_CLICK  = "|cffFFFFFFCtrl + Alt + Left Click:|r",
+    CTRL_SHIFT_RIGHT_CLICK = "|cffFFFFFFCtrl + Shift + Right Click:|r",
+    CTRL_ALT_LEFT_CLICK  = "|cffFFFFFFCtrl + Alt + Left Click a Name:|r",
+    SHIFT_HOVER          = "|cffFFFFFFShift + Hover:|r",
     YOU_HAVE_MAIL        = "You've Got Mail!",
     SERVER_TIME          = "Server time",
     SAVED_INSTANCES      = "Saved Raid(s)",
@@ -96,7 +103,6 @@ local L = {
     SPENT                = "Spent",
     PROFIT               = "Profit",
     DEFICIT              = "Deficit",
-    WARBANK              = "Warbank",
     TOTAL                = "Total",
     WOW_TOKEN            = "WoW Token",
     OPEN_BAGS            = "Open Bags",
@@ -104,7 +110,9 @@ local L = {
     FREE                 = "Free",
     OPEN_CURRENCIES      = "Open Currencies",
     RESET_SESSION        = "Reset Session",
+    RESET_ALL_DATA       = "Reset All Data",
     REMOVE_CHARACTER     = "Remove Character",
+    SHOW_EVERY_CHARACTER = "Show Every Character",
     PLUS_N_MORE          = "+ %d more",
     TRAVEL_COOLDOWNS     = "Travel Cooldowns",
     HEARTHSTONE          = "Hearthstone",
@@ -113,6 +121,12 @@ local L = {
     MYTHIC_TELEPORTS     = "Mythic+ Teleports",
     USE_HEARTHSTONE      = "Use Hearthstone",
     RANDOM_HEARTHSTONE   = "Random Hearthstone",
+    RETURN_FROM_HOME     = "Return from Home",
+    RETURN_AVAILABLE     = "Return available",
+    HOME_ALLIANCE        = "Home (A)",
+    HOME_HORDE           = "Home (H)",
+    TRAVEL_ARCANTINA     = "Arcantina",
+    TRAVEL_MOONGLADE     = "Moonglade",
     CURRENT_SPEC         = "Current Specialization",
     CHANGE_SPEC          = "Change Specialization",
     CHANGE_SPEC_SHORT    = "Change Spec",
@@ -183,6 +197,9 @@ local floor             = math.floor
 local max, min, abs     = math.max, math.min, math.abs
 
 local PP = EllesmereUI.PP
+-- The options page frame pool's table (made by the parent, filled in place when
+-- the options addon loads it): read for its Gen at call time.
+local POOL = EllesmereUI._Pool
 
 local MEDIA = "Interface\\AddOns\\EllesmereUIDataBars\\media\\"
 ns.MEDIA = MEDIA
@@ -224,10 +241,23 @@ ns.BLOCK_TYPES = {
     { key = "crests",     label = "Crests" },
     { key = "ilvl",       label = "Item Level" },
     { key = "greatvault", label = "Great Vault" },
+    { key = "mplussummary", label = "M+ Summary",
+      available = function() return EllesmereUI._MythicRuns ~= nil end },
     { key = "audio",      label = "Audio" },
     { key = "ldb",        label = "Broker Plugin" },
     { key = "spacer",     label = "Spacer" },
 }
+
+-- The types the picker offers: one with available() only while it answers
+-- true (M+ Summary needs Mythic+ Tools loaded). Asked when the picker is built,
+-- after login, once every module has loaded. A bar saved with one keeps it.
+function ns.OfferedBlockTypes()
+    local out = {}
+    for _, t in ipairs(ns.BLOCK_TYPES) do
+        if not t.available or t.available() then out[#out + 1] = t end
+    end
+    return out
+end
 
 ns.BLOCK_DEFAULTS = {
     clock      = { localTime = true, twentyFour = true, showMail = true, showResting = true, fontSizeClock = nil, fontSizeInfo = nil },
@@ -258,6 +288,7 @@ ns.BLOCK_DEFAULTS = {
                    hideEmpty = false, reverse = false },
     ilvl       = { prefix = "short", value = "equipped", precision = 0 },
     greatvault = {},
+    mplussummary = { hideWhenEmpty = false },
     audio      = { channel = "master" },
     -- Broker plugin: one block type for every LibDataBroker data source, picked
     -- by name (source). stripColors defaults ON -- broker text arrives full of
@@ -271,13 +302,14 @@ ns.BLOCK_DEFAULTS = {
 -- Factories are registered by Blocks\*.lua.
 ns.BlockFactories = {}
 
--- WoW Forever has no Great Vault, no season crests and one spec per class with
--- nothing to switch: those blocks leave the picker (BLOCK_TYPES), the add path
--- refuses them (no default, so the Bottom Info Bar template skips its spec
--- block) and their Blocks\*.lua files return before registering a factory, so
--- a bar saved with one shows an empty slot there instead of erroring.
+-- WoW Forever has no Great Vault, no season crests, no Mythic+ Tools runs and
+-- one spec per class with nothing to switch: those blocks leave the picker
+-- (BLOCK_TYPES), the add path refuses them (no default, so the Bottom Info Bar
+-- template skips its spec block) and their Blocks\*.lua files return before
+-- registering a factory, so a bar saved with one shows an empty slot there
+-- instead of erroring.
 if EllesmereUI.IS_FOREVER then
-    local FOREVER_OFF = { greatvault = true, crests = true, spec = true }
+    local FOREVER_OFF = { greatvault = true, crests = true, spec = true, mplussummary = true }
     table.insert(ns.BLOCK_TYPES, #ns.BLOCK_TYPES, { key = "supplies", label = "Class Resources" })
     ns.BLOCK_DEFAULTS.supplies = { showIcon = true }
     for i = #ns.BLOCK_TYPES, 1, -1 do
@@ -399,7 +431,7 @@ end
 -- any locale-specific algorithm (e.g. CJK wan/yi grouping) live in the
 -- shared EllesmereUI_NumberFormat.lua, so every module abbreviates the same way.
 local function GoldDisplay(val, abbreviate, forceEnglish)
-    if abbreviate then return EllesmereUI.AbbreviateNumber(val, forceEnglish) end
+    if abbreviate then return EllesmereUI.AbbreviateNumberFixed(val, forceEnglish) end
     return BreakUpLargeNumbers and BreakUpLargeNumbers(val) or tostring(val)
 end
 
@@ -445,7 +477,7 @@ end
 
 -- Reset countdowns for the clock tooltip. SecondsToTime is the client's own duration
 -- formatter, so units come out localized. Same call the Minimap module
--- (EllesmereUIMinimap.lua) makes for the weekly reset, so both render identically.
+-- (EUI_Minimap_Tooltips.lua) makes for the weekly reset, so both render identically.
 -- Seconds are suppressed above a minute (3 units already covers "2d 5h 30m"); below a
 -- minute they're all that's left, so suppressing them there would return "".
 function ns.FormatTimeLeft(seconds)
@@ -1020,6 +1052,7 @@ do
         d.action = nil
         d.actionToy = nil
         d.actionMacro = nil
+        d.actionHouse = nil
         d._padBand = nil
         d.onClick = nil
         d.onWheel = nil
@@ -1053,6 +1086,7 @@ do
         d.action = nil
         d.actionToy = nil
         d.actionMacro = nil
+        d.actionHouse = nil
         d._padBand = nil
         d.onClick = nil
         d.onWheel = nil
@@ -1083,6 +1117,7 @@ do
         d.action = nil
         d.actionToy = nil
         d.actionMacro = nil
+        d.actionHouse = nil
         d._padBand = nil
         d.onClick = nil
         d.onWheel = nil
@@ -1122,6 +1157,14 @@ do
     function ns.Tip_AddMacroActionDouble(left, right, macrotext, lr, lg, lb, rr, rg, rb)
         if ns.Tip_AddDouble(left, right, lr, lg, lb, rr, rg, rb) and macrotext then
             data[dataCount].actionMacro = macrotext
+        end
+    end
+
+    -- Click-to-teleport HOUSE row: same overlay/degrade contract. house is a HouseInfo
+    -- whose GUIDs the caller checked are not secret; returnTrip fires returnhome instead.
+    function ns.Tip_AddHouseActionDouble(left, right, house, returnTrip, lr, lg, lb, rr, rg, rb)
+        if ns.Tip_AddDouble(left, right, lr, lg, lb, rr, rg, rb) and house then
+            data[dataCount].actionHouse = { house = house, returnTrip = returnTrip }
         end
     end
 
@@ -1251,7 +1294,7 @@ do
                 -- Clickable (or pad-marked) rows carry 2px of breathing room
                 -- above and below the text; the padded band is the rect the
                 -- overlay button and its hover wash cover.
-                if d.action or d.actionToy or d.actionMacro or d._padBand then h = h + 4 end
+                if d.action or d.actionToy or d.actionMacro or d.actionHouse or d._padBand then h = h + 4 end
                 d._h = h
             end
         end
@@ -1283,7 +1326,7 @@ do
                     left:SetWordWrap(true)
                     left:SetWidth(innerW)
                     local h = left:GetStringHeight() or FONT_SIZE
-                    if d.action or d.actionToy or d.actionMacro or d._padBand then h = h + 4 end
+                    if d.action or d.actionToy or d.actionMacro or d.actionHouse or d._padBand then h = h + 4 end
                     d._h = h
                 end
             end
@@ -1305,7 +1348,7 @@ do
             -- Text sits 4px into a clickable row's padded band (centered);
             -- d._y keeps the band's top so the overlay covers all of it.
             local ty = y
-            if d.action or d.actionToy or d.actionMacro or d._padBand then ty = y - 2 end
+            if d.action or d.actionToy or d.actionMacro or d.actionHouse or d._padBand then ty = y - 2 end
             row.left:ClearAllPoints()
             row.left:SetPoint("TOPLEFT", tip, "TOPLEFT", PAD, ty)
             if d.r then
@@ -1339,7 +1382,7 @@ do
         if not InCombatLockdown() then
             for i = 1, dataCount do
                 local d = data[i]
-                if d.action or d.actionToy or d.actionMacro then
+                if d.action or d.actionToy or d.actionMacro or d.actionHouse then
                     interactive = true
                     -- Re-attach the host: REGEN_DISABLED detaches it (and the
                     -- buttons) from the tip at every combat start.
@@ -1354,6 +1397,10 @@ do
                     local b = AcquireActionButton()
                     -- Pooled reuse swaps type + payload; the unused payload is
                     -- cleared so a recycled button can never fire a stale one.
+                    local h = d.actionHouse and not d.actionHouse.returnTrip and d.actionHouse.house
+                    b:SetAttribute("house-neighborhood-guid", h and h.neighborhoodGUID or nil)
+                    b:SetAttribute("house-guid", h and h.houseGUID or nil)
+                    b:SetAttribute("house-plot-id", h and h.plotID or nil)
                     if d.action then
                         b:SetAttribute("type", "spell")
                         b:SetAttribute("spell", d.action)
@@ -1363,6 +1410,11 @@ do
                         b:SetAttribute("type", "toy")
                         b:SetAttribute("toy", d.actionToy)
                         b:SetAttribute("spell", nil)
+                        b:SetAttribute("macrotext", nil)
+                    elseif d.actionHouse then
+                        b:SetAttribute("type", d.actionHouse.returnTrip and "returnhome" or "teleporthome")
+                        b:SetAttribute("spell", nil)
+                        b:SetAttribute("toy", nil)
                         b:SetAttribute("macrotext", nil)
                     else
                         b:SetAttribute("type", "macro")
@@ -1740,7 +1792,12 @@ local BASE_L, BASE_R, BASE_T, BASE_B = 0.25, 1, 0, 0.75
 local BASE_U, BASE_V = BASE_R - BASE_L, BASE_B - BASE_T
 
 local function EnsureThemeTextures(host)
-    if host._edbBgAtlas then return end
+    -- Made once per host. An options preview strip is a frame of the options
+    -- page pool that every header build dresses again for another use: the
+    -- textures count only for the dress (generation) they were made in. Gen
+    -- is nil for every frame the pool did not make (the live bars).
+    local gen = POOL.Gen and POOL.Gen(host)
+    if host._edbBgAtlas and host._edbThemeGen == gen then return end
     local bgAtlas = host:CreateTexture(nil, "BACKGROUND", nil, -8)
     bgAtlas:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png")
     bgAtlas:SetAllPoints(host)
@@ -1759,6 +1816,7 @@ local function EnsureThemeTextures(host)
     host._edbBgOverlay = bgOverlay
     host._edbModernBg  = modernBg
     host._edbBarTex    = barTex
+    host._edbThemeGen  = gen
 
     -- Cover-fit: crop the atlas so it fills the host without stretching.
     local function UpdateBgTexCoords()
@@ -1981,10 +2039,12 @@ local function EnsureSlot(rec, blockCfg)
     if not slot then
         slot = CreateFrame("Frame", nil, rec.bar)
         slot:SetSize(10, 10)
+        rec.slots[blockCfg.id] = slot
+    end
+    if not slot._edbContent then
         local content = CreateFrame("Frame", nil, slot)
         content:SetSize(10, 10)
         slot._edbContent = content
-        rec.slots[blockCfg.id] = slot
     end
     return slot
 end
@@ -2175,6 +2235,9 @@ ApplyLayout = function(id)
             end
         end
     end
+    -- The options page's preview strip solves from these measurements.
+    local onLaidOut = ns.OnBarLaidOut
+    if onLaidOut then onLaidOut(id) end
 end
 
 --- "Never" is this module's only disable channel, so every gate that asks it has to ask
@@ -2287,7 +2350,18 @@ function ns.ApplyBar(id)
             rec.insts[blockId] = nil
             rec.assigned[blockId] = nil
             local slot = rec.slots[blockId]
-            if slot then slot:Hide() end
+            if slot then
+                slot:Hide()
+                -- The block's frames stay parented to its content, and Destroy
+                -- only hides it; a later block with this id (another type, or a
+                -- profile switch) would show them again. Retire it so EnsureSlot
+                -- builds a fresh one.
+                local content = slot._edbContent
+                if content and not (InCombatLockdown() and content:IsProtected()) then
+                    content:Hide()
+                    slot._edbContent = nil
+                end
+            end
         end
     end
     for blockId, slot in pairs(rec.slots) do
@@ -3180,8 +3254,8 @@ end
 -------------------------------------------------------------------------------
 function WB:OnInitialize()
     self.db = EllesmereUI.Lite.NewDB("EllesmereUIDataBarsDB", defaults)
-    -- Cross-character gold ledger is account data (EllesmereUIDB.dataBarsGold,
-    -- GoldStore), not profile -- a profile-scoped copy would leak every
+    -- Cross-character gold ledger is account data (EllesmereUIDB.goldLedger,
+    -- EllesmereUI.GetGoldLedger()), not profile -- a profile-scoped copy would leak every
     -- character's name/realm/balance into export strings. Drop any old
     -- profile copy (don't migrate): on an imported profile it holds the
     -- exporter's characters, and the account store refills from play anyway.

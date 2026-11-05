@@ -11,7 +11,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --   position  pinned to our holder (the unlock element) with the Edit Mode
 --             system's saved base SetPoint / ClearAllPoints / SetScale, which
 --             never flag Edit Mode's anchor pass; a layout apply's re-anchor
---             (ApplySystemAnchor) is answered by re-pinning
+--             (ApplySystemAnchor) and Edit Mode's bottom bar stack, which
+--             holds this bar too, are answered by re-pinning
 --   overlay   its Edit Mode selection at alpha 0 with no mouse, so Edit Mode
 --             cannot select or drag it
 --   layout    scale from Icon Size, and the shown buttons laid out in a row
@@ -217,10 +218,8 @@ end
 -- Pin the bar's top-left corner to the holder's, through the system's base
 -- methods (Blizzard's SetPoint / ClearAllPoints overrides flag Edit Mode).
 local function PinBar()
-    local clear = bar.ClearAllPointsBase or bar.ClearAllPoints
-    local setPt = bar.SetPointBase or bar.SetPoint
-    clear(bar)
-    setPt(bar, "TOPLEFT", holder, "TOPLEFT", 0, 0)
+    EllesmereUI.ClearFramePoints(bar)
+    EllesmereUI.SetFramePoint(bar, "TOPLEFT", holder, "TOPLEFT", 0, 0)
 end
 
 -- The shown buttons in a row (left to right) or a column (top to bottom), each
@@ -265,8 +264,7 @@ local function Layout(c)
     end
 
     if vertical then bar:SetSize(BTN, len) else bar:SetSize(len, BTN) end
-    local setScale = bar.SetScaleBase or bar.SetScale
-    setScale(bar, scale)
+    EllesmereUI.SetFrameScale(bar, scale)
     bar:SetFrameStrata(c.frameStrata or "MEDIUM")
     PinBar()
 end
@@ -368,6 +366,13 @@ local function Hook()
     -- A snap break (Edit Mode resetting, reverting or hiding the system the bar
     -- was snapped to) re-anchors the bar to UIParent: re-pin it the same way.
     if bar.BreakFrameSnap then hooksecurefunc(bar, "BreakFrameSnap", OnSystemAnchor) end
+    -- The bar is one of the bottom action bars Edit Mode stacks: its stack
+    -- pass (after every layout apply, on this bar's own show and hide, on a
+    -- status bar change) moves a shown bar that sits at its default spot.
+    local mgr = _G.EditModeManagerFrame
+    if mgr and mgr.UpdateBottomActionBarPositions then
+        hooksecurefunc(mgr, "UpdateBottomActionBarPositions", OnSystemAnchor)
+    end
     hooksecurefunc("MultiCastActionBarFrame_Update", OnBarUpdate)
     if _G.MultiCastFlyoutFrameOpenButton_Show then
         hooksecurefunc("MultiCastFlyoutFrameOpenButton_Show", OnFlyoutArrow)
@@ -405,24 +410,22 @@ local function Release()
     UnskinAll()
     RestoreLayout()
     ReleaseSelection()
-    local setScale = bar.SetScaleBase or bar.SetScale
-    setScale(bar, home.scale)
+    EllesmereUI.SetFrameScale(bar, home.scale)
     bar:SetSize(home.w, home.h)
     bar:SetFrameStrata(home.strata)
     -- Back to the Edit Mode layout's spot (read from the system's own record).
     local info = bar.systemInfo
     local ai = info and info.anchorInfo
-    local clear = bar.ClearAllPointsBase or bar.ClearAllPoints
-    local setPt = bar.SetPointBase or bar.SetPoint
+    EllesmereUI.ClearFramePoints(bar)
     if ai then
         local s = bar:GetScale()
-        clear(bar)
-        setPt(bar, ai.point, ai.relativeTo, ai.relativePoint, ai.offsetX / s, ai.offsetY / s)
+        EllesmereUI.SetFramePoint(bar, ai.point, ai.relativeTo, ai.relativePoint, ai.offsetX / s, ai.offsetY / s)
         local ai2 = info.anchorInfo2
-        if ai2 then setPt(bar, ai2.point, ai2.relativeTo, ai2.relativePoint, ai2.offsetX / s, ai2.offsetY / s) end
+        if ai2 then
+            EllesmereUI.SetFramePoint(bar, ai2.point, ai2.relativeTo, ai2.relativePoint, ai2.offsetX / s, ai2.offsetY / s)
+        end
     else
-        clear(bar)
-        setPt(bar, "RIGHT", UIParent, "BOTTOM", -28, 128)
+        EllesmereUI.SetFramePoint(bar, "RIGHT", UIParent, "BOTTOM", -28, 128)
     end
 end
 

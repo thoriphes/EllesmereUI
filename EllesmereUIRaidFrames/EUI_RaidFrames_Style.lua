@@ -11,6 +11,10 @@ local I = ns._internals
 -- EllesmereUIRaidFrames.lua or an earlier Raid Frames file failed to load.
 if not I or I.broken then return end
 I.broken = true
+-- The options page pool's table (EllesmereUI_PixelPerfect.lua makes it; the
+-- options addon fills it in place): read through this file local, never the
+-- public slot.
+local POOL = EllesmereUI._Pool
 
 local floor        = math.floor
 local max          = math.max
@@ -323,6 +327,186 @@ function ns.RF_VisibleHighlight(s, r, g, b)
     return 1, 1, 1
 end
 
+function ns.RF_ColorPowerDivider(host, r, g, b, a)
+    if not host or host._powerArtMode ~= "divider" then return end
+    host._powerArtR, host._powerArtG, host._powerArtB, host._powerArtAlpha = r, g, b, a
+    host._powerArtTex:SetVertexColor(r, g, b, a)
+end
+
+function ns.RF_ClearPowerBorderArt(host)
+    if not host or not host._powerArtKey then return end
+    if host._powerArtTex then host._powerArtTex:Hide() end
+    if host._powerArtSeam then host._powerArtSeam:Hide() end
+    EllesmereUI.HideBorderStyle(host)
+    EllesmereUI.RegisterPxReapply(host, nil)
+    PP.ShowBorder(host)
+    host._powerArtKey = nil
+    host._powerArtMode = nil
+end
+
+function ns.RF_LayoutPowerBorderArt(host)
+    if not host:IsShown() or not host._powerArtKey then return end
+    if host._powerArtMode == "border" then
+        EllesmereUI.ApplyBorderStyle(host, host._powerArtSize, host._powerArtR, host._powerArtG, host._powerArtB,
+            host._powerArtAlpha, host._powerArtKey, host._powerArtOffset, host._powerArtOffsetY,
+            host._powerArtShiftX, host._powerArtShiftY, "unitframes", host._powerArtSize, nil, host._powerArtPx)
+        return
+    end
+    local seam = host._powerArtSeam
+    seam:SetFrameStrata(host:GetFrameStrata())
+    seam:SetFrameLevel(host:GetParent():GetFrameLevel() + ns.LVL_TEXT - 1)
+    local es = host:GetEffectiveScale()
+    if not (es and es > 0.01) then es = UIParent:GetEffectiveScale() end
+    local thick = EllesmereUI.BorderCompanionThickness(host._powerArtKey, host._powerArtSize, host._powerArtPx, es)
+    local realPP = EllesmereUI.PP
+    local raise = realPP.SnapForES(thick * 5 / 32, es) - realPP.perfect / es
+    local t = host._powerArtTex
+    t:ClearAllPoints()
+    if host._powerArtEdge == "BOTTOM" then
+        t:SetTexCoord(0, 1, 1, 0)
+        t:SetPoint("BOTTOMLEFT", host, "BOTTOMLEFT", 0, -raise)
+        t:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", 0, -raise)
+    else
+        t:SetTexCoord(0, 1, 0, 1)
+        t:SetPoint("TOPLEFT", host, "TOPLEFT", 0, raise)
+        t:SetPoint("TOPRIGHT", host, "TOPRIGHT", 0, raise)
+    end
+    t:SetHeight(thick)
+    t:Show()
+    seam:Show()
+end
+
+-- Settings passes refresh the cached art; ordinary power paints reuse it.
+function ns.RF_ApplyPowerBorderArt(host, s, force, preview, nameBar)
+    local mode = nameBar and "divider" or (s.powerBorderStyle or "eui")
+    local key = ((nameBar and s.topNameBarDivider == true) or (not nameBar and s.powerBorderMatchFrame == true))
+        and not ns.RF_Stock() and s.borderTexture
+    if not EllesmereUI._pixelArtBorders[key] or (mode ~= "divider" and mode ~= "border") then
+        ns.RF_ClearPowerBorderArt(host)
+        return false
+    end
+    local size = s.borderSize or 1
+    local height = nameBar and (s.topNameBarHeight or 20) or (s.powerHeight or 4)
+    if size <= 0 or (mode == "divider" and height < 4) then
+        ns.RF_ClearPowerBorderArt(host)
+        host:Hide()
+        return true
+    end
+    if not force and host._powerArtKey == key and host._powerArtMode == mode and host._powerArtSize == size then
+        host:Show()
+        return true
+    end
+    EllesmereUI.HideBorderStyle(host)
+    if host._powerArtTex then host._powerArtTex:Hide() end
+    if host._powerArtSeam then host._powerArtSeam:Hide() end
+    host._powerArtKey, host._powerArtMode = key, mode
+    host._powerArtEdge = (nameBar and not s.topNameBarBottom) and "BOTTOM" or "TOP"
+    host._powerArtSize = size
+    host._powerArtPx = EllesmereUI.BorderPx(s.borderSizePx, size, key)
+    local c = s.borderColor
+    host._powerArtR, host._powerArtG, host._powerArtB = c and c.r or 0, c and c.g or 0, c and c.b or 0
+    host._powerArtAlpha = s.borderAlpha or 1
+    host._powerArtOffset, host._powerArtOffsetY = s.borderTextureOffset, s.borderTextureOffsetY
+    host._powerArtShiftX, host._powerArtShiftY = s.borderTextureShiftX, s.borderTextureShiftY
+    if mode == "divider" then
+        local t = host._powerArtTex
+        if not t then
+            -- On the Buff / Debuff Manager preview (a frame of the options page
+            -- pool, EllesmereUI_FramePool.lua) the seam is pooled with its host
+            -- and handed out again by the next build; elsewhere a plain new frame.
+            local seam = POOL.CreateFrame("Frame", nil, host)
+            seam:SetAllPoints(host)
+            host._powerArtSeam = seam
+            t = seam:CreateTexture(nil, "ARTWORK")
+            PP.DisablePixelSnap(t)
+            host._powerArtTex = t
+        end
+        t:SetTexture(EllesmereUI.GetBorderCompanion(key, "sepH"))
+        t:SetVertexColor(host._powerArtR, host._powerArtG, host._powerArtB, host._powerArtAlpha)
+    end
+    host:Show()
+    ns.RF_LayoutPowerBorderArt(host)
+    EllesmereUI.RegisterPxReapply(host, (mode == "divider" and not preview) and ns.RF_LayoutPowerBorderArt or nil)
+    return true, true
+end
+
+function ns.RF_ApplyTopNameDivider(tnb, s, preview)
+    local host = tnb._divider
+    local key = s.borderTexture
+    if not PP or not s.topNameBarEnabled or s.topNameBarDivider ~= true or ns.RF_Stock()
+        or not EllesmereUI._pixelArtBorders[key] or (s.borderSize or 1) <= 0
+        or (s.topNameBarHeight or 20) < 4 then
+        if host then
+            ns.RF_ClearPowerBorderArt(host)
+            host:Hide()
+        end
+        return
+    end
+    if not host then
+        -- Pooled with the options preview's replica, as the seam above.
+        host = POOL.CreateFrame("Frame", nil, tnb:GetParent())
+        host:SetAllPoints(tnb)
+        tnb._divider = host
+    end
+    ns.RF_ApplyPowerBorderArt(host, s, true, preview, true)
+end
+
+-- Unit tooltip and hover border for a raid/party button; the detached
+-- portrait's click button replays them (EUI_RaidFrames_Portrait.lua).
+local function ButtonOnEnter(self)
+    local fd = GetFFD(self)
+    fd._hovered = true
+    if fd.ApplyBorderColor then fd.ApplyBorderColor() end
+    -- Aura icons enable mouse and propagate motion up to this button, so entering an icon fires
+    -- its OnEnter (aura tooltip) then bubbles here, clobbering it with the unit tooltip. Bail
+    -- when the cursor is over one of our aura icons (stashed _tipIID).
+    local foci = GetMouseFoci()
+    if foci then
+        for _, mf in ipairs(foci) do
+            if mf ~= self and mf._tipIID ~= nil then return end
+        end
+    end
+    -- Unit-tooltip gating: see ns.RaidFrameTooltipAllowed. It reads through the party-aware
+    -- proxy, NOT raw db.profile -- else party_<key> overrides from a custom party
+    -- "Range & Tooltip" section are never seen.
+    if not ns.RaidFrameTooltipAllowed(self) then return end
+    local u = self:GetAttribute("unit")
+    if u and UnitExists(u) then
+        GameTooltip_SetDefaultAnchor(GameTooltip, self)
+        -- Populate with a freshly-built clean literal token (GUID-matched) rather than the
+        -- secure unit attribute: a literal "raidN"/"partyN"/"player" string lacks the
+        -- secure-frame origin that makes GameTooltip:GetUnit() return a secret, so external
+        -- tooltip addons can resolve the unit. Falls back to the attribute if no clean token.
+        local tip, g = u, UnitGUID(u)
+        if g and not (issecretvalue and issecretvalue(g)) then
+            if UnitGUID("player") == g then
+                tip = "player"
+            elseif IsInRaid() then
+                for i = 1, GetNumGroupMembers() do
+                    local tk = "raid" .. i
+                    local tg = UnitGUID(tk)
+                    if tg and not (issecretvalue and issecretvalue(tg)) and tg == g then tip = tk; break end
+                end
+            else
+                for i = 1, GetNumSubgroupMembers() do
+                    local tk = "party" .. i
+                    local tg = UnitGUID(tk)
+                    if tg and not (issecretvalue and issecretvalue(tg)) and tg == g then tip = tk; break end
+                end
+            end
+        end
+        GameTooltip:SetUnit(tip)
+        GameTooltip:Show()
+    end
+end
+local function ButtonOnLeave(self)
+    local fd = GetFFD(self)
+    fd._hovered = false
+    if fd.ApplyBorderColor then fd.ApplyBorderColor() end
+    GameTooltip:Hide()
+end
+ns.RF_ButtonOnEnter, ns.RF_ButtonOnLeave = ButtonOnEnter, ButtonOnLeave
+
 -------------------------------------------------------------------------------
 --  Style a single button (called once per button at creation time)
 -------------------------------------------------------------------------------
@@ -480,85 +664,19 @@ local function StyleButton(button)
         ns.RF_KitBuild(button, d, health, d.power, bdrFrame)
     end
 
-    -- Text carrier: name + health text in the text band (ns.LVL_TEXT) -- above every border incl. the raise, below the aura band.
+    -- Text carrier: the texts in the text band (ns.LVL_TEXT) -- above every border incl.
+    -- the raise, below the aura band. Their FontStrings are built on it on first need
+    -- (ns.RF_TextLayout, run by AnchorTexts below and by the paints when the settings changed).
     local textCarrier = CreateFrame("Frame", nil, button)
     textCarrier:SetAllPoints(health)
     textCarrier:SetFrameLevel(button:GetFrameLevel() + ns.LVL_TEXT)
-    -- Kept for Power Text, whose FontString is built on it only when a mode first needs it.
     d.textCarrier = textCarrier
-
-    -- Name text
-    local nameFS = textCarrier:CreateFontString(nil, "OVERLAY")
-    ApplyFont(nameFS, s.nameSize or 10)
-    nameFS:SetJustifyH("CENTER")
-    nameFS:SetWordWrap(false)
-    d.nameText = nameFS
-
-    -- Health deficit text
-    local healthFS = textCarrier:CreateFontString(nil, "OVERLAY")
-    ApplyFont(healthFS, s.healthTextSize or 9)
-    healthFS:SetTextColor(1, 1, 1, 0.9)
-    d.healthText = healthFS
-
-    local function AnchorHealthText()
-        local s = LiveS()   -- party/extra-aware (see LiveS note above)
-        local health = ns.RF_BarHost(health, s)   -- Uniform Icon Anchoring host swap / kit bar
-        healthFS:ClearAllPoints()
-        local pos = s.healthTextPosition or "center"
-        local ox = s.healthTextOffsetX or 0
-        local oy = s.healthTextOffsetY or 0
-        healthFS:SetWidth(d.kitG and d.kitG.health.w or (s.frameWidth or 72) * 0.75)
-        healthFS:SetHeight(0)
-        if pos == "topleft" then
-            healthFS:SetPoint("TOPLEFT", health, "TOPLEFT", 2 + ox, -2 + oy)
-            healthFS:SetJustifyH("LEFT"); healthFS:SetJustifyV("TOP")
-        elseif pos == "top" then
-            healthFS:SetPoint("TOP", health, "TOP", ox, -2 + oy)
-            healthFS:SetJustifyH("CENTER"); healthFS:SetJustifyV("TOP")
-        elseif pos == "topright" then
-            healthFS:SetPoint("TOPRIGHT", health, "TOPRIGHT", -2 + ox, -2 + oy)
-            healthFS:SetJustifyH("RIGHT"); healthFS:SetJustifyV("TOP")
-        elseif pos == "left" then
-            healthFS:SetPoint("LEFT", health, "LEFT", 2 + ox, oy)
-            healthFS:SetJustifyH("LEFT"); healthFS:SetJustifyV("MIDDLE")
-        elseif pos == "right" then
-            healthFS:SetPoint("RIGHT", health, "RIGHT", -2 + ox, oy)
-            healthFS:SetJustifyH("RIGHT"); healthFS:SetJustifyV("MIDDLE")
-        elseif pos == "bottomleft" then
-            healthFS:SetPoint("BOTTOMLEFT", health, "BOTTOMLEFT", 2 + ox, 2 + oy)
-            healthFS:SetJustifyH("LEFT"); healthFS:SetJustifyV("BOTTOM")
-        elseif pos == "bottom" then
-            healthFS:SetPoint("BOTTOM", health, "BOTTOM", ox, 2 + oy)
-            healthFS:SetJustifyH("CENTER"); healthFS:SetJustifyV("BOTTOM")
-        elseif pos == "bottomright" then
-            healthFS:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", -2 + ox, 2 + oy)
-            healthFS:SetJustifyH("RIGHT"); healthFS:SetJustifyV("BOTTOM")
-        else -- "center"
-            healthFS:SetPoint("CENTER", health, "CENTER", ox, oy)
-            healthFS:SetJustifyH("CENTER"); healthFS:SetJustifyV("MIDDLE")
-        end
-        local txt = healthFS:GetText()
-        healthFS:SetText("")
-        healthFS:SetText(txt or "")
-    end
-    AnchorHealthText()
-    d.AnchorHealthText = AnchorHealthText
-
-    -- Heal absorb text (1:1 with health text; independent position/size/color).
-    local healAbsorbFS = textCarrier:CreateFontString(nil, "OVERLAY")
-    ApplyFont(healAbsorbFS, s.healAbsorbTextSize or 9)
-    healAbsorbFS:SetWordWrap(false)
-    d.healAbsorbText = healAbsorbFS
-    local function AnchorHealAbsorbText()
-        local s = LiveS()   -- party/extra-aware (see LiveS note above)
-        local health = ns.RF_BarHost(health, s)   -- Uniform Icon Anchoring host swap / kit bar
-        ns.AnchorRFText(healAbsorbFS, health, s.healAbsorbTextPosition or "center",
-            s.healAbsorbTextOffsetX or 0, s.healAbsorbTextOffsetY or 0,
-            d.kitG and d.kitG.health.w or (s.frameWidth or 72) * 0.75)
-    end
-    AnchorHealAbsorbText()
-    d.AnchorHealAbsorbText = AnchorHealAbsorbText
-
+    -- The second carrier for texts whose Show Above Icons differs from the name's: built
+    -- here with the first (never in a later layout pass), levelled by ns.RF_TextLayout.
+    local textCarrierAlt = CreateFrame("Frame", nil, button)
+    textCarrierAlt:SetAllPoints(health)
+    textCarrierAlt:SetFrameLevel(button:GetFrameLevel() + ns.LVL_TEXT)
+    d._txAlt = textCarrierAlt
     -- Status text (DEAD / OFFLINE / AFK -- always shown, own position/size/color).
     -- Party Frames kit: in the text band, so the Classic art (drawn over the
     -- bars) never covers it; it still anchors to the kit health bar.
@@ -613,16 +731,20 @@ local function StyleButton(button)
 
     local function AnchorRoleIcon()
         local s = LiveS()   -- party/extra-aware (see LiveS note above)
-        -- "Show Behind Border": LVL_RAISE - 1 (9) sits just under the hover/target raise (+10,
-        -- strips +11) and under the base border strips (+9 tie: strips are created after this
-        -- carrier, so they win the tie and draw over the icon). Default: text band.
+        -- Show Behind Border: just under the base border; default: the text band.
         roleCarrier:SetFrameLevel(button:GetFrameLevel()
-            + (s.roleIconBehindBorder and (ns.LVL_RAISE - 1) or (ns.LVL_AURA - 1)))
+            + (s.roleIconBehindBorder and ns.LVL_ROLE_BEHIND or (ns.LVL_AURA - 1)))
         local health = ns.RF_AnchorHost(health, s)   -- Uniform Icon Anchoring host swap
         roleIcon:ClearAllPoints()
         -- Party Frames kit: the stock spot plus the user's offsets.
         if d.kitG then
             ns.RF_KitSpot(d.kitG.role, roleIcon, button, s.roleIconOffsetX, s.roleIconOffsetY)
+            return
+        end
+        -- Attach Role Icons: the name bar's rect is the same with or without a power bar
+        if s.roleIconOnNameBar and s.topNameBarEnabled and d.topNameBar then
+            local pos = (s.roleNameBarPosition or "left"):upper()
+            roleIcon:SetPoint(pos, d.topNameBar, pos, s.roleNameBarOffsetX or 0, s.roleNameBarOffsetY or 0)
             return
         end
         -- The position key uppercases directly to a valid anchor point, so all
@@ -751,79 +873,19 @@ local function StyleButton(button)
     AnchorCombatIcon()
     d.AnchorCombatIcon = AnchorCombatIcon
 
-    -- Anchor name text: width-constrained region, position via a single anchor; JustifyH/V aligns within it.
-    local function AnchorNameText()
+    -- The texts: font, anchor and visibility of every shown text (Top Name Bar
+    -- hides the name, the Party Frames kit puts it on the stock spot).
+    local function AnchorTexts()
         local s = LiveS()   -- party/extra-aware (see LiveS note above)
-        local health = ns.RF_AnchorHost(health, s)   -- Uniform Icon Anchoring host swap
-        -- Text band level, re-applied on every reload; BEFORE the name-hidden early return because
-        -- health text shares this carrier. Default sits under the aura band (ns.LVL_TEXT); "Show
-        -- Above Icons" (name cog) lifts it above the band's children (+6 clears each aura unit's
-        -- +1..+5), still below the marker carrier.
+        -- Text band level, re-applied on every reload. Default sits under the aura band
+        -- (ns.LVL_TEXT); "Show Above Icons" (the name's cog) lifts it above the band's children
+        -- (+6 clears each aura unit's +1..+5), still below the marker carrier.
         textCarrier:SetFrameLevel(button:GetFrameLevel()
             + (s.nameTextAboveIcons and (ns.LVL_AURA + 6) or ns.LVL_TEXT))
-        nameFS:ClearAllPoints()
-        local pos = s.namePosition or "center"
-        -- Party Frames kit: the stock name spot and width plus the user's
-        -- offsets ("None" still hides it; the kit has no Top Name Bar).
-        local g = d.kitG
-        if g then
-            if pos == "none" then nameFS:Hide(); return end
-            nameFS:Show()
-            nameFS:SetWidth(g.name.w)
-            nameFS:SetHeight(0)
-            ns.RF_KitSpot(g.name, nameFS, button, s.nameOffsetX, s.nameOffsetY)
-            nameFS:SetJustifyH("LEFT"); nameFS:SetJustifyV(g.name.jv)
-            local txt = nameFS:GetText()
-            nameFS:SetText("")
-            nameFS:SetText(txt or "")
-            return
-        end
-        -- Top Name Bar enabled: it owns the unit name, suppress the in-frame name.
-        if pos == "none" or s.topNameBarEnabled then
-            nameFS:Hide()
-            return
-        end
-        nameFS:Show()
-        local ox = s.nameOffsetX or 0
-        local oy = s.nameOffsetY or 0
-        nameFS:SetWidth((s.frameWidth or 72) * ns.RF_NAME_WIDTH_FRACTION)
-        nameFS:SetHeight(0)
-        if pos == "topleft" then
-            nameFS:SetPoint("TOPLEFT", health, "TOPLEFT", 2 + ox, -2 + oy)
-            nameFS:SetJustifyH("LEFT"); nameFS:SetJustifyV("TOP")
-        elseif pos == "top" then
-            nameFS:SetPoint("TOP", health, "TOP", ox, -2 + oy)
-            nameFS:SetJustifyH("CENTER"); nameFS:SetJustifyV("TOP")
-        elseif pos == "topright" then
-            nameFS:SetPoint("TOPRIGHT", health, "TOPRIGHT", -2 + ox, -2 + oy)
-            nameFS:SetJustifyH("RIGHT"); nameFS:SetJustifyV("TOP")
-        elseif pos == "left" then
-            nameFS:SetPoint("LEFT", health, "LEFT", 2 + ox, oy)
-            nameFS:SetJustifyH("LEFT"); nameFS:SetJustifyV("MIDDLE")
-        elseif pos == "right" then
-            nameFS:SetPoint("RIGHT", health, "RIGHT", -2 + ox, oy)
-            nameFS:SetJustifyH("RIGHT"); nameFS:SetJustifyV("MIDDLE")
-        elseif pos == "bottomleft" then
-            nameFS:SetPoint("BOTTOMLEFT", health, "BOTTOMLEFT", 2 + ox, 2 + oy)
-            nameFS:SetJustifyH("LEFT"); nameFS:SetJustifyV("BOTTOM")
-        elseif pos == "bottom" then
-            nameFS:SetPoint("BOTTOM", health, "BOTTOM", ox, 2 + oy)
-            nameFS:SetJustifyH("CENTER"); nameFS:SetJustifyV("BOTTOM")
-        elseif pos == "bottomright" then
-            nameFS:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", -2 + ox, 2 + oy)
-            nameFS:SetJustifyH("RIGHT"); nameFS:SetJustifyV("BOTTOM")
-        else -- "center"
-            nameFS:SetPoint("CENTER", health, "CENTER", ox, oy)
-            nameFS:SetJustifyH("CENTER"); nameFS:SetJustifyV("MIDDLE")
-        end
-        -- Force text re-render (WoW doesn't visually re-layout on JustifyH change alone)
-        local txt = nameFS:GetText()
-        nameFS:SetText("")
-        nameFS:SetText(txt or "")
+        ns.RF_TextLayout(d, s)
     end
-    AnchorNameText()
-    d.AnchorNameText = AnchorNameText
-
+    AnchorTexts()
+    d.AnchorTexts = AnchorTexts
     -- Raise the border above neighbors while hovered/targeted (or recolored for aggro): buttons share a frame level, so with
     -- small/negative Frame Spacing a neighbor's border would cover this frame's highlight.
     -- Highlight states bump it up, normal restores the base level. The PP container's level is
@@ -861,6 +923,10 @@ local function StyleButton(button)
         if not (PP and d.borderFrame) then return end
         -- Re-called long after StyleButton: resolve LIVE (see LiveS note) so party overrides and profile swaps are honored.
         local s = LiveS()
+        if ns.RF_ButtonCompact(d, s) then
+            ns.RF_CompactHighlight(d.borderFrame, d, s, button)
+            return
+        end
         -- Party Frames kit: hover and target glow along the frame art.
         if d.kit then
             ApplyBorderLevel(false, s)
@@ -906,6 +972,12 @@ local function StyleButton(button)
         if hlSize then r, g, b = ns.RF_VisibleHighlight(s, r, g, b) end
         d.borderFrame._hlBorderSize = nil
         EllesmereUI.SetBorderStyleColor(d.borderFrame, r, g, b, a)
+        if s.powerBorderMatchColor == true and d.powerBorderFrame and d.powerBorderFrame._powerArtMode == "divider" then
+            ns.RF_ColorPowerDivider(d.powerBorderFrame, r, g, b, a)
+        end
+        if s.topNameBarDividerMatchColor == true and d.topNameBar and d.topNameBar._divider then
+            ns.RF_ColorPowerDivider(d.topNameBar._divider, r, g, b, a)
+        end
     end
     d.ApplyBorderColor = ApplyBorderColor
 
@@ -919,6 +991,14 @@ local function StyleButton(button)
         local bc = s.borderColor or { r = 0, g = 0, b = 0 }
         local texKey = s.borderTexture or "solid"
         local pl = button:GetFrameLevel()
+        local compact = ns.RF_ButtonCompact(d, s)
+        if compact or d._compactBorder then d._compactBorder = compact end
+        if compact then
+            EllesmereUI.ApplyBorderStyle(d.borderFrame, 0, 0, 0, 0, 0, "solid")
+            ApplyBorderColor()
+            EllesmereUI.RoundCorners(button, 0)
+            return
+        end
         -- Stock styles: the EllesmereUI border stands down for the stock edge
         -- (for the art under the Party Frames kit).
         if d.kit then
@@ -926,6 +1006,7 @@ local function StyleButton(button)
             EllesmereUI.ApplyBorderStyle(d.borderFrame, 0, 0, 0, 0, 0, "solid")
             d.borderFrame._hlBorderSize = nil
             ApplyBorderColor()
+            EllesmereUI.RoundCorners(button, 0)
             return
         end
         if d.stockEdge then
@@ -934,6 +1015,7 @@ local function StyleButton(button)
             d.borderFrame._hlBorderSize = nil
             ns.RF_StockSeat(d)
             ApplyBorderColor()
+            EllesmereUI.RoundCorners(button, 0)
             return
         end
         d.borderFrame:SetFrameLevel(s.borderBehind and math.max(0, pl - 1) or (pl + 8))
@@ -942,29 +1024,55 @@ local function StyleButton(button)
             s.borderTextureShiftX, s.borderTextureShiftY, "unitframes", bs, nil,
             EllesmereUI.BorderPx(s.borderSizePx, bs, texKey))
         ApplyBorderColor()
+        -- Rounded corners (EllesmereUI_RoundedCorners.lua; nothing at radius 0).
+        -- The power border rides in the body so its edge strips round too.
+        local radius = s.cornerRadius or 0
+        if radius > 0 then
+            EllesmereUI.RoundCorners(button, radius, {
+                roots = { d.health, d.power, d.topNameBar, d.powerBorderFrame },
+                textures = { d.bg },
+                border = d.borderFrame, style = texKey, corners = s.cornerMask,
+            })
+        else
+            EllesmereUI.RoundCorners(button, 0)
+        end
     end
     if ns.RF_Stock() and not d.kit then ns.RF_StockBuild(button, d, d.power) end
     UpdateBorder()
     d.UpdateBorder = UpdateBorder
 
     -- Apply power border
-    local function UpdatePowerBorder()
+    local function UpdatePowerBorder(force)
         -- Party Frames kit: the mana bar sits in the art's own track.
         if d.kit then
+            ns.RF_ClearPowerBorderArt(d.powerBorderFrame)
             if d.powerBorderFrame then d.powerBorderFrame:Hide() end
             return
         end
         -- No-op while the power bar is hidden: the border frame always exists and unconditional
         -- callers must not draw over a hidden bar. UpdateButton calls this AFTER power:Show().
-        if not PP or not d.powerBorderFrame or (d.power and not d.power:IsShown()) then return end
+        if not PP or not d.powerBorderFrame then return end
+        if d.power and not d.power:IsShown() then
+            ns.RF_ClearPowerBorderArt(d.powerBorderFrame)
+            d.powerBorderFrame:Hide()
+            return
+        end
         -- Classic WoW UI: the stock health/power divider in place of the power border.
         if d.stockDiv then
+            ns.RF_ClearPowerBorderArt(d.powerBorderFrame)
             d.powerBorderFrame:Hide()
             ns.RF_StockDivider(d)
             return
         end
         -- Re-called long after StyleButton: resolve LIVE (see LiveS note) -- a captured `s` misses party overrides and profile swaps.
         local s = LiveS()
+        if s.powerBorderMatchFrame == true or d.powerBorderFrame._powerArtKey then
+            local handled, refreshed = ns.RF_ApplyPowerBorderArt(d.powerBorderFrame, s, force)
+            if handled then
+                if refreshed and s.powerBorderMatchColor == true and d.powerBorderFrame._powerArtMode == "divider" then ApplyBorderColor() end
+                return
+            end
+        end
         local style = s.powerBorderStyle or "eui"
         if style == "eui" then
             -- EUI style: 1px divider, white at 20% opacity
@@ -1007,58 +1115,8 @@ local function StyleButton(button)
     d.UpdatePowerBorder = UpdatePowerBorder
 
     -- Tooltip handlers
-    button:HookScript("OnEnter", function(self)
-        local fd = GetFFD(self)
-        fd._hovered = true
-        if fd.ApplyBorderColor then fd.ApplyBorderColor() end
-        -- Aura icons enable mouse and propagate motion up to this button, so entering an icon fires
-        -- its OnEnter (aura tooltip) then bubbles here, clobbering it with the unit tooltip. Bail
-        -- when the cursor is over one of our aura icons (stashed _tipIID).
-        local foci = GetMouseFoci()
-        if foci then
-            for _, mf in ipairs(foci) do
-                if mf ~= self and mf._tipIID ~= nil then return end
-            end
-        end
-        -- Unit-tooltip gating: see ns.RaidFrameTooltipAllowed. It reads through the party-aware
-        -- proxy, NOT raw db.profile -- else party_<key> overrides from a custom party
-        -- "Range & Tooltip" section are never seen.
-        if not ns.RaidFrameTooltipAllowed(self) then return end
-        local u = self:GetAttribute("unit")
-        if u and UnitExists(u) then
-            GameTooltip_SetDefaultAnchor(GameTooltip, self)
-            -- Populate with a freshly-built clean literal token (GUID-matched) rather than the
-            -- secure unit attribute: a literal "raidN"/"partyN"/"player" string lacks the
-            -- secure-frame origin that makes GameTooltip:GetUnit() return a secret, so external
-            -- tooltip addons can resolve the unit. Falls back to the attribute if no clean token.
-            local tip, g = u, UnitGUID(u)
-            if g and not (issecretvalue and issecretvalue(g)) then
-                if UnitGUID("player") == g then
-                    tip = "player"
-                elseif IsInRaid() then
-                    for i = 1, GetNumGroupMembers() do
-                        local tk = "raid" .. i
-                        local tg = UnitGUID(tk)
-                        if tg and not (issecretvalue and issecretvalue(tg)) and tg == g then tip = tk; break end
-                    end
-                else
-                    for i = 1, GetNumSubgroupMembers() do
-                        local tk = "party" .. i
-                        local tg = UnitGUID(tk)
-                        if tg and not (issecretvalue and issecretvalue(tg)) and tg == g then tip = tk; break end
-                    end
-                end
-            end
-            GameTooltip:SetUnit(tip)
-            GameTooltip:Show()
-        end
-    end)
-    button:HookScript("OnLeave", function(self)
-        local fd = GetFFD(self)
-        fd._hovered = false
-        if fd.ApplyBorderColor then fd.ApplyBorderColor() end
-        GameTooltip:Hide()
-    end)
+    button:HookScript("OnEnter", ButtonOnEnter)
+    button:HookScript("OnLeave", ButtonOnLeave)
 
     -- Private auras: re-anchor whenever the secure header reassigns this button's unit. The engine
     -- drops private-aura anchors on unit reassignment (join/leave, sort, zone-in) even when the

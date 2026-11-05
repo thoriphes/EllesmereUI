@@ -14,6 +14,11 @@ I.broken = true
 
 local pairs, ipairs, type = pairs, ipairs, type
 local UnitIsUnit, UnitCanAttack = UnitIsUnit, UnitCanAttack
+-- The core's table of the options page frame pool (EllesmereUI_PixelPerfect.lua
+-- makes it, the options addon fills it): the builders the options preview shares
+-- with the plates create through it, so a preview frame is handed back to the
+-- preview's next build. A plate's parent is no pool host: a plain CreateFrame.
+local Pool = EllesmereUI._Pool
 
 local defaults = I.defaults
 
@@ -431,8 +436,10 @@ function ns.NP_BlizzBarShadow(bar, h, mask)
     if sh._h ~= h then
         sh._h = h
         local top, bottom, ends = math.max(2, math.floor(h * 0.2)), math.max(1, math.floor(h * 0.1)), math.max(2, math.floor(h * 0.15))
+        -- The bottom strip sits on the fill's bottom edge (ns.NP_SeatBarMask).
+        local lift = ns.NP_Forever() and ns.NP_FOREVER_FILL_LIFT or 0
         sh[1]:ClearAllPoints(); sh[1]:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0); sh[1]:SetPoint("TOPRIGHT", bar, "TOPRIGHT", 0, 0); sh[1]:SetHeight(top)
-        sh[2]:ClearAllPoints(); sh[2]:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0); sh[2]:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, 0); sh[2]:SetHeight(bottom)
+        sh[2]:ClearAllPoints(); sh[2]:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, lift); sh[2]:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, lift); sh[2]:SetHeight(bottom)
         sh[3]:ClearAllPoints(); sh[3]:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0); sh[3]:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0); sh[3]:SetWidth(ends)
         sh[4]:ClearAllPoints(); sh[4]:SetPoint("TOPRIGHT", bar, "TOPRIGHT", 0, 0); sh[4]:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, 0); sh[4]:SetWidth(ends)
         for i = 1, 4 do sh[i]:Show() end
@@ -444,6 +451,20 @@ function ns.NP_BlizzBarShadow(bar, h, mask)
             sh[i]:AddMaskTexture(mask)
         end
         sh._mask = mask
+    end
+end
+-- The stock fill-footprint mask on a health bar: the whole bar, except under
+-- the WoW Forever variant, whose background art's bottom rim reaches a unit
+-- up over the bar's bottom edge (field-measured), so there the mask stops
+-- that far up and the fill meets the rim. Shared with the options preview.
+ns.NP_FOREVER_FILL_LIFT = 1
+function ns.NP_SeatBarMask(mask, health)
+    mask:ClearAllPoints()
+    if ns.NP_Forever() then
+        mask:SetPoint("TOPLEFT", health, "TOPLEFT", 0, 0)
+        mask:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", 0, ns.NP_FOREVER_FILL_LIFT)
+    else
+        mask:SetAllPoints(health)
     end
 end
 -- Health bar: the stock shadowed background hugging the bar the way the
@@ -472,7 +493,7 @@ function ns.NP_ApplyBlizzBarArt(plate)
     if not mask and ns.NP_AtlasOK(B.bar) then
         mask = health:CreateMaskTexture()
         mask:SetAtlas(B.bar)
-        mask:SetAllPoints(health)
+        ns.NP_SeatBarMask(mask, health)
         plate._blizzBarMask = mask
     end
     if mask then
@@ -489,6 +510,11 @@ function ns.NP_ApplyBlizzBarArt(plate)
         if plate.targetHighlight and not plate._blizzMaskedTarget then
             plate.targetHighlight:AddMaskTexture(mask)
             plate._blizzMaskedTarget = true
+        end
+        if plate.castTintInt and not plate._blizzMaskedCastTints then
+            plate.castTintInt:AddMaskTexture(mask)
+            plate.castTintUnint:AddMaskTexture(mask)
+            plate._blizzMaskedCastTints = true
         end
     end
     ns.NP_BlizzBarShadow(health, nil, mask)
@@ -541,7 +567,7 @@ function ns.NP_ApplyClassicIconArt(frame, w, h)
     local host = frame._classicIconHost
     local border = frame._classicIconBorder
     if not border then
-        host = CreateFrame("Frame", nil, frame)
+        host = Pool.CreateFrame("Frame", nil, frame)
         host:SetAllPoints(frame)
         host:EnableMouse(false)
         border = host:CreateTexture(nil, "OVERLAY", nil, 5)
@@ -640,10 +666,11 @@ end
 function ns.NP_BuildForeverLevelBox(health)
     local B, L = ns.NP_BLIZZ, ns.NP_FOREVER_LVL
     if not ns.NP_AtlasOK(B.lvlBg) then return nil end
-    local box = CreateFrame("Frame", nil, health)
+    local box = Pool.CreateFrame("Frame", nil, health)
     box:EnableMouse(false)
     box:SetFrameLevel(health:GetFrameLevel() + 6)
-    box:SetPoint("LEFT", health, "RIGHT", L.gap, 0)
+    -- As the stock plate hangs it: L.pad taller than the bar, 3 of it above.
+    box:SetPoint("LEFT", health, "RIGHT", L.gap, 0.5)
     local bg = box:CreateTexture(nil, "BACKGROUND")
     bg:SetAtlas(B.lvlBg)
     bg:SetAllPoints(box)
@@ -657,12 +684,13 @@ function ns.NP_BuildForeverLevelBox(health)
     sk:Hide()
     box._skull = sk
     if ns.NP_AtlasOK(B.lvlSel) then
-        -- Where the stock plate hangs it (4 past a box 2 shorter), level with
-        -- the bar's own selection ring.
+        -- Where the stock plate hangs it (3 past the box's top and 4 past its
+        -- bottom, so 6 past the bar's each way), level with the bar's own
+        -- selection ring.
         local sel = box:CreateTexture(nil, "OVERLAY", nil, 1)
         sel:SetAtlas(B.lvlSel)
         sel:SetPoint("TOPLEFT", box, "TOPLEFT", -3, 3)
-        sel:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 3, -3)
+        sel:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 3, -4)
         sel:Hide()
         box._sel = sel
     end
@@ -886,18 +914,27 @@ function ns.NP_SeedStock(prof)
     prof.healthBarTexture = "blizzard"
     prof.castBarTexture = "blizzard"
 end
--- The one-time WoW Forever seed: the level box shows the level, so the Left
--- Text slot's Forever default ("level") steps aside instead of showing it a
--- second time. Once per profile; a level the user put anywhere else stays,
--- and the slot is the user's afterwards. The Style page keeps the key in a
--- Forever-only slot (p._foreverStyleSlots): the other looks' value is banked
--- on the way into the variant and comes back on the way out.
+-- The one-time WoW Forever seeds, each under its own stamp: the level box
+-- shows the level, so the Left Text slot's Forever default ("level") steps
+-- aside instead of showing it a second time (a level the user put anywhere
+-- else stays), and the look's plates start without elite or rare marks (the
+-- Elite/Rare Indicator box unchecked; the Quest Indicator keeps its own).
+-- Once per profile; the settings are the user's afterwards. The Style page
+-- keeps the keys in a Forever-only slot (p._foreverStyleSlots): the other
+-- looks' values are banked on the way into the variant and come back on the
+-- way out.
 function ns.NP_SeedForever(prof)
-    if not prof or prof.foreverLevelSlotSeeded then return end
-    prof.foreverLevelSlotSeeded = true
-    local v = prof.textSlotLeft
-    if v == nil then v = defaults.textSlotLeft end
-    if v == "level" then prof.textSlotLeft = "none" end
+    if not prof then return end
+    if not prof.foreverLevelSlotSeeded then
+        prof.foreverLevelSlotSeeded = true
+        local v = prof.textSlotLeft
+        if v == nil then v = defaults.textSlotLeft end
+        if v == "level" then prof.textSlotLeft = "none" end
+    end
+    if not prof.foreverRareSeeded then
+        prof.foreverRareSeeded = true
+        prof.classificationHideRare = true
+    end
 end
 
 local function NoTintFlag(db, key)
@@ -916,12 +953,123 @@ local function ApplyHealthBarTexture(plate)
     if plate.absorb and plate._absFill ~= health:GetStatusBarTexture() then
         ns.NP_LayoutAbsorbBars(plate, health, plate._absEdge)
     end
+    if plate.castTintInt then ns.NP_LayoutCastTints(plate) end
     -- Blizzard Style: the user's fill under the stock background art, plus
     -- the bar's inner shadow (re-sized here on every appearance pass). The
     -- classic plate is the bare fill inside its 1px edge (the border path).
     if ns.NP_Style() == "blizzard" then ns.NP_ApplyBlizzBarArt(plate) end
+    ns.NP_ApplyRounding(plate, "health")
 end
 ns.ApplyHealthBarTexture = ApplyHealthBarTexture
+
+-- Rounded corners (EllesmereUI_RoundedCorners.lua; nothing at radius 0, under
+-- the stock styles, under a custom border style that cannot round, or while
+-- Wrap Border Around Castbar is on, which greys Corner Radius out). The body
+-- is listed texture by texture: glows and arrows on the health bar reach past
+-- it and must stay unmasked. Re-run after every retexture (a path swap mints a
+-- new fill object). The custom border frame is the shape while it is on.
+-- part: "health" or "cast" for one bar, nil for both. cornersOnly: the cast
+-- bar's show / hide under Join Cast Bar, which moves only the health bar's
+-- bottom corners. The opts tables are reused (the kit reads them during the
+-- call only).
+local NO_ROOTS, HP_ROOTS, HP_TEX, CAST_TEX = {}, {}, {}, {}
+local HP_OPTS = { roots = HP_ROOTS, textures = HP_TEX }
+local CAST_OPTS = { roots = NO_ROOTS, textures = CAST_TEX }
+function ns.NP_ApplyRounding(plate, part, cornersOnly)
+    local health = plate.health
+    if not health then return end
+    local radius = (not ns.NP_Blizz() and p and p.cornerRadius) or 0
+    if radius > 0 and ns.GetWrapBorderCastbar() then radius = 0 end
+    local customOn = radius > 0 and ns.IsCustomBorderEnabled()
+    local style = customOn and ((p and p.customBorderTexture) or defaults.customBorderTexture) or "solid"
+    if not EllesmereUI.RoundedStyleOK(style) then radius = 0 end
+    -- Join Cast Bar: while a cast shows, the health bar and the cast bar under
+    -- it share one outline (the cast bar's show / hide re-rounds the health
+    -- bar, see the cast visibility hook).
+    local join = radius > 0 and p and p.cornerJoinCast or nil
+    plate._npJoinCast = join
+    -- Off: free on every spawn unless this plate was rounded before.
+    if radius <= 0 then
+        if plate._npRounded then
+            plate._npRounded = nil
+            EllesmereUI.RoundCorners(plate, 0)
+            if plate.cast then EllesmereUI.RoundCorners(plate.cast, 0) end
+        end
+        return
+    end
+    plate._npRounded = true
+    -- Basic draws Solid strips on the health bar; Custom draws its own style
+    -- on its own frame, which ApplyBorder builds and rounds right after.
+    local custom = customOn and plate._customBorder
+    if part ~= "cast" and (custom or not customOn) then
+        local shape = custom or health
+        HP_OPTS.rect, HP_OPTS.border, HP_OPTS.style = shape, shape, style
+        HP_OPTS.corners = p and p.cornerMask
+        if join and plate.cast and plate.cast:IsShown() then
+            HP_OPTS.corners = EllesmereUI.RoundedJoinCorners(HP_OPTS.corners)
+        end
+        local ab, fw = plate.absorb, plate.absorbForward
+        HP_TEX[1], HP_TEX[2], HP_TEX[3] = health:GetStatusBarTexture(), plate.healthBG, plate.hashLine
+        HP_TEX[4], HP_TEX[5] = plate.highlight, plate.targetHighlight
+        HP_TEX[6] = ab and ab:GetStatusBarTexture()
+        HP_TEX[7] = fw and fw:GetStatusBarTexture()
+        -- Color Casting Enemies tints (built on first use, nil until then)
+        HP_TEX[8], HP_TEX[9] = plate.castTintUnint, plate.castTintInt
+        -- The Target, Focus and Hover Texture overlays: one texture in each of
+        -- their clip frames (built on first use, nil until then)
+        HP_ROOTS[1], HP_ROOTS[2] = plate.targetClipFill, plate.targetClipBg
+        HP_ROOTS[3], HP_ROOTS[4] = plate.focusClipFill, plate.focusClipBg
+        HP_ROOTS[5], HP_ROOTS[6] = plate.hoverClipFill, plate.hoverClipBg
+        -- A cast show / hide moves the corners alone while every other input
+        -- of the plate's last full pass still holds (radius, style, shape,
+        -- each body texture and root): the kit then reshapes without walking
+        -- the body. Anything else, or a pass the kit will not shorten, runs
+        -- in full and records its inputs.
+        local last = plate._npHpRound
+        local same = cornersOnly and last and last.radius == radius
+            and last.style == style and last.shape == shape
+        if same then
+            local lt, lr = last.tex, last.roots
+            for i = 1, 9 do
+                if lt[i] ~= HP_TEX[i] then same = false; break end
+            end
+            if same then
+                for i = 1, 6 do
+                    if lr[i] ~= HP_ROOTS[i] then same = false; break end
+                end
+            end
+        end
+        if not (same and EllesmereUI.RoundedSetCorners(plate, HP_OPTS.corners)) then
+            EllesmereUI.RoundCorners(plate, radius, HP_OPTS)
+            if not last then
+                last = { tex = {}, roots = {} }
+                plate._npHpRound = last
+            end
+            last.radius, last.style, last.shape = radius, style, shape
+            local lt, lr = last.tex, last.roots
+            for i = 1, 9 do lt[i] = HP_TEX[i] end
+            for i = 1, 6 do lr[i] = HP_ROOTS[i] end
+        end
+    end
+    local cast = plate.cast
+    if cast and part ~= "health" then
+        CAST_OPTS.border, CAST_OPTS.corners = cast, p and p.cornerMask
+        if join then
+            local _, lower = EllesmereUI.RoundedJoinCorners(CAST_OPTS.corners)
+            CAST_OPTS.corners = lower
+        end
+        CAST_TEX[1], CAST_TEX[2], CAST_TEX[3] = cast:GetStatusBarTexture(), plate.castBG, plate.castBarOverlay
+        EllesmereUI.RoundCorners(cast, radius, CAST_OPTS)
+    end
+end
+
+-- The Basic border's colour: its PP strips, plus the rounded ring that stands
+-- in for them while Corner Radius is on (the strips are masked out then). A
+-- hidden border still takes the colour, for its next show.
+function ns.NP_BasicBorderColor(plate, r, g, b, a)
+    EllesmereUI.PP.SetBorderColor(plate.health, r, g, b, a)
+    if plate._npRounded then EllesmereUI.RoundedBorderColor(plate.health, r, g, b, a) end
+end
 
 -- Cast bar texture: mirrors ApplyHealthBarTexture with the same texture set (EUI built-ins +
 -- SharedMedia, appended into ns.healthBarTextures at options-build time). On ns (local cap).
@@ -939,6 +1087,60 @@ function ns.ApplyCastBarTexture(plate)
     -- per-cast grey SetVertexColor is re-applied on every cast start, so this is safe.
     if plate.castBarOverlay then
         plate.castBarOverlay:SetTexture(path)
+    end
+    -- A path swap mints a new fill object: it joins the rounded body.
+    if plate._npRounded then ns.NP_ApplyRounding(plate, "cast") end
+end
+-- Bar backgrounds, painted on every enemy appearance pass so a profile switch or
+-- an override reaches live plates: the Background / Cast Background colours, and
+-- Textured Background (Bar Texture / Cast Bar Texture cogs; off by default),
+-- which puts the bar texture there tinted by that colour. While textured, a
+-- background's own SetColorTexture tints the texture, so the colour rows' live
+-- repaints keep it: paint these backgrounds only through SetColorTexture
+-- (SetTexture / SetAtlas go around it). Blizzard Style draws its stock art there.
+do
+    local function PaintTinted(self, r, g, b, a) self:SetVertexColor(r, g, b, a) end
+    -- A background's texture path in settings s (nil = flat); the options
+    -- preview shares it.
+    function ns.NP_TexBgPath(s, cast)
+        if not (s and s[cast and "castTextureBg" or "healthTextureBg"]) then return nil end
+        return EllesmereUI.ResolveTexturePath(ns.healthBarTextures,
+            s[cast and "castBarTexture" or "healthBarTexture"] or "none", nil)
+    end
+    -- One paint of a background that is never swapped (the options preview).
+    function ns.NP_TexBgPaint(tex, path, r, g, b, a)
+        if path then
+            tex:SetTexture(path)
+            tex:SetVertexColor(r, g, b, a)
+            tex._npTexBgPath = path
+            return
+        end
+        if tex._npTexBgPath then
+            tex._npTexBgPath = nil
+            tex:SetVertexColor(1, 1, 1, 1)
+        end
+        tex:SetColorTexture(r, g, b, a)
+    end
+    local function Paint(bg, path, c, a)
+        if path then
+            if bg._npTexBgPath ~= path then
+                bg:SetTexture(path)
+                bg._npTexBgPath = path
+            end
+            bg.SetColorTexture = PaintTinted
+        elseif bg._npTexBgPath then
+            bg._npTexBgPath = nil
+            bg.SetColorTexture = nil
+            bg:SetVertexColor(1, 1, 1, 1)
+        end
+        bg:SetColorTexture(c.r, c.g, c.b, a)
+    end
+    function ns.ApplyBarBackgrounds(plate)
+        if ns.NP_Style() == "blizzard" then return end
+        Paint(plate.healthBG, ns.NP_TexBgPath(p, false),
+            (p and p.bgColor) or defaults.bgColor, (p and p.bgAlpha) or defaults.bgAlpha)
+        Paint(plate.castBG, ns.NP_TexBgPath(p, true),
+            (p and p.castBgColor) or defaults.castBgColor, (p and p.castBgAlpha) or defaults.castBgAlpha)
     end
 end
 
@@ -986,6 +1188,8 @@ function ns.ApplyAbsorbStyle(plate)
             plate:MarkHealthDirty()
         end
     end
+    -- A new shield texture is a new fill object: it joins the rounded body.
+    if plate._npRounded then ns.NP_ApplyRounding(plate, "health") end
 end
 
 -- Shield absorbs, drawn like the unit frames' and secret-safe: both bars take
@@ -1011,15 +1215,15 @@ end
 -- Shared with the options preview (owner is any table holding the bars).
 function ns.NP_BuildAbsorbBars(owner, health, mask)
     local lvl = health:GetFrameLevel() + 1
-    local curClip = CreateFrame("Frame", nil, health)
+    local curClip = Pool.CreateFrame("Frame", nil, health)
     curClip:SetClipsChildren(true)
     curClip:SetFrameLevel(lvl)
-    local missClip = CreateFrame("Frame", nil, health)
+    local missClip = Pool.CreateFrame("Frame", nil, health)
     missClip:SetClipsChildren(true)
     missClip:SetFrameLevel(lvl)
-    local fw = CreateFrame("StatusBar", nil, missClip)
+    local fw = Pool.CreateFrame("StatusBar", nil, missClip)
     fw:SetReverseFill(false)
-    local ab = CreateFrame("StatusBar", nil, curClip)
+    local ab = Pool.CreateFrame("StatusBar", nil, curClip)
     for _, bar in ipairs({ ab, fw }) do
         bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
         local fill = bar:GetStatusBarTexture()

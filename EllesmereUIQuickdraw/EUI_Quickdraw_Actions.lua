@@ -185,6 +185,47 @@ function ns.HasRezKit()
 end
 end
 
+-------------------------------------------------------------------------------
+--  Random Hearthstone
+--
+--  One entry that is a different owned hearthstone toy each time a menu
+--  holding it opens. The pick is shared by every Random Hearthstone cell on
+--  every palette, so whatever a cell draws is what its pushed attributes fire.
+--  Rolled again by the press of such a menu's key (RerollHearth in
+--  EUI_Quickdraw_Runtime.lua), which also rewrites every such cell's
+--  attributes -- out of combat only, since combat refuses the writes, so a
+--  menu opened mid-fight keeps the last roll.
+--
+--  The roll is the portal flyout's own (EllesmereUI.ResolveHearthSlot), so
+--  the two agree on what counts: a random owned toy, or the plain Hearthstone
+--  item for a character with none. Without the flyout's Astral Recall swap:
+--  the entry is a hearthstone, and a shaman who wants the spell can put it on
+--  the palette beside it. That function rolls again on every call, so its
+--  answer is kept here until the next press asks for a new one.
+-------------------------------------------------------------------------------
+local Hearth = {}
+do
+local pickKind, pickID
+
+-- A new pick, rolled once more when the first repeats the last pick, so two
+-- opens in a row rarely draw the same toy.
+function Hearth.Roll()
+    local lastID = pickID
+    local kind, id = EllesmereUI.ResolveHearthSlot(true)
+    if id == lastID then kind, id = EllesmereUI.ResolveHearthSlot(true) end
+    -- The flyout fires every toy as "item"; the toy action is the one the
+    -- rest of this module uses for toys.
+    if kind == "item" and PlayerHasToy(id) then kind = "toy" end
+    pickKind, pickID = kind, id
+end
+
+-- kind ("toy" or "item") and itemID of what the entry fires right now.
+function Hearth.Current()
+    if not pickID then Hearth.Roll() end
+    return pickKind, pickID
+end
+end
+
 -- The filtered answers, one per palette table. Wiped ONLY at the top of
 -- PushAllPalettes: the memo is what keeps the drawn menu and the pushed
 -- secure attributes reading the SAME list even when the spellbook shifts
@@ -192,9 +233,11 @@ end
 -- allowed to go stale until the next push rather than ever disagreeing with
 -- what a cell index fires. Every input that can change an answer lands here
 -- through that same wipe: SPELLS_CHANGED and UPDATE_MACROS request a push,
--- every slot edit and the toggle itself request one through Refresh, class
--- and spec-list are fixed for the session, and a profile switch hands out
--- different palette tables (weak keys let the old ones go).
+-- every slot edit, the toggle itself and an Assign to Spec pick request one
+-- through Refresh, a spec change that moves which palettes load requests one
+-- through SpecSync, class and spec-list are fixed for the session, and a
+-- profile switch hands out different palette tables (weak keys let the old
+-- ones go).
 local usableMemo = setmetatable({}, { __mode = "k" })
 
 -- KnownForm, SpellKnownHere and SlotUsable are private to UsableSlots, and
@@ -263,26 +306,35 @@ local function SlotUsable(slot)
     return true
 end
 
--- The entries of the palette this character can use ("Hide Unusable
--- Entries"). A view, never a mutation: returns the stored array itself while
--- nothing is filtered or the setting is off, and a fresh dense array
--- otherwise -- the stored slots keep every entry for the characters that CAN
--- use them.
+-- The entries of the palette this character can use ("Hide Unavailable
+-- Actions"). A view, never a mutation: returns the stored array itself while
+-- nothing is filtered, and a fresh dense array otherwise -- the stored slots
+-- keep every entry for the characters that CAN use them. A nested palette
+-- that does not load in this spec (Assign to Spec) is left out whatever the
+-- setting says; with it off, everything else stays.
 function UsableSlots(palette, p)
     local slots = palette and palette.slots
     if not slots then return slots end
-    if p and p.hideUnusable == false then return slots end
     local memo = usableMemo[palette]
     if memo then return memo end
+    local all = p and p.hideUnusable == false
     local out
     for i = 1, #slots do
-        if not SlotUsable(slots[i]) then
+        local slot = slots[i]
+        local keep
+        if slot.kind == "palette" then
+            local child = ChildIndex(slot)
+            keep = not child or ns.PaletteActive(child)
+        else
+            keep = all or SlotUsable(slot)
+        end
+        if not keep then
             if not out then
                 out = {}
                 for j = 1, i - 1 do out[j] = slots[j] end
             end
         elseif out then
-            out[#out + 1] = slots[i]
+            out[#out + 1] = slot
         end
     end
     usableMemo[palette] = out or slots
@@ -330,6 +382,11 @@ local function ResolveAction(slot, p)
     elseif k == "toy" then
         if type(slot.id) ~= "number" then return nil end
         return "toy", "toy", slot.id
+
+    elseif k == "randomhearth" then
+        local kind, id = Hearth.Current()
+        if kind == "toy" then return "toy", "toy", id end
+        return "item", "item", "item:" .. id
 
     elseif k == "outfit" then
         local info = ns.OutfitInfo(slot)
@@ -611,6 +668,18 @@ local function SlotDisplay(slot)
         local _, name, icon = C_ToyBox.GetToyInfo(slot.id)
         return icon or QUESTION_MARK, name or slot.name
 
+    elseif k == "randomhearth" then
+        -- The hearthstone this open rolled, like the last-mount entry draws
+        -- the mount it would summon. The entry's own name stands in until the
+        -- toy's data has loaded.
+        local kind, id = Hearth.Current()
+        if kind == "toy" then
+            local _, name, icon = C_ToyBox.GetToyInfo(id)
+            return icon or QUESTION_MARK, name or "Random Hearthstone"
+        end
+        local _, _, _, _, icon = C_Item.GetItemInfoInstant(id)
+        return icon or QUESTION_MARK, C_Item.GetItemInfo(id) or "Random Hearthstone"
+
     elseif k == "outfit" then
         local info = ns.OutfitInfo(slot)
         return ns.OutfitIcon(info) or ns.OutfitIcon(slot) or QUESTION_MARK,
@@ -818,6 +887,19 @@ local function SlotSpellID(slot)
     return nil
 end
 
+-- The itemID an entry's live state is read from, for the item-backed kinds.
+-- A toy's id IS its itemID. Random Hearthstone answers this open's pick.
+local function SlotItemID(slot)
+    local k = slot and slot.kind
+    if k == "item" or k == "toy" then
+        return type(slot.id) == "number" and slot.id or nil
+    elseif k == "randomhearth" then
+        local _, id = Hearth.Current()
+        return id
+    end
+    return nil
+end
+
 -- Display data the client only has once it has been ASKED for: GetSpellInfo
 -- answers nothing for a spell whose data has not been loaded this session
 -- (SpellDocumentation.lua:800-803), and the toy and item getters answer nothing
@@ -838,8 +920,9 @@ function ns.SlotDataReady(slot)
     -- A toy's id IS its itemID, so the two kinds share the one cache. An item's
     -- icon comes off the client's own table and is right either way; its NAME
     -- is what the load is for, and the hub caption reads that.
-    if k == "item" or k == "toy" then
-        return type(slot.id) ~= "number" or C_Item.IsItemDataCachedByID(slot.id)
+    if k == "item" or k == "toy" or k == "randomhearth" then
+        local id = SlotItemID(slot)
+        return not id or C_Item.IsItemDataCachedByID(id)
     end
 
     -- Every other kind reads a client-side table -- the mount journal, the pet
@@ -852,8 +935,9 @@ end
 -- the request again with each one.
 function ns.WarmSlot(slot)
     if ns.SlotDataReady(slot) then return false end
-    if slot.kind == "item" or slot.kind == "toy" then
-        C_Item.RequestLoadItemDataByID(slot.id)
+    local itemID = SlotItemID(slot)
+    if itemID then
+        C_Item.RequestLoadItemDataByID(itemID)
     else
         C_Spell.RequestLoadSpellData(SlotSpellID(slot))
     end
@@ -881,9 +965,10 @@ local function SlotCooldown(slot)
             -- hand a boolean to CooldownFrame_Set.
             return (C_Spell.GetSpellCooldownDuration(id))
         end
-    elseif k == "item" or k == "toy" then
-        if slot.id and C_Item.GetItemCooldown then
-            return nil, C_Item.GetItemCooldown(slot.id)
+    elseif k == "item" or k == "toy" or k == "randomhearth" then
+        local id = SlotItemID(slot)
+        if id and C_Item.GetItemCooldown then
+            return nil, C_Item.GetItemCooldown(id)
         end
     end
     return nil
@@ -949,7 +1034,8 @@ local USABILITY_TINT = {
 --
 -- Every call here is secret-SAFE, and that was checked rather than assumed:
 -- C_Spell.IsSpellUsable, C_Spell.IsSpellInRange, C_Item.IsUsableItem,
--- C_Item.ItemHasRange and C_Item.IsItemInRange all carry no
+-- C_Item.ItemHasRange, C_Item.IsItemInRange,
+-- C_MountJournal.GetMountUsabilityByID and IsIndoors all carry no
 -- SecretWhenCooldownsRestricted flag in the generated documentation, unlike
 -- the cooldown and charge getters two functions up. So these results may be
 -- branched on. Secrecy is not protection, though: C_Item.IsItemInRange is
@@ -1001,6 +1087,30 @@ local function SlotUsability(slot)
 
     elseif k == "outfit" then
         return InCombatLockdown() and "UNUSABLE" or nil
+
+    elseif k == "mount" or k == "lastmount" or k == "randommount" then
+        -- The Mount Journal's own answer, the one behind its Summon button's
+        -- "You can't mount here" line, indoors counted (checkIndoors): plain
+        -- booleans, no secret flags, on both clients. A mount entry asks about
+        -- its mount and the last-mount entry about the mount it summons. The
+        -- random favorite summons whichever favorite is usable, so it has no
+        -- one mount to ask about: it dims only where no mount can be summoned,
+        -- indoors or in combat -- the test the last-mount entry falls back to
+        -- before a mount is tracked, or when the journal answers nothing (its
+        -- getter may return nothing).
+        if k == "randommount" then
+            return (IsIndoors() or InCombatLockdown()) and "UNUSABLE" or nil
+        end
+        local id = slot.id
+        if k == "lastmount" then
+            local pf = P()
+            id = pf and pf.lastMountID
+        end
+        if type(id) == "number" and id > 0 then
+            local usable = C_MountJournal.GetMountUsabilityByID(id, true)
+            if usable ~= nil then return usable == false and "UNUSABLE" or nil end
+        end
+        if k == "lastmount" and (IsIndoors() or InCombatLockdown()) then return "UNUSABLE" end
     end
 
     return nil
@@ -1068,6 +1178,7 @@ end
 ns.SlotFromCursor = SlotFromCursor
 
 I.FireInsecure, I.ResolveAction, I.Rez = FireInsecure, ResolveAction, Rez
+I.Hearth = Hearth
 I.SlotCooldown, I.SlotCount, I.SlotDisplay = SlotCooldown, SlotCount, SlotDisplay
 I.SlotUsability, I.USABILITY_TINT, I.usableMemo = SlotUsability, USABILITY_TINT, usableMemo
 I.UsableSlots = UsableSlots
