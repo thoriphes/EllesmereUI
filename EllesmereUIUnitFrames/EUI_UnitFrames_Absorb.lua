@@ -727,6 +727,99 @@ function ns.UF_HealPredApply(frame, unitKey, s)
 end
 
 -------------------------------------------------------------------------------
+--  Max Health Style (opt-in per unit, s.maxHealthStyle; player, target and
+--  focus, where Blizzard's own frames draw max health loss, and boss frames
+--  through Target's): the part of the maximum a debuff took, as a styled
+--  overlay on the health bar's far end (Raid Frames parity; the look is
+--  EllesmereUI.ApplyMaxHealthStyle). Only loss is drawn. Off builds nothing;
+--  on, the opt-in "maxhp" channel repaints it on the unit's max health events.
+-------------------------------------------------------------------------------
+ns.UF_MAXHP_UNITS = { player = true, target = true, focus = true }
+
+-- Texture, tint, opacity and the black backing; shared with the options preview.
+function ns.UF_ApplyMaxHealthStyle(bar, style, s, mask)
+    local fill = EllesmereUI.ApplyMaxHealthStyle(bar, style, s, ns.ResolveAbsorbStyleTex)
+    if fill then
+        if mask then
+            pcall(fill.RemoveMaskTexture, fill, mask)
+            fill:AddMaskTexture(mask)
+        end
+        -- A retexture can replace the fill object: re-seat the backing on it.
+        local bg = bar._bg
+        if bg then
+            bg:SetColorTexture(0, 0, 0, ((s and s.maxHealthBgOpacity) or 100) / 100)
+            bg:ClearAllPoints()
+            bg:SetAllPoints(fill)
+        end
+    end
+end
+
+-- The loss sits at the bar's far end, on whichever fill axis the health bar uses.
+function ns.UF_OrientMaxHealth(bar, isReversed, isVert)
+    bar:SetOrientation(isVert and "VERTICAL" or "HORIZONTAL")
+    bar:SetReverseFill(not isReversed)
+    ns.ApplyFillRotation(bar)
+end
+
+-- The maxhp channel's painter. The API returns a plain fraction of the maximum
+-- (never secret, never nil); only loss is drawn, as on Blizzard's frames.
+function ns.UF_PaintMaxHp(frame, unit)
+    local hpe = frame.HealthPrediction
+    local ab = hpe and hpe.damageAbsorb
+    local bar = ab and ab._maxHp
+    if not (bar and ab._maxHpOn) then return end
+    local pct = GetUnitTotalModifiedMaxHealthPercent(unit)
+    if pct > 0 then
+        bar:SetValue(math.min(pct, 1))
+        bar:Show()
+    else
+        bar:Hide()
+    end
+end
+ns.Engine.SetPainter("maxhp", ns.UF_PaintMaxHp)
+
+-- Style pass + channel sync for one frame (unitKey = its unit token); runs at
+-- spawn and on every settings reload, after the absorb bars' fill axis is set.
+function ns.UF_MaxHpApply(frame, unitKey)
+    local hpe = frame.HealthPrediction
+    local ab = hpe and hpe.damageAbsorb
+    if not (ab and ab._hpBar and db) then return end
+    local s
+    if IS_BOSS_UNIT[unitKey] then
+        local b = db.profile.boss
+        if not (b and b.showAbsorbs == false) then s = db.profile.target end
+    elseif ns.UF_MAXHP_UNITS[unitKey] then
+        s = GetSettingsForUnit(unitKey)
+    end
+    local style = (s and s.maxHealthStyle) or "none"
+    local bar = ab._maxHp
+    if style == "none" then
+        if ab._maxHpOn then
+            ab._maxHpOn = false
+            bar:Hide()
+            ns.Engine.SetChannelOn(frame, "maxhp", false)
+        end
+        return
+    end
+    if not bar then
+        bar = CreateFrame("StatusBar", nil, ab._hpBar)
+        bar:SetAllPoints(ab._hpBar)
+        bar:SetFrameLevel(ab._hpBar:GetFrameLevel() + 2)
+        bar:SetMinMaxValues(0, 1)
+        bar._bg = bar:CreateTexture(nil, "ARTWORK", nil, 2)
+        bar:Hide()
+        ab._maxHp = bar
+    end
+    ns.UF_ApplyMaxHealthStyle(bar, style, s, ab._absorbMask)
+    ns.UF_OrientMaxHealth(bar, ab._isReversed, ab._isVert)
+    if not ab._maxHpOn then
+        ab._maxHpOn = true
+        ns.Engine.SetChannelOn(frame, "maxhp", true)
+    end
+    ns.UF_PaintMaxHp(frame, frame._euiUnit or unitKey)
+end
+
+-------------------------------------------------------------------------------
 --  Blizzard Glow Line (opt-in per unit, s.absorbGlowLine; player, target and
 --  focus, and boss frames through the Target styling they draw absorbs with).
 --  A soft line on the shield's edge next to current health. Placement
@@ -749,15 +842,8 @@ end
 --  the settings pass and after a retexture, never per paint.
 --  On ns: this chunk sits at the Lua 5.1 local ceiling.
 -------------------------------------------------------------------------------
--- Glow Line Texture art: { file, blend mode, width, width in whole pixels }.
-ns.UF_GLOW_LINE_ART = {
-    blizzard         = { "Interface\\AddOns\\EllesmereUI\\media\\cast_spark.tga", "ADD", 16 },
-    pixelsGlow       = { "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\pixels-glowline.tga", "ADD", 16 },
-    pixelsOvershield = { "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\pixels-overshield-line.tga", "BLEND", 2, true },
-}
-function ns.UF_GlowLineWidth(art)
-    return art[4] and PP.Scale(art[3]) or art[3]
-end
+ns.UF_GLOW_LINE_ART = EllesmereUI.AbsorbGlow.art
+ns.UF_GlowLineWidth = EllesmereUI.AbsorbGlow.Width
 
 -- Leader Indicator Icon Style art (leaderIndicatorStyle), shared with the
 -- options preview.
@@ -780,114 +866,10 @@ ns.UF_ELITE_DRAGON_ART = {
 }
 ns.UF_ELITE_DRAGON_SCALE = 512 / 120
 
-function ns.UF_BuildAbsorbGlow(ab)
-    local hp = ab._hpBar
-    -- Own clip host above the shield bars: the health-side half of the line
-    -- would otherwise be cut by the missing-health clip.
-    local host = CreateFrame("Frame", nil, hp)
-    host:SetAllPoints(hp)
-    host:SetClipsChildren(true)
-    host:SetFrameLevel(hp:GetFrameLevel() + 4)
-    -- Each line sits on its own frame: boolean alpha works on frames (on a
-    -- texture it renders nothing on this client).
-    local edgeHost = CreateFrame("Frame", nil, host)
-    edgeHost:SetAllPoints(host)
-    -- Invisible gate bar on the edge: fed the absorb over a 0-1 range, its
-    -- fill is full with ANY shield and empty without one, so the line drawn
-    -- over the fill needs no boolean read of the secret amount.
-    local gate = CreateFrame("StatusBar", nil, edgeHost)
-    gate:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-    gate:SetStatusBarColor(1, 1, 1, 0)
-    gate:SetMinMaxValues(0, 1)
-    gate:SetValue(0)
-    local edge = edgeHost:CreateTexture(nil, "OVERLAY")
-    edge:SetAllPoints(gate:GetStatusBarTexture())
-    local bfHost = CreateFrame("Frame", nil, host)
-    bfHost:SetAllPoints(host)
-    local bf = bfHost:CreateTexture(nil, "OVERLAY")
-    local g = { host = host, edgeHost = edgeHost, gate = gate, edge = edge, bfHost = bfHost, bf = bf }
-    if CreateUnitHealPredictionCalculator and UnitGetDetailedHealPrediction then
-        local calc = CreateUnitHealPredictionCalculator()
-        -- Configured once: the Missing Health clamp makes GetDamageAbsorbs'
-        -- second return the overshield boolean (shield exceeds empty health).
-        if calc.SetMaximumHealthMode and Enum.UnitMaximumHealthMode then
-            calc:SetMaximumHealthMode(Enum.UnitMaximumHealthMode.Default)
-        end
-        if calc.SetDamageAbsorbClampMode and Enum.UnitDamageAbsorbClampMode then
-            calc:SetDamageAbsorbClampMode(Enum.UnitDamageAbsorbClampMode.MissingHealth)
-        end
-        g.calc = calc
-    end
-    ab._glow = g
-    return g
-end
-
--- Seats both lines for the stamped placement and fill direction. Runs from
--- the settings pass and after a retexture (a new shield fill object).
-function ns.UF_AbsorbGlowAnchor(ab)
-    local g = ab._glow
-    if not (g and g.ge) then return end
-    local rev = g.rev
-    local near, far = rev and "RIGHT" or "LEFT", rev and "LEFT" or "RIGHT"
-    local off = rev and 1 or -1
-    local fill = ab:GetStatusBarTexture()
-    local gate, bf = g.gate, g.bf
-    gate:ClearAllPoints()
-    if g.ge >= 3 then
-        gate:SetPoint("CENTER", fill, near, off, 0)
-    else
-        gate:SetPoint("CENTER", ab._forward, near, off, 0)
-    end
-    bf:ClearAllPoints()
-    if g.anc == 1 then
-        bf:SetPoint("CENTER", fill, near, off, 0)
-    elseif g.anc == 2 then
-        bf:SetPoint("CENTER", fill, far, -off, 0)
-    else
-        bf:SetPoint("CENTER", ab, far, off, 0)
-    end
-end
-
--- The overshield flip. Placements 1-2: the seam line hides while
--- overshielding and the overshield line shows only then; 5: the line shows
--- only while the shield reaches current health. The boolean only ever
--- reaches SetAlphaFromBoolean.
-function ns.UF_AbsorbGlowFlip(ab, unit)
-    local g = ab._glow
-    local ge = g.ge
-    if ge == 3 then return end
-    local eh, bh = g.edgeHost, g.bfHost
-    local calc = g.calc
-    if not (calc and eh.SetAlphaFromBoolean) then
-        -- No calculator on this client: the seam line alone.
-        eh:SetAlpha(ge == 5 and 0 or 1)
-        bh:SetAlpha(0)
-        return
-    end
-    UnitGetDetailedHealPrediction(unit, nil, calc)
-    local _, clamped = calc:GetDamageAbsorbs()
-    if ge == 5 then
-        eh:SetAlphaFromBoolean(clamped, 1, 0)
-    else
-        eh:SetAlphaFromBoolean(clamped, 0, 1)
-        bh:SetAlphaFromBoolean(clamped, 1, 0)
-    end
-end
-
--- Value pass, from the absorb painter while the line is on: the gate takes
--- the raw absorb, sizes follow the bar height and the pixel grid (a
--- whole-pixel width moves with it; size-gated), then the flip.
-function ns.UF_PaintAbsorbGlow(ab, unit, absorbAmt, hpH)
-    local g = ab._glow
-    if g.szH ~= hpH or g.szM ~= PP.mult then
-        g.szH, g.szM = hpH, PP.mult
-        local w = ns.UF_GlowLineWidth(g.art)
-        g.gate:SetSize(w, hpH)
-        g.bf:SetSize(w, hpH)
-    end
-    g.gate:SetValue(absorbAmt)
-    ns.UF_AbsorbGlowFlip(ab, unit)
-end
+ns.UF_BuildAbsorbGlow = EllesmereUI.AbsorbGlow.Build
+ns.UF_AbsorbGlowAnchor = EllesmereUI.AbsorbGlow.Anchor
+ns.UF_AbsorbGlowFlip = EllesmereUI.AbsorbGlow.Flip
+ns.UF_PaintAbsorbGlow = EllesmereUI.AbsorbGlow.Paint
 
 -- The absglow channel's painter: the flip alone, and only while a shield is
 -- up (without one there is nothing to flip; the absorb paint that cleared
@@ -1288,7 +1270,7 @@ local function CreateAbsorbBar(frame, unit, settings)
                             local fs = field and self[field]
                             if fs then
                                 local cfg = _G._EUI_AbbrevDecimalCfg
-                                fs:SetText(cfg and AbbreviateNumbers(amt, cfg) or AbbreviateNumbers(amt))
+                                fs:SetText(cfg and AbbreviateNumbers(amt, cfg) or ns.AbbreviateValue(amt, "absorb"))
                             end
                         end
                     end

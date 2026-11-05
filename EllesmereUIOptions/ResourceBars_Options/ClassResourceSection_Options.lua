@@ -93,6 +93,8 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
 
     local hdr
     hdr, h = W:SectionHeader(parent, "CLASS RESOURCE BAR", y);  y = y - h
+    -- Move in Unlock Mode on the title; handed back so the page's preview eye sits after it.
+    local unlockJump = EllesmereUI.BuildSectionUnlockJump(hdr, { key = "ERB_ClassResource", disabled = classOff, disabledTooltip = "Class Resource" })
 
     local _advTop = y  -- content top; also used by the Simple override overlay
     -- Guardian Ironfur + Prot Ignore Pain special bars stay global at runtime (stored on
@@ -1051,7 +1053,15 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
                   local p = DB(); if not p then return end
                   p.secondary.showTextOnlyIfNoPower = v; RebuildClass()
               end },
-            { type = "slider", label = "Size", min = 8, max = 24, step = 1,
+            { type = "toggle", label = "Hide at Zero",
+              tooltip = "Hide the resource text while the resource is at zero.",
+              get = function() local p = DB(); return p and p.secondary.hideTextAtZero end,
+              set = function(v)
+                  local p = DB(); if not p then return end
+                  -- Rebuild: the build path installs or removes the filter.
+                  p.secondary.hideTextAtZero = v; RebuildClass()
+              end },
+            { type = "slider", label = "Size", min = 8, max = 64, step = 1,
               get = function() local p = DB(); return p and p.secondary.textSize or 11 end,
               set = function(v)
                   local p = DB(); if not p then return end
@@ -1440,6 +1450,6 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
     ns.ERB_BlizzArtBlockRegions(artRegions)
 
     -- Header + row frames go back so the Simple page can wire its preview click-mappings (classSection/classEnableRow, and the Resource Text row for the count-text overlay).
-    return y, hdr, classEnableRow, classColorRow
+    return y, hdr, classEnableRow, classColorRow, unlockJump
 end
 --- [class resource end]

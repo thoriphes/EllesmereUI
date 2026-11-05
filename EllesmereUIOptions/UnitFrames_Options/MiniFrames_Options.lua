@@ -31,6 +31,14 @@ local function GetMiniDonorSettings(unitKey)
     return ns.GetMiniDonorSettings and ns.GetMiniDonorSettings(unitKey) or db.profile.player
 end
 
+-- The label of each mini frame's enable toggle (the row that opens its DISPLAY
+-- section): the requirement its Move in Unlock Mode button names while that
+-- toggle is off.
+local MINI_ENABLE_LABELS = {
+    targettarget = "Enable Target of Target", focustarget = "Enable Focus Target",
+    pet = "Enable Pet Frame", boss = "Enable Boss Frames",
+}
+
 ---------------------------------------------------------------------------
 --  Shared mini frame settings builder
 ---------------------------------------------------------------------------
@@ -72,6 +80,16 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
     -- DISPLAY
     local displayHeader
     displayHeader, h = W:SectionHeader(parent, "DISPLAY", y); y = y - h
+    -- The Move in Unlock Mode button on the frame's first section: its mover
+    -- exists only for the EllesmereUI frame source, so the button explains
+    -- itself while the frame is hidden (its enable toggle) or on Blizzard's frame.
+    EllesmereUI.BuildSectionUnlockJump(displayHeader, {
+        key = unitKey,
+        disabled = function() return ns.GetUnitFrameSource(unitKey) ~= "eui" end,
+        disabledTooltip = function()
+            if ns.VisUnitDisabled(db.profile, unitKey) then return MINI_ENABLE_LABELS[unitKey] end
+            return "This option requires the EllesmereUI Frame Source."
+        end })
     y = EllesmereUI.BlizzStyle.Note(parent, y, "unitframes")
 
     -- Enable row (passed in from each builder)
@@ -233,10 +251,28 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
 
     -- Boss Border Style | Border Size (+ Width Offset | Height Offset for a
     -- textured style): the boss frames' own border, or the main frames'
-    -- while the style reads Inherit. Full pairs, so Strata below stays
-    -- the section's odd last slot.
+    -- while the style reads Inherit. Full pairs, so Strata | Dark Mode below
+    -- stays the section's last row.
     if unitKey == "boss" then
         y = y - ns.UF_BossFrameBorderRows(W, parent, y, settingsTable, ReloadAndUpdate)
+    end
+
+    -- Dark Mode for this frame alone, as on the Main Frames page (unset follows the
+    -- profile's). It feeds the Dark Mode override condition, so it rechecks it and is
+    -- locked while such an override is edited.
+    local darkCfg = { type="toggle", text="Dark Mode",
+        tooltip="Dark Mode for this frame. Global Settings > Colors switches every frame.",
+        getValue=function() return ns.UF_DarkThemeOn(settingsTable) end,
+        setValue=function(v)
+            MSet("darkTheme", v)
+            EllesmereUI.Conditions_Recheck()
+            EllesmereUI:RefreshPage()
+        end }
+    local function LockDark(rgn)
+        if EllesmereUI._prebuilding then return end
+        EllesmereUI.SpecOverrides_AttachEditLock(rgn,
+            "Dark Mode drives a Dark Mode override condition and can't be changed while editing an override",
+            EllesmereUI.SpecOverrides_DarkCondEditActive)
     end
 
     -- DISPLAY bottom row for boss: the mini frames carry their Strata
@@ -247,7 +283,8 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
     if unitKey == "boss" then
         local bossStrataValues = EllesmereUI.FRAME_STRATA_LABELS
         local bossStrataOrder = EllesmereUI.FRAME_STRATA_ORDER_BASE
-        _, h = W:DualRow(parent, y,
+        local strataRow
+        strataRow, h = W:DualRow(parent, y,
             { type="dropdown", text="Strata",
               tooltip="Overrides the Frame Strata set in the main frames for this frame only. Controls the order that overlapping frames display in; set higher to show above other frames.",
               values = bossStrataValues, order = bossStrataOrder,
@@ -256,7 +293,8 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
                   settingsTable.frameStrata = v
                   ReloadAndUpdate()
               end },
-            { type="label", text="" });  y = y - h
+            darkCfg);  y = y - h
+        LockDark(strataRow._rightRegion)
     end
 
     -- DISPLAY bottom rows: per-frame border for ToT/Focus Target/Pet. Boss
@@ -372,10 +410,14 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
                 EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
                 UpdateCogVis()
             end
-            -- Show Highlight Border (+ swatch) | empty: last row of the section.
-            hlRow, h = W:DualRow(parent, y, hlSlot, { type="label", text="" });  y = y - h
+            -- Show Highlight Border (+ swatch) | Dark Mode: last row of the section.
+            hlRow, h = W:DualRow(parent, y, hlSlot, darkCfg);  y = y - h
+            LockDark(hlRow._rightRegion)
         else
             _, h = W:DualRow(parent, y, sizeSlot, hlSlot);  y = y - h
+            local darkRow
+            darkRow, h = W:DualRow(parent, y, darkCfg, EllesmereUI.BlankRowCfg());  y = y - h
+            LockDark(darkRow._leftRegion)
         end
 
         -- Advanced: inline Border color swatch on Border Size and Highlight
@@ -775,7 +817,7 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
           getValue=function() return MVal("leftTextContent", "name") end,
           setValue=function(v)
             settingsTable.leftTextContent = v
-            if v ~= "none" then
+            if ns.UF_IsUniqueContent(v) then
                 if settingsTable.rightTextContent == v then settingsTable.rightTextContent = "none" end
                 if settingsTable.centerTextContent == v then settingsTable.centerTextContent = "none" end
             end
@@ -902,7 +944,7 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
           getValue=function() return MVal("rightTextContent", "none") end,
           setValue=function(v)
             settingsTable.rightTextContent = v
-            if v ~= "none" then
+            if ns.UF_IsUniqueContent(v) then
                 if settingsTable.leftTextContent == v then settingsTable.leftTextContent = "none" end
                 if settingsTable.centerTextContent == v then settingsTable.centerTextContent = "none" end
             end
@@ -1445,19 +1487,28 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
         -- Reads/writes the same per-unit keys; MSet -> ReloadAndUpdate live-updates
         -- the real boss frames AND the preview (runtime already supports boss).
         local pwrTextRow
+        local function SetPowerTextFormat(v)
+            settingsTable.powerTextFormat = v
+            if v ~= "none" and MVal("powerPercentText", "none") == "none" then
+                settingsTable.powerPercentText = "center"
+            end
+            if v == "none" then settingsTable.powerPercentText = "none" end
+            ReloadAndUpdate(); EllesmereUI:RefreshPage()
+            -- The page stays, so the menu is rebuilt for Custom's pencil.
+            ns.UFO_RefreshMenus(pwrTextRow and pwrTextRow._leftRegion)
+        end
         pwrTextRow, h = W:DualRow(parent, y,
             { type="dropdown", text="Power Text",
-              values = { ["none"]="None", ["smart"]="Smart Text", ["curpp"]="Power Value", ["perpp"]="Power %", ["both"]="Value | %" },
-              order  = { "none", "smart", "curpp", "perpp", "both" },
+              values = ns.UFO_CustomTextValues(
+                  { ["none"]="None", ["smart"]="Smart Text", ["curpp"]="Power Value", ["perpp"]="Power %", ["both"]="Value | %" },
+                  function() return MVal("powerTextFormat", "perpp") end,
+                  function()
+                      ns.UFO_EditCustomText("powerText", settingsTable, unitKey,
+                          function() SetPowerTextFormat("custom") end)
+                  end),
+              order  = { "none", "---", "custom", "---", "smart", "curpp", "perpp", "both" },
               getValue=function() return MVal("powerTextFormat", "perpp") end,
-              setValue=function(v)
-                  settingsTable.powerTextFormat = v
-                  if v ~= "none" and MVal("powerPercentText", "none") == "none" then
-                      settingsTable.powerPercentText = "center"
-                  end
-                  if v == "none" then settingsTable.powerPercentText = "none" end
-                  ReloadAndUpdate(); EllesmereUI:RefreshPage()
-              end },
+              setValue=SetPowerTextFormat },
             { type="dropdown", text="Text Position",
               values = { ["none"]="None", ["left"]="Left", ["right"]="Right", ["center"]="Center" },
               order  = { "none", "---", "left", "right", "center" },
@@ -1466,6 +1517,10 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
         -- Expose the power-text row so the preview's power-text click overlay
         -- can scroll here (mirrors parent._powerHeightRow / _powerHeaderFrame).
         parent._powerTextRow = pwrTextRow
+        if not EllesmereUI._prebuilding then
+            ns.UFO_AddCustomFormatAccessor(pwrTextRow._leftRegion, "Power Text", "powerText",
+                MVal("powerTextFormat", "perpp"), function() return settingsTable end, ReloadAndUpdate)
+        end
         -- Inline Text Color swatches on Power Text (left): Custom + Power Colored,
         -- mutually exclusive (mirrors Main Frames' Text Color multiSwatch). Custom
         -- click: first clears power-colored (selecting custom), second opens the
@@ -1522,16 +1577,9 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
         -- Show % cog on Power Text (left)
         if not EllesmereUI._prebuilding then
             local rgn = pwrTextRow._leftRegion
-            EllesmereUI.BuildInlineCog(rgn, {
-                disabled = function() local fmt = MVal("powerTextFormat", "perpp"); return fmt == "none" or fmt == "curpp" end,
-                disabledTooltip = "This option is only available for formats that display a percentage.",
-                title = "Power Text",
-                rows = {
-                    { type="toggle", label="Show %",
-                      get=function() return MVal("powerShowPercent", true) ~= false end,
-                      set=function(v) MSet("powerShowPercent", v) end },
-                },
-            })
+            EllesmereUI.BuildInlineCog(rgn, ns.UFO_PowerTextCog(MVal, MSet,
+                { none = true, curpp = true },
+                function(v) MSet("powerShowPercent", v) end))
         end
         -- Size + X/Y offsets cog on Text Position (right)
         if not EllesmereUI._prebuilding then
@@ -2229,6 +2277,7 @@ function ns.UFO_BuildBossOptions(W, parent, y)
                     -- with Buffs Location (the two modes are mutually exclusive);
                     -- the runtime caps frame.Buffs.num to it.
                     { type="slider", label="Max Count", min=1, max=20, step=1,
+                      tooltip=ns.UFO_MAX_COUNT_TOOLTIP,
                       get=function() return db.profile.boss.maxBuffs or 4 end,
                       set=function(v) db.profile.boss.maxBuffs = v; ReloadAndUpdate(); if ns.RefreshBossPreviewDebuffs then ns.RefreshBossPreviewDebuffs() end end },
                     -- Shares the boss buffMaxPerRow key with Buffs Location
@@ -2372,6 +2421,7 @@ function ns.UFO_BuildBossOptions(W, parent, y)
                     -- key with Debuffs Location (the two modes are mutually
                     -- exclusive); the runtime caps frame.Debuffs.num to it.
                     { type="slider", label="Max Count", min=1, max=20, step=1,
+                      tooltip=ns.UFO_MAX_COUNT_TOOLTIP,
                       get=function() return db.profile.boss.maxDebuffs or 10 end,
                       set=function(v) db.profile.boss.maxDebuffs = v; ReloadAndUpdate(); if ns.RefreshBossPreviewDebuffs then ns.RefreshBossPreviewDebuffs() end end },
                     ns.UFO_MaxImportantRow(function() return db.profile.boss end, ReloadAndUpdate, 20, 10),
@@ -2966,6 +3016,7 @@ function ns.UFO_BuildBossOptions(W, parent, y)
                       get=function() return db.profile.boss.buffGrowth or "auto" end,
                       set=function(v) db.profile.boss.buffGrowth = v; ReloadAndUpdate() end },
                     { type="slider", label="Max Count", min=1, max=20, step=1,
+                      tooltip=ns.UFO_MAX_COUNT_TOOLTIP,
                       get=function() return db.profile.boss.maxBuffs or 4 end,
                       set=function(v) db.profile.boss.maxBuffs = v; ReloadAndUpdate() end },
                     { type="slider", label="Max Per Row", min=1, max=20, step=1,
@@ -2993,6 +3044,7 @@ function ns.UFO_BuildBossOptions(W, parent, y)
                       get=function() return db.profile.boss.debuffGrowth or "auto" end,
                       set=function(v) db.profile.boss.debuffGrowth = v; ReloadAndUpdate() end },
                     { type="slider", label="Max Count", min=1, max=20, step=1,
+                      tooltip=ns.UFO_MAX_COUNT_TOOLTIP,
                       get=function() return db.profile.boss.maxDebuffs or 10 end,
                       set=function(v) db.profile.boss.maxDebuffs = v; ReloadAndUpdate() end },
                     ns.UFO_MaxImportantRow(function() return db.profile.boss end, ReloadAndUpdate, 20, 10),

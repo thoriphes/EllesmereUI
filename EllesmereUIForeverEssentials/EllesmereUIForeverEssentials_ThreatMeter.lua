@@ -156,13 +156,6 @@ function ns.GetStyleValue(group, key)
     return v
 end
 
--- A fresh merged copy of one appearance group (options getters).
-function ns.GetStyleGroup(group)
-    local result = {}
-    for key in pairs(STYLE_DEFAULTS[group]) do result[key] = ns.GetStyleValue(group, key) end
-    return result
-end
-
 -- Writes into the real saved appearance[group] table (created on first write)
 -- and restyles. Callers whose toggle gates other rows refresh the page.
 function ns.SetStyleValues(group, values)
@@ -805,7 +798,7 @@ local function PaintRow(row, e, dm, top, gen)
         if not e.unit then
             -- A preview row: the Name Format reaches your own sample name.
             local name = e.pull and EllesmereUI.L("Pull Aggro") or e.name
-            if e.own and dm.nameFormat then name = EUI.ForeverShortName(name, dm.nameFormat) end
+            if e.own and dm.nameFormat then name = EUI.ShortName(name, dm.nameFormat) end
             row.label:SetText(name)
         end
     end
@@ -815,7 +808,7 @@ local function PaintRow(row, e, dm, top, gen)
     -- player's name; a pet keeps its own and a secret passes whole.
     if e.unit then
         local name = EUI.WithSurname(UnitName(e.unit))
-        if dm.nameFormat and not e.isPet then name = EUI.ForeverShortName(name, dm.nameFormat) end
+        if dm.nameFormat and not e.isPet then name = EUI.ShortName(name, dm.nameFormat) end
         if issecretvalue(name) then
             row.label:SetText(name)
             row._name = nil
@@ -1361,6 +1354,10 @@ function ns.ApplyStyle()
     ns.FeedChanged()
     RefreshSettingsPreview()
 end
+
+-- The value column is sized from a formatted sample (Style), so a Number Format
+-- change restyles.
+EUI.RegisterNumberFormatCallback(function() ns.ApplyStyle() end)
 
 -- Ten seconds of preview rows on the live meter.
 function ns.Preview()

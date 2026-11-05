@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
 
 
 
@@ -70,7 +70,7 @@ end
 
 function BonusRoll.ItemStringOf(link)
     if type(link) ~= "string" or #link > MAX_LINK then return nil end
-    local itemString = link:match("|H(item:[^|]*)") or link:match("^item:[%-%d:]*$")
+    local itemString = link:match("|H(item:[^|]*)") or link:match("^item:[^|]*$")
     local id = itemString and tonumber(itemString:match("^item:(%d+)"))
     if not id or id <= 0 then return nil end
     return itemString
@@ -112,8 +112,7 @@ function BonusRoll.FirstSighting(store, name, itemString, encounterKey, now)
     for key, at in pairs(store) do
         if now - at > SEEN_TTL then store[key] = nil end
     end
-    local id = addon.Storage.ItemID(itemString)
-    local key = tostring(name) .. "|" .. tostring(id) .. "|" .. tostring(encounterKey)
+    local key = tostring(name) .. "|" .. tostring(encounterKey)
     if store[key] then return false end
     store[key] = now
     return true
@@ -366,14 +365,15 @@ function BonusRoll:ReceiveCoin(args, sender)
     local record = addon.Player:Get(sender)
     if not record or not record.fullName then return false end
 
-    local logBoss, logID = addon.Encounter:AtTime(coin.epoch)
-    if not (logBoss or logID) then Refuse("no_recent_encounter", sender) return false end
+    local logBoss, logID, logStart = addon.Encounter:KillAtTime(coin.epoch)
+    if not (logBoss or logID) then Refuse("no_recent_kill", sender) return false end
 
     if not coin.boss and not coin.encounterID then
         coin.boss, coin.encounterID = logBoss, logID
     end
     if not BonusRoll.FirstSighting(seen, record.fullName, coin.link,
-            tostring(logID or logBoss), now) then
+            tostring(logID or logBoss) .. "@" .. tostring(logStart), now) then
+        Refuse("second_claim", sender)
         return false
     end
     BonusRoll:ApplyCoin(record.fullName, coin.link, coin.epoch, coin.boss,

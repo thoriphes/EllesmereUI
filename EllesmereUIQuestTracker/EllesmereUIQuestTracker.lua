@@ -10,7 +10,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -- Blizzard_ObjectiveTracker has loaded.
 -------------------------------------------------------------------------------
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.PadTaintStandDown) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -70,10 +70,12 @@ local QT_DEFAULTS = {
             -- QoL
             autoAccept           = false,
             autoAcceptPreventMulti = true,
+            autoAcceptShiftEnable = false,
             autoAcceptShiftSkip  = true,
             autoAcceptIgnoreTrivial = false,
             autoAcceptIgnoreOldExpansion = false,
             autoTurnIn           = false,
+            autoTurnInShiftEnable = false,
             autoTurnInShiftSkip  = true,
             questItemHotkey      = nil,
         },
@@ -168,6 +170,7 @@ local function TryInit()
     if EQT.InitSkin       then EQT.InitSkin()       end
     if EQT.InitVisibility then EQT.InitVisibility() end
     if EQT.InitQoL        then EQT.InitQoL()        end
+    if EQT.InitPosition   then EQT.InitPosition()   end
     loader:UnregisterAllEvents()
 end
 
@@ -192,11 +195,13 @@ _G._EQT_RefreshAll = function()
     if EQT.ApplyMasterHeaderVisibility then EQT.ApplyMasterHeaderVisibility() end
     if EQT.ApplyBackground then EQT.ApplyBackground() end
     if EQT.ApplyForceOnScreen then EQT.ApplyForceOnScreen() end
+    if EQT.SyncPosition then EQT.SyncPosition() end
     -- The hotkey is a per-profile setting backed by an override binding, so a
     -- profile or spec swap has to re-point it. Without this the outgoing
     -- profile's key stays overridden -- taken from whatever the player really
     -- has bound there -- and the incoming profile's key is never laid down.
     if EQT.ApplyQuestItemHotkey then EQT.ApplyQuestItemHotkey() end
+    if EQT.SyncAutoQuests then EQT.SyncAutoQuests() end
     -- WoW Forever's quest tools (nil on retail).
     if EQT.ApplyQuestWatches then EQT.ApplyQuestWatches() end
     if EQT.ApplyQuestProgress then EQT.ApplyQuestProgress() end

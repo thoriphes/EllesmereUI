@@ -755,7 +755,7 @@ Kit.ICON_STYLE_VALUES = {
     blizzard = "Blizzard",
     modern   = "Modern",
     pixel    = "Pixel",
-    pixelsComic = "Pixels Comic",
+    pixelsComic = "Comic",
     glyph    = "Glyph",
     arcade   = "Arcade",
     legend   = "Legend",
@@ -792,12 +792,7 @@ Kit.ICON_STYLE_ORDER = {
 --  Kit.RedecorateTiles.
 -------------------------------------------------------------------------------
 -- External weak-keyed state. Never write custom keys onto a Blizzard frame.
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -------------------------------------------------------------------------------
 --  Tuning
@@ -1704,8 +1699,9 @@ function Kit.StartTiles(h)
     if host then return end
     -- WoW Forever's Gamepad interface style navigates Blizzard's windows from
     -- secure code, and the tile hover hooks are script hooks on Blizzard's
-    -- cards, so the tiles stand down for the session under it.
-    if EllesmereUI.PadGamepadUI() then return end
+    -- cards, so the tiles stand down for the session under it where that
+    -- navigation can still be tainted (EllesmereUI.PadTaintStandDown).
+    if EllesmereUI.PadTaintStandDown() then return end
     host = h
     if h.style ~= "eui" then
         -- Stock styles decorate whichever window Blizzard shows (the switch
@@ -1801,8 +1797,9 @@ local function AutoAcceptOnEvent(self, event, _, _, _, _, _, _, inviterGUID)
         if isFriend then
             AcceptGroup()
             -- WoW Forever's Gamepad interface style runs Blizzard's popups from
-            -- secure code: its invite popup is left to it there.
-            if not EllesmereUI.PadGamepadUI() then
+            -- secure code: its invite popup is left to it where that navigation
+            -- can still be tainted (EllesmereUI.PadTaintStandDown).
+            if not EllesmereUI.PadTaintStandDown() then
                 autoAcceptHidePopup = true
                 self:RegisterEvent("GROUP_ROSTER_UPDATE")
             end

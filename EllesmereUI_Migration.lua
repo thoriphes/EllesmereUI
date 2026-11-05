@@ -4427,6 +4427,26 @@ EllesmereUI.RegisterMigration({
     end,
 })
 
+-- WoW Forever Junk Items: Include White Items became Maximum Quality and Skip
+-- Confirmation for White Items became Delete Without Confirming. An account
+-- with either on keeps it as Common; both old keys go. Registered on the
+-- Forever client only, where Junk Items exists.
+if EllesmereUI.IS_FOREVER == true then
+EllesmereUI.RegisterMigration({
+    id          = "junk_items_quality_settings_v1",
+    scope       = "global",
+    description = "Move the Junk Items white-item toggles into Maximum Quality and Delete Without Confirming.",
+    body = function(ctx)
+        local c = ctx.db.junkList
+        if type(c) ~= "table" then return end
+        local COMMON = Enum.ItemQuality.Common
+        if c.includeWhite and c.maxQuality == nil then c.maxQuality = COMMON end
+        if c.skipWhiteConfirm and c.oneClickQuality == nil then c.oneClickQuality = COMMON end
+        c.includeWhite, c.skipWhiteConfirm = nil, nil
+    end,
+})
+end
+
 -- Player Aura Bars icons with a custom Icon Shape used to zoom the spell art far
 -- past their Icon Zoom (the shaped icon grew past its button and still took the
 -- zoom crop), so most players with a shape dragged Icon Zoom down to 0. Shaped
@@ -5385,27 +5405,3 @@ do
         end)
     end
 end
-
--- WoW Forever: Find Minerals / Find Herbs became a built-in Aura Buff Reminders
--- toggle (forever.gathering), which treats either tracking as on. A profile that
--- tracked either one as a custom spell ID gets the toggle on instead, and those
--- custom entries go (the single-ID reminder nagged whenever the other one ran).
-EllesmereUI.RegisterMigration({
-    id          = "forever_gathering_tracking_v1",
-    scope       = "profile",
-    description = "Move Find Minerals / Find Herbs custom reminders to the built-in gathering toggle",
-    body        = function(ctx)
-        local abr = ctx.profile.addons and ctx.profile.addons.EllesmereUIAuraBuffReminders
-        local fo = type(abr) == "table" and abr.forever
-        local ids = type(fo) == "table" and fo.customIDs
-        if type(ids) ~= "table" then return end
-        local moved = false
-        for i = #ids, 1, -1 do
-            if ids[i] == 2580 or ids[i] == 2383 then  -- Find Minerals, Find Herbs
-                table.remove(ids, i)
-                moved = true
-            end
-        end
-        if moved then fo.gathering = true end
-    end,
-})

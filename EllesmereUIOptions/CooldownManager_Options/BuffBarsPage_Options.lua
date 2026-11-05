@@ -184,7 +184,8 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 displayName = (info and info.name) or displayName
             end
             if unassigned then displayName = "" end
-            wrap._nameText:SetText(EllesmereUI.L(displayName or ""))
+            -- A custom name is the player's own text: shown as typed, never translated.
+            wrap._nameText:SetText(ns.TBBCustomName(cfg) or EllesmereUI.L(displayName or ""))
         end
         -- Icon texture (same resolution as the live build; question mark when no buff assigned yet)
         if wrap._icon and wrap._icon:IsShown() and wrap._icon._tex then
@@ -491,12 +492,10 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 if not _tbbPlaceholders[i] then
                     _tbbPlaceholders[i] = EllesmereUI.BuildUnlockPlaceholder({
                         parent = liveBar,
+                        -- The bar's own mover (a grouped bar has none under
+                        -- this key, so nothing is selected there).
                         onClick = function()
-                            if EllesmereUI._openUnlockMode then
-                                EllesmereUI._unlockReturnModule = EllesmereUI:GetActiveModule()
-                                EllesmereUI._unlockReturnPage   = EllesmereUI:GetActivePage()
-                                C_Timer.After(0, EllesmereUI._openUnlockMode)
-                            end
+                            EllesmereUI.OpenUnlockModeAt(ns._tbbUKey[i])
                         end,
                     })
                 else
@@ -772,6 +771,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             -- base; MatchFrameToConfig self-heals it once talented.
             barCfg.baseSpellID    = nil
             barCfg.name           = C_Spell.GetSpellName(sid)
+            barCfg.customName     = nil
             Refresh()
             ns.BuildTrackedBuffBars()
             if onChanged then onChanged() end
@@ -904,6 +904,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 barCfg.baseSpellID    = nil
                 barCfg.trackType      = nil
                 barCfg.name           = entry.name
+                barCfg.customName     = nil
                 Refresh()
                 ns.BuildTrackedBuffBars()
                 if onChanged then onChanged() end
@@ -1026,6 +1027,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 barCfg.customDuration = nil
                 barCfg.trackType      = nil
                 barCfg.name           = sp.name
+                barCfg.customName     = nil
                 -- Capture the BASE spell id for hero-talent override spells so the bar keeps
                 -- tracking after the talent is removed (active override's cooldownInfo
                 -- reports base in info.spellID); store only when it differs from the picked id.
@@ -1193,6 +1195,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                     barCfg.customDuration = nil
                     barCfg.trackType      = "cooldown"
                     barCfg.name           = sp.name
+                    barCfg.customName     = nil
                     -- Capture the BASE spell id for hero-talent override spells so the bar keeps tracking after the talent is removed.
                     barCfg.baseSpellID = nil
                     if sp.cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
@@ -1610,7 +1613,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
     local function BuildBuffBarsPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local _, h
+        local _, h, hdr
 
         -- If user chose Blizzard bars, show re-enable button and bail
         local usingBlizz = DB() and DB().cdmBars and DB().cdmBars.useBlizzardBuffBars
@@ -1754,6 +1757,22 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             _tbbSelectedGroup = nil
             ns.BuildTrackedBuffBars()
             EllesmereUI:RefreshPage(true)
+        end
+
+        -- Drag-and-drop reorder inside the bar's own group: no style copy, the
+        -- editing context stays (a selected bar follows its config to its new
+        -- index) and the menu opens again on the fresh button for the next move.
+        local function ReorderBarInGroup(idx, pos)
+            local t = ns.GetTrackedBuffBars()
+            local sel = not _tbbSelectedGroup and t.bars[_tbbSelectedBar] or nil
+            ns.MoveTrackedBuffBarInGroup(idx, pos)
+            for j, c in ipairs(t.bars) do
+                if c == sel then _tbbSelectedBar = j; break end
+            end
+            EllesmereUI:RefreshPage(true)
+            C_Timer.After(0, function()
+                if _tbbDDBtn and _tbbDDBtn:IsShown() then _tbbDDBtn:Click() end
+            end)
         end
 
         -------------------------------------------------------------------
@@ -2012,18 +2031,55 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
 
                 -- Drag-and-drop: bar rows can be dragged onto another group's section (or
                 -- independent) to move them; zones collect every row of a group so the whole
-                -- section is a drop target. Drag flag declared before any OnUpdate reads it.
-                local dropZones = {}   -- { gid, label, frames = {rows...} }
+                -- section is a drop target. Inside the bar's own group the drop reorders
+                -- instead, at the gap a green insertion line marks. Drag flag declared
+                -- before any OnUpdate reads it.
+                local dropZones = {}   -- { gid, label, frames = {rows...}, rows = {{frame, idx}...}, head, tail }
                 local dragState = { idx = nil, name = nil }
                 menu._dragActive = false
 
                 local function HoveredZone()
                     for _, z in ipairs(dropZones) do
                         for _, f in ipairs(z.frames) do
-                            if f and f:IsMouseOver() then return z end
+                            if f and f:IsMouseOver() then return z, f end
                         end
                     end
                     return nil
+                end
+
+                -- Over a row of the dragged bar's own group: the bar's new place among
+                -- the members and the gap to mark (header = before the first bar, add
+                -- row = after the last, a bar row = the half the cursor is in). nil when
+                -- the drop would leave the order as it is.
+                local function ReorderTarget(z, f)
+                    local rows = z and z.rows
+                    if not (rows and f and dragState.idx) then return nil end
+                    local from, gap
+                    for k, r in ipairs(rows) do
+                        if r.idx == dragState.idx then from = k end
+                        if r.frame == f then
+                            local _, cy = GetCursorPosition()
+                            local mid = (f:GetTop() + f:GetBottom()) / 2
+                            gap = (cy / f:GetEffectiveScale() > mid) and k or k + 1
+                        end
+                    end
+                    if f == z.head then gap = 1 elseif f == z.tail then gap = #rows + 1 end
+                    if not (from and gap) or gap == from or gap == from + 1 then return nil end
+                    return (gap > from) and gap - 1 or gap, gap
+                end
+
+                local insLine = inner:CreateTexture(nil, "OVERLAY", nil, 7)
+                insLine:SetHeight(2)
+                local EG = EllesmereUI.ELLESMERE_GREEN
+                insLine:SetColorTexture(EG.r, EG.g, EG.b, 0.9)
+                insLine:Hide()
+                local function ShowInsLine(rows, gap)
+                    local r = rows[gap] or rows[#rows]
+                    local edge = rows[gap] and "TOP" or "BOTTOM"
+                    insLine:ClearAllPoints()
+                    insLine:SetPoint("LEFT", r.frame, edge .. "LEFT", 18, 0)
+                    insLine:SetPoint("RIGHT", r.frame, edge .. "RIGHT", -8, 0)
+                    insLine:Show()
                 end
 
                 local dragGhost
@@ -2032,7 +2088,15 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                     local sc = UIParent:GetEffectiveScale()
                     dragGhost:ClearAllPoints()
                     dragGhost:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", cx / sc + 14, cy / sc - 22)
-                    local z = HoveredZone()
+                    local z, f = HoveredZone()
+                    local pos, gap = ReorderTarget(z, f)
+                    if pos then
+                        ShowInsLine(z.rows, gap)
+                        dragGhost._lbl:SetText(dragState.name or "")
+                        dragGhost._lbl:SetTextColor(ar, ag, ab, 1)
+                        return
+                    end
+                    insLine:Hide()
                     if z and dragState.idx then
                         local t2 = ns.GetTrackedBuffBars()
                         local c2 = t2.bars and t2.bars[dragState.idx]
@@ -2063,6 +2127,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 local function StopDrag()
                     menu._dragActive = false
                     dragState.idx = nil
+                    insLine:Hide()
                     if dragGhost then
                         dragGhost:Hide()
                         dragGhost:SetScript("OnUpdate", nil)
@@ -2322,7 +2387,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                         end
                     end)
 
-                    -- Drag to move between groups (drop handled by zone under the cursor at release).
+                    -- Drag to move between groups or reorder within one (drop handled by zone under the cursor at release).
                     item:RegisterForDrag("LeftButton")
                     item:SetScript("OnDragStart", function()
                         menu._dragActive = true
@@ -2336,9 +2401,13 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                     end)
                     item:SetScript("OnDragStop", function()
                         local moveIdx = dragState.idx
-                        local z = HoveredZone()
+                        local z, f = HoveredZone()
+                        local pos = ReorderTarget(z, f)
                         StopDrag()
-                        if moveIdx and z then
+                        if moveIdx and pos then
+                            menu:Hide()
+                            ReorderBarInGroup(moveIdx, pos)
+                        elseif moveIdx and z then
                             MoveBarToGroup(moveIdx, z.gid)
                         end
                     end)
@@ -2384,17 +2453,22 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                         label = (ns.TBBGroupName and ns.TBBGroupName(gid))
                             or (EllesmereUI.L("Group") .. " " .. gid),
                         frames = {},
+                        rows = {},
                     }
                     dropZones[#dropZones + 1] = zone
-                    zone.frames[#zone.frames + 1] = AddGroupHeaderRow(gid, gkey)
+                    zone.head = AddGroupHeaderRow(gid, gkey)
+                    zone.frames[#zone.frames + 1] = zone.head
                     for idx, b in ipairs(t.bars) do
                         if ns.TBBBarGroupID(b) == gid then
-                            zone.frames[#zone.frames + 1] = AddBarItem(idx, b, 8)
+                            local row = AddBarItem(idx, b, 8)
+                            zone.frames[#zone.frames + 1] = row
+                            zone.rows[#zone.rows + 1] = { frame = row, idx = idx }
                         end
                     end
-                    zone.frames[#zone.frames + 1] = AddActionItem(EllesmereUI.L("+ Add Bar to Group"), 8, function()
+                    zone.tail = AddActionItem(EllesmereUI.L("+ Add Bar to Group"), 8, function()
                         SelectNewBar(ns.AddTrackedBuffBar(gid))
                     end)
+                    zone.frames[#zone.frames + 1] = zone.tail
                 end
 
                 -- Global groups with no bars on this spec are always listed so any spec can
@@ -2457,7 +2531,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                     dragHint:SetFont(FONT_PATH, 10, GetCDMOptOutline())
                     dragHint:SetTextColor(1, 1, 1, 0.35)
                     dragHint:SetPoint("TOP", inner, "TOP", 0, -mH - 4)
-                    dragHint:SetText(EllesmereUI.L("Drag a bar to move it into another group"))
+                    dragHint:SetText(EllesmereUI.L("Drag a bar to reorder it or move it into another group"))
                     mH = mH + 20
                 end
                 -- Discoverability for the row right-click (Audio on Buff Gain/Loss): shown
@@ -3088,7 +3162,15 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             parent._showRowDivider = true
             parent._tbbClickTargets = nil
 
-            _, h = W:SectionHeader(parent, "GROUP SETTINGS", y);  y = y - h
+            hdr, h = W:SectionHeader(parent, "GROUP SETTINGS", y);  y = y - h
+            -- The group's mover: a global group's TBBG_ element, else its anchor
+            -- bar's (nil while no member is enabled: the click then does nothing).
+            EllesmereUI.BuildSectionUnlockJump(hdr, { key = function()
+                local gk = ns.TBBGroupGlobalKey and ns.TBBGroupGlobalKey(gid)
+                if gk then return "TBBG_" .. gk end
+                local ai = ns.TBBGroupAnchorIndex(gid)
+                return ai and ("TBB_" .. ai) or nil
+            end })
 
             -- Grow Direction | Bar Spacing
             _, h = W:DualRow(parent, y,
@@ -3265,6 +3347,20 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
         -------------------------------------------------------------------
         local layoutHeader
         layoutHeader, h = W:SectionHeader(parent, "BAR LAYOUT", y);  y = y - h
+        -- The selected bar's mover; a grouped bar's is its group's (a global
+        -- group's TBBG_ element, else the group anchor's), since only the anchor
+        -- keeps a mover.
+        EllesmereUI.BuildSectionUnlockJump(layoutHeader, { key = function()
+            local bd = SelectedTBB()
+            local gid = bd and ns.TBBBarGroupID(bd) or 0
+            if gid ~= 0 then
+                local gk = ns.TBBGroupGlobalKey and ns.TBBGroupGlobalKey(gid)
+                if gk then return "TBBG_" .. gk end
+                local ai = ns.TBBGroupAnchorIndex(gid)
+                if ai then return "TBB_" .. ai end
+            end
+            return "TBB_" .. _tbbSelectedBar
+        end })
 
         -- Height | Width. The whole group shares one width/height, so a grouped member
         -- inherits the group ANCHOR's match-lock: if size-matched, every member's slider
@@ -3572,7 +3668,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
         );  y = y - h
         AddTBBTextSwatch(nameRow, nameRow._leftRegion, "name")
         AddTBBTextSwatch(nameRow, nameRow._rightRegion, "timer")
-        -- Cog on Name Text: text size + x/y
+        -- Cog on Name Text: custom name, text size, wrap + x/y
         do
             local rgn = nameRow._leftRegion
             EllesmereUI.BuildInlineCog(rgn, {
@@ -3591,6 +3687,18 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                     return "This option requires a Name Text position other than None"
                 end,
                 rows = {
+                    { type = "input", label = "Custom Name", inputWidth = 120, commitOnBlur = true,
+                      tooltip = "Leave empty to show the spell's name.",
+                      get = function()
+                          local bd = SelectedTBB()
+                          return bd and bd.customName or ""
+                      end,
+                      set = function(text)
+                          local bd = SelectedTBB(); if not bd then return end
+                          text = strtrim(text or "")
+                          bd.customName = text ~= "" and text or nil
+                          RefreshTBB()
+                      end },
                     { type = "slider", label = "Text Size", min = 8, max = 24, step = 1,
                       get = function() local bd = SelectedTBB(); return bd and bd.nameSize or 11 end,
                       set = function(v)
@@ -4341,16 +4449,20 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 rightSlot = { type = "label", text = "" }
             end
 
+            -- WoW Forever: the same row is the Anti-Clip Glow (EUI_CDM_ForeverAntiClip.lua).
+            local antiClip = ns.CDM_ANTI_CLIP
             local tbbPanRow
-            tbbPanRow, h = W:DualRow(parent, y, GO.DropdownSpec(tbbDesc, "Pandemic Glow",
-                "Show a glow on the bar when the remaining duration is in the pandemic window (last 30%)"), rightSlot);  y = y - h
+            tbbPanRow, h = W:DualRow(parent, y, GO.DropdownSpec(tbbDesc, antiClip and "Anti-Clip Glow" or "Pandemic Glow",
+                antiClip and "Show a glow on the bar when casting the spell next, after your current cast or global cooldown, won't clip it"
+                    or "Show a glow on the bar when the remaining duration is in the pandemic window (last 30%)"), rightSlot);  y = y - h
             GO.AttachInline(tbbPanRow._leftRegion, tbbDesc)
 
             -- Apply All
             if EllesmereUI.BuildSyncIcon and EllesmereUI.ApplyPandemicGlowToAll then
                 EllesmereUI.BuildSyncIcon({
                     region = tbbPanRow._leftRegion,
-                    tooltip = "Apply this pandemic glow to Nameplates, all CDM bars, and other tracking bars. A surface that can't show a style uses its closest match.",
+                    tooltip = antiClip and "Apply this glow's look to the Nameplates Pandemic Glow, all CDM bars, and other tracking bars. A surface that can't show a style uses its closest match."
+                        or "Apply this pandemic glow to Nameplates, all CDM bars, and other tracking bars. A surface that can't show a style uses its closest match.",
                     isSynced = function()
                         local src = SelectedTBB(); if not src then return true end
                         return EllesmereUI.IsPandemicGlowSyncedToAll(EllesmereUI.PandemicPayloadFromRectBar(src), { skipTbbBar = src })

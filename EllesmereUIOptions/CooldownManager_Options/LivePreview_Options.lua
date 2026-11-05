@@ -288,6 +288,46 @@ local function BuildCDMLivePreview(parent, yOff)
         local localX = (rawCX - rawPfL) / pfES
         local localY = -((rawPfT - rawCY) / pfES)
 
+        -- A vertical bar stacks its icons in columns, so there the cursor's height
+        -- inside an icon picks the drop (top part above it, bottom part below it,
+        -- the middle swaps), in the column nearest the cursor. The preview lays each
+        -- column out top-down in index order.
+        if StackedSlots(previewSlots[1], previewSlots[2]) then
+            local colX, colDist
+            for i = 1, slotCount do
+                local s = previewSlots[i]
+                if s and s:IsShown() and s._baseX then
+                    local d = math.abs(localX - (s._baseX + iconSz / 2))
+                    if not colDist or d < colDist then colX, colDist = s._baseX, d end
+                end
+            end
+            if not colX or colDist > iconSz then return nil, nil end
+            -- Each icon's band reaches half the spacing past its edges (+1 so rounding
+            -- leaves no seam; an overlap resolves to the same insert either way).
+            local pad = spacing * 0.5 + 1
+            local firstIdx, lastIdx
+            for i = 1, slotCount do
+                local s = previewSlots[i]
+                if s and s:IsShown() and s._baseX and math.abs(s._baseX - colX) < 1 then
+                    firstIdx = firstIdx or i
+                    lastIdx = i
+                    local h = s:GetHeight()
+                    local top = s._baseY
+                    if localY <= top + pad and localY > top - h - pad then
+                        local midY = top - h / 2
+                        local isBlank = not s._icon or not s._icon:GetTexture()
+                        if i ~= fromIdx and math.abs(localY - midY) < h * (isBlank and 0.45 or 0.2) then
+                            return "swap", i
+                        end
+                        return "insert", (localY > midY) and i or (i + 1)
+                    end
+                end
+            end
+            if not firstIdx then return nil, nil end
+            if localY > previewSlots[firstIdx]._baseY then return "insert", firstIdx end
+            return "insert", lastIdx + 1
+        end
+
         -- Group slots into rows by _baseY
         local bestRowStart, bestRowEnd, bestRowDist = 1, slotCount, math.huge
         local rowsByY = {}
@@ -489,7 +529,8 @@ local function BuildCDMLivePreview(parent, yOff)
         if StackedSlots(first, second) then
             -- Later slots sit further along the column (down, or up on a bar growing up).
             local towardEndY = (second._baseY < first._baseY) and -nudge or nudge
-            local ts = previewSlots[targetIdx] or previewSlots[targetIdx - 1]
+            -- The target's column; past the last slot, the last slot's (as the row code above).
+            local ts = previewSlots[(targetIdx <= slotCount) and targetIdx or (targetIdx - 1)]
             local colX = ts and ts._baseX
             local virtualInsert = targetIdx
             if targetIdx > fromIdx then virtualInsert = targetIdx - 1 end
@@ -554,21 +595,17 @@ local function BuildCDMLivePreview(parent, yOff)
                 end
             end
 
-            -- A vertical bar stacks its icons (same X, one per row): there the line runs
-            -- across the gap between the neighbors instead of down through an icon.
-            -- Decided by the two neighbors, or at either end by the first two icons.
-            local stacked
-            if leftSlot and rightSlot then
-                stacked = StackedSlots(leftSlot, rightSlot)
-            else
-                stacked = StackedSlots(previewSlots[1], previewSlots[2])
-            end
+            -- A vertical bar stacks its icons in columns: there the line runs across the
+            -- gap between the neighbors instead of down through an icon. Between two
+            -- columns it sits above the next column's first icon, where that column opens.
+            local stacked = StackedSlots(previewSlots[1], previewSlots[2])
 
             local lineX, lineY
             if stacked then
                 local gap = math.floor(spacing / 2) + 1
                 if leftSlot and leftSlot:IsShown() and leftSlot._baseX
-                   and rightSlot and rightSlot:IsShown() and rightSlot._baseX then
+                   and rightSlot and rightSlot:IsShown() and rightSlot._baseX
+                   and StackedSlots(leftSlot, rightSlot) then
                     local upper, lower = leftSlot, rightSlot
                     if lower._baseY > upper._baseY then upper, lower = lower, upper end
                     -- Centered in the gap the icons are opening (their shifted positions; the
@@ -1750,10 +1787,13 @@ local function BuildCDMLivePreview(parent, yOff)
                         -- Empty Slot: blank placeholder, no icon/tooltip identity.
                         slot._previewIsEmptySlot = true
                     elseif id <= -100 then
-                        -- On-use bag item: negated itemID
-                        tex = C_Item.GetItemIconByID(-id)
+                        -- On-use bag item: negated itemID. The art and the item the
+                        -- live icon shows (a resolved potion variant, or Blizzard's
+                        -- own row's art), so the preview matches the bar in game.
+                        local dispID
+                        tex, dispID = ns.ItemEntryPreview(bd.key, id)
                         slot._previewItemID = -id
-                        slot._previewTipItemID = -id
+                        slot._previewTipItemID = dispID or -id
                     elseif id < 0 then
                         -- Trinket slot: get icon from equipped item
                         local itemID = GetInventoryItemID("player", -id)
@@ -1880,7 +1920,16 @@ local function BuildCDMLivePreview(parent, yOff)
                     local sid = slot._previewSpellID
                     local chargeInfo = sid and C_Spell.GetSpellCharges and C_Spell.GetSpellCharges(sid)
                     local maxC = chargeInfo and chargeInfo.maxCharges
-                    if (bd.showCharges ~= false) and maxC and maxC > 1 then
+                    -- A custom CD/utility spell EUI draws itself has no Blizzard charge
+                    -- frame: the live icon shows a count only with its Show Charges
+                    -- opt-in, so match it. A Blizzard-tracked one draws Blizzard's frame.
+                    local sdSc = sid and not isBuffBar and not isCustomBuffBar and ns.GetBarSpellData(bd.key)
+                    local showC = bd.showCharges ~= false
+                    if sdSc and sdSc.customSpellIDs and sdSc.customSpellIDs[sid]
+                       and not ns.IsCDMTrackedCooldown(sid) then
+                        showC = (sdSc.customSpellForceCount and sdSc.customSpellForceCount[sid]) or false
+                    end
+                    if showC and maxC and maxC > 1 then
                         slot._stackText:SetText(tostring(maxC))
                         slot._stackText:Show()
                     elseif slot._previewItemID and (bd.showItemCount ~= false) then
@@ -2039,11 +2088,16 @@ local function BuildCDMLivePreview(parent, yOff)
             end
             local fkFS = self._focusKickInfoText
             -- Wording must track the "Show on Target" toggle -- otherwise this text keeps promising focus-tracking even when the bar is configured to follow the current target instead.
+            local fkMain
             if bd.focusKickUseTarget then
-                fkFS:SetText(EllesmereUI.L("This bar will always be attached to your current target's nameplate"))
+                fkMain = EllesmereUI.L("This bar will always be attached to your current target's nameplate")
             else
-                fkFS:SetText(EllesmereUI.L("This bar will always be attached to your focus target's nameplate"))
+                fkMain = EllesmereUI.L("This bar will always be attached to your focus target's nameplate")
             end
+            -- Second, dimmer line: points sound-only users at the setup that needs no icon.
+            fkFS:SetText(fkMain .. "\n" .. EllesmereUI.COLOR_CODES.DIM
+                .. EllesmereUI.L("Want only the cast sound? Leave this bar empty and set Interrupt Spell below.")
+                .. "|r")
             fkFS:ClearAllPoints()
             fkFS:SetPoint("TOP", self, "TOPLEFT", self:GetWidth() / 2, -(totalH + 14))
             fkFS:SetWidth(self:GetWidth() - 20)

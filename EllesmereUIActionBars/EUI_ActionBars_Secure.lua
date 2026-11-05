@@ -421,8 +421,11 @@ local BUTTON_EVENT_LISTS = {
         "SPELL_UPDATE_CHARGES",
         "UPDATE_INVENTORY_ALERTS",
         "PLAYER_EQUIPMENT_CHANGED",
-        "LOSS_OF_CONTROL_ADDED",
-        "LOSS_OF_CONTROL_UPDATE",
+        -- LOSS_OF_CONTROL_ADDED / _UPDATE are deliberately NOT registered per button
+        -- either: they run the mixin's ActionButton_UpdateCooldown, which under our
+        -- taint cannot hand the restricted loss-of-control times to SetCooldown, so
+        -- the overlay never drew in PvP matches. The dispatcher paints it
+        -- (ns._abLoCPass in EUI_ActionBars_Events.lua).
         "PLAYER_TARGET_CHANGED", -- native per-button usability via Blizzard's C-side dispatcher
     },
     stance = {
@@ -699,6 +702,7 @@ do
     local V = EAB_VTABLE
     V.GetOverrideBarIndex = GetOverrideBarIndex or (C_ActionBar and C_ActionBar.GetOverrideBarIndex) or function() return 14 end
     V.GetVehicleBarIndex = GetVehicleBarIndex or (C_ActionBar and C_ActionBar.GetVehicleBarIndex) or function() return 12 end
+    V.GetTempShapeshiftBarIndex = GetTempShapeshiftBarIndex or (C_ActionBar and C_ActionBar.GetTempShapeshiftBarIndex) or function() return 13 end
     V.GetActionBarPage = GetActionBarPage or (C_ActionBar and C_ActionBar.GetActionBarPage) or function() return 1 end
     V.HasVehicleActionBar = HasVehicleActionBar or (C_ActionBar and C_ActionBar.HasVehicleActionBar) or function() return false end
     V.HasOverrideActionBar = HasOverrideActionBar or (C_ActionBar and C_ActionBar.HasOverrideActionBar) or function() return false end

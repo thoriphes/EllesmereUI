@@ -1066,6 +1066,11 @@ local function BuildBars()
                     runeFrames[i]:ApplyBorder(0, 0, 0, 0, 0)
                 end
                 runeFrames[i]:ApplyTexture(g.barTexture or "none")
+                if sp.useContinuousTexture then
+                    I.PipTextureHelpers.Configure(runeFrames[i], x0, x1, widthSnapped, pipOri)
+                elseif runeFrames[i]._continuousStart then
+                    I.PipTextureHelpers.Reset(runeFrames[i])
+                end
                 runeFrames[i]._bg:SetColorTexture(ERB.PipBgColor(sp, pipBg))
                 -- Textured Background, as the bar-type branch.
                 if g.barTextureBg or runeFrames[i]._bg._erbBgTex then
@@ -1144,6 +1149,11 @@ local function BuildBars()
                     pips[i]:ApplyBorder(0, 0, 0, 0, 0)
                 end
                 pips[i]:ApplyTexture(g.barTexture or "none")
+                if sp.useContinuousTexture then
+                    I.PipTextureHelpers.Configure(pips[i], x0, x1, widthSnapped, pipOri)
+                elseif pips[i]._continuousStart then
+                    I.PipTextureHelpers.Reset(pips[i])
+                end
                 pips[i]._bg:SetColorTexture(ERB.PipBgColor(sp, pipBg))
                 -- Textured Background, as the bar-type branch.
                 if g.barTextureBg or pips[i]._bg._erbBgTex then
@@ -1324,6 +1334,51 @@ local function BuildBars()
             local _spTA = sp.textAnchor or "CENTER"
             secondaryFrame._countText:SetPoint(_spTA, secondaryFrame, _spTA, sp.textXOffset, sp.textYOffset)
             SetRBFont(secondaryFrame._countText, GetRBFont(), sp.textSize)
+            -- "Hide at Zero": both writers of the count text are wrapped while the
+            -- option is on (pip resources use SetText, the power bars
+            -- SetFormattedText). A secret bare count goes through TruncateWhenZero;
+            -- a secret "cur / max" or percent still shows its 0. The hidden text is
+            -- kept so turning the option off at 0 shows the 0 again.
+            if sp.hideTextAtZero and not secondaryFrame._countText._euiOrigSetText then
+                secondaryFrame._countText._euiOrigSetText = secondaryFrame._countText.SetText
+                secondaryFrame._countText._euiOrigSetFormattedText = secondaryFrame._countText.SetFormattedText
+                secondaryFrame._countText.SetText = function(self, text, ...)
+                    if issecretvalue and issecretvalue(text) then
+                        local ok, shown = ns.ERB_TruncateSecretZero(text)
+                        if ok then
+                            self._euiHidden, self._euiHiddenText = true, text
+                            return self._euiOrigSetText(self, shown)
+                        end
+                    elseif ns.ERB_TextIsZero(text) then
+                        self._euiHidden, self._euiHiddenText = true, text
+                        return self._euiOrigSetText(self, "")
+                    end
+                    self._euiHidden, self._euiHiddenText = false, nil
+                    return self._euiOrigSetText(self, text, ...)
+                end
+                secondaryFrame._countText.SetFormattedText = function(self, fmt, first, ...)
+                    if fmt == "%s" and select("#", ...) == 0 and issecretvalue and issecretvalue(first) then
+                        return self:SetText(first)
+                    end
+                    if ns.ERB_TextIsZero(first) then
+                        self._euiHidden, self._euiHiddenText = true, format(fmt, first, ...)
+                        return self._euiOrigSetText(self, "")
+                    end
+                    self._euiHidden, self._euiHiddenText = false, nil
+                    return self._euiOrigSetFormattedText(self, fmt, first, ...)
+                end
+                secondaryFrame._countText:SetText(secondaryFrame._countText:GetText())
+            elseif not sp.hideTextAtZero and secondaryFrame._countText._euiOrigSetText then
+                secondaryFrame._countText.SetText = nil
+                secondaryFrame._countText.SetFormattedText = nil
+                secondaryFrame._countText._euiOrigSetText = nil
+                secondaryFrame._countText._euiOrigSetFormattedText = nil
+                -- A flag, not a nil test: the kept text may be secret.
+                if secondaryFrame._countText._euiHidden then
+                    secondaryFrame._countText:SetText(secondaryFrame._countText._euiHiddenText)
+                end
+                secondaryFrame._countText._euiHidden, secondaryFrame._countText._euiHiddenText = false, nil
+            end
             -- "Only if Power Bar Hidden": the fontstring is still created and
             -- updated (so text-value writes never hit nil), just hidden while the
             -- power bar is visible. Re-evaluated every build (spec/power changes

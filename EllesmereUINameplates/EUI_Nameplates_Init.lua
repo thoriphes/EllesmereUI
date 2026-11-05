@@ -180,6 +180,7 @@ function npAddon:OnInitialize()
     -- so the apply loop no-ops; SetUnit fades new plates as they spawn).
     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
     if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
+    if ns.NP_RefreshTypeScaleSetting then ns.NP_RefreshTypeScaleSetting() end
     -- Append SharedMedia textures to runtime tables so SM texture keys resolve at runtime
     EllesmereUI.AppendSharedMediaTextures(
         ns.healthBarTextureNames,
@@ -246,6 +247,8 @@ function npAddon:OnEnable()
     ns.NP_RefreshSlotClassFlags()
     ns.NP_RefreshThreatPctFlag()
     ns.NP_RefreshThreatColorFlag()
+    -- PreSeedSpecProfile / the spec preset above may have changed the type scales.
+    if ns.NP_RefreshTypeScaleSetting then ns.NP_RefreshTypeScaleSetting() end
     if ns.RangeText_Apply then ns.RangeText_Apply() end
     -- Debuff coloring last: it reads the final profile, and Color Border reads
     -- the plate style, which latches for the session on its first read.
@@ -278,6 +281,8 @@ do
             anchorTo = plate.levelText
         elseif rightEl == "targetOfTarget" then
             anchorTo = plate.totText
+        elseif rightEl == "custom" then
+            anchorTo = plate.customRight
         elseif rightEl and rightEl ~= "none" then
             local ca = plate._cachedHealthSlots
             if ca then

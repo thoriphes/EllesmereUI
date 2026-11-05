@@ -634,7 +634,7 @@ local function BuildMainPage(pageName, parent, yOffset)
     local SGet, SGetPx, SSet, SVal = env.SGet, env.SGetPx, env.SSet, env.SVal
     local SWrite, optState = env.SWrite, env.optState
     local W = EllesmereUI.Widgets
-    local _, h
+    local _, h, hdr
     local row
 
     -- Both Group Growth menus grey out the grid flow while groups are merged,
@@ -645,6 +645,21 @@ local function BuildMainPage(pageName, parent, yOffset)
         end
     end
 
+    -- Center Groups (base and per-tier): the grid flow never centers
+    -- (ns._RFGroupCentered), read through the runtime's own self-heal, which
+    -- renders it as Right in merged mode. Locked in combat: the layout pass
+    -- bails there and would not pick the change up afterwards.
+    local CENTER_TIP = "Keeps the shown groups centered on the raid frame area along the group growth direction, so fewer groups sit in the middle instead of starting at one edge."
+    local CENTER_OFF_TIP = "This option is not available with the Down and then Right group growth."
+    local function CenterBlocked(gg)
+        if InCombatLockdown() then return true end
+        local _, eg = ns._RFEffectiveGrowth("DOWN", gg, SVal("mergeGroups", false))
+        return eg == "DOWNRIGHT"
+    end
+    local function CenterBlockedTip()
+        return InCombatLockdown() and "Unavailable in combat" or CENTER_OFF_TIP
+    end
+
     parent._showRowDivider = true
     local y = yOffset
 
@@ -653,7 +668,8 @@ local function BuildMainPage(pageName, parent, yOffset)
     -------------------------------------------------------------------
     --  FRAME SIZES
     -------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "FRAME SIZES", y); y = y - h
+    hdr, h = W:SectionHeader(parent, "FRAME SIZES", y); y = y - h
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = "RF_RaidFrames" })
 
     _, h = W:DualRow(parent, y,
         { type="slider", text="20 Man Frame Width", min=40, max=300, step=1,
@@ -737,6 +753,7 @@ local function BuildMainPage(pageName, parent, yOffset)
                     eyeBtn:SetPoint("RIGHT", sizeRow, "LEFT", -5, 0)
                     eyeBtn:SetFrameLevel(sizeRow:GetFrameLevel() + 5)
                     local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+                    EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
                     eyeTex:SetAllPoints()
 
                     -- Kept on ns until this tier's next build, which may never come
@@ -747,13 +764,13 @@ local function BuildMainPage(pageName, parent, yOffset)
                         if PoolGen(eyeBtn) ~= eyeGen then return end
                         local active = ns._sizePreviewTier == tier
                         eyeTex:SetTexture(active and EYE_INVISIBLE or EYE_VISIBLE)
-                        eyeBtn:SetAlpha(active and 0.6 or 0.4)
+                        EllesmereUI.SetGlyphAlpha(eyeBtn, active and 0.6 or 0.4)
                     end
                     RefreshSizeEye()
                     ns["_refreshSizeEye" .. tier] = RefreshSizeEye
 
                     eyeBtn:SetScript("OnEnter", function(self)
-                        self:SetAlpha(0.7)
+                        EllesmereUI.SetGlyphAlpha(self, 0.7)
                         local active = ns._sizePreviewTier == tier
                         EllesmereUI.ShowWidgetTooltip(self, active and "Hide " .. tierLabel .. " preview" or "Preview " .. tierLabel .. " frame size")
                     end)
@@ -898,6 +915,24 @@ local function BuildMainPage(pageName, parent, yOffset)
                                   end
                                   TierGrowthChanged()
                               end },
+                            { type="toggle", label="Center Groups", tooltip=CENTER_TIP,
+                              get=function()
+                                  local ovs = db.profile.raidSizeOverrides
+                                  local o = ovs and ovs[tier]
+                                  if o and o.groupGrowthCentered ~= nil then return o.groupGrowthCentered end
+                                  return db.profile.groupGrowthCentered == true
+                              end,
+                              set=function(v)
+                                  if InCombatLockdown() then return end
+                                  EnsureTierOv().groupGrowthCentered = v
+                                  TierGrowthChanged()
+                              end,
+                              disabled=function()
+                                  local ovs = db.profile.raidSizeOverrides
+                                  return CenterBlocked(ovs and ovs[tier] and ovs[tier].groupGrowth
+                                      or db.profile.groupGrowth or "RIGHT")
+                              end,
+                              disabledTooltip=CenterBlockedTip, rawTooltip=true },
                             { type="dropdown", label="Unit Growth",
                               values=growthValues, order=allGrowthOrder,
                               get=function()
@@ -1113,7 +1148,8 @@ local function BuildMainPage(pageName, parent, yOffset)
         end
     end
 
-    _, h = W:DualRow(parent, y,
+    local growthRow
+    growthRow, h = W:DualRow(parent, y,
         { type="dropdown", text="Group Growth", values=groupGrowthValues, order=groupGrowthOrder,
           disabledValues=GridFlowOff,
           getValue=function() return ReadGroupGrowth(SVal("groupGrowth", "RIGHT")) end,
@@ -1143,6 +1179,18 @@ local function BuildMainPage(pageName, parent, yOffset)
               if ns._BumpAbsorbGen then ns._BumpAbsorbGen() end
               ReloadAndUpdate()
           end });  y = y - h
+    EllesmereUI.BuildInlineCog(growthRow._leftRegion, { title = "Group Growth",
+        captureRegion = growthRow._leftRegion, rows = {
+        { type="toggle", label="Center Groups", tooltip=CENTER_TIP,
+          get=function() return db.profile.groupGrowthCentered == true end,
+          set=function(v)
+              if InCombatLockdown() then return end
+              db.profile.groupGrowthCentered = v
+              ReloadAndUpdate()
+          end,
+          disabled=function() return CenterBlocked(SVal("groupGrowth", "RIGHT")) end,
+          disabledTooltip=CenterBlockedTip, rawTooltip=true },
+    } })
 
     -- Row 4: Sort By (custom dropdown with drag-to-reorder roles) | Self Position
     local sortRow
@@ -1402,8 +1450,12 @@ local function BuildPartyPage(pageName, parent, yOffset)
     local BuildPreviewModeRow, BuildVisualSections, db, optState = env.BuildPreviewModeRow, env.BuildVisualSections, env.db, env.optState
     local PP, SVal = env.PP, env.SVal
     local W = EllesmereUI.Widgets
-    local _, h
+    local _, h, hdr
     local row
+    -- The Party Frames' Move in Unlock Mode button goes on the page's first
+    -- section: FRAME STYLE where the stock-style block builds, else RAID
+    -- SYNC AND SOLO.
+    local jumped
 
     parent._showRowDivider = true
     local y = yOffset
@@ -1417,7 +1469,9 @@ local function BuildPartyPage(pageName, parent, yOffset)
     -------------------------------------------------------------------
     local p0 = db.profile
     if ns.RF_Stock and ns.RF_Stock() and (p0.useBlizzardStyle or p0.useClassicStyle) then
-        _, h = W:SectionHeader(parent, "FRAME STYLE", y); y = y - h
+        hdr, h = W:SectionHeader(parent, "FRAME STYLE", y); y = y - h
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "RF_PartyFrames" })
+        jumped = true
         local kitOn = ns.RF_PartyKit and ns.RF_PartyKit()
         -- Frame Scale default (nil = this, 120%).
         local scaleDef = math.floor((ns.RF_KIT_SCALE or 1.2) * 100 + 0.5)
@@ -1508,7 +1562,10 @@ local function BuildPartyPage(pageName, parent, yOffset)
     -------------------------------------------------------------------
     --  RAID SYNC AND SOLO
     -------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "RAID SYNC AND SOLO", y); y = y - h
+    hdr, h = W:SectionHeader(parent, "RAID SYNC AND SOLO", y); y = y - h
+    if not jumped then
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "RF_PartyFrames" })
+    end
 
     -- Row 1: Use Raid Settings For (checkbox dropdown) | Show When Solo
     local SECTION_ORDER = ns._PARTY_SECTION_ORDER or {}
