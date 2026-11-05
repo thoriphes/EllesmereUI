@@ -35,12 +35,7 @@ local WSkin = {}
 ns.WSkin = WSkin
 
 -- Weak-keyed external state (prevents tainting Blizzard frames) ---------------
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 WSkin.GetFFD = GetFFD
 WSkin.FFD = FFD
 
@@ -86,7 +81,7 @@ local function SolidTex(parent, layer, r, g, b, a, sublevel)
 end
 WSkin.SolidTex = SolidTex
 
-local function AddBorder(frame, r, g, b, a)
+local function AddBorder(frame, r, g, b, a, layer, sublevel)
     if GetFFD(frame).border then return end
     local PP = EUI and (EUI.PanelPP or EUI.PP)
     if PP and PP.CreateBorder then
@@ -96,7 +91,9 @@ local function AddBorder(frame, r, g, b, a)
         -- container level, frame level beats every layer and the border covers
         -- bar text -- XP/reputation bar labels). Demotion is window-engine-only
         -- on purpose: every other CreateBorder consumer keeps the +1 contract.
-        local c = PP.CreateBorder(frame, r or Theme.brdR, g or Theme.brdG, b or Theme.brdB, a or Theme.brdA, 1, "BORDER", -7)
+        -- layer/sublevel put the strips lower still, for a frame sitting at its
+        -- parent's level under art the parent draws (flag carrier panels).
+        local c = PP.CreateBorder(frame, r or Theme.brdR, g or Theme.brdG, b or Theme.brdB, a or Theme.brdA, 1, layer or "BORDER", sublevel or -7)
         if c and c.SetFrameLevel then c:SetFrameLevel(frame:GetFrameLevel()) end
         GetFFD(frame).border = true
     end
@@ -439,14 +436,15 @@ function WSkin.Inset(inset)
     Register(inset, true)
 end
 
-function WSkin.Font(fs, r, g, b)
+-- size (optional): the size to set; otherwise the string keeps its own (12 if none).
+function WSkin.Font(fs, r, g, b, size)
     if not fs or not fs.GetFont or (fs.IsForbidden and fs:IsForbidden()) then return end
-    local _, size = fs:GetFont()
-    if size and issecretvalue(size) then return end
+    local _, cur = fs:GetFont()
+    if cur and issecretvalue(cur) then return end
     -- 12.0.7: shadows only render from a FontObject, never from instance
     -- SetShadowOffset. Prime BEFORE SetFont (SetFont then restores the face).
     EUI.PrimeFontShadow(fs, Theme.fontShadow)
-    fs:SetFont(Theme.fontPath, size or 12, Theme.fontFlag or "")
+    fs:SetFont(Theme.fontPath, size or cur or 12, Theme.fontFlag or "")
     if r then fs:SetTextColor(r, g, b or r) end
 end
 
@@ -770,6 +768,62 @@ function WSkin.CloseButton(btn)
     d.x = x
     btn:HookScript("OnEnter", function() if d.x then d.x:SetVertexColor(1, 1, 1, 1) end end)
     btn:HookScript("OnLeave", function() if d.x then d.x:SetVertexColor(1, 1, 1, 0.75) end end)
+end
+
+-- Active-filter reset "X": strips Blizzard's glyph, draws house
+-- uitools-icon-close above the dropdown border (white 0.9->1 on hover).
+-- `host` = the dropdown it rides (frame-level layering); idempotent via FFD.x.
+-- The window packs' filter dropdowns and the Group Finder's search filter.
+function WSkin.FilterResetX(rb, host)
+    if not rb or rb:IsForbidden() then return end
+    local rd = GetFFD(rb)
+    if rd.x then return end
+    local regions = { rb:GetRegions() }
+    for i = 1, #regions do
+        local r = regions[i]
+        if r and r.IsObjectType and r:IsObjectType("Texture") then r:SetAlpha(0) end
+    end
+    for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetHighlightTexture" }) do
+        local t = rb[g] and rb[g](rb)
+        if t and t.SetAlpha then t:SetAlpha(0) end
+    end
+    if host then rb:SetFrameLevel(host:GetFrameLevel() + 5) end
+    local x = rb:CreateTexture(nil, "OVERLAY", nil, 7)
+    x:SetAtlas("uitools-icon-close", false)
+    x:SetSize(10, 10)
+    x:SetPoint("CENTER", rb, "CENTER", 0, 0)
+    x:SetVertexColor(1, 1, 1, 0.9)
+    rd.x = x
+    rb:HookScript("OnEnter", function() x:SetVertexColor(1, 1, 1, 1) end)
+    rb:HookScript("OnLeave", function() x:SetVertexColor(1, 1, 1, 0.9) end)
+end
+
+-- Refresh button -> strip its art and draw the house white UI-RefreshButton
+-- glyph (desaturated, white at 0.9, full on hover). The Group Finder, Auction
+-- House, crafting orders and WoW Forever Looking For Group refresh buttons.
+function WSkin.RefreshGlyph(rb)
+    if not rb or rb:IsForbidden() then return end
+    local d = GetFFD(rb)
+    if d.refreshGlyph then return end
+    if not (C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("UI-RefreshButton")) then return end
+    local regions = { rb:GetRegions() }
+    for i = 1, #regions do
+        local r = regions[i]
+        if r and r.IsObjectType and r:IsObjectType("Texture") then r:SetAlpha(0) end
+    end
+    for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetHighlightTexture", "GetDisabledTexture" }) do
+        local t = rb[g] and rb[g](rb)
+        if t and t.SetAlpha then t:SetAlpha(0) end
+    end
+    local glyph = rb:CreateTexture(nil, "OVERLAY")
+    glyph:SetAtlas("UI-RefreshButton", false)
+    glyph:SetSize(16, 16)
+    glyph:SetPoint("CENTER")
+    glyph:SetDesaturated(true)
+    glyph:SetVertexColor(1, 1, 1, 0.9)
+    d.refreshGlyph = glyph
+    rb:HookScript("OnEnter", function() glyph:SetVertexColor(1, 1, 1, 1) end)
+    rb:HookScript("OnLeave", function() glyph:SetVertexColor(1, 1, 1, 0.9) end)
 end
 
 -- Page-nav / arrow button -> flat block with a house arrow texture

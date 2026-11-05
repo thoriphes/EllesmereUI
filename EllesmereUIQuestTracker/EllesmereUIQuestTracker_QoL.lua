@@ -62,23 +62,28 @@ local function IsIgnoredQuest(questID, isTrivial)
     return expansion ~= nil and expansion >= 0 and expansion < GetServerExpansionLevel()
 end
 
+-- Hold Shift to Enable runs the feature only while Shift is down; Hold Shift
+-- to Skip runs it only while Shift is up. prefix is "autoAccept" or "autoTurnIn".
+local function ShiftAllows(prefix)
+    if Cfg(prefix .. "ShiftEnable") then return IsShiftKeyDown() end
+    if Cfg(prefix .. "ShiftSkip") then return not IsShiftKeyDown() end
+    return true
+end
+
 local function InstallAutoQuests()
     local autoFrame = CreateFrame("Frame")
     local autoPreventNPCGUID = nil
-    autoFrame:RegisterEvent("QUEST_DETAIL")
-    autoFrame:RegisterEvent("QUEST_COMPLETE")
-    autoFrame:RegisterEvent("GOSSIP_SHOW")
-    if not EQT._eventFrames then EQT._eventFrames = {} end
-    if not EQT._eventRegistrations then EQT._eventRegistrations = {} end
-    local aidx = #EQT._eventFrames + 1
-    EQT._eventFrames[aidx] = autoFrame
-    EQT._eventRegistrations[aidx] = {"QUEST_DETAIL", "QUEST_COMPLETE", "GOSSIP_SHOW"}
+    -- Deliberately NOT enrolled in EQT._eventFrames, so the raid/arena/M+
+    -- suspension leaves it alone. That suspension exists to stop skin and
+    -- layout work while the tracker is hidden; this frame does neither, it
+    -- answers quest NPC dialogs, so Auto Accept / Auto Turn In keep working
+    -- while the tracker is hidden.
     autoFrame:SetScript("OnEvent", function(_, event, ...)
         if Cfg("enabled") == false then return end
 
         if event == "GOSSIP_SHOW" then
             if C_GossipInfo then
-                if Cfg("autoTurnIn") and C_GossipInfo.GetActiveQuests then
+                if Cfg("autoTurnIn") and ShiftAllows("autoTurnIn") and C_GossipInfo.GetActiveQuests then
                     local active = C_GossipInfo.GetActiveQuests()
                     if active then
                         for _, quest in ipairs(active) do
@@ -90,7 +95,7 @@ local function InstallAutoQuests()
                     end
                 end
                 if Cfg("autoAccept") and C_GossipInfo.GetAvailableQuests then
-                    if Cfg("autoAcceptShiftSkip") and IsShiftKeyDown() then return end
+                    if not ShiftAllows("autoAccept") then return end
                     local available = C_GossipInfo.GetAvailableQuests()
                     if available then
                         for i = #available, 1, -1 do
@@ -121,6 +126,45 @@ local function InstallAutoQuests()
             return
         end
 
+        -- The quest greeting: an NPC with quests and no gossip lists them as
+        -- Current Quests and Available Quests (common on WoW Forever). The same
+        -- order as the gossip above, by the greeting's own indexes.
+        if event == "QUEST_GREETING" then
+            if Cfg("autoTurnIn") and ShiftAllows("autoTurnIn") then
+                for i = 1, GetNumActiveQuests() do
+                    local _, isComplete = GetActiveTitle(i)
+                    if isComplete then
+                        SelectActiveQuest(i)
+                        return
+                    end
+                end
+            end
+            if Cfg("autoAccept") and ShiftAllows("autoAccept") then
+                local first, count = nil, 0
+                for i = 1, GetNumAvailableQuests() do
+                    local isTrivial, _, _, _, questID = GetAvailableQuestInfo(i)
+                    if not IsIgnoredQuest(questID, isTrivial) then
+                        count = count + 1
+                        first = first or i
+                    end
+                end
+                if first then
+                    if Cfg("autoAcceptPreventMulti") then
+                        local npcGUID = UnitGUID("npc")
+                        if count > 1 then
+                            autoPreventNPCGUID = npcGUID
+                        end
+                        if autoPreventNPCGUID ~= npcGUID then
+                            SelectAvailableQuest(first)
+                        end
+                    else
+                        SelectAvailableQuest(first)
+                    end
+                end
+            end
+            return
+        end
+
         -- QUEST_AUTOCOMPLETE handling removed: calling ShowQuestComplete() from addon
         -- execution runs Blizzard's quest-complete panel flow (ShowUIPanel, UIPanel
         -- attribute writes on WorldMapFrame) under our taint, and that state is read by
@@ -131,19 +175,51 @@ local function InstallAutoQuests()
 
         if event == "QUEST_DETAIL" then
             if not Cfg("autoAccept") then return end
-            if Cfg("autoAcceptShiftSkip") and IsShiftKeyDown() then return end
+            if not ShiftAllows("autoAccept") then return end
             local questID = GetQuestID()
             if IsIgnoredQuest(questID, C_QuestLog.IsQuestTrivial(questID)) then return end
             AcceptQuest()
+        elseif event == "QUEST_PROGRESS" then
+            -- A turn-in that asks for items shows this page (Continue) before
+            -- the reward page. One that costs gold stays with the player, as
+            -- Blizzard asks before taking it.
+            if not Cfg("autoTurnIn") then return end
+            if not ShiftAllows("autoTurnIn") then return end
+            if IsQuestCompletable() and (GetQuestMoneyToGet() or 0) == 0 then
+                CompleteQuest()
+            end
         elseif event == "QUEST_COMPLETE" then
             if not Cfg("autoTurnIn") then return end
-            if Cfg("autoTurnInShiftSkip") and IsShiftKeyDown() then return end
+            if not ShiftAllows("autoTurnIn") then return end
             local numChoices = GetNumQuestChoices()
             if numChoices <= 1 then
                 GetQuestReward(numChoices)
             end
         end
     end)
+
+    -- The dialog events are registered only while Auto Accept or Auto Turn In
+    -- is on; their toggles and profile swaps call this.
+    local registered = false
+    function EQT.SyncAutoQuests()
+        local want = (Cfg("autoAccept") or Cfg("autoTurnIn")) and true or false
+        if want == registered then return end
+        registered = want
+        if want then
+            autoFrame:RegisterEvent("QUEST_DETAIL")
+            autoFrame:RegisterEvent("QUEST_PROGRESS")
+            autoFrame:RegisterEvent("QUEST_COMPLETE")
+            autoFrame:RegisterEvent("GOSSIP_SHOW")
+            autoFrame:RegisterEvent("QUEST_GREETING")
+        else
+            autoFrame:UnregisterEvent("QUEST_DETAIL")
+            autoFrame:UnregisterEvent("QUEST_PROGRESS")
+            autoFrame:UnregisterEvent("QUEST_COMPLETE")
+            autoFrame:UnregisterEvent("GOSSIP_SHOW")
+            autoFrame:UnregisterEvent("QUEST_GREETING")
+        end
+    end
+    EQT.SyncAutoQuests()
 end
 
 -------------------------------------------------------------------------------
@@ -400,4 +476,8 @@ function EQT.InitQoL()
     InstallSplashFrameFix()
     InstallAutoQuests()
     InstallQuestItemHotkey()
+    -- WoW Forever's quest tools (EllesmereUIQuestTracker_Forever.lua; nil on retail).
+    if EQT.ApplyQuestWatches then EQT.ApplyQuestWatches() end
+    if EQT.ApplyQuestProgress then EQT.ApplyQuestProgress() end
+    if EQT.ApplyQuestLinks then EQT.ApplyQuestLinks() end
 end

@@ -1,21 +1,31 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
 --  EllesmereUI_SharedHelpers.lua
---  Frame data store, third-party skin registry, Blizzard cast bar ownership
---  and suppression, and small shared helpers (Swiftmend, level colors,
---  faction art). Loads right after EllesmereUI_VisibilityRules.lua.
+--  Frame data store, third-party skin registry, Edit Mode-safe anchoring and
+--  frame placers, Blizzard cast bar ownership and suppression, and small
+--  shared helpers (Swiftmend, level colors, faction art, split-module guard
+--  tables). Loads right after EllesmereUI_VisibilityRules.lua.
 -------------------------------------------------------------------------------
 local EllesmereUI = _G.EllesmereUI
+local _, EUI_NS = ...
+EUI_NS = EUI_NS.__euiCoreNS or EUI_NS  -- standalone builds: the core's own table (EllesmereUI.lua)
 
 -------------------------------------------------------------------------------
 --  External weak-keyed lookup table for frame state (prevents tainting Blizzard
---  frames). Stored on EllesmereUI to avoid the 200-local cap in EllesmereUI.lua.
+--  frames). NewFrameData returns a fresh table and its getter; each file keeps
+--  its own, so two files never share fields on one frame. The core's pair is
+--  stored on EllesmereUI to avoid the 200-local cap in EllesmereUI.lua.
 -------------------------------------------------------------------------------
-EllesmereUI._FFD = EllesmereUI._FFD or setmetatable({}, { __mode = "k" })
-function EllesmereUI._GetFFD(frame)
-    local d = EllesmereUI._FFD[frame]
-    if not d then d = {}; EllesmereUI._FFD[frame] = d end
-    return d
+function EllesmereUI.NewFrameData()
+    local FFD = setmetatable({}, { __mode = "k" })
+    return FFD, function(frame)
+        local d = FFD[frame]
+        if not d then d = {}; FFD[frame] = d end
+        return d
+    end
+end
+if not EllesmereUI._FFD then
+    EllesmereUI._FFD, EllesmereUI._GetFFD = EllesmereUI.NewFrameData()
 end
 
 -- Stock styles, enable-time catch-up seeds: a profile already on a stock
@@ -80,12 +90,34 @@ function EllesmereUI.SetElementVisibility(frame, visible)
         frame:SetAlpha(EllesmereUI._GetFFD(frame).restoreAlpha or 1)
         frame:EnableMouse(EllesmereUI._GetFFD(frame).restoreMouse or false)
     else
-        if frame:GetAlpha() > 0 then
-            EllesmereUI._GetFFD(frame).restoreAlpha = frame:GetAlpha()
+        local a = frame:GetAlpha()
+        if not issecretvalue(a) and a > 0 then
+            EllesmereUI._GetFFD(frame).restoreAlpha = a
         end
         EllesmereUI._GetFFD(frame).restoreMouse = frame:IsMouseEnabled()
         frame:SetAlpha(0)
         frame:EnableMouse(false)
+    end
+end
+
+-------------------------------------------------------------------------------
+--  An Edit Mode system's own child (its Selection box, a resize button) made
+--  inert in place while a module of ours owns that frame's spot or size, so
+--  Edit Mode cannot pick it up: alpha and mouse only, never reparented (a
+--  region its owner still writes stays in its tree). inert = false turns it
+--  back on; a caller does that only for a child it turned off itself.
+--  GetAlpha can read secret on some widgets in lockdown; a secret skips the
+--  compare and re-asserts.
+-------------------------------------------------------------------------------
+function EllesmereUI.SetEditModeChildInert(f, inert)
+    if not f then return end
+    local alpha = inert and 0 or 1
+    local a = f:GetAlpha()
+    if issecretvalue(a) or a ~= alpha then f:SetAlpha(alpha) end
+    if f.SetMouseClickEnabled then
+        local on = not inert
+        if f:IsMouseClickEnabled() ~= on then f:SetMouseClickEnabled(on) end
+        if f:IsMouseMotionEnabled() ~= on then f:SetMouseMotionEnabled(on) end
     end
 end
 
@@ -104,6 +136,313 @@ end
 function EllesmereUI.SetFramePoint(frame, point, relativeTo, relativePoint, x, y)
     local setPoint = frame.SetPointBase or frame.SetPoint
     setPoint(frame, point, relativeTo, relativePoint, x, y)
+end
+
+-- Edit Mode's SetScale override, called from our code, re-anchors the system
+-- through its SetPoint override and re-runs the managed frame layout; the
+-- saved C method only scales, leaving the anchor offsets as they are.
+-- keepPosition: an Edit Mode system's offsets are rescaled as the override
+-- does it, so the system keeps its spot (Edit Mode's save reads a moved
+-- system's anchor back from its geometry times its scale).
+function EllesmereUI.SetFrameScale(frame, scale, keepPosition)
+    local setScale = frame.SetScaleBase
+    if not setScale then
+        frame:SetScale(scale)
+        return
+    end
+    local old = keepPosition and frame:GetScale()
+    setScale(frame, scale)
+    if not old then return end
+    local new = frame:GetScale()
+    if issecretvalue(old) or issecretvalue(new) or new == old or new <= 0 then return end
+    local k = old / new
+    for i = 1, frame:GetNumPoints() do
+        local p, rel, rp, x, y = frame:GetPoint(i)
+        if not (issecretvalue(p) or issecretvalue(rel) or issecretvalue(rp)
+                or issecretvalue(x) or issecretvalue(y)) then
+            EllesmereUI.SetFramePoint(frame, p, rel, rp, x * k, y * k)
+        end
+    end
+end
+
+-- Edit Mode's Hide override on a system sized to its children (a layout
+-- frame: the party, raid and boss frame containers), called from our code,
+-- first breaks the snap of every system snapped to it, re-anchoring each one
+-- and writing it into the active layout under our taint. This hides through
+-- the saved C method instead, so those stay snapped (Edit Mode's own save
+-- still breaks snaps to party, raid and boss frames); any other frame uses
+-- its own Hide. A protected frame still hides only out of combat. Show has
+-- no such override (a plain Show undoes this), except on Blizzard's action
+-- bars, whose overrides keep their own shown state, which this leaves as it
+-- was.
+function EllesmereUI.HideFrame(frame)
+    local hide = frame.HideBase or frame.Hide
+    hide(frame)
+end
+
+-------------------------------------------------------------------------------
+--  Frame placers: keep an unprotected Blizzard frame that Blizzard keeps
+--  re-anchoring (a bottom managed column frame such as GroupLootContainer) at
+--  a spot of ours, with nothing written onto the frame.
+--
+--  EllesmereUI.SetFramePlacer(frame, owner, fn): owners are tried in the fixed
+--  order of PLACER_RANKS, "shifter" (the player's saved spot) before "cdm" (an
+--  automatic spot); a new owner adds its rank there. fn(frame, point,
+--  relativeTo, relativePoint, x, y) gets the anchor Blizzard last set (an
+--  anchor to the parent comes with the parent) and returns the anchor to use,
+--  nil to pass to the next owner, or false to pass and be asked again when
+--  combat ends (an input it reads is secret); nil from every owner keeps
+--  Blizzard's anchor. fn = nil removes the owner, and the last owner leaving
+--  puts Blizzard's anchor back. Returns false, registering nothing, for an
+--  unknown owner, a value that is not a frame, an fn that is not a function,
+--  or a protected, forbidden or anchoring-restricted frame (a secret answer
+--  counts as yes).
+--  EllesmereUI.RequestFramePlacement(frame): place it again after a saved
+--  spot or another input of an owner changed.
+--
+--  Post-hooks installed at the frame's first registration watch writes from
+--  anyone but us. A SetPoint or SetAllPoints marks the frame and a
+--  ClearAllPoints does not (Blizzard re-anchors through SetPoint when it
+--  shows the frame again). A frame in a managed column (its layoutParent)
+--  is placed as the column's Layout returns, whatever ran it, so Blizzard's
+--  anchor is never drawn: one post-hook per column, which costs one check
+--  while nothing is marked. One hidden frame of ours places every frame
+--  still marked from its OnUpdate (the same frame when Blizzard re-anchors
+--  from an event, one frame later when it does so from a timer, an
+--  animation or another OnUpdate). The anchor such a write leaves is
+--  Blizzard's new one, unless the frame then has more than one point: those
+--  anchors stay, except that a point a SetPoint adds beside ours (no clear
+--  first) puts ours back on alone. A placement or hand-back that cannot run
+--  (the frame refused at that moment, or Blizzard's anchor secret) runs
+--  again when combat ends. Placer frames are unprotected, so placements run
+--  in combat too: the refusal check before every write stands in for a
+--  combat gate. An owner fn must not register or remove placers.
+-------------------------------------------------------------------------------
+do
+    local PLACER_RANKS = { shifter = 1, cdm = 2 }
+    local NUM_PLACER_RANKS = 0
+    for _, rank in pairs(PLACER_RANKS) do
+        if rank > NUM_PLACER_RANKS then NUM_PLACER_RANKS = rank end
+    end
+    local placerStates = setmetatable({}, { __mode = "k" })
+    local PlacerRetry
+
+    local function PlacerRefused(frame)
+        local v = frame:IsForbidden()
+        if issecretvalue(v) or v then return true end
+        v = frame:IsProtected()
+        if issecretvalue(v) or v then return true end
+        if frame.IsAnchoringRestricted then
+            v = frame:IsAnchoringRestricted()
+            if issecretvalue(v) or v then return true end
+        end
+        return false
+    end
+
+    local function PlacerSet(frame, point, relativeTo, relativePoint, x, y)
+        EllesmereUI.ClearFramePoints(frame)
+        EllesmereUI.SetFramePoint(frame, point, relativeTo, relativePoint, x, y)
+    end
+
+    -- False when SetPoint refused the anchor (an anchor loop): the frame was
+    -- left with no points, and the error goes to the error handler. Either
+    -- way no point of anyone else is left on the frame.
+    local function PlacerApply(frame, st, point, relativeTo, relativePoint, x, y)
+        st.applying = true
+        local ok, err = pcall(PlacerSet, frame, point, relativeTo, relativePoint, x, y)
+        st.applying, st.over = false, false
+        if not ok then geterrorhandler()(err) end
+        return ok
+    end
+
+    -- Runs the state again when combat ends (one keyed entry in the core's
+    -- combat queue, however many states wait).
+    local function PlacerOwe(st)
+        st.owed = true
+        EllesmereUI.CombatQueue.Defer("FramePlacerRetry", PlacerRetry)
+    end
+
+    local function PlacerResolve(frame, st)
+        st.owed = false
+        if st.count == 0 and not st.placed then return end
+        if PlacerRefused(frame) then
+            PlacerOwe(st)
+            return
+        end
+        if st.count == 0 then
+            -- A hand-back refused earlier: our anchor is still on the frame.
+            st.placed = false
+            PlacerApply(frame, st, st.bp, st.br, st.brp, st.bx, st.by)
+            return
+        end
+        if not st.placed then
+            -- The frame holds Blizzard's anchor: kept for the owners and the hand-back.
+            if frame:GetNumPoints() ~= 1 then return end
+            local p, r, rp, x, y = frame:GetPoint(1)
+            if issecretvalue(p) or issecretvalue(r) or issecretvalue(rp)
+               or issecretvalue(x) or issecretvalue(y) then
+                PlacerOwe(st)
+                return
+            end
+            if r == nil then
+                -- An anchor to the parent can read back with no relative
+                -- frame; an explicit nil would anchor to the screen instead.
+                r = frame:GetParent()
+                if issecretvalue(r) then
+                    PlacerOwe(st)
+                    return
+                end
+            end
+            st.bp, st.br, st.brp, st.bx, st.by = p, r, rp, x, y
+        end
+        local fns = st.fns
+        local later = false
+        local ok, p, r, rp, x, y
+        for rank = 1, NUM_PLACER_RANKS do
+            local fn = fns[rank]
+            if fn then
+                -- An owner that errors passes, so it never stops the others.
+                ok, p, r, rp, x, y = pcall(fn, frame, st.bp, st.br, st.brp, st.bx, st.by)
+                if not ok then
+                    geterrorhandler()(p)
+                    p = nil
+                elseif p == false then
+                    later = true
+                end
+                if p then break end
+            end
+        end
+        if later then PlacerOwe(st) end
+        if p then
+            if st.placed and not st.over and p == st.ap and r == st.ar
+               and rp == st.arp and x == st.ax and y == st.ay then
+                return
+            end
+            if PlacerApply(frame, st, p, r, rp, x, y) then
+                st.placed = true
+                st.ap, st.ar, st.arp, st.ax, st.ay = p, r, rp, x, y
+                return
+            end
+        elseif later or not st.placed then
+            -- Nothing placed yet, or an owner decides after combat: the
+            -- anchor on the frame stays.
+            return
+        end
+        -- No owner wants a spot, or the owner's anchor was refused.
+        st.placed = false
+        PlacerApply(frame, st, st.bp, st.br, st.brp, st.bx, st.by)
+    end
+
+    -- Shown exactly while a state is marked, so its OnUpdate runs only in a
+    -- frame where one was.
+    local placerDriver = CreateFrame("Frame")
+    placerDriver:Hide()
+
+    local function PlacerFlush()
+        placerDriver:Hide()
+        for frame, st in pairs(placerStates) do
+            if st.dirty then
+                st.dirty = false
+                PlacerResolve(frame, st)
+            end
+        end
+    end
+    placerDriver:SetScript("OnUpdate", PlacerFlush)
+
+    -- Post-hook of a managed column's Layout. Whatever runs the layout (an
+    -- event, a timer, an animation that ends, the column's own OnUpdate), the
+    -- frames it re-anchored are placed as it returns, before anything draws.
+    local function PlacerSettle()
+        if placerDriver:IsShown() then PlacerFlush() end
+    end
+    local placerColumns = {}
+
+    local function PlacerMark(st)
+        st.dirty = true
+        placerDriver:Show()
+    end
+
+    PlacerRetry = function()
+        for _, st in pairs(placerStates) do
+            if st.owed then PlacerMark(st) end
+        end
+    end
+
+    local function PlacerNewState(frame)
+        local st = { fns = {}, count = 0 }
+        placerStates[frame] = st
+        -- A write from anyone but us (ours run with st.applying set) that
+        -- replaces or clears our anchor drops it, owners or not, so a waiting
+        -- hand-back has nothing left to do; a SetPoint or SetAllPoints also
+        -- asks for a placement while there are owners. A SetPoint on another
+        -- point than ours leaves our anchor on the frame beside it (st.over):
+        -- it stays ours, and the next placement or hand-back leaves one point.
+        hooksecurefunc(frame, "SetPoint", function(_, point)
+            if st.applying then return end
+            if st.placed and point ~= st.ap then
+                st.over = true
+            else
+                st.placed, st.over = false, false
+            end
+            if st.count > 0 then PlacerMark(st) end
+        end)
+        hooksecurefunc(frame, "SetAllPoints", function()
+            if st.applying then return end
+            st.placed, st.over = false, false
+            if st.count > 0 then PlacerMark(st) end
+        end)
+        hooksecurefunc(frame, "ClearAllPoints", function()
+            if not st.applying then st.placed, st.over = false, false end
+        end)
+        local column = frame.layoutParent
+        if type(column) == "table" and type(column.Layout) == "function"
+           and not placerColumns[column] then
+            placerColumns[column] = true
+            hooksecurefunc(column, "Layout", PlacerSettle)
+        end
+        return st
+    end
+
+    function EllesmereUI.SetFramePlacer(frame, owner, fn)
+        local rank = PLACER_RANKS[owner]
+        if not rank or type(frame) ~= "table" or not frame.IsForbidden
+           or (fn ~= nil and type(fn) ~= "function") then
+            return false
+        end
+        local st = placerStates[frame]
+        if fn then
+            if st and st.fns[rank] == fn then return true end
+            if PlacerRefused(frame) then return false end
+            st = st or PlacerNewState(frame)
+            if not st.fns[rank] then st.count = st.count + 1 end
+            st.fns[rank] = fn
+            PlacerMark(st)
+            return true
+        end
+        if not (st and st.fns[rank]) then return true end
+        st.fns[rank] = nil
+        st.count = st.count - 1
+        if st.count > 0 then
+            PlacerMark(st)
+        elseif st.placed then
+            -- placed still means the frame holds our anchor (a write that
+            -- replaces or clears it drops placed), so Blizzard's recorded
+            -- anchor is current. A frame refused right now keeps our anchor,
+            -- still marked as ours, until the hand-back can run.
+            if PlacerRefused(frame) then
+                PlacerOwe(st)
+            else
+                st.placed = false
+                PlacerApply(frame, st, st.bp, st.br, st.brp, st.bx, st.by)
+            end
+        end
+        return true
+    end
+
+    function EllesmereUI.RequestFramePlacement(frame)
+        local st = placerStates[frame]
+        if st and st.count > 0 then PlacerMark(st) end
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -472,7 +811,7 @@ end
 -------------------------------------------------------------------------------
 EllesmereUI.FACTION_ART = {
     pvp       = { atlas = "UI-HUD-UnitFrame-Player-PVP-%sIcon" },
-    honor     = { atlas = "honorsystem-portrait-%s", lower = true },
+    honor     = { atlas = "honorsystem-portrait-%s", lower = true, badge = true },
     poi       = { atlas = "poi-%s", lower = true },
     classic   = { file = "Interface\\TargetingFrame\\UI-PVP-%s", coords = { 0, 0.65625, 0, 0.65625 } },
     banner    = { file = "Interface\\Icons\\INV_BannerPVP_0%s", num = true },
@@ -484,7 +823,70 @@ EllesmereUI.FACTION_ART_LABELS = {
     pvp = "PvP Emblem", honor = "Honor Portrait", poi = "Map Flag", classic = "Classic Banner",
     banner = "Banner Icon", honoricon = "Honor Icon", friends = "Friends Crest",
 }
-function EllesmereUI.SetFactionArt(tex, style, faction)
+-- Honor Portrait is an empty hexagon; the unit's honor badge is drawn on top (30 on 50).
+-- Returns that badge's file id, or nil. Callers pass it to SetFactionArt and memoize it.
+local HONOR_BADGE_RATIO = 30 / 50
+local honorBadgeFiles = {}
+function EllesmereUI.FactionBadgeFor(style, unit)
+    local art = EllesmereUI.FACTION_ART[style]
+    if not (art and art.badge and unit) then return nil end
+    local level = UnitHonorLevel and UnitHonorLevel(unit)
+    if issecretvalue(level) or not level or level <= 0 then return nil end
+    local file = honorBadgeFiles[level]
+    if file == nil then
+        local info = C_PvP and C_PvP.GetHonorRewardInfo and C_PvP.GetHonorRewardInfo(level)
+        file = (info and info.badgeFileDataID) or false
+        honorBadgeFiles[level] = file
+    end
+    return file or nil
+end
+
+-- The badge sits on a frame that follows the faction texture (textures cannot be parents);
+-- the texture's Show/Hide/alpha/desaturation are mirrored onto it.
+local function GetBadgeHost(tex)
+    local host = tex._honorBadgeHost
+    if host then return host end
+    local par = tex:GetParent()
+    host = CreateFrame("Frame", nil, par)
+    host:SetAllPoints(tex)
+    host:SetFrameLevel(par:GetFrameLevel() + 1)
+    host:Hide()
+    host:SetAlpha(tex:GetAlpha())
+    local icon = host:CreateTexture(nil, "OVERLAY")
+    icon:SetPoint("CENTER")
+    icon:SetDesaturated(tex:IsDesaturated())
+    host.icon = icon
+    host:SetScript("OnSizeChanged", function(_, w)
+        local s = w * HONOR_BADGE_RATIO
+        icon:SetSize(s, s)
+    end)
+    hooksecurefunc(tex, "Hide", function() host:Hide() end)
+    hooksecurefunc(tex, "Show", function() if host.wanted then host:Show() end end)
+    hooksecurefunc(tex, "SetAlpha", function(_, a) host:SetAlpha(a) end)
+    hooksecurefunc(tex, "SetDesaturated", function(_, d) icon:SetDesaturated(d) end)
+    tex._honorBadgeHost = host
+    return host
+end
+
+local function SetBadge(tex, file)
+    local host = tex._honorBadgeHost
+    if not file then
+        if host then host.wanted = false; host:Hide() end
+        return
+    end
+    host = host or GetBadgeHost(tex)
+    host.icon:SetTexture(file)
+    local w = tex:GetWidth()
+    if w and w > 0 then
+        local s = w * HONOR_BADGE_RATIO
+        host.icon:SetSize(s, s)
+    end
+    host.wanted = true
+    if tex:IsShown() then host:Show() end
+end
+
+function EllesmereUI.SetFactionArt(tex, style, faction, badgeFile)
+    SetBadge(tex, badgeFile)
     local art = EllesmereUI.FACTION_ART[style] or EllesmereUI.FACTION_ART.pvp
     -- The resolved atlas or file name is built once per style and faction and kept
     -- on the style's entry (art.Horde / art.Alliance).
@@ -509,4 +911,295 @@ function EllesmereUI.SetFactionArt(tex, style, faction)
         local c = art.coords
         if c then tex:SetTexCoord(c[1], c[2], c[3], c[4]) else tex:SetTexCoord(0, 1, 0, 1) end
     end
+end
+
+-------------------------------------------------------------------------------
+--  Secret values (12.1): the one test every module uses, and the string reader
+--  that gives back a readable, non-empty string or nil. Hot paths import both
+--  as locals; no module keeps a copy.
+-------------------------------------------------------------------------------
+local issecretvalue = issecretvalue or function() return false end
+function EllesmereUI.IsSecret(v)
+    return v ~= nil and issecretvalue(v)
+end
+function EllesmereUI.PlainString(v)
+    -- The secrecy test comes first: comparing a secret string raises.
+    if type(v) == "string" and not issecretvalue(v) and v ~= "" then return v end
+    return nil
+end
+
+-------------------------------------------------------------------------------
+--  Guard table of a split module: the main file's names that its part files
+--  re-import. setters maps Set<Name> to a list in t; Set<Name>(v) hands v to
+--  every function in that list, and a function added to the list after a
+--  Set<Name> call gets the last value at once (registered as
+--  list[#list + 1] = fn: table.insert sets raw and skips that). broken starts
+--  false (a file chain that guards on t.last ignores it). Reading a name the
+--  table lacks raises at the reader; label names the owner in that message
+--  (default "ns"). The parent's own chain calls the private copy on EUI_NS, so
+--  the parent's namespace never passes through a public slot.
+-------------------------------------------------------------------------------
+do
+    local function NewFanOut(list)
+        local has, cur = false, nil
+        setmetatable(list, { __newindex = function(l, i, fn)
+            rawset(l, i, fn)
+            if has then fn(cur) end
+        end })
+        return function(v)
+            has, cur = true, v
+            for i = 1, #list do list[i](v) end
+        end
+    end
+
+    local function NewInternals(ns, field, t, setters, label)
+        local name = (label or "ns") .. "." .. field
+        if setters then
+            for setter, listName in pairs(setters) do
+                local list = t[listName]
+                if type(list) ~= "table" then
+                    error(name .. ": " .. setter .. " has no list " .. tostring(listName), 2)
+                end
+                t[setter] = NewFanOut(list)
+            end
+        end
+        t.broken = false
+        ns[field] = setmetatable(t, { __index = function(_, k)
+            error(name .. " has no entry " .. tostring(k), 2)
+        end })
+        return ns[field]
+    end
+    EUI_NS.NewInternals = NewInternals
+    EllesmereUI.NewInternals = NewInternals
+end
+
+-------------------------------------------------------------------------------
+--  Detached portrait click buttons (Unit Frames and Party Frames)
+--  A detached portrait floats outside its unit button, so clicks on it fall
+--  through to the world. While a module's Clickable Portrait is on, a second
+--  secure unit button for the same unit covers the portrait, set up like the
+--  owner's own: target on left-click, the secure menu on right-click, and
+--  handed to click-casting, so Blizzard's native click casting, EUI's engine
+--  and click-cast addons bind it as they bind the owner. Hover replays the
+--  owner's own hover work through the module's callbacks.
+--  The overlay is parented to the owner and anchored to it by measured
+--  offsets, never to the backdrop: a protected frame anchored to the backdrop
+--  would lock the backdrop's anchors in combat. Built on the first wanted
+--  sync; out of combat only (in combat it re-runs at combat end).
+--    owner : the unit button the portrait belongs to
+--    cfg   : one static table per module:
+--      wanted(owner)   -> true while the overlay should cover the portrait
+--      backdrop(owner) -> the portrait backdrop frame
+--      onEnter(owner), onLeave(owner) -> the owner's own hover work
+--      register(btn)   -> hands the overlay to click-casting
+--      parentUnit      -> true: the unit resolves through the owner (header
+--                         buttons, whose unit moves in combat); else the
+--                         owner's unit attribute is copied once
+--  Returns true while the owner wants the overlay (placed, or waiting for a
+--  rect); nil when it does not, and in combat.
+-------------------------------------------------------------------------------
+do
+    local overlays = setmetatable({}, { __mode = "k" })  -- owner -> overlay
+    local pending = setmetatable({}, { __mode = "k" })   -- owner -> cfg, awaiting a rect
+    local placed = setmetatable({}, { __mode = "k" })    -- overlay -> its last offsets and size
+
+    local function OverlayEnter(self)
+        local cfg = self._euiPtCfg
+        if cfg and cfg.onEnter then cfg.onEnter(self:GetParent()) end
+    end
+    local function OverlayLeave(self)
+        local cfg = self._euiPtCfg
+        if cfg and cfg.onLeave then cfg.onLeave(self:GetParent()) end
+    end
+
+    local Sync
+    Sync = function(owner, cfg)
+        local btn = overlays[owner]
+        if not btn and not cfg.wanted(owner) then return end
+        if InCombatLockdown() then
+            EllesmereUI.CombatQueue.Defer(owner, function() Sync(owner, cfg) end)
+            return
+        end
+        if not cfg.wanted(owner) then
+            pending[owner] = nil
+            btn:Hide()
+            return
+        end
+        if not btn then
+            local name = owner:GetName()
+            btn = CreateFrame("Button", name and (name .. "PortraitClick"), owner, "SecureUnitButtonTemplate")
+            if cfg.parentUnit then
+                btn:SetAttribute("useparent-unit", true)
+            else
+                btn:SetAttribute("unit", owner:GetAttribute("unit"))
+            end
+            btn:SetAttribute("*type1", "target")
+            btn:SetAttribute("toggleForVehicle", true)
+            btn:RegisterForClicks("AnyUp")
+            EllesmereUI.AttachSecureUnitMenu(btn)
+            btn._euiPtCfg = cfg
+            btn:HookScript("OnEnter", OverlayEnter)
+            btn:HookScript("OnLeave", OverlayLeave)
+            overlays[owner] = btn
+            if cfg.register then cfg.register(btn) end
+            -- An owner never shown yet has no rect to measure: measure on its first show.
+            owner:HookScript("OnShow", function(o)
+                local c = pending[o]
+                if c then Sync(o, c) end
+            end)
+        end
+        local bd = cfg.backdrop(owner)
+        local fl, ft = owner:GetLeft(), owner:GetTop()
+        local bl, bt = bd:GetLeft(), bd:GetTop()
+        if not (fl and ft and bl and bt) then
+            pending[owner] = cfg
+            btn:Hide()
+            return true
+        end
+        pending[owner] = nil
+        -- Placed again only when the portrait moved or resized against the owner.
+        local k = bd:GetEffectiveScale() / owner:GetEffectiveScale()
+        local x, y = bl * k - fl, bt * k - ft
+        local w, h = bd:GetWidth() * k, bd:GetHeight() * k
+        local r = placed[btn]
+        if not r then r = {}; placed[btn] = r end
+        if r.x ~= x or r.y ~= y or r.w ~= w or r.h ~= h then
+            r.x, r.y, r.w, r.h = x, y, w, h
+            btn:ClearAllPoints()
+            btn:SetPoint("TOPLEFT", owner, "TOPLEFT", x, y)
+            btn:SetSize(w, h)
+        end
+        -- The layer is read back from the overlay: a strata change on the owner moves it too.
+        local strata = bd:GetFrameStrata()
+        if btn:GetFrameStrata() ~= strata then btn:SetFrameStrata(strata) end
+        local level = bd:GetFrameLevel() + 1
+        if btn:GetFrameLevel() ~= level then btn:SetFrameLevel(level) end
+        btn:Show()
+        return true
+    end
+    EllesmereUI.SyncPortraitClick = Sync
+end
+
+-------------------------------------------------------------------------------
+--  Full Craft Time (player cast bars). A repeat craft queues the rest of the
+--  batch behind the current cast. SetCraftBatch fills f._craftExtra (seconds
+--  queued after this cast), the batch total and the " (n/N)" name suffix, or
+--  clears them when on is false or the cast is not part of a batch. Done
+--  counts finished casts so the total stays fixed; a re-read of the same cast
+--  (settings refresh mid-cast) keeps the batch as is.
+-------------------------------------------------------------------------------
+do
+    local floor, format = math.floor, string.format
+
+    function EllesmereUI.SetCraftBatch(f, on, spellID, castID, castDur)
+        local getLeft = C_TradeSkillUI and C_TradeSkillUI.GetRemainingRecasts
+        if not (on and getLeft) then
+            f._craftExtra, f._craftLeft = nil, nil
+            return
+        end
+        local left = getLeft() or 0
+        if castID and castID == f._craftCast then
+            left = f._craftLeft or left
+        elseif f._craftLeft and spellID == f._craftSpell and left == f._craftLeft - 1 then
+            f._craftDone = f._craftDone + 1
+        else
+            f._craftDone = 0
+        end
+        f._craftLeft, f._craftSpell, f._craftCast = left, spellID, castID
+        if left == 0 and f._craftDone == 0 then
+            f._craftExtra = nil
+            return
+        end
+        local done = f._craftDone
+        local total = floor((done + 1 + left) * castDur)
+        f._craftExtra = left * castDur
+        f._craftTotal = total
+        f._craftTotalSuffix = format(" / %d:%02d", floor(total / 60), total % 60)
+        f._craftCountSuffix = format(" (%d/%d)", done + 1, done + 1 + left)
+        f._craftSecs = nil
+    end
+
+    -- Whole batch left (or elapsed / total), repainted once per second.
+    function EllesmereUI.SetCraftTimerText(f, fs, remaining, totalMode)
+        local left = (remaining > 0 and remaining or 0) + f._craftExtra
+        local secs = floor(totalMode and (f._craftTotal - left) or left)
+        if secs < 0 then secs = 0 end
+        if secs ~= f._craftSecs then
+            f._craftSecs = secs
+            fs:SetText(format("%d:%02d", floor(secs / 60), secs % 60)
+                .. (totalMode and f._craftTotalSuffix or ""))
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
+--  Show Full Spell Name (cast bars). Shrinks the spell name's font just enough
+--  for the whole name to fit the FontString's set width, and puts it back at
+--  baseSize for names that already fit. Measured on a private FontString that
+--  only ever holds clean text, so the cast text's own (possibly secret) metrics
+--  are never read. A secret name stays at baseSize and truncates as before.
+-------------------------------------------------------------------------------
+do
+    local floor = math.floor
+    local MIN_SIZE = 6
+    local measure
+
+    -- Width of a clean string in fs's font face (at size, or fs's own size).
+    local function Measure(fs, str, size)
+        local font, cur, flags = fs:GetFont()
+        if not font then return 0 end
+        if not measure then
+            measure = UIParent:CreateFontString(nil, "BACKGROUND")
+            measure:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 100, -100)
+            measure:SetAlpha(0)
+        end
+        measure:SetFont(font, size or cur, flags)
+        measure:SetText(str)
+        return measure:GetUnboundedStringWidth() or 0
+    end
+    EllesmereUI.MeasureCastText = Measure
+
+    function EllesmereUI.FitCastName(fs, str, baseSize)
+        local font, cur, flags = fs:GetFont()
+        if not font then return end
+        local size = baseSize
+        local room = fs:GetWidth()
+        if str and not issecretvalue(str) and str ~= ""
+           and room and not issecretvalue(room) and room > 1 then
+            local w = Measure(fs, str, baseSize)
+            -- 1px slack: glyph hinting can round a scaled string up a pixel.
+            if w and w > room - 1 then
+                size = floor(baseSize * (room - 1) / w * 2) / 2
+                if size < MIN_SIZE then size = MIN_SIZE end
+            end
+        end
+        if cur ~= size then fs:SetFont(font, size, flags) end
+    end
+end
+
+-------------------------------------------------------------------------------
+--  Blizzard's animated rest icon (PlayerFrame.xml PlayerRestLoop) on `tex`:
+--  the flipbook atlas, a 6 x 7 grid of 42 frames, looping while `frame` is
+--  shown. MUST use SetAtlas: a raw SetTexture slices the sheet's padding into
+--  the FlipBook. `duration` is one loop in seconds (Blizzard: 1.5). Build once
+--  per frame of ours: it sets the frame's OnShow and OnHide scripts.
+-------------------------------------------------------------------------------
+function EllesmereUI.AddRestFlipbook(frame, tex, duration)
+    tex:SetAtlas("UI-HUD-UnitFrame-Player-Rest-Flipbook")
+    local anim = frame:CreateAnimationGroup()
+    anim:SetLooping("REPEAT")
+    if anim.SetToFinalAlpha then anim:SetToFinalAlpha(true) end
+    local flip = anim:CreateAnimation("FlipBook")
+    flip:SetTarget(tex)
+    flip:SetDuration(duration or 1.5)
+    flip:SetOrder(1)
+    if flip.SetSmoothing then flip:SetSmoothing("NONE") end
+    flip:SetFlipBookRows(7)
+    flip:SetFlipBookColumns(6)
+    flip:SetFlipBookFrames(42)
+    flip:SetFlipBookFrameWidth(0)
+    flip:SetFlipBookFrameHeight(0)
+    frame:SetScript("OnShow", function() anim:Play() end)
+    frame:SetScript("OnHide", function() anim:Stop() end)
+    return anim
 end

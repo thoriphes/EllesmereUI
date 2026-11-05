@@ -91,8 +91,10 @@ every other module that can't be overridden.
 
 ## Reference
 
-`EllesmereUI.PLUGIN_API_VERSION` is `1`. The API only ever grows; existing
-functions and fields will not change.
+`EllesmereUI.PLUGIN_API_VERSION` is `4`. The API only ever grows; existing
+functions and fields will not change. Version 2 added
+`EllesmereUI.GetCDMIconsForSpell`, version 3 `EllesmereUI.RequestCDMRepopulate`,
+version 4 `EllesmereUI.GetCDMRepopulateStatus`.
 
 ### `EllesmereUI.RegisterPlugin(id, spec)` -> `boolean`
 
@@ -152,6 +154,114 @@ EllesmereUI:InvalidateModulePageCache(key)  -- drop your cached pages
 
 `true` while the global search's hidden pre-build pass is running one of your
 page builders (see [Search](#search)).
+
+### `EllesmereUI.GetCDMIconsForSpell(spellID [, out])` -> `table`
+
+The Cooldown Manager icons currently showing `spellID`, on every CDM bar,
+including spells the player added that Blizzard's Cooldown Manager doesn't
+track. An icon matches when it holds the spell, its base spell or one of its
+overrides, the same way the rotation helper highlight finds its icon. Icons
+that are not shown are left out. A bar hidden by its visibility settings, or
+while the player is in a vehicle, fades its icons out instead of hiding them,
+so those icons are still returned.
+
+`out` is optional: pass a table of your own to have it wiped and filled
+instead of getting a new one. Each call walks every icon on every CDM bar, so
+call it when the spell you track changes, not every frame. The function
+exists only while the Cooldown Manager module is loaded, so test for it first:
+
+```lua
+local icons = {}
+if EllesmereUI.GetCDMIconsForSpell then
+    for _, icon in ipairs(EllesmereUI.GetCDMIconsForSpell(spellID, icons)) do
+        -- show your own overlay on icon
+    end
+end
+```
+
+Some of these icons are EUI's own frames and some are Blizzard's Cooldown
+Manager frames that EUI shows on its bars, so treat every icon as read-only:
+
+- Draw on a frame of your own, created as a child of the icon
+  (`CreateFrame("Frame", nil, icon)`) so it moves, fades and hides with it.
+  Give it a frame level above the icon's, which carries its own cooldown,
+  border and glow layers.
+- Keep anything you track per icon in a table of your own, keyed by the
+  icon. Never write fields onto an icon: on Blizzard's frames that spreads
+  taint into Blizzard's code.
+- Don't reparent, hide, move, resize or hook an icon, and don't hand one to
+  code that does. Glow libraries usually store their state on the frame they
+  are given, so glow your own frame, never the icon.
+- Look the icons up again rather than keeping them: bars reuse their icons
+  for other spells when they rebuild, so hide your overlay on any icon the
+  latest call didn't return.
+
+### `EllesmereUI.RequestCDMRepopulate([specIDs])` -> `boolean`
+
+For profile installers that set up Blizzard's Cooldown Manager layouts. EUI's
+Cooldown Manager keeps its own arrangement of Blizzard's spells, so a Blizzard
+layout imported or switched to later is not mirrored onto EUI's bars by
+itself. This queues the work of the **Repopulate from Blizzard CDM** button:
+EUI's bars drop every spell that came from Blizzard's Cooldown Manager (the
+spells a player added in EUI, trinkets and presets stay) and are filled again
+from the active Blizzard layout.
+
+The character's racial is placed as well. Blood Fury and Berserking go to the
+end of the Cooldowns bar; Will of the Forsaken, War Stomp, Will to Survive,
+Stoneform, Shadowmeld, Escape Artist, Read Ley Line and Skysight go to the end
+of the Utility bar. Any other racial goes where your Blizzard layout puts it,
+and if the layout doesn't track it, it stays where the EUI profile had it.
+
+`specIDs` is optional: one spec ID or a list of them, as the game reports them
+(`C_SpecializationInfo.GetSpecializationInfo`); leave it out for every spec of
+the player's class. The request is kept for the current character only. Each
+requested spec is repopulated the next time it is active, once Blizzard's
+Cooldown Manager has loaded its saved layouts and finished building its icons
+after a login, reload or spec change, and never during combat (it waits for
+combat to end). Returns `true` once queued, `false` when nothing valid was
+given.
+
+Call it after your installer has written and activated its Blizzard layouts,
+right before your own `ReloadUI()`: the bars are filled from whichever Blizzard
+layout is active when the repopulate runs. The function exists only while the
+Cooldown Manager module is loaded, so test for it first:
+
+```lua
+-- after importing and activating the Blizzard Cooldown Manager layouts
+if EllesmereUI.RequestCDMRepopulate then
+    EllesmereUI.RequestCDMRepopulate()   -- every spec of this class
+end
+ReloadUI()
+```
+
+### `EllesmereUI.GetCDMRepopulateStatus([specID])` -> `status, time, layoutID`
+
+How a repopulate you queued with `EllesmereUI.RequestCDMRepopulate` went, for
+the current character. `specID` is optional: a spec ID as the game reports it,
+or leave it out for the character's current spec. It returns:
+
+- `"pending"` while the request is still queued: that spec has not been active
+  and settled since you asked, or Blizzard has not loaded its saved layouts
+  yet, or combat is holding it.
+- `"done", time, layoutID` once the queued repopulate has finished. `time` is
+  when it ran (`time()`), and `layoutID` is the Blizzard Cooldown Manager
+  layout that was active then, the one EUI's bars were filled from (`nil` when
+  no saved layout was active). The record stays until your next request for
+  that spec.
+- `nil` when nothing was requested for that spec, or the run did not finish.
+
+After your reload the repopulate runs a moment after login, once Blizzard has
+loaded its layouts and built its icons, so check later than `PLAYER_LOGIN`
+(for example when your installer's window opens again):
+
+```lua
+if EllesmereUI.GetCDMRepopulateStatus then
+    local status, ranAt, layoutID = EllesmereUI.GetCDMRepopulateStatus()
+    if status == "done" and layoutID == myLayoutID then
+        -- EUI's bars were filled from your layout
+    end
+end
+```
 
 ## Building pages
 

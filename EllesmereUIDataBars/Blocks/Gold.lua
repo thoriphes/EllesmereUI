@@ -39,50 +39,37 @@ local goldLedger = { profit = 0, spent = 0, lastMoney = nil, tokenPrice = nil }
 local goldInstances = {}
 local goldEventFrame
 
-local function GoldCharKey()
-    return (UnitName("player") or "Unknown") .. "-" .. (GetRealmName() or "Unknown")
-end
+-- Account-level store shared with Bags: EllesmereUI.GetGoldLedger() (EllesmereUI_GoldLedger.lua).
+local GL = EllesmereUI.GetGoldLedger()
 
--- ACCOUNT-level, NOT the profile: the ledger lists the player's characters and
--- balances, and profiles get shared -- inside a profile it rides export
--- strings, so importers would see the exporter's alts and gold. Top-level in
--- EllesmereUIDB next to the Bags gold ledger; also survives profile switches.
-local function GoldStore()
-    -- Throwaway fallback if the parent DB is somehow absent: never assign the global here, or a pre-SavedVariables call could shadow the real table.
-    if type(EllesmereUIDB) ~= "table" then return {} end
-    local store = EllesmereUIDB.dataBarsGold
-    if type(store) ~= "table" then
-        store = {}
-        EllesmereUIDB.dataBarsGold = store
-    end
-    return store
-end
-
--- Drop a character the player no longer has (renamed, deleted, transferred); sits next to the writer so both mutations of the store are in one place.
+-- Drop a character the player no longer has (renamed, deleted, transferred).
 local function GoldForgetCharacter(key)
-    GoldStore()[key] = nil
+    GL.Forget(key)
     for gi in pairs(goldInstances) do gi:QueueRefresh() end
 end
 
-local function GoldSaveCurrentMoney(money)
-    local store = GoldStore()
-    local _, class = UnitClass("player")
-    store[GoldCharKey()] = { currentMoney = money, class = class, realm = GetRealmName(), name = UnitName("player") }
+-- Every character and the warbank figure gone, as the Bags gold button's reset
+-- does (a list holding characters that never update, from another account):
+-- this character and the warbank are recorded again at once, the others when
+-- they next log in.
+local function GoldResetAll()
+    GL.Reset()
+    GL.RecordCharacter()
+    GL.RecordWarband()
+    for gi in pairs(goldInstances) do gi:QueueRefresh() end
 end
 
-local function GoldLedgerUpdate()
-    local money = GetMoney()
-    -- Never let a secret into the ledger or the persisted store: every consumer (session math, roster threshold, sort, total) does arithmetic on it.
-    if (issecretvalue and issecretvalue(money)) or type(money) ~= "number" then
-        return
-    end
-    if goldLedger.lastMoney then
+-- Ledger callback, after it recorded. `money` is the live balance for character events (nil for warband ones or an unusable read, which the ledger refuses, so session math only ever sees numbers).
+local function GoldOnMoney(_, money)
+    if money and goldLedger.lastMoney then
         local diff = money - goldLedger.lastMoney
         if diff > 0 then goldLedger.profit = goldLedger.profit + diff
         elseif diff < 0 then goldLedger.spent = goldLedger.spent + (-diff) end
     end
-    goldLedger.lastMoney = money
-    GoldSaveCurrentMoney(money)
+    if money then goldLedger.lastMoney = money end
+    for gi in pairs(goldInstances) do
+        gi:QueueRefresh()
+    end
 end
 
 local function GoldOnEvent(_, event)
@@ -94,8 +81,6 @@ local function GoldOnEvent(_, event)
         end
         return
     end
-    -- BAG_UPDATE changes bag slots only, never money.
-    if event ~= "BAG_UPDATE" then GoldLedgerUpdate() end
     for gi in pairs(goldInstances) do
         gi:QueueRefresh()
     end
@@ -107,11 +92,12 @@ local function UpdateGoldEvents()
             goldEventFrame = CreateFrame("Frame")
             goldEventFrame:SetScript("OnEvent", GoldOnEvent)
         end
-        goldEventFrame:RegisterEvent("PLAYER_MONEY")
         goldEventFrame:RegisterEvent("BAG_UPDATE")
         goldEventFrame:RegisterEvent("TOKEN_MARKET_PRICE_UPDATED")
-    elseif goldEventFrame then
-        goldEventFrame:UnregisterAllEvents()
+        GL.Register("databars-gold", GoldOnMoney)
+    else
+        if goldEventFrame then goldEventFrame:UnregisterAllEvents() end
+        GL.Unregister("databars-gold")
     end
 end
 
@@ -173,7 +159,7 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
         ns.SetFont(goldText, fontSize, barCfg)
         ns.SetFont(bagText, fontSize, barCfg)
 
-        local money = GetMoney()
+        local money = GL.Money() or 0
         local ci = dg.coinIcons == true
         local ab = dg.abbreviate == true
         local fe = dg.forceEnglishUnits == true
@@ -327,7 +313,9 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
         local ci = D().coinIcons == true
         -- Show Tooltip Data checklist: each section defaults ON.
         local showSession = D().tipSession ~= false
-        local showChars   = D().tipCharacters ~= false
+        -- Account gold tracking (Bags options) only covers the character roster and warbank; the session record needs no ledger writes.
+        local tracking    = GL.IsTracking()
+        local showChars   = D().tipCharacters ~= false and tracking
         local showToken   = D().tipToken ~= false
         local ar, ag, ab = 1, 1, 1
         ns.Tip_Begin(goldButton)
@@ -346,39 +334,45 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
                 ns.Tip_AddDouble(label, ns.FormatMoney(abs(net), true, sm, ci), 0.6, 0.6, 0.6, nr, ngr, 0.3)
             end
         end
-        local charCount = 0
+        -- unlisted: stored characters the roster leaves out (the hint offers them all)
+        local charCount, unlisted = 0, 0
         if showChars then
-            local store = GoldStore()
+            local store = GL.Data().chars
             -- The list holds store KEYS ("Name-Realm"): a delete needs the key, and the entry itself does not carry one.
-            local selfKey = GoldCharKey()
+            local selfKey = GL.CharKey()
             -- Roster shows only balances above 10,000 gold (copper threshold) plus the live char; filtered chars still count into the total.
+            -- WoW Forever has no floor: its vanilla balances rarely come near one.
+            -- Hovered with Shift held, it shows every character, with no floor and no row cap, so any one can be removed.
+            local all = IsShiftKeyDown()
             local minCopper = 10000 * 10000
+            local noFloor = all or EllesmereUI.IS_FOREVER
             local total, charList = 0, {}
             for key, cdata in pairs(store) do
-                -- issecretvalue-first: a stored value may be secret, and even a truthiness test on one is an error.
-                local cm = cdata and cdata.currentMoney
-                if issecretvalue and issecretvalue(cm) then cm = nil end
+                -- The ledger only ever stores usable numbers (secrets are refused on write).
+                local cm = cdata and cdata.money
                 if cm then
-                    if cm > minCopper or key == selfKey then
+                    if noFloor or cm > minCopper or key == selfKey then
                         tinsert(charList, key)
+                    else
+                        unlisted = unlisted + 1
                     end
                     total = total + cm
                 end
             end
             tsort(charList, function(a, b)
-                return (store[a].currentMoney or 0) > (store[b].currentMoney or 0)
+                return (store[a].money or 0) > (store[b].money or 0)
             end)
             charCount = #charList
             if charCount > 0 then
                 ns.Tip_AddLine(" ")
-                ns.Tip_AddLine(GetRealmName() or "?", 0.5, 0.78, 1)
+                ns.Tip_AddLine(EllesmereUI.RealmGroupName() or "?", 0.5, 0.78, 1)
                 -- Cap roster rows so many alts cannot push the total and hint rows off
                 -- screen. Sorted richest first, so the cap keeps the highest balances; the
                 -- live character always shows; the total still sums EVERY stored character.
                 local maxRows, shownRows, hiddenRows = 10, 0, 0
                 for _, key in ipairs(charList) do
                     local char = store[key]
-                    if shownRows >= maxRows and key ~= selfKey then
+                    if not all and shownRows >= maxRows and key ~= selfKey then
                         hiddenRows = hiddenRows + 1
                     else
                         shownRows = shownRows + 1
@@ -387,7 +381,7 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
                             local cc = RAID_CLASS_COLORS[char.class]; cr, cg, cb = cc.r, cc.g, cc.b
                         end
                         local label = char.name or "?"
-                        local tokens = ns.MoneyTokens(char.currentMoney, sm, ci, true)
+                        local tokens = ns.MoneyTokens(char.money, sm, ci, true)
                         -- Every row gets the same hover affordance; the live character's
                         -- click is inert (it re-saves on every money event, so a delete returns instantly).
                         ns.Tip_AddClickableColumns(label, tokens, function(mouseButton)
@@ -401,21 +395,23 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
                 end
                 if hiddenRows > 0 then
                     ns.Tip_AddLine(format(L["PLUS_N_MORE"], hiddenRows), 0.6, 0.6, 0.6)
+                    unlisted = unlisted + hiddenRows
                 end
             end
             -- Warbank rides the character list as its final row, no separator: it reads as one more entry.
-            local bankType = 2
-            if Enum and Enum.BankType and Enum.BankType.Account then bankType = Enum.BankType.Account end
-            if C_Bank and C_Bank.FetchDepositedMoney then
-                local wbank = C_Bank.FetchDepositedMoney(bankType)
-                if issecretvalue and issecretvalue(wbank) then wbank = nil end
-                if wbank and wbank > 0 then
-                    ns.Tip_AddColumns(L["WARBANK"], ns.MoneyTokens(wbank, sm, ci, true), 1, 0.82, 0)
-                    total = total + wbank
-                end
+            -- Live when readable, otherwise the ledger's last known balance.
+            GL.RecordWarband()
+            local wband = GL.Data().warband
+            local wbank = wband and wband.money
+            if wbank and wbank > 0 then
+                ns.Tip_AddColumns(EllesmereUI.L("Warbank"), ns.MoneyTokens(wbank, sm, ci, true), 1, 0.82, 0)
+                total = total + wbank
             end
             ns.Tip_AddLine(" ")
             ns.Tip_AddDouble(L["TOTAL"], ns.FormatMoney(total, true, sm, ci), ar, ag, ab, 1, 1, 1)
+        elseif not tracking and D().tipCharacters ~= false then
+            ns.Tip_AddLine(" ")
+            ns.Tip_AddLine(EllesmereUI.L("Account gold tracking is disabled"), 0.6, 0.6, 0.6)
         end
         if showToken and goldLedger.tokenPrice and goldLedger.tokenPrice > 0 then
             ns.Tip_AddLine(" ")
@@ -425,8 +421,14 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
         ns.Tip_AddDouble(L["LEFT_CLICK"],       L["OPEN_BAGS"],       1, 1, 1, ar, ag, ab)
         ns.Tip_AddDouble(L["RIGHT_CLICK"],      L["OPEN_CURRENCIES"], 1, 1, 1, ar, ag, ab)
         ns.Tip_AddDouble(L["CTRL_RIGHT_CLICK"], L["RESET_SESSION"],   1, 1, 1, ar, ag, ab)
+        if showChars then
+            ns.Tip_AddDouble(L["CTRL_SHIFT_RIGHT_CLICK"], L["RESET_ALL_DATA"], 1, 1, 1, ar, ag, ab)
+        end
         if charCount > 1 then
             ns.Tip_AddDouble(L["CTRL_ALT_LEFT_CLICK"], L["REMOVE_CHARACTER"], 1, 1, 1, ar, ag, ab)
+        end
+        if unlisted > 0 then
+            ns.Tip_AddDouble(L["SHIFT_HOVER"], L["SHOW_EVERY_CHARACTER"], 1, 1, 1, ar, ag, ab)
         end
         ns.Tip_Show()
     end)
@@ -437,9 +439,21 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
         inst:Refresh()
     end)
     goldButton:SetScript("OnClick", function(_, button)
-        if IsControlKeyDown() and button == "RightButton" then
+        if button == "RightButton" and IsControlKeyDown() and IsShiftKeyDown() then
+            ns.Tip_Hide(goldButton)
+            EllesmereUI:ShowConfirmPopup({
+                title = "Reset Gold Data",
+                message = "Clear the gold of every character and the warbank? This character and the warbank are recorded again at once, the others when they next log in.",
+                confirmText = "Reset",
+                cancelText = "Cancel",
+                onConfirm = GoldResetAll,
+            })
+        elseif IsControlKeyDown() and button == "RightButton" then
             goldLedger.profit = 0; goldLedger.spent = 0
             inst:Refresh()
+            -- The tooltip stays up through the click: drawn again, it shows the
+            -- session at zero.
+            if mouseOver then goldButton:GetScript("OnEnter")(goldButton) end
         elseif button == "RightButton" then
             if C_CurrencyInfo and C_CurrencyInfo.OpenCurrencyPanel then
                 C_CurrencyInfo.OpenCurrencyPanel()
@@ -454,10 +468,9 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
     function inst:Enable()
         content:Show()
         if goldLedger.lastMoney == nil then
-            goldLedger.lastMoney = GetMoney()
+            goldLedger.lastMoney = GL.RecordCharacter()
             goldLedger.profit = 0
             goldLedger.spent = 0
-            GoldSaveCurrentMoney(goldLedger.lastMoney)
         end
         if C_WowTokenPublic and C_WowTokenPublic.UpdateMarketPrice then
             C_WowTokenPublic.UpdateMarketPrice()

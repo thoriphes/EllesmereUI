@@ -333,7 +333,7 @@ end
 -- lazily on first read after invalidation, reads are one lookup with zero allocation.
 -- Invalidation inputs: ApplyColorsToOUF (the universal "colours changed" chokepoint -- swatch
 -- edits, resets, mode toggles, profile switches) and RefreshDarkMode. READ-ONLY derived cache: worst failure is a stale colour.
-EllesmereUI._colorCache = { class = {}, power = {}, classResource = {}, resource = {}, classCustomized = {} }
+EllesmereUI._colorCache = { class = {}, classRaw = {}, power = {}, classResource = {}, resource = {}, classCustomized = {} }
 EllesmereUI._colorCacheDirty = true
 EllesmereUI._COLOR_WHITE = { r = 1, g = 1, b = 1 }
 EllesmereUI._powerBgDarkenFactor = 1
@@ -367,6 +367,7 @@ function EllesmereUI._RebuildColorCache()
     local dm = EllesmereUI.GetDarkModeDB()
     local cache = EllesmereUI._colorCache
     EllesmereUI._BuildColorPalette(cache.class,          EllesmereUI.CLASS_COLOR_MAP,               cc and cc.class,          dm and dm.classDarken)
+    EllesmereUI._BuildColorPalette(cache.classRaw,       EllesmereUI.CLASS_COLOR_MAP,               cc and cc.class,          0)
     EllesmereUI._BuildColorPalette(cache.power,          EllesmereUI.DEFAULT_POWER_COLORS,          cc and cc.power,          dm and dm.powerDarken)
     EllesmereUI._BuildColorPalette(cache.classResource,  EllesmereUI.DEFAULT_CLASS_RESOURCE_COLORS, cc and cc.classResource,  dm and dm.resourceDarken)
     EllesmereUI._BuildColorPalette(cache.resource,       EllesmereUI.DEFAULT_RESOURCE_COLORS,       cc and cc.resource,       dm and dm.resourceDarken)
@@ -449,6 +450,13 @@ end
 function EllesmereUI.GetClassColor(classToken)
     if EllesmereUI._colorCacheDirty then EllesmereUI._RebuildColorCache() end
     return EllesmereUI._colorCache.class[classToken] or EllesmereUI._COLOR_WHITE
+end
+
+-- Class color (custom or default) WITHOUT Class Color Darken, for accents and cursors
+-- rather than bars. Unknown -> nil.
+function EllesmereUI.GetRawClassColor(classToken)
+    if EllesmereUI._colorCacheDirty then EllesmereUI._RebuildColorCache() end
+    return EllesmereUI._colorCache.classRaw[classToken]
 end
 
 -- Class token from a localized class name (friend list entries carry only that).
@@ -644,41 +652,49 @@ function EllesmereUI.ResolveUnitPowerColor(unit)
     return nil
 end
 
+-- The unit-frame engine's shared color objects (class and power) from the current
+-- palette. ApplyColorsToOUF runs it first; Unit Frames runs it alone at login, before
+-- its frames spawn, where repainting every module would change nothing (each paints
+-- the current palette as it builds).
+function EllesmereUI.SyncUFColors()
+    -- Drop the effective-colour cache; the GetClassColor/GetPowerColor reads below
+    -- rebuild it from the palette + darken.
+    EllesmereUI.InvalidateColorCache()
+    -- NEVER modify _G.RAID_CLASS_COLORS: taint.
+    local colors = EllesmereUI._UFColors
+    if not colors then return end
+    if colors.class then
+        for classToken, _ in pairs(CLASS_COLOR_MAP) do
+            local cc = EllesmereUI.GetClassColor(classToken)
+            local entry = colors.class[classToken]
+            if entry and entry.SetRGBA then
+                entry:SetRGBA(cc.r, cc.g, cc.b, 1)
+            else
+                colors.class[classToken] = CreateColor(cc.r, cc.g, cc.b, 1)
+            end
+        end
+    end
+    if colors.power then
+        for powerKey, enumVal in pairs(EllesmereUI.POWER_KEY_TO_ENUM) do
+            local pc = EllesmereUI.GetPowerColor(powerKey)
+            local entry = colors.power[enumVal]
+            if entry and entry.SetRGBA then
+                entry:SetRGBA(pc.r, pc.g, pc.b, 1)
+            else
+                colors.power[enumVal] = CreateColor(pc.r, pc.g, pc.b, 1)
+            end
+        end
+    end
+end
+
 -- Apply custom class colors to oUF (call after settings change)
 function EllesmereUI.ApplyColorsToOUF()
     -- Universal "colours changed" entry point (swatch edits, resets, global-mode toggle,
-    -- Pull Colors From, profile switches), so drop the effective-colour cache here; the
-    -- GetClassColor/GetPowerColor reads below rebuild it from the new palette + darken.
-    EllesmereUI.InvalidateColorCache()
-    -- 1. Update the unit-frame engine's shared color objects. NEVER modify
-    -- _G.RAID_CLASS_COLORS: taint.
-    local colors = EllesmereUI._UFColors
-    if colors then
-        if colors.class then
-            for classToken, _ in pairs(CLASS_COLOR_MAP) do
-                local cc = EllesmereUI.GetClassColor(classToken)
-                local entry = colors.class[classToken]
-                if entry and entry.SetRGBA then
-                    entry:SetRGBA(cc.r, cc.g, cc.b, 1)
-                else
-                    colors.class[classToken] = CreateColor(cc.r, cc.g, cc.b, 1)
-                end
-            end
-        end
-        if colors.power then
-            for powerKey, enumVal in pairs(EllesmereUI.POWER_KEY_TO_ENUM) do
-                local pc = EllesmereUI.GetPowerColor(powerKey)
-                local entry = colors.power[enumVal]
-                if entry and entry.SetRGBA then
-                    entry:SetRGBA(pc.r, pc.g, pc.b, 1)
-                else
-                    colors.power[enumVal] = CreateColor(pc.r, pc.g, pc.b, 1)
-                end
-            end
-        end
-        if EllesmereUI._UFEngineForceAll then
-            EllesmereUI._UFEngineForceAll("ForceUpdate")
-        end
+    -- Pull Colors From, profile switches).
+    -- 1. The unit-frame engine's shared color objects, then a repaint of its frames.
+    EllesmereUI.SyncUFColors()
+    if EllesmereUI._UFColors and EllesmereUI._UFEngineForceAll then
+        EllesmereUI._UFEngineForceAll("ForceUpdate")
     end
     -- 3. Refresh nameplates (enemy + friendly)
     local ns_NP = _G.EllesmereNameplates_NS
@@ -710,4 +726,32 @@ function EllesmereUI.ApplyColorsToOUF()
     if EllesmereUI._DM_RefreshColors then
         EllesmereUI._DM_RefreshColors()
     end
+    -- 7. A class-colored accent or cursor follows a class swatch edit; the accent
+    -- re-applies only when it changed (that path redraws the options page).
+    do
+        local r, g, b = EllesmereUI.ResolveActiveAccent()
+        local cr, cg, cb = EllesmereUI.GetAccentColor()
+        if r ~= cr or g ~= cg or b ~= cb then EllesmereUI.RefreshAccent() end
+    end
+    if _G._ECL_Apply then _G._ECL_Apply() end
+    if _G._ECL_ApplyTrail then _G._ECL_ApplyTrail() end
+    if _G._ECL_ApplyGCDCircle then _G._ECL_ApplyGCDCircle() end
+    if _G._ECL_ApplyCastCircle then _G._ECL_ApplyCastCircle() end
+end
+
+-------------------------------------------------------------------------------
+--  WoW Forever stat hues (hex, no |cff), one per stat, shared by the Quality
+--  of Life Secondary Stats block (EllesmereUIQoL_ForeverStats.lua) and Forever
+--  Essentials' Simplified Stats tooltip lines. Forever only.
+-------------------------------------------------------------------------------
+if EllesmereUI.IS_FOREVER then
+    EllesmereUI.FOREVER_STAT_HUES = {
+        str = "c79c6e", agi = "abd473", sta = "ef5350", int = "69ccf0", spi = "ffe082",
+        health = "ef5350", mana = "4fc3f7",
+        ap = "ff8c42", crit = "ffd100", haste = "7fe3d4", hit = "ffa94d",
+        sp = "c77dff", healing = "4ec9b0", spen = "b39ddb",
+        holy = "fff2b0", fire = "ff6b35", frost = "3fc7eb", nature = "4caf50",
+        shadow = "a335ee", arcane = "ff7eb6",
+        armor = "b0bec5", avoid = "64b5f6", mp5 = "4fc3f7", hp5 = "e57373", speed = "81c784",
+    }
 end

@@ -25,8 +25,8 @@ local InitPagingQuickKeybindButton, SyncPagingAlpha, StopFade = I.InitPagingQuic
 local SHOWGRID, SetShowGridInsecure = I.SHOWGRID, I.SetShowGridInsecure
 local SafeEnableMouseMotionOnly, ShouldQuickKeybindSurfaceBar = I.SafeEnableMouseMotionOnly, I.ShouldQuickKeybindSurfaceBar
 local EAB_UpdateQuickKeybindButtons -- assigned below, published as ns.EAB_UpdateQuickKeybindButtons
-local _pagingFrame -- set by the main file through ns._PagingFrameBind
-function ns._PagingFrameBind(f) _pagingFrame = f end
+local _pagingFrame -- set through SetPagingFrame (EUI_ActionBars_Paging.lua)
+I.pagingFrameSetters[#I.pagingFrameSetters + 1] = function(v) _pagingFrame = v end
 
 -------------------------------------------------------------------------------
 --  QuickKeybind compatibility: modern QuickKeybind works off visible
@@ -353,7 +353,11 @@ _quickKeybindState.UpdateMacroButtons = function(show)
 end
 
 _quickKeybindState.InitMacroFrame = function()
-    if _quickKeybindState.macroFrameHooked or not MacroFrame or not QuickKeybindButtonTemplateMixin then return end
+    -- The Gamepad interface style drives the macro window from secure code; no
+    -- hooks on its buttons where that navigation can still be tainted
+    -- (EllesmereUI.PadTaintStandDown; asked at every call, once logged in).
+    if _quickKeybindState.macroFrameHooked or not MacroFrame or not QuickKeybindButtonTemplateMixin
+        or not IsLoggedIn() or EllesmereUI.PadTaintStandDown() then return end
 
     _quickKeybindState.InitMacroButton(MacroFrameSelectedMacroButton or MacroFrame.SelectedMacroButton)
 
@@ -362,7 +366,12 @@ _quickKeybindState.InitMacroFrame = function()
 
     _quickKeybindState.macroScrollUpdate = function(frame)
         if not frame or not frame.GetView or not frame:GetView() then return end
-        frame:ForEachFrame(_quickKeybindState.InitMacroButton)
+        -- No hooks on new buttons once the Gamepad interface style is on where
+        -- its navigation can still be tainted (it can be switched on after the
+        -- macro window was hooked).
+        if not EllesmereUI.PadTaintStandDown() then
+            frame:ForEachFrame(_quickKeybindState.InitMacroButton)
+        end
         _quickKeybindState.UpdateMacroButtons(_quickKeybindState.open)
     end
     C_Timer_After(0, function()
@@ -674,6 +683,9 @@ _qkbHookFrame:SetScript("OnEvent", function(self, event, addonName)
     if event == "PLAYER_LOGIN" then
         self:UnregisterEvent("PLAYER_LOGIN")
         C_Timer_After(1, function()
+            -- As Blizzard Skins+: no Quick Keybind hooks under the Gamepad
+            -- interface style where its navigation can still be tainted.
+            if EllesmereUI.PadTaintStandDown() then self:UnregisterAllEvents() return end
             local qkb = QuickKeybindFrame
             if qkb then
                 if _pagingFrame then
@@ -760,4 +772,4 @@ end)
     end)
 end)()
 
-ns.EAB_UpdateQuickKeybindButtons = EAB_UpdateQuickKeybindButtons -- called by the main file
+ns.EAB_UpdateQuickKeybindButtons = EAB_UpdateQuickKeybindButtons -- called by EUI_ActionBars_ButtonArt.lua

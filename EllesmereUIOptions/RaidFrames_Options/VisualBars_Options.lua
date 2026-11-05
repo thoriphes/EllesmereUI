@@ -9,15 +9,49 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUIRaidFrames"]
 if not ns then return end  -- module disabled: no options page
 
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host (a kept page wrapper and every frame it hands out) are reset and
+-- dressed again by the next build instead of made anew; elsewhere this is
+-- CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
+-- The eyeball hint's tip callout: built by the first raid build that shows it,
+-- then kept for the session (every later raid build points it at its own eye).
+local eyeHintTip
+
+-- Panel close stops the health and power animations and resets the eye of each
+-- tab's latest build (ns._eye[ctx]): registered once for the session, by the
+-- first build that has the eyes.
+local animEyesOnHide
+local function StopAnimEyesOnHide()
+    local eyes = ns._eye
+    if ns._healthAnimActive then
+        if ns.StopHealthAnim then ns.StopHealthAnim() end
+        if eyes then
+            for _, eye in pairs(eyes) do
+                if eye.refreshHealthEye then eye.refreshHealthEye() end
+            end
+        end
+    end
+    if ns._powerAnimActive then
+        if ns.StopPowerAnim then ns.StopPowerAnim() end
+        if eyes then
+            for _, eye in pairs(eyes) do
+                if eye.refreshPowerEye then eye.refreshPowerEye() end
+            end
+        end
+    end
+end
+
 local function BuildVisualBars(parent, y, W, onSection, EYE)
     local env = ns._RFO_OptEnv
     local AbbreviateNumbers, absorbStyleOrder, absorbStyleValues, db = env.AbbreviateNumbers, env.absorbStyleOrder, env.absorbStyleValues, env.db
     local hbtOrder, hbtValues, healAbsorbStyleOrder, healthColorOrder = env.hbtOrder, env.hbtValues, env.healAbsorbStyleOrder, env.healthColorOrder
-    local healthColorValues, healthTextOrder, healthTextValues, IsPreviewOff = env.healthColorValues, env.healthTextOrder, env.healthTextValues, env.IsPreviewOff
-    local maxHealthStyleOrder, namePositionOrder, namePositionOrderName, namePositionValues = env.maxHealthStyleOrder, env.namePositionOrder, env.namePositionOrderName, env.namePositionValues
-    local namePositionValuesName, optState, PP, ReloadAndUpdate = env.namePositionValuesName, env.optState, env.PP, env.ReloadAndUpdate
+    local healthColorValues, IsPreviewOff, maxHealthStyleOrder = env.healthColorValues, env.IsPreviewOff, env.maxHealthStyleOrder
+    local optState, PP, ReloadAndUpdate = env.optState, env.PP, env.ReloadAndUpdate
     local SGet, SGetPx, SSet, SVal = env.SGet, env.SGetPx, env.SSet, env.SVal
     local SWrite = env.SWrite
+    local TexBgRowCfg = env.TexBgRowCfg
     local _, h
     local row
     local _secY  -- section start tracker
@@ -29,7 +63,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
     healthHeader, h = W:SectionHeader(parent, "HEALTH BAR", y); y = y - h
 
     -- Eyeball: animate health bars (damage/healing simulation); built on raid + party pages, reads the active frame set via ns.PvActiveFrames().
-    do
+    if not EllesmereUI._prebuilding then
         local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
         local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
         -- State lives on ns (single shared ticker) so raid and party eyeball builds drive one animation and start/stop works across both. ns._healthAnimActive is the truth the renderer reads.
@@ -99,34 +133,11 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                                 f._health:SetValue(barPct)
                             end
 
-                            if f._healthText then
-                                local mode = s.healthTextMode or "none"
-                                if mode == "percent" then
-                                    f._healthText:SetFormattedText("%d%%", st.current)
-                                elseif mode == "percentNoSign" then
-                                    f._healthText:SetFormattedText("%d", st.current)
-                                elseif mode == "number" then
-                                    local fakeHP = st.current * 12000
-                                    if AbbreviateNumbers then
-                                        f._healthText:SetText(AbbreviateNumbers(fakeHP))
-                                    end
-                                elseif mode == "numberPercent" then
-                                    local fakeHP = st.current * 12000
-                                    local numStr = AbbreviateNumbers and AbbreviateNumbers(fakeHP) or tostring(fakeHP)
-                                    f._healthText:SetFormattedText("%s | %d%%", numStr, st.current)
-                                elseif mode == "percentNumber" then
-                                    local fakeHP = st.current * 12000
-                                    local numStr = AbbreviateNumbers and AbbreviateNumbers(fakeHP) or tostring(fakeHP)
-                                    f._healthText:SetFormattedText("%d%% | %s", st.current, numStr)
-                                elseif mode == "missing" then
-                                    local fakeHP = (100 - st.current) * 12000
-                                    f._healthText:SetText(C_StringUtil.TruncateWhenZero(fakeHP))
-                                    if f._healthText:GetText() then
-                                        if AbbreviateNumbers then
-                                            f._healthText:SetText(AbbreviateNumbers(fakeHP))
-                                        end
-                                    end
-                                end
+                            -- The texts following health (Custom texts reading it included).
+                            local pv = f._pv
+                            if pv then
+                                pv.hpPct = st.current
+                                ns.RF_TextPreviewTick(f, "hp")
                             end
 
                             -- Fill color only moves in gradient modes.
@@ -163,17 +174,18 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
             eyeBtn:SetPoint("LEFT", healthHeader, "BOTTOMLEFT", 85, 8)
         end
         eyeBtn:SetFrameLevel(healthHeader:GetFrameLevel() + 5)
-        eyeBtn:SetAlpha(0.4)
+        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshHealthEye()
             if IsPreviewOff() then
                 eyeTex:SetTexture(EYE_VISIBLE)
-                eyeBtn:SetAlpha(0.15)
+                EllesmereUI.SetGlyphAlpha(eyeBtn, 0.15)
                 return
             end
             eyeTex:SetTexture(ns._healthAnimActive and EYE_INVISIBLE or EYE_VISIBLE)
-            eyeBtn:SetAlpha(0.4)
+            EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         end
         RefreshHealthEye()
         EYE.refreshHealthEye = RefreshHealthEye
@@ -198,102 +210,45 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                 EllesmereUI.ShowWidgetTooltip(self, "Enable preview to use")
                 return
             end
-            self:SetAlpha(0.7)
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
             EllesmereUI.ShowWidgetTooltip(self, ns._healthAnimActive and "Stop health bar effects" or "Preview health bar effects")
         end)
         eyeBtn:SetScript("OnLeave", function(self)
-            if not IsPreviewOff() then self:SetAlpha(0.4) end
+            if not IsPreviewOff() then EllesmereUI.SetGlyphAlpha(self, 0.4) end
             EllesmereUI.HideWidgetTooltip()
         end)
 
-        EllesmereUI:RegisterOnHide(function()
-            if ns._healthAnimActive then StopHealthAnim(); RefreshHealthEye() end
-        end)
-
-        -- One-time eyeball hint, raid/main page only.
-        if not optState._partyCtx and not (EllesmereUIDB and EllesmereUIDB.rfEyeHintSeen) then
-            local TIP_W, TIP_H = 310, 82
-            local EG = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.83, b = 0.62 }
-            local ar, ag, ab = EG.r, EG.g, EG.b
-
-            -- On the panel body like the other panel tips: it hides with the
-            -- window when it collapses and rides the panel scale.
-            local tip = CreateFrame("Frame", nil, EllesmereUI._panelBody)
-            tip:SetFrameStrata("FULLSCREEN_DIALOG")
-            tip:SetFrameLevel(200)
-            if PP then PP.Size(tip, TIP_W, TIP_H) end
-            tip:SetSize(TIP_W, TIP_H)
-            tip:EnableMouse(true)
-            tip:SetPoint("TOP", eyeBtn, "BOTTOM", 0, -14)
-
-            local tipBg = tip:CreateTexture(nil, "BACKGROUND")
-            tipBg:SetAllPoints()
-            tipBg:SetColorTexture(0.077, 0.068, 0.058, 0.95)
-
-            EllesmereUI.MakeBorder(tip, ar, ag, ab, 0.25, PP)
-
-            -- Arrow pointing up (clipped diamond)
-            local ARROW_SZ = 16
-            local arrowClip = CreateFrame("Frame", nil, tip)
-            arrowClip:SetFrameStrata("FULLSCREEN_DIALOG")
-            arrowClip:SetFrameLevel(tip:GetFrameLevel() + 10)
-            arrowClip:SetClipsChildren(true)
-            arrowClip:SetSize(ARROW_SZ * 2, ARROW_SZ)
-            arrowClip:SetPoint("BOTTOM", tip, "TOP", 0, -1)
-
-            local arrowFrame = CreateFrame("Frame", nil, arrowClip)
-            arrowFrame:SetFrameLevel(arrowClip:GetFrameLevel() + 1)
-            arrowFrame:SetSize(ARROW_SZ + 4, ARROW_SZ + 4)
-            arrowFrame:SetPoint("CENTER", arrowClip, "BOTTOM", 0, 0)
-
-            local arrowBorder = arrowFrame:CreateTexture(nil, "ARTWORK", nil, 7)
-            arrowBorder:SetSize(ARROW_SZ + 2, ARROW_SZ + 2)
-            arrowBorder:SetPoint("CENTER")
-            arrowBorder:SetColorTexture(ar, ag, ab, 0.18)
-            arrowBorder:SetRotation(math.rad(45))
-            if arrowBorder.SetSnapToPixelGrid then arrowBorder:SetSnapToPixelGrid(false); arrowBorder:SetTexelSnappingBias(0) end
-
-            local arrowFill = arrowFrame:CreateTexture(nil, "OVERLAY", nil, 6)
-            arrowFill:SetSize(ARROW_SZ, ARROW_SZ)
-            arrowFill:SetPoint("CENTER")
-            arrowFill:SetColorTexture(0.077, 0.068, 0.058, 0.95)
-            arrowFill:SetRotation(math.rad(45))
-            if arrowFill.SetSnapToPixelGrid then arrowFill:SetSnapToPixelGrid(false); arrowFill:SetTexelSnappingBias(0) end
-
-            local msg = EllesmereUI.MakeFont(tip, 10, nil, 1, 1, 1, 0.85)
-            msg:SetPoint("TOP", tip, "TOP", 0, -12)
-            msg:SetWidth(TIP_W - 24)
-            msg:SetJustifyH("CENTER")
-            msg:SetSpacing(4)
-            msg:SetText(EllesmereUI.L("Click this eye icon to preview live\nhealth bar effects like absorbs and healing."))
-
-            local okBtn = CreateFrame("Button", nil, tip)
-            okBtn:SetSize(70, 22)
-            okBtn:SetPoint("BOTTOM", tip, "BOTTOM", 0, 10)
-            EllesmereUI.MakeStyledButton(okBtn, "Okay", 10,
-                EllesmereUI.RB_COLOURS, function()
-                    tip:Hide()
-                    ns._rfEyeHintTip = nil
-                    EllesmereUIDB = EllesmereUIDB or {}
-                    EllesmereUIDB.rfEyeHintSeen = true
-                end)
-
-            ns._rfEyeHintTip = tip
-
-            tip:SetAlpha(0)
-            tip:Show()
-            local fadeIn = 0
-            tip:SetScript("OnUpdate", function(self, dt)
-                fadeIn = fadeIn + dt
-                if fadeIn >= 0.3 then
-                    self:SetAlpha(1)
-                    self:SetScript("OnUpdate", nil)
-                    return
-                end
-                self:SetAlpha(fadeIn / 0.3)
-            end)
+        if not animEyesOnHide then
+            animEyesOnHide = true
+            EllesmereUI:RegisterOnHide(StopAnimEyesOnHide)
         end
-    end  -- close do (health eyeball)
+
+        -- One-time eyeball hint, raid/main page only. On the panel body like
+        -- the other panel tips: it hides with the window when it collapses and
+        -- rides the panel scale. One tip for the session, anchored to the eye
+        -- of the build that shows it and faded in only when it was hidden.
+        -- ns._rfEyeHintTip holds it while undismissed (the page, module and
+        -- panel hooks show and hide it through that field); Okay clears it.
+        if not optState._partyCtx and not (EllesmereUIDB and EllesmereUIDB.rfEyeHintSeen) then
+            if not eyeHintTip then
+                eyeHintTip = EllesmereUI.BuildTipCallout(EllesmereUI._panelBody, {
+                    width = 310, height = 82, pp = PP,
+                    text = EllesmereUI.L("Click this eye icon to preview live\nhealth bar effects like absorbs and healing."),
+                    fontSize = 10, textTop = 12, textInset = 24, spacing = 4, bgAlpha = 0.95,
+                    btnW = 70, btnH = 22, btnBottom = 10, btnFontSize = 10,
+                    onOkay = function()
+                        ns._rfEyeHintTip = nil
+                        EllesmereUIDB = EllesmereUIDB or {}
+                        EllesmereUIDB.rfEyeHintSeen = true
+                    end,
+                })
+            end
+            eyeHintTip:ClearAllPoints()
+            eyeHintTip:SetPoint("TOP", eyeBtn, "BOTTOM", 0, -14)
+            ns._rfEyeHintTip = eyeHintTip
+            if not eyeHintTip:IsShown() then EllesmereUI.ShowTipCallout(eyeHintTip) end
+        end
+    end  -- health eyeball
 
     local texRow
     texRow, h = W:DualRow(parent, y,
@@ -320,6 +275,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                   tooltip="The bar fills with missing health, growing as the unit takes damage.",
                   get=function() return SVal("healthInvertFill", false) end,
                   set=function(v) SSet("healthInvertFill", v) end }),
+                TexBgRowCfg(SVal, SSet),
             },
         })
     end
@@ -421,7 +377,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         UpdateSwatchVis()
     end
     -- Background Custom + Class swatch pair: clicking either toggles bgClassColored, the inactive one dims (mirrors the fill picker).
-    do
+    if not EllesmereUI._prebuilding then
         local rgn = row._rightRegion
         -- Class swatch shows the player's class color and is not editable.
         local bgClassSwatch = EllesmereUI.BuildColorSwatch(
@@ -488,7 +444,10 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         UpdateBgSwatchVis()
     end
 
+    -- Rows the test panel's Edit buttons scroll to. The search prebuild's rows
+    -- are stand-ins, so it records them in a scratch table instead.
     ns._editTargets = ns._editTargets or {}
+    local editTargets = EllesmereUI._prebuilding and {} or ns._editTargets
 
     local healPredRow
     healPredRow, h = W:DualRow(parent, y,
@@ -500,7 +459,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
           disabledTooltip="Heal Prediction",
           getValue=function() return SVal("healPredOpacity", 75) end,
           setValue=function(v) SSet("healPredOpacity", v) end });  y = y - h
-    ns._editTargets.healPrediction = healPredRow
+    editTargets.healPrediction = healPredRow
     if not EllesmereUI._prebuilding then
         local rgn = healPredRow._leftRegion
         local swatch = EllesmereUI.BuildColorSwatch(
@@ -526,13 +485,16 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
     -- Color Custom Borders (the Threat Borders and Dispel Border cogs) recolors the
     -- frame's own border, so it needs one to recolor: the EllesmereUI style, a Border
     -- Style other than Solid and a Border Size above 0 (runtime twin:
-    -- ns.RF_CustomBorderOn). Cog rows re-check this on every open.
+    -- ns.RF_CustomBorderOn), and no Compact Mode, whose shared outline stands in for
+    -- the frame's border. Cog rows re-check this on every open.
     local function CustomBorderOff()
+        if ns.RF_CompactOnTab(optState._partyCtx) then return true end
         if ns.RF_Stock and ns.RF_Stock() then return true end
         local tex = SGet("borderTexture")
         return tex == nil or tex == "" or tex == "solid" or SVal("borderSize", 1) <= 0
     end
     local function CustomBorderOffTip()
+        if ns.RF_CompactOnTab(optState._partyCtx) then return "Compact Mode" end
         if ns.RF_Stock and ns.RF_Stock() then
             return EllesmereUI.BlizzStyle and EllesmereUI.BlizzStyle.Label("raidframes")
         end
@@ -551,8 +513,8 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         { type="slider", text="Threat Borders", min=0, max=4, step=1,
           getValue=function() return SVal("threatBorderSize", 2) end,
           setValue=function(v) SSet("threatBorderSize", v) end });  y = y - h
-    ns._editTargets.threat = smoothThreatRow
-    ns._editTargets.animateBars = smoothThreatRow
+    editTargets.threat = smoothThreatRow
+    editTargets.animateBars = smoothThreatRow
     -- Cog on Threat Borders: Color Custom Borders recolors the frame's own border in
     -- the threat color on aggro, drawn instead of the inner border (the slider's
     -- size still applies whenever the recolor cannot).
@@ -568,8 +530,14 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                   disabled=CustomBorderOff,
                   disabledTooltip=CustomBorderOffTip,
                   requireState="disabled",
-                  get=function() return SVal("threatCustomBorder", false) end,
-                  set=function(v) SSet("threatCustomBorder", v) end },
+                  get=function()
+                      return not ns.RF_CompactOnTab(optState._partyCtx)
+                          and SVal("threatCustomBorder", false)
+                  end,
+                  set=function(v)
+                      if v and CustomBorderOff() then return end
+                      SSet("threatCustomBorder", v)
+                  end },
             },
         })
     end
@@ -584,7 +552,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
     absorbsHeader, h = W:SectionHeader(parent, "ABSORBS", y); y = y - h
 
     -- Eyeball: toggle shield/heal-absorb effects on the preview frames.
-    do
+    if not EllesmereUI._prebuilding then
         local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
         local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
 
@@ -602,8 +570,9 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
             eyeBtn:SetPoint("LEFT", absorbsHeader, "BOTTOMLEFT", 85, 8)
         end
         eyeBtn:SetFrameLevel(absorbsHeader:GetFrameLevel() + 5)
-        eyeBtn:SetAlpha(0.4)
+        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
 
         -- On ns so the preview renderer can read it.
@@ -612,11 +581,11 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         local function RefreshAbsorbEye()
             if IsPreviewOff() then
                 eyeTex:SetTexture(EYE_VISIBLE)
-                eyeBtn:SetAlpha(0.15)
+                EllesmereUI.SetGlyphAlpha(eyeBtn, 0.15)
                 return
             end
             eyeTex:SetTexture(ns._absorbsPreviewVisible and EYE_INVISIBLE or EYE_VISIBLE)
-            eyeBtn:SetAlpha(0.4)
+            EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         end
         EYE.refreshAbsorbEye = RefreshAbsorbEye
         RefreshAbsorbEye()
@@ -636,14 +605,14 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                 EllesmereUI.ShowWidgetTooltip(self, "Enable preview to use")
                 return
             end
-            self:SetAlpha(0.7)
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
             EllesmereUI.ShowWidgetTooltip(self, ns._absorbsPreviewVisible and "Hide shield effects on preview" or "Show shield effects on preview")
         end)
         eyeBtn:SetScript("OnLeave", function(self)
-            if not IsPreviewOff() then self:SetAlpha(0.4) end
+            if not IsPreviewOff() then EllesmereUI.SetGlyphAlpha(self, 0.4) end
             EllesmereUI.HideWidgetTooltip()
         end)
-    end  -- close do (absorbs eyeball)
+    end  -- absorbs eyeball
 
     local absorbRow
     absorbRow, h = W:DualRow(parent, y,
@@ -679,7 +648,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
           disabledTooltip="Absorb Style",
           getValue=function() return SVal("absorbOpacity", 90) end,
           setValue=function(v) SSet("absorbOpacity", v) end });  y = y - h
-    ns._editTargets.absorbs = absorbRow
+    editTargets.absorbs = absorbRow
     if not EllesmereUI._prebuilding then
         local rgn = absorbRow._leftRegion
         local swatch = EllesmereUI.BuildColorSwatch(
@@ -893,7 +862,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
           disabledTooltip="Heal Absorb Style",
           getValue=function() return SVal("healAbsorbOpacity", 75) end,
           setValue=function(v) SSet("healAbsorbOpacity", v) end });  y = y - h
-    ns._editTargets.healAbsorbs = healAbsorbRow
+    editTargets.healAbsorbs = healAbsorbRow
     if not EllesmereUI._prebuilding then
         local rgn = healAbsorbRow._leftRegion
         local swatch = EllesmereUI.BuildColorSwatch(
@@ -1109,7 +1078,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
     powerHeader, h = W:SectionHeader(parent, "POWER BAR", y); y = y - h
 
     -- Power bar animation: same pattern as health, serves raid + party.
-    do
+    if not EllesmereUI._prebuilding then
         local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
         local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
         -- On ns: single ticker, resolves the active preview at call time.
@@ -1175,8 +1144,12 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                             else
                                 f._power:SetValue(st.current)
                             end
-                            -- Power Text follows the animated value (ApplyPreviewData sets f._pwtMode; nil = hidden).
-                            if f._pwtMode then ns.RF_PowerTextInto(f._powerText, f._pwtMode, st.current, nil, nil, f._pwtPer) end
+                            -- The texts following power (Custom texts reading it included).
+                            local pv = f._pv
+                            if pv then
+                                pv.ppPct = st.current
+                                ns.RF_TextPreviewTick(f, "pp")
+                            end
                         end
                     end
                 end
@@ -1197,17 +1170,18 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
             eyeBtn:SetPoint("LEFT", powerHeader, "BOTTOMLEFT", 85, 8)
         end
         eyeBtn:SetFrameLevel(powerHeader:GetFrameLevel() + 5)
-        eyeBtn:SetAlpha(0.4)
+        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshPowerEye()
             if IsPreviewOff() then
                 eyeTex:SetTexture(EYE_VISIBLE)
-                eyeBtn:SetAlpha(0.15)
+                EllesmereUI.SetGlyphAlpha(eyeBtn, 0.15)
                 return
             end
             eyeTex:SetTexture(ns._powerAnimActive and EYE_INVISIBLE or EYE_VISIBLE)
-            eyeBtn:SetAlpha(0.4)
+            EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         end
         EYE.refreshPowerEye = RefreshPowerEye
         ns._stopPowerAnim = StopPowerAnim
@@ -1230,18 +1204,15 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                 EllesmereUI.ShowWidgetTooltip(self, "Enable preview to use")
                 return
             end
-            self:SetAlpha(0.7)
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
             EllesmereUI.ShowWidgetTooltip(self, ns._powerAnimActive and "Stop power animation" or "Animate power bars")
         end)
         eyeBtn:SetScript("OnLeave", function(self)
-            if not IsPreviewOff() then self:SetAlpha(0.4) end
+            if not IsPreviewOff() then EllesmereUI.SetGlyphAlpha(self, 0.4) end
             EllesmereUI.HideWidgetTooltip()
         end)
-
-        EllesmereUI:RegisterOnHide(function()
-            if ns._powerAnimActive then StopPowerAnim(); RefreshPowerEye() end
-        end)
-    end  -- close do (power eyeball)
+        -- (The panel-close stop and eye reset: StopAnimEyesOnHide, at the top.)
+    end  -- power eyeball
 
     -- Power bar is off when no role is selected.
     -- The Party Frames kit's mana bar always shows. Decided at build time:
@@ -1320,22 +1291,69 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         return cfg
     end
     local pwBdrRow
+    local function CanMatchPowerBorder()
+        local key = SGet("borderTexture")
+        return not EllesmereUI.BlizzStyle.Get("raidframes") and EllesmereUI._pixelArtBorders[key] == true
+    end
+    local function MatchingPowerBorder()
+        return SVal("powerBorderMatchFrame", false) and CanMatchPowerBorder() and SVal("powerBorderStyle", "eui") ~= "eui"
+    end
+    local pwSizeCfg
+    if MatchingPowerBorder() then
+        pwSizeCfg = EllesmereUI.BorderPxSliderCfg({
+            getStep=function() return SVal("borderSize", 1) end,
+            setStep=function() end,
+            getTex=function() return SGet("borderTexture") end,
+            getPx=function() return SGetPx("borderSizePx", "borderSize") end,
+            setPx=function() end,
+            disabled=function() return true end,
+            disabledTooltip="Size and color follow the frame border while Match Frame Border is enabled.",
+            rawTooltip=true,
+        })
+    else
+        pwSizeCfg = { type="slider", text="Border Size", min=0, max=4, step=1,
+            disabled=function() return IsPowerOff() or SVal("powerBorderStyle", "eui") == "eui" end,
+            disabledTooltip="Show Power Bar For",
+            getValue=function() return SVal("powerBorderSize", 1) end,
+            setValue=function(v) SSet("powerBorderSize", v) end }
+    end
     pwBdrRow, h = W:DualRow(parent, y,
         ns.RF_PartyKitGate(PwClassicGate({ type="dropdown", text="Border Style", values=pwBorderStyleValues, order=pwBorderStyleOrder,
           disabled=function() return IsPowerOff() end,
           disabledTooltip="Show Power Bar For",
           getValue=function() return SVal("powerBorderStyle", "divider") end,
-          setValue=function(v) SSet("powerBorderStyle", v); EllesmereUI:RefreshPage() end })),
-        ns.RF_PartyKitGate(PwClassicGate({ type="slider", text="Border Size", min=0, max=4, step=1,
-          disabled=function() return IsPowerOff() or SVal("powerBorderStyle", "eui") == "eui" end,
-          disabledTooltip="Show Power Bar For",
-          getValue=function() return SVal("powerBorderSize", 1) end,
-          setValue=function(v) SSet("powerBorderSize", v) end })));  y = y - h
+          setValue=function(v)
+              SSet("powerBorderStyle", v)
+              EllesmereUI:RefreshPage(SVal("powerBorderMatchFrame", false) and CanMatchPowerBorder())
+          end })),
+        ns.RF_PartyKitGate(PwClassicGate(pwSizeCfg)));  y = y - h
     if not EllesmereUI._prebuilding then
+        EllesmereUI.BuildInlineCog(pwBdrRow._leftRegion, {
+            disabled=function() return IsPowerOff() or not CanMatchPowerBorder() end,
+            disabledTooltip=function() return IsPowerOff() and "Show Power Bar For" or "Pixels or Pixels Textured Border Style" end,
+            title="Power Border Options",
+            rows={
+                ns.RF_PartyKitGate({ type="toggle", label="Match Frame Border",
+                  tooltip="Uses the frame border's art, size and color.",
+                  get=function() return SVal("powerBorderMatchFrame", false) end,
+                  set=function(v) SSet("powerBorderMatchFrame", v); EllesmereUI:RefreshPage(true) end }),
+                ns.RF_PartyKitGate({ type="toggle", label="Match Highlight Colors",
+                  tooltip="The divider follows hover and target colors.",
+                  disabled=function() return not MatchingPowerBorder() or SVal("powerBorderStyle", "eui") ~= "divider" end,
+                  disabledTooltip="Requires Match Frame Border and Divider.",
+                  rawTooltip=true,
+                  get=function() return SVal("powerBorderMatchColor", false) end,
+                  set=function(v) SSet("powerBorderMatchColor", v) end }),
+            },
+        })
         local rgn = pwBdrRow._rightRegion
         local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
             rgn, pwBdrRow:GetFrameLevel() + 3,
             function()
+                if MatchingPowerBorder() then
+                    local c = SGet("borderColor")
+                    return c and c.r or 0, c and c.g or 0, c and c.b or 0, SVal("borderAlpha", 1)
+                end
                 local c = SGet("powerBorderColor")
                 if c then return c.r, c.g, c.b, SVal("powerBorderAlpha", 1) end
                 return 0, 0, 0, 1
@@ -1349,10 +1367,14 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         rgn._lastInline = swatch
         local block = CreateFrame("Frame", nil, swatch)
         block:SetAllPoints(); block:SetFrameLevel(swatch:GetFrameLevel() + 10); block:EnableMouse(true)
-        block:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Border Style")) end)
+        block:SetScript("OnEnter", function()
+            EllesmereUI.ShowWidgetTooltip(swatch, MatchingPowerBorder()
+                and "Size and color follow the frame border while Match Frame Border is enabled."
+                or EllesmereUI.DisabledTooltip("Border Style"))
+        end)
         block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         local function UpdatePwBdrSwatchState()
-            local off = IsPowerOff() or SVal("powerBorderSize", 1) == 0 or SVal("powerBorderStyle", "eui") == "eui"
+            local off = IsPowerOff() or SVal("powerBorderSize", 1) == 0 or SVal("powerBorderStyle", "eui") == "eui" or MatchingPowerBorder()
             if off then swatch:SetAlpha(0.3); block:Show() else swatch:SetAlpha(1); block:Hide() end
         end
         EllesmereUI.RegisterWidgetRefresh(function() if updateSwatch then updateSwatch() end; UpdatePwBdrSwatchState() end)
@@ -1372,7 +1394,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
           getValue=function() return SVal("powerBgDarkness", 70) end,
           setValue=function(v) SSet("powerBgDarkness", v) end });  y = y - h
     -- Power bg Custom + Power Colored swatch pair: clicking either toggles powerBgPowerColored, the inactive one dims (mirrors the health bg).
-    do
+    if not EllesmereUI._prebuilding then
         local rgn = pwBgRow._rightRegion
         -- Power swatch shows the player's power color and is not editable.
         local bgPwrSwatch = EllesmereUI.BuildColorSwatch(
@@ -1434,459 +1456,18 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
     if onSection then onSection("powerBar", _secY, y) end; _secY = y
     _, h = W:SectionHeader(parent, "TEXT DISPLAY", y); y = y - h
 
-    row, h = W:DualRow(parent, y,
-        { type="slider", text="Name Size", min=6, max=26, step=1,
-          getValue=function() return SVal("nameSize", 10) end,
-          setValue=function(v) SSet("nameSize", v) end },
-        { type="multiSwatch", text="Name Color",
-          swatches = {
-            { tooltip = "Custom Color",
-              hasAlpha = false,
-              getValue = function()
-                  local c = SGet("nameCustomColor")
-                  if c then return c.r, c.g, c.b end
-                  return 1, 1, 1
-              end,
-              setValue = function(r, g, b)
-                  SWrite("nameCustomColor", { r=r, g=g, b=b })
-                  ReloadAndUpdate()
-              end,
-              onClick = function(self)
-                  if SVal("nameColorMode", "class") ~= "custom" then
-                      SSet("nameColorMode", "custom")
-                      EllesmereUI:RefreshPage()
-                      return
-                  end
-                  if self._eabOrigClick then self._eabOrigClick(self) end
-              end,
-              refreshAlpha = function()
-                  return SVal("nameColorMode", "class") == "custom" and 1 or 0.3
-              end },
-            { tooltip = "Class Color",
-              hasAlpha = false,
-              getValue = function()
-                  local _, ct = UnitClass("player")
-                  if ct and RAID_CLASS_COLORS[ct] then
-                      local cc = RAID_CLASS_COLORS[ct]
-                      return cc.r, cc.g, cc.b
-                  end
-                  return 1, 1, 1
-              end,
-              setValue = function() end,
-              onClick = function()
-                  SSet("nameColorMode", "class")
-                  EllesmereUI:RefreshPage()
-              end,
-              refreshAlpha = function()
-                  return SVal("nameColorMode", "class") == "class" and 1 or 0.3
-              end },
-            { tooltip = "Accent Color",
-              hasAlpha = false,
-              getValue = function()
-                  return EllesmereUI.ResolveActiveAccent()
-              end,
-              setValue = function() end,
-              onClick = function()
-                  SSet("nameColorMode", "accent")
-                  EllesmereUI:RefreshPage()
-              end,
-              refreshAlpha = function()
-                  return SVal("nameColorMode", "class") == "accent" and 1 or 0.3
-              end },
-          } });  y = y - h
-    -- Name char cap + text stacking cog, on the Name Size slider. WoW Forever
-    -- heads it with Name Format (the character name's first or last word; First
-    -- and Last is the default). "full" is stored, not nil: a party section's nil
-    -- would fall through to the raid value.
+    y = ns.RFO_BuildTextDisplay(W, parent, y, { page = EllesmereUI._buildingPage, party = optState._partyCtx })
+    -- The Name Format also shapes the Top Name Bar, so it has a row of its own,
+    -- not a place on the Name tile. Raid Frames saves "full" (an unset party
+    -- key reads the raid's).
     do
-        local rgn = row._leftRegion
-        local nameRows = {
-            { type="slider", label="Max Characters (0=off)", min=0, max=30, step=1,
-              get=function() return SVal("nameMaxLength", 15) end,
-              set=function(v) SSet("nameMaxLength", v) end },
-            { type="toggle", label="Show Above Icons",
-              tooltip="Render the name and health text above buff and debuff icons.",
-              get=function() return SVal("nameTextAboveIcons", false) end,
-              set=function(v) SSet("nameTextAboveIcons", v) end },
-        }
-        if EllesmereUI.IS_FOREVER then
-            table.insert(nameRows, 1, { type="dropdown", label="Name Format",
-                values=EllesmereUI.NAME_FORMAT_VALUES, order=EllesmereUI.NAME_FORMAT_ORDER,
-                get=function() return SVal("nameFormat", "full") end,
-                set=function(v) SSet("nameFormat", v) end })
-        end
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Name Text",
-            rows = nameRows,
-        })
-    end
-
-    -- Party Frames kit: the name has the stock spot (its offsets stay on
-    -- the cog), so the dropdown only chooses shown or None.
-    row, h = W:DualRow(parent, y,
-        ns.RF_OptPartyKit() and { type="dropdown", text="Name Position",
-          values={ kit = "Party Frame", none = "None" }, order={ "kit", "none" },
-          getValue=function() return (SVal("namePosition", "center") == "none") and "none" or "kit" end,
-          setValue=function(v)
-              if v == "none" then SSet("namePosition", "none")
-              elseif SVal("namePosition", "center") == "none" then SSet("namePosition", "topleft") end
-          end }
-        or { type="dropdown", text="Name Position", values=namePositionValuesName, order=namePositionOrderName,
-          getValue=function() return SVal("namePosition", "center") end,
-          setValue=function(v) SSet("namePosition", v) end },
-        { type="dropdown", text="Health Text", values=healthTextValues, order=healthTextOrder,
-          getValue=function() return SVal("healthTextMode", "none") end,
-          -- Rebuilds the page on the None <-> not-None flip so the Position/Size row below appears/vanishes.
-          setValue=EllesmereUI.DependentSetValue(
-              function() return SVal("healthTextMode", "none") ~= "none" end,
-              function(v) SSet("healthTextMode", v) end) });  y = y - h
-    do
-        local rgn = row._leftRegion
-        EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
-            title = "Name Offset",
-            rows = {
-                { type="slider", label="Offset X", min=-500, max=500, step=1,
-                  get=function() return SVal("nameOffsetX", 0) end,
-                  set=function(v) SSet("nameOffsetX", v) end },
-                { type="slider", label="Offset Y", min=-500, max=500, step=1,
-                  get=function() return SVal("nameOffsetY", 0) end,
-                  set=function(v) SSet("nameOffsetY", v) end },
-            },
-        })
-    end
-    -- Health Text color swatches (custom/class/accent), mirroring the Name Color triple. Custom is added FIRST so the _lastInline chain places it next to the dropdown, matching Name Color.
-    if not EllesmereUI._prebuilding then
-        local rgn = row._rightRegion
-        local function AddHTSwatch(getColor, setColor, mode, opensPicker, tooltip)
-            local sw = EllesmereUI.BuildColorSwatch(
-                rgn, row:GetFrameLevel() + 3, getColor, setColor, false, 20)
-            sw:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-            rgn._lastInline = sw
-            -- Preserve the picker-opening click, then switch mode on click (same technique multiSwatch uses for Name Color).
-            sw._eabOrigClick = sw:GetScript("OnClick")
-            sw:SetScript("OnClick", function(self)
-                if SVal("healthTextColorMode", "custom") ~= mode then
-                    SSet("healthTextColorMode", mode)
-                    EllesmereUI:RefreshPage()
-                    return
-                end
-                if opensPicker and self._eabOrigClick then self._eabOrigClick(self) end
-            end)
-            -- HookScript so BuildColorSwatch's own hover stays intact.
-            if tooltip then
-                sw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, tooltip) end)
-                sw:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            end
-            local function vis()
-                sw:SetAlpha(SVal("healthTextColorMode", "custom") == mode and 1 or 0.3)
-            end
-            EllesmereUI.RegisterWidgetRefresh(vis)
-            vis()
-        end
-        -- Custom (rightmost): editable, opens the picker when active.
-        AddHTSwatch(
-            function()
-                local c = SGet("healthTextCustomColor")
-                if c then return c.r, c.g, c.b, 1 end
-                return 1, 1, 1, 1
-            end,
-            function(r, g, b)
-                SWrite("healthTextCustomColor", { r=r, g=g, b=b })
-                ReloadAndUpdate()
-            end, "custom", true, "Custom Color")
-        AddHTSwatch(
-            function()
-                local _, ct = UnitClass("player")
-                if ct and RAID_CLASS_COLORS[ct] then
-                    local cc = RAID_CLASS_COLORS[ct]
-                    return cc.r, cc.g, cc.b, 1
-                end
-                return 1, 1, 1, 1
-            end,
-            function() end, "class", false, "Class Color")
-        -- Accent (leftmost).
-        AddHTSwatch(
-            function()
-                local r, g, b = EllesmereUI.ResolveActiveAccent()
-                return r or 1, g or 1, b or 1, 1
-            end,
-            function() end, "accent", false, "Accent Color")
-    end
-
-    -- Health Text Position (+ cog for X/Y) | Health Text Size. Hidden entirely while Health Text is None.
-    if SVal("healthTextMode", "none") ~= "none" then
-    row, h = W:DualRow(parent, y,
-        { type="dropdown", text="Health Text Position", values=namePositionValues, order=namePositionOrder,
-          getValue=function() return SVal("healthTextPosition", "center") end,
-          setValue=function(v) SSet("healthTextPosition", v) end },
-        { type="slider", text="Health Text Size", min=6, max=26, step=1,
-          getValue=function() return SVal("healthTextSize", 9) end,
-          setValue=function(v) SSet("healthTextSize", v) end });  y = y - h
-    do
-        local rgn = row._leftRegion
-        EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
-            title = "Health Text Offset",
-            rows = {
-                { type="slider", label="Offset X", min=-150, max=150, step=1,
-                  get=function() return SVal("healthTextOffsetX", 0) end,
-                  set=function(v) SSet("healthTextOffsetX", v) end },
-                { type="slider", label="Offset Y", min=-75, max=75, step=1,
-                  get=function() return SVal("healthTextOffsetY", 0) end,
-                  set=function(v) SSet("healthTextOffsetY", v) end },
-            },
-        })
-    end
-    end   -- close Health Text dependent-row gate
-
-    -- Level Position (+ offset cog) | Level Size: the unit's level in front of the name inside
-    -- the name text ("Attach to Name", the WoW Forever default, None on retail: "60 Name"; "(Divider)": "60 | Name"; both
-    -- follow the Name Size), or in the name's colour on its own spot. None = off.
-    do
-        local levelPosValues = { name = "Attach to Name", nameDiv = "Attach to Name (Divider)" }
-        for k, v in pairs(namePositionValuesName) do levelPosValues[k] = v end
-        local levelPosOrder = { "name", "nameDiv", "topleft", "top", "topright", "left", "center",
-            "right", "bottomleft", "bottom", "bottomright", "none" }
-        local function LvlPos() return SVal("levelTextPosition", ns.RF_LEVEL_DEFAULT) end
-        local function LvlAttached() return ns.RF_LEVEL_ATTACH[LvlPos()] ~= nil end
-        local function LvlSpotOff() return LvlPos() == "none" or LvlAttached() end
-        local function LvlReq()
-            return LvlAttached() and "Attached to the name, the level uses the Name Size." or "Level Position"
-        end
-        local function LvlCogReq()
-            return LvlAttached() and "Attached to the name, the level follows the name's position." or "Level Position"
-        end
-        row, h = W:DualRow(parent, y,
-            { type="dropdown", text="Level Position", values=levelPosValues, order=levelPosOrder,
-              getValue=LvlPos,
-              setValue=function(v) SSet("levelTextPosition", v); EllesmereUI:RefreshPage() end },
-            { type="slider", text="Level Size", min=6, max=26, step=1,
-              disabled=LvlSpotOff, disabledTooltip=LvlReq, rawTooltip=LvlAttached,
-              getValue=function() return SVal("levelTextSize", 10) end,
-              setValue=function(v) SSet("levelTextSize", v) end });  y = y - h
-        EllesmereUI.BuildInlineCog(row._leftRegion, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
-            disabled = LvlSpotOff, disabledTooltip = LvlCogReq, rawTooltip = LvlAttached,
-            title = "Level Offset",
-            rows = {
-                { type="slider", label="Offset X", min=-500, max=500, step=1,
-                  get=function() return SVal("levelTextOffsetX", 0) end,
-                  set=function(v) SSet("levelTextOffsetX", v) end },
-                { type="slider", label="Offset Y", min=-500, max=500, step=1,
-                  get=function() return SVal("levelTextOffsetY", 0) end,
-                  set=function(v) SSet("levelTextOffsetY", v) end },
-            },
-        })
-    end
-
-    -- Power Text (+ Custom/Class/Accent/Power swatches) | Power Text Size (+ position cog). Shows only on frames whose power bar shows, so everything greys while no role shows one.
-    do
-        local function PTOff() return IsPowerOff() or SVal("powerTextMode", "none") == "none" end
-        local function PTReq() return IsPowerOff() and "Show Power Bar For" or "Power Text" end
-        row, h = W:DualRow(parent, y,
-            { type="dropdown", text="Power Text",
-              values={ ["none"]="None", ["percent"]="Percent", ["percentNoSign"]="Percent (No Sign)",
-                       ["number"]="Number", ["numberPercent"]="Number | Percent", ["percentNumber"]="Percent | Number" },
-              order={ "none", "percent", "percentNoSign", "number", "numberPercent", "percentNumber" },
-              disabled=IsPowerOff,
-              disabledTooltip="Show Power Bar For",
-              getValue=function() return SVal("powerTextMode", "none") end,
-              setValue=function(v) SSet("powerTextMode", v); EllesmereUI:RefreshPage() end },
-            { type="slider", text="Power Text Size", min=6, max=26, step=1,
-              disabled=PTOff,
-              disabledTooltip=PTReq,
-              getValue=function() return SVal("powerTextSize", 8) end,
-              setValue=function(v) SSet("powerTextSize", v) end });  y = y - h
-        -- Swatches: Custom is added FIRST so the _lastInline chain places it next to the dropdown; Power (leftmost) shows the player's power color and is not editable. Each dims and blocks while Power Text is None or power is off.
-        if not EllesmereUI._prebuilding then
-            local rgn = row._leftRegion
-            local function AddPTSwatch(getColor, setColor, mode, opensPicker, tooltip)
-                local sw, updateSw = EllesmereUI.BuildColorSwatch(
-                    rgn, row:GetFrameLevel() + 3, getColor, setColor, false, 20)
-                sw:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-                rgn._lastInline = sw
-                -- Preserve the picker-opening click, then switch mode on click (same technique as the Health Text swatches).
-                sw._eabOrigClick = sw:GetScript("OnClick")
-                sw:SetScript("OnClick", function(self)
-                    if SVal("powerTextColorMode", "custom") ~= mode then
-                        SSet("powerTextColorMode", mode)
-                        EllesmereUI:RefreshPage()
-                        return
-                    end
-                    if opensPicker and self._eabOrigClick then self._eabOrigClick(self) end
-                end)
-                sw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, tooltip) end)
-                sw:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                local block = CreateFrame("Frame", nil, sw)
-                block:SetAllPoints(); block:SetFrameLevel(sw:GetFrameLevel() + 10); block:EnableMouse(true)
-                block:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip(PTReq())) end)
-                block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                local function vis()
-                    updateSw()
-                    if PTOff() then
-                        sw:SetAlpha(0.3); block:Show()
-                    else
-                        sw:SetAlpha(SVal("powerTextColorMode", "custom") == mode and 1 or 0.3); block:Hide()
-                    end
-                end
-                EllesmereUI.RegisterWidgetRefresh(vis)
-                vis()
-            end
-            -- Custom (rightmost): editable, opens the picker when active.
-            AddPTSwatch(
-                function()
-                    local c = SGet("powerTextCustomColor")
-                    if c then return c.r, c.g, c.b, 1 end
-                    return 1, 1, 1, 1
-                end,
-                function(r, g, b)
-                    SWrite("powerTextCustomColor", { r=r, g=g, b=b })
-                    ReloadAndUpdate()
-                end, "custom", true, "Custom Color")
-            AddPTSwatch(
-                function()
-                    local _, ct = UnitClass("player")
-                    if ct and RAID_CLASS_COLORS[ct] then
-                        local cc = RAID_CLASS_COLORS[ct]
-                        return cc.r, cc.g, cc.b, 1
-                    end
-                    return 1, 1, 1, 1
-                end,
-                function() end, "class", false, "Class Color")
-            AddPTSwatch(
-                function()
-                    local r, g, b = EllesmereUI.ResolveActiveAccent()
-                    return r or 1, g or 1, b or 1, 1
-                end,
-                function() end, "accent", false, "Accent Color")
-            -- Power (leftmost): each frame's own power-type color at runtime.
-            AddPTSwatch(
-                function()
-                    local _, pToken = UnitPowerType("player")
-                    local info = EllesmereUI.GetPowerColor(pToken or "MANA")
-                    if info then return info.r, info.g, info.b, 1 end
-                    return 0, 0.5, 1, 1
-                end,
-                function() end, "power", false, "Power Colored Text")
-        end
-        -- Position + offset cog on the Power Text Size slider.
-        EllesmereUI.BuildInlineCog(row._rightRegion, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
-            disabled = PTOff,
-            disabledTooltip = PTReq,
-            title = "Power Text Position",
-            rows = {
-                { type="dropdown", label="Position", values=namePositionValues, order=namePositionOrder,
-                  get=function() return SVal("powerTextPosition", "bottom") end,
-                  set=function(v) SSet("powerTextPosition", v) end },
-                { type="slider", label="Offset X", min=-150, max=150, step=1,
-                  get=function() return SVal("powerTextOffsetX", 0) end,
-                  set=function(v) SSet("powerTextOffsetX", v) end },
-                { type="slider", label="Offset Y", min=-75, max=75, step=1,
-                  get=function() return SVal("powerTextOffsetY", 0) end,
-                  set=function(v) SSet("powerTextOffsetY", v) end },
-            },
-        })
-    end
-
-    -- Heal Absorb Text (+swatches) | Heal Absorb Text Position (+offset cog); Heal Absorb Text Size row is 1:1 with Health Text. Shows the heal-absorb shield amount (short/full), hidden at zero.
-    row, h = W:DualRow(parent, y,
-        { type="dropdown", text="Heal Absorb Text",
-          values={ ["none"]="None", ["short"]="Short (240k)", ["amount"]="Amount" },
-          order={ "none", "short", "amount" },
-          getValue=function() return SVal("healAbsorbTextMode", "none") end,
-          -- Rebuilds the page on the None <-> not-None flip so the Text Size row below appears/vanishes.
-          setValue=EllesmereUI.DependentSetValue(
-              function() return SVal("healAbsorbTextMode", "none") ~= "none" end,
-              function(v) SSet("healAbsorbTextMode", v); EllesmereUI:RefreshPage() end) },
-        { type="dropdown", text="Heal Absorb Text Position", values=namePositionValues, order=namePositionOrder,
-          disabled=function() return SVal("healAbsorbTextMode", "none") == "none" end,
-          disabledTooltip="Heal Absorb Text",
-          getValue=function() return SVal("healAbsorbTextPosition", "center") end,
-          setValue=function(v) SSet("healAbsorbTextPosition", v) end });  y = y - h
-    -- Heal Absorb Text swatches (custom/class/accent), same pattern as the Health Text triple above.
-    if not EllesmereUI._prebuilding then
-        local rgn = row._leftRegion
-        local function AddHASwatch(getColor, setColor, mode, opensPicker, tooltip)
-            local sw = EllesmereUI.BuildColorSwatch(
-                rgn, row:GetFrameLevel() + 3, getColor, setColor, false, 20)
-            sw:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-            rgn._lastInline = sw
-            sw._eabOrigClick = sw:GetScript("OnClick")
-            sw:SetScript("OnClick", function(self)
-                if SVal("healAbsorbTextColorMode", "custom") ~= mode then
-                    SSet("healAbsorbTextColorMode", mode)
-                    EllesmereUI:RefreshPage()
-                    return
-                end
-                if opensPicker and self._eabOrigClick then self._eabOrigClick(self) end
-            end)
-            if tooltip then
-                sw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, tooltip) end)
-                sw:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            end
-            local function vis()
-                sw:SetAlpha(SVal("healAbsorbTextColorMode", "custom") == mode and 1 or 0.3)
-            end
-            EllesmereUI.RegisterWidgetRefresh(vis)
-            vis()
-        end
-        -- Custom (rightmost): editable, opens the picker when active.
-        AddHASwatch(
-            function()
-                local c = SGet("healAbsorbTextCustomColor")
-                if c then return c.r, c.g, c.b, 1 end
-                return 1, 0.3, 0.3, 1
-            end,
-            function(r, g, b)
-                SWrite("healAbsorbTextCustomColor", { r=r, g=g, b=b })
-                ReloadAndUpdate()
-            end, "custom", true, "Custom Color")
-        AddHASwatch(
-            function()
-                local _, ct = UnitClass("player")
-                if ct and RAID_CLASS_COLORS[ct] then
-                    local cc = RAID_CLASS_COLORS[ct]
-                    return cc.r, cc.g, cc.b, 1
-                end
-                return 1, 1, 1, 1
-            end,
-            function() end, "class", false, "Class Color")
-        -- Accent (leftmost).
-        AddHASwatch(
-            function()
-                local r, g, b = EllesmereUI.ResolveActiveAccent()
-                return r or 1, g or 1, b or 1, 1
-            end,
-            function() end, "accent", false, "Accent Color")
-    end
-    -- Offset cog on the Heal Absorb Text Position region.
-    do
-        local rgn = row._rightRegion
-        EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
-            disabled = function() return SVal("healAbsorbTextMode", "none") == "none" end,
-            disabledTooltip = "Heal Absorb Text",
-            title = "Heal Absorb Text Offset",
-            rows = {
-                { type="slider", label="Offset X", min=-150, max=150, step=1,
-                  get=function() return SVal("healAbsorbTextOffsetX", 0) end,
-                  set=function(v) SSet("healAbsorbTextOffsetX", v) end },
-                { type="slider", label="Offset Y", min=-75, max=75, step=1,
-                  get=function() return SVal("healAbsorbTextOffsetY", 0) end,
-                  set=function(v) SSet("healAbsorbTextOffsetY", v) end },
-            },
-        })
-    end
-    -- Row 5: Heal Absorb Text Size | (blank odd last slot). Hidden entirely
-    -- while Heal Absorb Text is None.
-    if SVal("healAbsorbTextMode", "none") ~= "none" then
-        row, h = W:DualRow(parent, y,
-            { type="slider", text="Heal Absorb Text Size", min=6, max=26, step=1,
-              getValue=function() return SVal("healAbsorbTextSize", 9) end,
-              setValue=function(v) SSet("healAbsorbTextSize", v) end },
-            { type="label", text="" });  y = y - h
+        local function Set(v) SSet("nameFormat", v) end
+        local values, order, getValue = EllesmereUI.NameFormatMenu(
+            function() return SVal("nameFormat", "full") end, Set)
+        _, h = W:DualRow(parent, y,
+            { type="dropdown", text="Name Format", values=values, order=order,
+              getValue=getValue, setValue=Set },
+            EllesmereUI.BlankRowCfg());  y = y - h
     end
     if onSection then onSection("textDisplay", _secY, y) end; _secY = y
     return y, CustomBorderOff, CustomBorderOffTip

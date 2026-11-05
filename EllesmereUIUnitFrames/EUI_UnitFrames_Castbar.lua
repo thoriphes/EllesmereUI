@@ -7,6 +7,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Builders, which re-imports from it. db is set through I.dbSetters.
 -------------------------------------------------------------------------------
 local _, ns = ...
+-- The options page pool's table (EllesmereUI_PixelPerfect.lua makes it; the
+-- options addon fills it in place): read through this file local, never the
+-- public slot.
+local POOL = EllesmereUI._Pool
 
 local issecretvalue = issecretvalue
 local PP = EllesmereUI.PP
@@ -216,7 +220,9 @@ function ns.UF_ApplyCastBorder(castbar, s, stock, unit, icon, preview)
         return
     end
     if not host then
-        host = CreateFrame("Frame", nil, castbar)
+        -- Through the options frame pool: a real frame for a live bar, handed
+        -- back by the pool on the options preview's next build.
+        host = POOL.CreateFrame("Frame", nil, castbar)
         castbar._cbBorder = host
     end
     host:ClearAllPoints()
@@ -278,7 +284,8 @@ function ns.UF_ApplyCastIconBorder(castbar, s, stock, unit, icon, preview)
     local px = custom and EllesmereUI.BorderPx(s.castBorderSizePx, size, tex) or nil
     if styled then
         if not host then
-            host = CreateFrame("Frame", nil, icon)
+            -- Options frame pool: a real frame for a live bar (as above).
+            host = POOL.CreateFrame("Frame", nil, icon)
             host:SetAllPoints(icon)
             icon._castBorder = host
         end
@@ -331,7 +338,8 @@ function ns.UF_ApplyCastIconBorder(castbar, s, stock, unit, icon, preview)
         return
     end
     if not seam then
-        seam = CreateFrame("Frame", nil, castbar)
+        -- Options frame pool: a real frame for a live bar (as above).
+        seam = POOL.CreateFrame("Frame", nil, castbar)
         seam:SetAllPoints(castbar)
         seam._tex = seam:CreateTexture(nil, "OVERLAY")
         castbar._iconSeam = seam
@@ -400,6 +408,34 @@ function ns.UF_CastBorderPad(unit, s)
     return w, h
 end
 
+-- While the cast icon shows on the portrait (backdrop +2), the backdrop's shape
+-- border, inner shadow and Outer Ring move onto an overlay at backdrop +3, so
+-- the icon sits under them; when it hides they go back under a 3D model. The
+-- overlay is a child of the backdrop, so the backdrop's shape mask still clips
+-- them. Built through the options page pool (the preview shares this), which
+-- also hands a pooled texture back to its own frame on reset.
+local function MoveDecoration(tex, parent)
+    if tex and tex:GetParent() ~= parent then tex:SetParent(parent) end
+end
+local function CastIconPortraitOverlay(bd, on)
+    local overlay = bd._castIconOverlay
+    if on then
+        if not overlay then
+            overlay = POOL.CreateFrame("Frame", nil, bd)
+            overlay:SetAllPoints(bd)
+            bd._castIconOverlay = overlay
+        end
+        overlay:SetFrameStrata(bd:GetFrameStrata())
+        overlay:SetFrameLevel(bd:GetFrameLevel() + 3)
+    elseif not overlay then
+        return
+    end
+    local parent = on and overlay or bd
+    MoveDecoration(bd._shapeBorderTex, parent)
+    MoveDecoration(bd._innerShadow, parent)
+    MoveDecoration(bd._outerRing, parent)
+end
+
 -- Show Icon on Portrait: lays the cast icon over the portrait backdrop bd, or
 -- (bd nil) hands it back to the bar layout. ico = the cast icon frame, tex =
 -- its texture, s = the unit's settings. Our own frames only (the options
@@ -412,6 +448,7 @@ end
 -- view round the icon. Levelled over the backdrop and its 3D model.
 -- ico._pbd = the backdrop it sits on.
 function ns.UF_CastIconPortraitLayout(ico, tex, bd, s)
+    if ico._pbd and ico._pbd ~= bd then CastIconPortraitOverlay(ico._pbd, false) end
     if not bd then
         if not ico._pbd then return end
         ico._pbd = nil
@@ -439,6 +476,16 @@ function ns.UF_CastIconPortraitLayout(ico, tex, bd, s)
     -- (frame +10) still closes an attached portrait's edges over the icon.
     ico:SetFrameStrata(bd:GetFrameStrata())
     ico:SetFrameLevel(bd:GetFrameLevel() + 2)
+    if not ico._pOverlayHooked then
+        ico:HookScript("OnShow", function(self)
+            if self._pbd then CastIconPortraitOverlay(self._pbd, true) end
+        end)
+        ico:HookScript("OnHide", function(self)
+            if self._pbd then CastIconPortraitOverlay(self._pbd, false) end
+        end)
+        ico._pOverlayHooked = true
+    end
+    CastIconPortraitOverlay(bd, ico:IsShown())
     if not tex then return end
     tex:ClearAllPoints()
     tex:SetAllPoints(ico)
@@ -491,6 +538,32 @@ function ns.UF_CastIconPortraitLayout(ico, tex, bd, s)
         tex:RemoveMaskTexture(ico._pMask)
         ico._pMaskOn = nil
     end
+end
+
+-- Resource Bars' Embed in Player Portrait lays its cast icon out with the same geometry:
+-- the player portrait's backdrop and settings, or nil plus why. "uf": the Unit Frames
+-- player cast bar already shows its icon there (two icons would stack); else there is no
+-- EllesmereUI player portrait to embed in (the stock styles own the icon, as for ours).
+function ns.UF_GetPlayerCastPortrait()
+    local p = db and db.profile
+    if not p or ns.GetUnitFrameSource("player") ~= "eui" or ns.UF_Blizz() then return nil end
+    local s = GetSettingsForUnit("player")
+    if s.showPortrait == false or (s.portraitStyle or p.portraitStyle or "attached") == "none"
+        or (s.portraitMode or p.portraitMode or "2d") == "none" then return nil end
+    if s.showPlayerCastbar and ns.UF_CastIconOnPortrait("player", s) then return nil, nil, "uf" end
+    local pt = frames.player and frames.player.Portrait
+    return pt and pt.backdrop, s
+end
+
+-- A module that lays something over the player portrait asks to be called back after
+-- each frame reload, which can move, reshape or remove the portrait: one callback per
+-- key, nil drops it. The reload pays one table walk, empty unless a module asked.
+local portraitWatchers = {}
+function ns.UF_WatchPlayerPortrait(key, fn)
+    portraitWatchers[key] = fn
+end
+function ns.UF_PlayerPortraitChanged()
+    for _, fn in pairs(portraitWatchers) do fn() end
 end
 
 -- The live cast bar's side of Show Icon on Portrait, run as LayoutCastbarIcon's
@@ -565,6 +638,8 @@ local function ApplyUnitFrameCastColor(castbar)
     -- Zero-alloc: values flow as scalars instead of building up to three throwaway
     -- color tables per call (two default literals + the blended kick tint).
     local r, g, b
+    -- Base fill colour (what ReloadFrames gives the StatusBar), before the kick blend.
+    local br, bg, bb
     if settings and settings.castbarClassColored and ownerUnit == "player" then
         local _, classToken = UnitClass(ownerUnit)
         if issecretvalue(classToken) then classToken = nil end
@@ -572,22 +647,46 @@ local function ApplyUnitFrameCastColor(castbar)
             local cc = EllesmereUI.GetClassColor(classToken)
             if cc then r, g, b = cc.r, cc.g, cc.b end
         end
+        br, bg, bb = r, g, b
     end
     if not r then
         local baseTint = (settings and settings.castbarFillColor) or GetCastbarColor()
+        br, bg, bb = baseTint.r, baseTint.g, baseTint.b
         if IsKickCastbarUnit(ownerUnit) then
             local readyTint = (settings and settings.castbarInterruptReadyColor) or UF_KICK_READY_TINT
             r, g, b = ComputeCastBarTint(readyTint, baseTint)
         else
-            r, g, b = baseTint.r, baseTint.g, baseTint.b
+            r, g, b = br, bg, bb
         end
     end
+    local uc = (settings and settings.castbarUninterruptibleColor) or UF_UNINTERRUPT_GREY
+    if not castbar._blizzCast then
+        -- Uninterruptible colour folded into the textured tint layer and the base
+        -- fill under it (the nameplates' approach): the texture stays visible and
+        -- its transparent pixels cannot show the interruptible colour. The flat
+        -- shield wash below would cover the texture. The fold is secret-safe.
+        local ev = C_CurveUtil.EvaluateColorValueFromBoolean
+        local uninterruptible = GetCastbarUninterruptible(castbar)
+        castbar.castTintLayer:SetVertexColor(ev(uninterruptible, uc.r, r),
+            ev(uninterruptible, uc.g, g), ev(uninterruptible, uc.b, b), 1)
+        -- Same alpha as the ReloadFrames SetStatusBarColor sites.
+        local baseA = ((settings and settings.castFillOpacity or 100) < 100) and 0
+            or (db and db.profile.castbarOpacity or 1)
+        castbar:SetStatusBarColor(ev(uninterruptible, uc.r, br),
+            ev(uninterruptible, uc.g, bg), ev(uninterruptible, uc.b, bb), baseA)
+        if castbar._shieldHost and not castbar._shieldOff then
+            castbar._shieldHost:SetAlpha(0)
+            castbar._shieldOff = true
+        end
+        return
+    end
+    castbar._shieldOff = nil
     castbar.castTintLayer:SetVertexColor(r, g, b)
     if castbar._shieldedTint then
         -- Uninterruptible overlay colour (defaults to grey). Its alpha is toggled
         -- from the secret "not interruptible" flag, so the colour is always set and
-        -- only becomes visible on uninterruptible casts.
-        local uc = (settings and settings.castbarUninterruptibleColor) or UF_UNINTERRUPT_GREY
+        -- only becomes visible on uninterruptible casts. Only Blizzard Style
+        -- (tint layer hidden) still uses this wash.
         -- Explicit vertex alpha: Midnight's 3-arg SetVertexColor leaves the
         -- vertex alpha at an unexpected value (measured 0.5 with the gray
         -- default -- GetVertexColor returned a=r), and the composite with the
@@ -974,6 +1073,16 @@ local function CreateCastBar(frame, unit, settings)
         -- shows a target (boss frames: showCastTarget false with no UI to enable it)
         -- the name owns the row and gets 80% before truncating.
         local nameW = (cb._showTarget == false) and (barW * 0.80) or textW
+        -- Show Full Spell Name: the name gets the whole row less the duration's
+        -- slot (both sides when centered) and a shown target's slot, and
+        -- shrinks to fit it (cb:_fitSpellName after each cast start).
+        if cb._fitName then
+            nameW = barW - 8 - (showDur and timerW * (nameSide == "center" and 2 or 1) or 0)
+            if not cb._combineNT and cb.Target:IsShown() and tgtSide ~= nameSide then
+                nameW = nameW - textW
+            end
+            if nameW < 20 then nameW = 20 end
+        end
         -- Combine Spell Name and Target suppresses the target element, so the combined
         -- name owns the row and gets the wide budget.
         cb.Text:ClearAllPoints()
@@ -981,7 +1090,7 @@ local function CreateCastBar(frame, unit, settings)
             cb.Text:Hide()
         else
             local pt, xb, jh = ns.GetCastTextAnchor(nameSide, showDur and durSide == nameSide, timerW, false)
-            cb.Text:SetWidth(cb._combineNT and (barW * 0.80) or nameW)
+            cb.Text:SetWidth((cb._combineNT and not cb._fitName) and (barW * 0.80) or nameW)
             cb.Text:SetJustifyH(jh)
             cb.Text:SetPoint(pt, cb, pt, xb + (cb._nameOX or 0), 1 + (cb._nameOY or 0))
             cb.Text:Show()
@@ -995,10 +1104,14 @@ local function CreateCastBar(frame, unit, settings)
             cb.Target:SetPoint(pt, cb, pt, xb + (cb._tgtOX or 0), (cb._tgtOY or 0))
         end
         -- Duration/timer: side is only "left"/"right"; visibility via _showDuration.
+        -- Its box is wider than the room it reserves (timerW), up to half the
+        -- bar: the countdown sits justified at the anchored edge, and a
+        -- pushback's added time ("1.5+0.50") still fits in a wide font instead
+        -- of being cut off.
         do
             local pt, xb, jh = ns.GetCastTextAnchor(durSide, false, timerW, true)
             cb.Time:ClearAllPoints()
-            cb.Time:SetWidth(timerW)
+            cb.Time:SetWidth(math.max(timerW * 2.5, barW * 0.5))
             cb.Time:SetJustifyH(jh)
             cb.Time:SetPoint(pt, cb, pt, xb + (cb._durOX or 0), (cb._durOY or 0))
         end
@@ -1018,6 +1131,9 @@ local function CreateCastBar(frame, unit, settings)
     castbar._tgtSide  = settings.castSpellTargetSide or "right"
     castbar._durSide  = settings.castDurationSide or "right"
     castbar._showDuration = settings.showCastDuration ~= false
+    castbar._fullCraft = settings.castFullCraftTime == true
+    castbar._fitName = settings.castFitSpellName == true or nil
+    castbar._nameSize = settings.castSpellNameSize or 11
     castbar._showTarget = settings.showCastTarget ~= false
     castbar._layoutTextZones = LayoutCastTextZones
     LayoutCastTextZones(castbar)
@@ -1036,7 +1152,20 @@ local function CreateCastBar(frame, unit, settings)
         self._tgtSide  = s.castSpellTargetSide or "right"
         self._durSide  = s.castDurationSide or "right"
         self._showDuration = s.showCastDuration ~= false
+        self._fullCraft = s.castFullCraftTime == true
+        self._fitName = s.castFitSpellName == true or nil
+        self._nameSize = s.castSpellNameSize or 11
         if self._layoutTextZones then self:_layoutTextZones() end
+        -- Settings refresh resets the name to its configured size; re-fit a
+        -- cast in flight.
+        if self._fitName and self.spellName then self:_fitSpellName() end
+    end
+
+    -- Show Full Spell Name: shrink the shown name (spell, craft count or
+    -- "Spell - Target") to the width LayoutCastTextZones gave it. _fitStr is
+    -- the clean copy built at cast start; nil (secret) keeps the size.
+    castbar._fitSpellName = function(self)
+        EllesmereUI.FitCastName(self.Text, self._fitStr, self._nameSize or 11)
     end
 
     local castTintLayer = castbar:CreateTexture(nil, "ARTWORK", nil, 1)
@@ -1149,33 +1278,28 @@ local function CreateCastBar(frame, unit, settings)
     end
 
     castbar.CustomTimeText = function(self, durationObject)
+        local time = self.Time
         if self._showDuration == false then
-            self.Time:SetText("")
-            self.Time:Hide()
-            self._timeBucket = nil
+            if time:IsShown() then
+                time:SetText("")
+                time:Hide()
+            end
             return
         end
-        self.Time:Show()
+        time:Show()
+        if self._craftExtra and durationObject then
+            EllesmereUI.SetCraftTimerText(self, time, durationObject:GetRemainingDuration(), false)
+            return
+        end
         if durationObject then
-            -- oUF calls this per RENDER FRAME, but the displayed value has %.1f
-            -- precision -- format + SetText only when the displayed tenth actually
-            -- changes (~6x fewer at 60fps, more uncapped). Secret durations (other
-            -- units' casts in combat) can't be floored: fail open to formatting every
-            -- call (SetFormattedText accepts secrets). The delay branch is rare
-            -- (pushback) and stays unmemoized.
+            -- The engine calls this only when the shown tenth can have changed
+            -- (CastOnUpdate paces it), so every call formats. SetFormattedText
+            -- accepts the secret durations of other units' casts in combat.
             local duration = durationObject:GetRemainingDuration()
             if self.delay and self.delay ~= 0 then
-                self._timeBucket = nil
-                self.Time:SetFormattedText('%.1f|cffff0000%s%.2f|r', duration, self.channeling and '-' or '+', self.delay)
-            elseif issecretvalue and issecretvalue(duration) then
-                self._timeBucket = nil
-                self.Time:SetFormattedText('%.1f', duration)
+                time:SetFormattedText('%.1f|cffff0000%s%.2f|r', duration, self.channeling and '-' or '+', self.delay)
             else
-                local bucket = math.floor(duration * 10)
-                if bucket ~= self._timeBucket then
-                    self._timeBucket = bucket
-                    self.Time:SetFormattedText('%.1f', duration)
-                end
+                time:SetFormattedText('%.1f', duration)
             end
         end
     end
@@ -1376,6 +1500,22 @@ local function SetupShowOnCastBar(frame, unit)
             local combine = sOwn and sOwn.castCombineNameTarget == true
                 and (ownerUnit == "target" or ownerUnit == "focus")
             self._combineNT = combine or nil
+            -- Show Full Spell Name: the clean string the name element shows,
+            -- for measuring. Secret parts are never concatenated (nil = skip).
+            if self._fitName then
+                local n = self.spellName
+                if n and not issecretvalue(n) then
+                    if self._craftExtra and self._craftCountSuffix then
+                        n = n .. self._craftCountSuffix
+                    end
+                    if combine and hasTarget then
+                        n = (not issecretvalue(spellTarget)) and (n .. " - " .. spellTarget) or nil
+                    end
+                else
+                    n = nil
+                end
+                self._fitStr = n
+            end
             if combine then
                 -- The separate target element is fully suppressed; the target
                 -- rides appended to the spell NAME element instead.
@@ -1417,6 +1557,7 @@ local function SetupShowOnCastBar(frame, unit)
                 end
             end
             if self._layoutTextZones then self:_layoutTextZones() end
+            if self._fitName then self:_fitSpellName() end
         end
         if savedCastHook then savedCastHook(self, ...) end
         UpdateUnitFrameKickTick(self)
@@ -1518,9 +1659,12 @@ local function ApplyBlizzCastbarState()
         -- there is no EUI cast bar, so leave Blizzard's alone. Visibility "never"
         -- counts as no replacement too: our cast bar is built now but hides with the
         -- frame, and taking Blizzard's away would leave no player cast bar at all.
+        -- Nor while ours stands down for the controller under WoW Forever's
+        -- Gamepad interface style, whose cast bar is Blizzard's own.
         local suppress = (db.profile.player.showPlayerCastbar
             and ns.VisEffective(db.profile.player) ~= "never"
-            and ns.GetUnitFrameSource("player") == "eui") or false
+            and ns.GetUnitFrameSource("player") == "eui"
+            and not (ns._ufCastPadHidden and EllesmereUI.PadGamepadUI())) or false
         EllesmereUI.SetPlayerCastBarSuppressed("UnitFrames", suppress)
     end
 end
@@ -1529,10 +1673,12 @@ end
 -- draws its own player cast bar, so ours stands down while a controller is
 -- connected. It rides the same element switch "Show Player Cast Bar" off uses,
 -- keyed on a runtime flag the reload and visibility passes also read
--- (ns._ufCastPadHidden); the saved toggle is never written and Blizzard's bar
--- stays suppressed. The pad edges are watched only while the option is on and
--- our player cast bar is on screen. padOn is the watcher's verdict; the login,
--- reload and options callers pass nothing and it is read live.
+-- (ns._ufCastPadHidden); the saved toggle is never written. Blizzard's bar
+-- stays suppressed, except under WoW Forever's Gamepad interface style: from
+-- build 70425 that style draws the cast on Blizzard's player bar itself, so it
+-- is handed back meanwhile. The pad edges are watched only while the option is
+-- on and our player cast bar is on screen. padOn is the watcher's verdict; the
+-- login, reload and options callers pass nothing and it is read live.
 function ns.UF_ApplyGamepadCastbar(padOn)
     local s = db and db.profile and db.profile.player
     local frame = frames.player
@@ -1555,6 +1701,7 @@ function ns.UF_ApplyGamepadCastbar(padOn)
     end
     if hide == (ns._ufCastPadHidden == true) then return end
     ns._ufCastPadHidden = hide
+    ApplyBlizzCastbarState()
     if not cb then return end
     local castbarBg = cb:GetParent()
     if hide then

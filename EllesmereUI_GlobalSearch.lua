@@ -29,9 +29,9 @@ local function ModuleLabel(config, folder)
     return title, title
 end
 
--- A page's name as its tab shows it (EllesmereUI.TAB_LABEL_OVERRIDES), localized.
-local function PageLabel(page)
-    return EllesmereUI.L(EllesmereUI.TAB_LABEL_OVERRIDES[page] or page)
+-- A page's name as its tab shows it (EUI_NS.GetTabLabel), localized.
+local function PageLabel(folder, page)
+    return EllesmereUI.L(ns.GetTabLabel(folder, page))
 end
 
 -------------------------------------------------------------------------------
@@ -180,10 +180,10 @@ local function BuildCoarseCandidates()
             -- moduleText is the plain-text form used in the haystack.
             local moduleLabel, moduleText = ModuleLabel(config, folder)
             for _, page in ipairs(config.pages) do
-                local pageLabel = PageLabel(page)
+                local pageLabel = PageLabel(folder, page)
                 -- A relabeled tab stays findable by its page identity too.
                 local pageText = pageLabel
-                if EllesmereUI.TAB_LABEL_OVERRIDES[page] then
+                if ns.GetTabLabel(folder, page) ~= page then
                     pageText = pageLabel .. " " .. EllesmereUI.L(page)
                 end
                 _coarseCandidates[#_coarseCandidates + 1] = {
@@ -244,6 +244,9 @@ local function BuildModuleAliases()
         -- Without the "+", and the module's former name.
         EllesmereUIBlizzardSkin    = { "blizzard skins", "blizz ui enhanced" },
         EllesmereUIQuickdraw       = { "radial", "wheel", "ring menu", "palette", "grid", "arc", "fan", "action wheel", "action palette", "action menu" },
+        EllesmereUILoadoutManager  = { "gear swap", "talent swap", "equipment manager", "loadouts" },
+        -- The module's former name.
+        EllesmereUIRaidFrames      = { "raid frames" },
     }
     for folder, list in pairs(EXTRA_ALIASES) do
         if ns.modules and ns.modules[folder] then
@@ -752,7 +755,7 @@ local function PrebuildJob(job)
     -- restore still runs: the live visit happened at whatever selection the player made
     -- themselves, but an EARLIER variant job may have left the module's selector moved.
     local cacheKey = job.folder .. "::" .. job.page
-    if not (ns.pageCache and ns.pageCache[cacheKey]) then
+    if not (ns.pageCache and ns.pageCache[cacheKey] and not ns.pageCache[cacheKey].stale) then
         local savedMethods = {}
         for _, name in ipairs(_CONTENT_HEADER_METHODS) do
             savedMethods[name] = EllesmereUI[name]
@@ -796,7 +799,7 @@ local function RunPrebuildPass(onComplete)
                 -- cache-restore could pick up instead of the live ones.
                 local cacheKey = folder .. "::" .. page
                 -- A link tab (config.pageLinks) has no page of its own to build.
-                if not (ns.pageCache and ns.pageCache[cacheKey])
+                if not (ns.pageCache and ns.pageCache[cacheKey] and not ns.pageCache[cacheKey].stale)
                    and not (config.pageLinks and config.pageLinks[page]) then
                     -- Selector-driven pages (CDM bar / unit dropdowns) expand to one
                     -- job PER variant so each tick stays one build; the last variant
@@ -1051,10 +1054,10 @@ local function EnsureSearchUI()
                         name = name .. "  (" .. TitleCaseSection(entry.labelLoc) .. ")"
                     end
                     row._label:SetText(accentHex .. EllesmereUI.L("Section") .. ":|r " .. name)
-                    row._sub:SetText(JoinBreadcrumb(GetModuleDisplayName(entry.module), PageLabel(entry.page)))
+                    row._sub:SetText(JoinBreadcrumb(GetModuleDisplayName(entry.module), PageLabel(entry.module, entry.page)))
                 else
                     row._label:SetText(entry.labelLoc and (entry.label .. "  (" .. entry.labelLoc .. ")") or entry.label)
-                    row._sub:SetText(JoinBreadcrumb(GetModuleDisplayName(entry.module), PageLabel(entry.page)))
+                    row._sub:SetText(JoinBreadcrumb(GetModuleDisplayName(entry.module), PageLabel(entry.module, entry.page)))
                 end
                 row:SetScript("OnClick", function() JumpToResult(entry, sidebarSearchBox) end)
                 row:Show()

@@ -133,21 +133,39 @@ local function RegisterUFUnlockElements()
                     local unit = (k == "boss") and "boss1" or k
                     local s = GetSettingsForUnit(unit)
                     if not s then return end
+                    local oldW = s.frameWidth
+                    -- The pet, ToT and FoT frames always attach their portrait.
+                    local miniUnit = unit == "pet" or unit == "targettarget" or unit == "focustarget"
                     local wPStyle = s.portraitStyle or db.profile.portraitStyle or "attached"
+                    if miniUnit and wPStyle == "detached" then wPStyle = "attached" end
                     local showPortrait = wPStyle ~= "none" and s.showPortrait ~= false
                     local isAttached = wPStyle == "attached"
                     if showPortrait and isAttached then
-                        local pSizeAdj = s.portraitSize or 0
-                        if not isAttached then pSizeAdj = pSizeAdj + 10 end
+                        -- The portrait's width, as GetFrameDimensions adds it:
+                        -- the one subtraction that gives a reported size back.
+                        local adjPH
                         local powerPos = s.powerPosition or "below"
                         local powerIsAtt = (powerPos == "below" or powerPos == "above")
-                        local ptH = s.healthHeight + (powerIsAtt and (s.powerHeight or 6) or 0)
-                        local adjPH = ptH + pSizeAdj
-                        if adjPH < 8 then adjPH = 8 end
+                        if miniUnit then
+                            -- A mini portrait squares off the bar stack, which
+                            -- only a WoW Forever pet's attached power bar grows
+                            -- (StyleSimpleFrame); Size does not touch it.
+                            local petPowerH = (unit == "pet" and ns.UF_PetHasPower and powerIsAtt) and (s.powerHeight or 6) or 0
+                            adjPH = s.healthHeight + petPowerH
+                        else
+                            local pSizeAdj = s.portraitSize or 0
+                            local ptH = s.healthHeight + (powerIsAtt and (s.powerHeight or 6) or 0)
+                            adjPH = ptH + pSizeAdj
+                            if adjPH < 8 then adjPH = 8 end
+                        end
                         s.frameWidth = math.max(PP.Snap(w - adjPH), 50)
                     else
                         s.frameWidth = math.max(PP.Snap(w), 50)
                     end
+                    -- A size match re-applied at the width the frame already has
+                    -- (the settle pass re-runs every match after any anchored
+                    -- element resizes) leaves nothing to rebuild.
+                    if EllesmereUI._propagatingMatch and s.frameWidth == oldW then return end
                     Rebuild()
                 end,
                 setHeight = function(k, h)
@@ -164,7 +182,9 @@ local function RegisterUFUnlockElements()
                     local btbPos = s.btbPosition or "bottom"
                     local btbIsAtt = (btbPos == "top" or btbPos == "bottom")
                     local btbH = (s.bottomTextBar and btbIsAtt) and (s.bottomTextBarHeight or 16) or 0
+                    local oldH = s.healthHeight
                     s.healthHeight = math.max(PP.Snap(h - powerH - btbH), 8)
+                    if EllesmereUI._propagatingMatch and s.healthHeight == oldH then return end
                     Rebuild()
                 end,
                 loadPos = function(k)
@@ -304,8 +324,14 @@ local function RegisterUFUnlockElements()
             elements[#elements + 1] = bossElem
         end
 
-        -- Conditional elements
-        if ns.GetUnitFrameSource("player") == "eui" and db.profile.player.showClassPowerBar and not db.profile.player.lockClassPowerToFrame then
+        -- Conditional elements. WoW Forever: the style that builds
+        -- (ns.UF_ForeverCPStyle; a rogue under the EllesmereUI look reads its
+        -- own), not the shared showClassPowerBar.
+        local cpShown = db.profile.player.showClassPowerBar
+        if ns.UF_ForeverCPStyle then
+            cpShown = ns.UF_ForeverCPStyle(db.profile.player.classPowerStyle or "none") ~= "none"
+        end
+        if ns.GetUnitFrameSource("player") == "eui" and cpShown and not db.profile.player.lockClassPowerToFrame then
             elements[#elements + 1] = MakeUFElement("classPower", 9)
         end
 

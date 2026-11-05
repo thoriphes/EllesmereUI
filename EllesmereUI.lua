@@ -359,7 +359,8 @@ local ICONS_PATH    = MEDIA_PATH .. "icons\\"
 -------------------------------------------------------------------------------
 --  Season M+ Portals -- single source of truth for every portal/teleport list in
 --  the suite (Chat flyout, Minimap flyout, QoL /keys resolver, DataBars tooltip).
---  Update ONCE here each season. Order = flyout grid order (top-left to bottom-right).
+--  SEASON UPDATE: one entry per dungeon of the new Mythic+ pool, updated ONCE
+--  here. Order = flyout grid order (top-left to bottom-right).
 --    spellID     - primary teleport spell id
 --    short       - abbreviated label used by the flyout buttons
 --    dungeonID   - LFG dungeonID (GetLFGDungeonInfo name lookup)
@@ -682,7 +683,7 @@ local ADDON_ROSTER = {
     { folder = "EllesmereUIActionBars",        display = "Action Bars",          search_name = "EllesmereUI Action Bars"             },
     { folder = "EllesmereUINameplates",        display = "Nameplates",           search_name = "EllesmereUI Nameplates"              },
     { folder = "EllesmereUIUnitFrames",        display = "Unit Frames",          search_name = "EllesmereUI Unit Frames"             },
-    { folder = "EllesmereUIRaidFrames",        display = "Raid Frames",          search_name = "EllesmereUI Raid Frames"             },
+    { folder = "EllesmereUIRaidFrames",        display = "Raid & Party Frames",  search_name = "EllesmereUI Raid & Party Frames"     },
     { folder = "EllesmereUICooldownManager",   display = "Cooldown Manager",     search_name = "EllesmereUI Cooldown Manager"        },
     { folder = "EllesmereUIResourceBars",      display = "Resource & Cast Bars", search_name = "EllesmereUI Resource Bars Cast Bars" },
     { folder = "EllesmereUIAuraBuffReminders", display = "AuraBuff Reminders",   search_name = "EllesmereUI AuraBuff Reminders"      },
@@ -698,13 +699,18 @@ local ADDON_ROSTER = {
     { folder = "EllesmereUIBags",              display = "Bags",                 search_name = "EllesmereUI Bags"                    },
     { folder = "EllesmereUIDataBars",          display = "DataBars",             search_name = "EllesmereUI DataBars"                },
     { folder = "EllesmereUIQuickdraw",         display = "Quickdraw",            search_name = "EllesmereUI Quickdraw"               },
+    { folder = "EllesmereUILoadoutManager",    display = "Loadout Manager",      search_name = "EllesmereUI Loadout Manager"         },
+    { folder = "EllesmereUIGroupFinder",       display = "Group Finder",         search_name = "EllesmereUI Group Finder Premade Groups" },
     { folder = "EllesmereUIPartyMode",         display = "Party Mode",           search_name = "EllesmereUI Party Mode",             alwaysLoaded = true },
+    { folder = "EllesmereUISimpleLootCouncil", display = "Simple Loot Council",  search_name = "EllesmereUI Simple Loot Council Loot Council" },
 }
 
 -------------------------------------------------------------------------------
---  Addon Groups -- ordered sidebar categories (group = text header, no toggle; members
---  = child rows, order authoritative, coming-soon last). On EllesmereUI, not a file
---  local, to stay under the 200-local / CreateMainFrame 60-upvalue caps.
+--  Addon Groups -- ordered sidebar categories (group = header the player can
+--  collapse; members = child rows, order authoritative, coming-soon last). Keys
+--  stay stable when a label changes: other addons look groups up by key. On
+--  EllesmereUI, not a file local, to stay under the 200-local / CreateMainFrame
+--  60-upvalue caps.
 -------------------------------------------------------------------------------
 EllesmereUI.ADDON_GROUPS = {
     {
@@ -720,12 +726,22 @@ EllesmereUI.ADDON_GROUPS = {
         },
     },
     {
+        key     = "secondary",
+        label   = "Secondary Addons",
+        members = {
+            "EllesmereUIMythicTimer",
+            "EllesmereUIDamageMeters",
+            "EllesmereUIAuraBuffReminders",
+            "EllesmereUILoadoutManager",
+            "EllesmereUISimpleLootCouncil",
+        },
+    },
+    {
         key     = "qol",
-        label   = "QoL Addons",
+        label   = "Utility Addons",
         members = {
             "EllesmereUIQoL",
             "EllesmereUIForeverEssentials",
-            "EllesmereUIAuraBuffReminders",
             "EllesmereUIDataBars",
             "EllesmereUIQuickdraw",
             "EllesmereUIPartyMode",
@@ -733,16 +749,15 @@ EllesmereUI.ADDON_GROUPS = {
     },
     {
         key     = "reskin",
-        label   = "UI Reskin Addons",
+        label   = "UI Enhancements",
         members = {
             "EllesmereUIBlizzardSkin",
-            "EllesmereUIDamageMeters",
-            "EllesmereUIMythicTimer",
-            "EllesmereUIQuestTracker",
-            "EllesmereUIFriends",
-            "EllesmereUIMinimap",
             "EllesmereUIChat",
             "EllesmereUIBags",
+            "EllesmereUIQuestTracker",
+            "EllesmereUIGroupFinder",
+            "EllesmereUIFriends",
+            "EllesmereUIMinimap",
         },
     },
 }
@@ -782,6 +797,8 @@ end
 -- than sit in them disabled. Extend the set whenever a TOC gets that line.
 EllesmereUI.FOREVER_HIDDEN_ADDONS = {
     EllesmereUIMythicTimer = true, EllesmereUIFriends = true,
+    EllesmereUILoadoutManager = true,
+    EllesmereUIGroupFinder = true,
     -- Not an addon: the Dragon Riding profile pseudo-folder (its file returns at
     -- load on Forever), listed so the profile import/export checklists drop it.
     EllesmereUIDragonRiding = true,
@@ -791,9 +808,30 @@ EllesmereUI.FOREVER_HIDDEN_ADDONS = {
 EllesmereUI.FOREVER_ONLY_ADDONS = {
     EllesmereUIForeverEssentials = true,
 }
+-- Modules held back from the current release on every client: they leave the
+-- same lists and the packager does not ship their folder (.pkgmeta ignore);
+-- the tester zip ships every folder as the tree stands, held back or not
+-- (owner 2026-10-20). The Loadout Manager never loads (its TOC is LoadOnDemand
+-- and nothing loads it); a Group Finder listed here would stop at the top of
+-- each runtime file. To ship one, drop it here, drop its TOC's LoadOnDemand
+-- hold line and restore its .pkgmeta move-folders line. Simple Loot Council
+-- is held back too (listed here, with the hold line in both its TOCs, and
+-- .pkgmeta ignoring it); to switch it on locally for the guild's raid tests,
+-- drop it here and drop the hold line from both TOCs.
+EllesmereUI.HELD_BACK_ADDONS = {
+    EllesmereUILoadoutManager = true,
+    EllesmereUISimpleLootCouncil = true,
+}
 -- The set the running client leaves out.
-EllesmereUI._CLIENT_HIDDEN_ADDONS = (EUI_CLIENT_FOREVER == true)
-    and EllesmereUI.FOREVER_HIDDEN_ADDONS or EllesmereUI.FOREVER_ONLY_ADDONS
+do
+    local hidden = {}
+    for folder in pairs((EUI_CLIENT_FOREVER == true) and EllesmereUI.FOREVER_HIDDEN_ADDONS
+            or EllesmereUI.FOREVER_ONLY_ADDONS) do
+        hidden[folder] = true
+    end
+    for folder in pairs(EllesmereUI.HELD_BACK_ADDONS) do hidden[folder] = true end
+    EllesmereUI._CLIENT_HIDDEN_ADDONS = hidden
+end
 -- The profile import/export checklists read the profile data map, which stays
 -- complete (it drives the data itself); they list through this view instead.
 function EllesmereUI.VisibleProfileAddons(map)
@@ -1100,12 +1138,29 @@ local function MakeDropdownArrow(parent, xPad, ppOverride)
     return arrow
 end
 
+-- Page reuse (EllesmereUIOptions/EllesmereUI_FramePool.lua): ONE switch for the
+-- whole suite. On: a page built again gets its earlier frames back reset to
+-- fresh instead of building new ones. Off: every page takes the old
+-- build-and-drop path (the one-line rollback).
+EllesmereUI._reusePages = true
+-- The frame pool's table (EllesmereUI_PixelPerfect.lua makes it): for the
+-- resident helpers that build options frames (MakeBorder, AttachSmoothScrollbar)
+-- a plain CreateFrame until the options addon loads the pool, which fills this
+-- same table in place. Read through this local, never the public slot.
+local POOL = EllesmereUI._Pool
+if type(POOL) ~= "table" then
+    POOL = { CreateFrame = function(...) return CreateFrame(...) end }
+    EllesmereUI._Pool = POOL
+end
+
 local function MakeBorder(parent, r, g, b, a, ppOverride)
     -- PP.CreateBorder wrapper returning the MakeBorder API. ppOverride: PanelPP for panel context, else real PP (game context).
     local pp = ppOverride or PP
     local alpha = a or 1
     r = r or 0; g = g or 0; b = b or 0
-    local bf = CreateFrame("Frame", nil, parent)
+    -- On a page-pool host the border frame is pooled with it (PP.CreateBorder
+    -- dresses its kept strips again); anywhere else a plain new frame.
+    local bf = POOL.CreateFrame("Frame", nil, parent)
     bf:SetAllPoints(parent)
     bf:SetFrameLevel(parent:GetFrameLevel() + 1)
     bf:EnableMouse(false)
@@ -1162,6 +1217,34 @@ local function ResetRowCounters()
 end
 
 local function lerp(a, b, t) return a + (b - a) * t end
+
+-- Realm a character roster groups by. Forever is realmless: the ruleset name.
+function EllesmereUI.RealmGroupName()
+    if not EllesmereUI.IS_FOREVER then return GetRealmName() end
+    local R = Enum.GameRule
+    local function On(rule) return rule and C_GameRules.IsGameRuleActive(rule) end
+    if On(R.HardcoreRuleset) then return GUILD_PLAYSTYLE_HARDCORE end
+    local pvp, rp = On(R.PvPRuleset), On(R.RPRuleset)
+    if pvp and rp then return GDAPI_REALMTYPE_PVP_RP end
+    if pvp then return GDAPI_REALMTYPE_PVP end
+    if rp then return GDAPI_REALMTYPE_RP end
+    return GDAPI_REALMTYPE_NORMAL
+end
+
+-- Per-character key "Name<sep>RealmGroupName". Moves a store's entry from the
+-- old realm-name key (Forever only; retail keys match).
+function EllesmereUI.CharKey(sep, store)
+    local name, group = UnitName("player"), EllesmereUI.RealmGroupName()
+    if not name or not group then return nil end
+    local key = name .. sep .. group
+    if not EllesmereUI.IS_FOREVER then return key end
+    local old = name .. sep .. (GetRealmName() or "")
+    if type(store) == "table" and old ~= key and store[old] ~= nil then
+        if store[key] == nil then store[key] = store[old] end
+        store[old] = nil
+    end
+    return key
+end
 
 -- "Name-Realm" whisper/invite target. With realmName it builds (realm wins,
 -- spaces stripped); with a finished name alone it only collapses a stacked realm.
@@ -1230,6 +1313,7 @@ EllesmereUI.DIRECTIONS_ICON = MEDIA_PATH .. "icons\\eui-directions.png"
 EllesmereUI.SYNC_ICON       = MEDIA_PATH .. "icons\\sync.png"
 EllesmereUI.EYE_VISIBLE_ICON   = MEDIA_PATH .. "icons\\eui-visible.png"
 EllesmereUI.EYE_INVISIBLE_ICON = MEDIA_PATH .. "icons\\eui-invisible.png"
+EllesmereUI.UNLOCK_ICON     = MEDIA_PATH .. "icons\\unlockmode.png"
 
 -- Shared chat/tooltip colour escapes. Leave codes inside L()/Lf() literals alone:
 -- that text is the translation key.
@@ -1324,6 +1408,20 @@ function EllesmereUI.BuildAlertSoundTables()
         if f then paths[k] = dir .. f end
     end
     return paths, names, order
+end
+
+-- Plays one catalogue path: a file path, a SoundKit id (1 = silent), or a
+-- FileDataID when isFile is set (a number the catalogue cannot tell apart).
+function EllesmereUI.PlaySoundPath(path, isFile)
+    if type(path) == "number" then
+        if isFile then
+            PlaySoundFile(path, "Master")
+        elseif path ~= 1 then
+            PlaySound(path, "Master")
+        end
+    elseif path then
+        PlaySoundFile(path, "Master")
+    end
 end
 
 -- Statusbar texture catalogue: same contract as the sound catalogue above.
@@ -1423,6 +1521,39 @@ EllesmereUI.ABSORB_STYLE_NAMES = {
 }
 EllesmereUI.ABSORB_STYLE_ORDER = { "none", "striped", "stripedReversed", "stripedThick", "stripedThickR", "clean", "blizzard", "largeStripes", "largeStripesR", "pixelsShield", "pixelsShieldEdge", "pixelsShieldFill" }
 EllesmereUI.HEAL_ABSORB_STYLE_ORDER = { "none", "striped", "stripedReversed", "stripedThick", "stripedThickR", "clean", "blizzard", "largeOutlinedStripes", "largeOutlinedStripesR", "largeStripes", "largeStripesR", "pixelsShield" }
+
+-- Max Health Style: the temporary max health loss overlay of the Raid & Party
+-- Frames and the Unit Frames. Its own stripes, or any style the calling module's
+-- resolver knows (resolveTex(style, fallback): its built-ins and SharedMedia).
+-- Plain Striped tiles here, unlike on the absorbs; the pre-colored heal absorb
+-- styles draw untinted. Sets the fill's texture, tint, opacity and layer and
+-- returns it; the caller owns the fill rotation, any mask and the backing.
+EllesmereUI.MAX_HEALTH_STRIPES_TEX = "Interface\\AddOns\\EllesmereUI\\media\\textures\\shields\\striped-maxhp.png"
+EllesmereUI.MAX_HEALTH_COLOR = { r = 0.7, g = 0.1, b = 0.1 }
+do
+    local UNTINTED = { healBlizzModern = true, largeOutlinedStripes = true, largeOutlinedStripesR = true }
+    local WHITE = { r = 1, g = 1, b = 1 }
+    function EllesmereUI.ApplyMaxHealthStyle(bar, style, settings, resolveTex)
+        local tex, tiled
+        if style == "maxHealthStripes" then
+            tex, tiled = EllesmereUI.MAX_HEALTH_STRIPES_TEX, true
+        else
+            tex = resolveTex(style, "Interface\\Buttons\\WHITE8X8")
+            tiled = style == "striped" or EllesmereUI.ABSORB_TILED_STYLES[style] == true
+        end
+        local mc = UNTINTED[style] and WHITE or (settings and settings.maxHealthColor) or EllesmereUI.MAX_HEALTH_COLOR
+        bar:SetStatusBarTexture(tex)
+        bar:SetStatusBarColor(mc.r or 0.7, mc.g or 0.1, mc.b or 0.1,
+            settings and (settings.maxHealthOpacity or 100) / 100 or 1)
+        local fill = bar:GetStatusBarTexture()
+        if fill then
+            fill:SetDrawLayer("ARTWORK", 3)
+            fill:SetHorizTile(tiled)
+            fill:SetVertTile(tiled)
+        end
+        return fill
+    end
+end
 
 -- Numeric constants
 EllesmereUI.TEXT_WHITE_R = STYLE.TEXT_WHITE_R
@@ -1701,6 +1832,167 @@ do
     end
 end
 
+-- Stat letters for an item: its secondaries by amount, largest first ("MH"),
+-- and its tertiaries the same way ("L"), returned apart so callers can show
+-- the tertiaries smaller. Ties keep the list order. The letters stay English
+-- in every locale (the usual shorthand). Shared by the equipment flyout, the
+-- character sheet slots and the socket panel. Memoized per link (the link
+-- carries the bonus IDs, so catalyst variants of one item differ); an item
+-- whose stats have not loaded yet is not recorded, and its third return
+-- (pending) is true while the client has not cached the item at all.
+do
+    local SECONDARY = {
+        { "ITEM_MOD_CRIT_RATING_SHORT",    "C" },
+        { "ITEM_MOD_HASTE_RATING_SHORT",   "H" },
+        { "ITEM_MOD_MASTERY_RATING_SHORT", "M" },
+        { "ITEM_MOD_VERSATILITY",          "V" },
+    }
+    local TERTIARY = {
+        { "ITEM_MOD_CR_LIFESTEAL_SHORT", "L" },
+        { "ITEM_MOD_CR_AVOIDANCE_SHORT", "A" },
+        { "ITEM_MOD_CR_SPEED_SHORT",     "S" },
+    }
+
+    local function Letters(stats, list)
+        local picked = {}
+        for i = 1, #list do
+            local v = stats[list[i][1]]
+            if type(v) == "number" and v > 0 then picked[#picked + 1] = i end
+        end
+        table.sort(picked, function(a, b)
+            local va, vb = stats[list[a][1]], stats[list[b][1]]
+            if va ~= vb then return va > vb end
+            return a < b
+        end)
+        local out = ""
+        for n = 1, #picked do out = out .. list[picked[n]][2] end
+        return out
+    end
+
+    -- Stat amounts read off the item's tooltip data, for items whose stats
+    -- C_Item.GetItemStats leaves empty (gems: "+16 Versatility & +7 Critical
+    -- Strike"). Each listed stat's localized name (_G[key]) is found in a line,
+    -- in any letter case (some locales lower-case a stat mid-line), and paired
+    -- with the last number before it; a stat takes the first line that gives
+    -- it one. C_TooltipInfo only: never a scanning tooltip frame. The second
+    -- return is false when there was no tooltip data to read.
+    local LISTS = { SECONDARY, TERTIARY }
+    -- Each listed stat's key and lower-cased name, built on the first read
+    -- (the names are constant for the session).
+    local NAMES
+    local function StatNames()
+        if not NAMES then
+            NAMES = {}
+            for _, list in ipairs(LISTS) do
+                for i = 1, #list do
+                    local name = _G[list[i][1]]
+                    if type(name) == "string" and name ~= "" then
+                        NAMES[#NAMES + 1] = { list[i][1], name:lower() }
+                    end
+                end
+            end
+        end
+        return NAMES
+    end
+    local function TooltipStats(itemLink)
+        if not (C_TooltipInfo and C_TooltipInfo.GetHyperlink) then return nil, false end
+        local data = C_TooltipInfo.GetHyperlink(itemLink)
+        local lines = data and data.lines
+        if not lines then return nil, false end
+        local names = StatNames()
+        local stats
+        for _, line in ipairs(lines) do
+            local text = line.leftText
+            if type(text) == "string" and text ~= "" then
+                local low = text:lower()
+                for j = 1, #names do
+                    local key = names[j][1]
+                    if not (stats and stats[key]) then
+                        local pos = low:find(names[j][2], 1, true)
+                        if pos then
+                            local num = text:sub(1, pos - 1):match("(%d[%d%.,]*)%D*$")
+                            local v = num and tonumber((num:gsub("%D", "")))
+                            if v and v > 0 then
+                                stats = stats or {}
+                                stats[key] = v
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return stats, true
+    end
+
+    local secCache, terCache, cacheN = {}, {}, 0
+    function EllesmereUI.GetItemStatLetters(itemLink)
+        if type(itemLink) ~= "string" then return "", "", false end
+        local sec = secCache[itemLink]
+        if sec then return sec, terCache[itemLink], false end
+        local stats = C_Item.GetItemStats and C_Item.GetItemStats(itemLink)
+        local read = true
+        if not stats or next(stats) == nil then
+            stats, read = TooltipStats(itemLink)
+        end
+        local ter = ""
+        sec = ""
+        if stats then sec, ter = Letters(stats, SECONDARY), Letters(stats, TERTIARY) end
+        -- A read made before the item's data loads can come back short: one
+        -- that found no letters is recorded only once the client has the item
+        -- and its tooltip was read (an item with no such stats then stops
+        -- reading its tooltip).
+        if sec == "" and ter == "" then
+            local pending = C_Item.GetItemInfo(itemLink) == nil
+            if pending or not read then return sec, ter, pending end
+        end
+        if cacheN >= 2000 then wipe(secCache); wipe(terCache); cacheN = 0 end
+        secCache[itemLink], terCache[itemLink] = sec, ter
+        cacheN = cacheN + 1
+        return sec, ter, false
+    end
+
+    -- An item's letters for a main label and a smaller one: the secondaries,
+    -- then the tertiaries (when withTertiary). An item with only tertiaries
+    -- gives them for the main label; a nil link gives two empty strings.
+    local function StatLetterPair(link, withTertiary)
+        local sec, ter, pending = "", "", false
+        if link then sec, ter, pending = EllesmereUI.GetItemStatLetters(link) end
+        if not withTertiary then ter = "" end
+        if sec == "" then sec, ter = ter, "" end
+        return sec, ter, pending
+    end
+
+    -- Paints an item's letters into `main`, with its tertiaries in `small`,
+    -- the smaller label the caller hung off main's right; the pair is centred
+    -- along `anchor`'s bottom edge. Returns GetItemStatLetters' pending flag.
+    function EllesmereUI.PaintStatLetters(main, small, link, withTertiary, anchor)
+        local sec, ter, pending = StatLetterPair(link, withTertiary)
+        main:SetText(sec)
+        small:SetText(ter)
+        local w = main:GetStringWidth() + (ter ~= "" and small:GetStringWidth() + 1 or 0)
+        main:ClearAllPoints()
+        main:SetPoint("BOTTOMLEFT", anchor, "BOTTOM", -w / 2, 2)
+        return pending
+    end
+
+    -- At most two letters: three or more read as the first and "+" ("CHM"
+    -- shows "C+").
+    local function TwoLetters(s)
+        if #s > 2 then return s:sub(1, 1) .. "+" end
+        return s
+    end
+
+    -- Paints an item's letters as two rows the caller placed: the secondaries
+    -- in `main`, the tertiaries in `small`, each at most two letters. Returns
+    -- GetItemStatLetters' pending flag.
+    function EllesmereUI.PaintStatLetterRows(main, small, link, withTertiary)
+        local sec, ter, pending = StatLetterPair(link, withTertiary)
+        main:SetText(TwoLetters(sec))
+        small:SetText(TwoLetters(ter))
+        return pending
+    end
+end
+
 -- File-level PanelPP reference for panel layout code below
 local PanelPP = EllesmereUI.PanelPP
 
@@ -1800,16 +2092,53 @@ end
 -- key as tank, swap to dps: UnitGroupRolesAssigned still answers TANK for the
 -- life of the group, surviving /reload and a manual role set), so for the
 -- player the spec-derived role wins whenever spec data is readable. Other
--- units have no readable spec, so they keep the assigned role; call sites
--- keep their own secret guards on that value (the player's spec role is
--- never secret).
+-- units have no readable spec, so they keep the assigned role. The client
+-- makes that role secret for a unit whose identity it restricts, and the
+-- player test secret where unit comparisons are restricted: a secret role
+-- returns nil plus true, so every caller can compare what it gets (the role
+-- icon paints a secret one through Blizzard's own painter).
 function EllesmereUI.UnitEffectiveRole(unit)
-    if UnitIsUnit(unit, "player") then
+    local isPlayer = UnitIsUnit(unit, "player")
+    if not issecretvalue(isPlayer) and isPlayer then
         local spec = GetSpecialization and GetSpecialization()
         local role = spec and GetSpecializationRole and GetSpecializationRole(spec)
         if role then return role end
     end
-    return UnitGroupRolesAssigned(unit)
+    local role = UnitGroupRolesAssigned(unit)
+    if issecretvalue(role) then return nil, true end
+    return role
+end
+
+-- WoW Forever has no specs, so the effective role above is only the group's
+-- assigned one there: a tank's shape or stance tells the rest (Bear Form,
+-- Dire Bear Form or Defensive Stance, by shapeshift form ID). Callers on the
+-- Forever client add this to the role, but only while nobody in the group has
+-- the tank role assigned (EllesmereUI.GroupHasTankRole): then the role decides.
+function EllesmereUI.ForeverTankForm()
+    local form = GetShapeshiftFormID()
+    return form == 5 or form == 8 or form == 18
+end
+
+-- Whether anyone in the group, the player included, has the tank role assigned.
+-- The second return is true when a restricted (secret) role read leaves a "no"
+-- unsure; a tank found is always sure.
+do
+    local raidTok, partyTok = {}, {}
+    for i = 1, 40 do raidTok[i] = "raid" .. i end
+    for i = 1, 4 do partyTok[i] = "party" .. i end
+    function EllesmereUI.GroupHasTankRole()
+        local unsure = false
+        local role = UnitGroupRolesAssigned("player")
+        if issecretvalue(role) then unsure = true elseif role == "TANK" then return true, false end
+        local tok, count = nil, 0
+        if IsInRaid() then tok, count = raidTok, GetNumGroupMembers()
+        elseif IsInGroup() then tok, count = partyTok, GetNumGroupMembers() - 1 end
+        for i = 1, tok and math.min(count, #tok) or 0 do
+            role = UnitGroupRolesAssigned(tok[i])
+            if issecretvalue(role) then unsure = true elseif role == "TANK" then return true, false end
+        end
+        return false, unsure
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -2103,14 +2432,26 @@ do
         return false
     end
 
+    -- Hearthstone toys are account-wide, but the Draenic Hologem works only for
+    -- draenei and lightforged draenei: owning it is not enough on other races.
+    local function CanUseHearthToy(id)
+        if id ~= 210455 then return true end
+        local _, race = UnitRace("player")
+        if issecretvalue(race) then return false end
+        return race == "Draenei" or race == "LightforgedDraenei"
+    end
+    EllesmereUI.CanUseHearthToy = CanUseHearthToy
+
     -- Resolve slot 1: For Shamans with Astral Recall known:
     --   In M+/raid combat -> always Astral Recall (no CD checks, no secret values)
     --   If any owned toy is on CD -> Astral Recall (shorter CD)
     --   Otherwise -> random owned toy (variety)
     -- For non-Shamans: random owned toy HS, fallback to item 6948
-    function EllesmereUI.ResolveHearthSlot()
+    -- noAstralRecall: resolve as a non-Shaman (Quickdraw's Random Hearthstone).
+    function EllesmereUI.ResolveHearthSlot(noAstralRecall)
         local _, cls = UnitClass("player")
-        local isShaman = cls == "SHAMAN" and IsPlayerSpell(SHAMAN_ASTRAL_RECALL)
+        local isShaman = not noAstralRecall
+            and cls == "SHAMAN" and IsPlayerSpell(SHAMAN_ASTRAL_RECALL)
 
         if isShaman and InProtectedInstance() then
             local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(SHAMAN_ASTRAL_RECALL)
@@ -2121,7 +2462,7 @@ do
         local owned = {}
         for _, id in ipairs(HEARTH_TOYS) do
             local hasToy = PlayerHasToy and PlayerHasToy(id)
-            if hasToy then
+            if hasToy and CanUseHearthToy(id) then
                 owned[#owned + 1] = id
             end
         end
@@ -2175,12 +2516,16 @@ end
 -- opts: step (45), thumbMin (30), width (4), rightInset (2), topInset (4), bottomInset (topInset),
 -- trackParent (sf), level (2, above trackParent), trackAlpha (0.02), thumbAlpha (0.27),
 -- child (range = child height - sf height, else SafeScrollRange), onScroll(v), thumb (false = wheel only),
--- panelWheel (true: a surface inside the options panel, where Shift + wheel scales the panel instead).
+-- panelWheel (true: a surface inside the options panel, where Shift + wheel scales the panel instead),
+-- passWheel (true: while there is nothing to scroll, the wheel goes on to the options page; a surface inside a page).
 -- Returns UpdateThumb, ScrollTo(v) (immediate: stops the lerp, clamps, syncs the thumb).
 -- While a controller is in use the bar also carries step arrows and a page strip.
+-- On a page-pool host (EllesmereUI_FramePool.lua) its parts are pooled with the
+-- scroll frame, so a call on a reset scroll frame dresses the same bar again.
 function EllesmereUI.AttachSmoothScrollbar(sf, opts)
     opts = opts or {}
     local step, child, onScroll = opts.step or 45, opts.child, opts.onScroll
+    local Pool = POOL
     local function MaxScroll()
         if child then return math.max(0, child:GetHeight() - sf:GetHeight()) end
         return EllesmereUI.SafeScrollRange(sf)
@@ -2190,14 +2535,14 @@ function EllesmereUI.AttachSmoothScrollbar(sf, opts)
     if opts.thumb ~= false then
         local w, thumbMin, tp = opts.width or 4, opts.thumbMin or 30, opts.trackParent or sf
         local top = opts.topInset or 4
-        track = CreateFrame("Frame", nil, tp)
+        track = Pool.CreateFrame("Frame", nil, tp)
         track:SetWidth(w)
         track:SetPoint("TOPRIGHT", tp, "TOPRIGHT", -(opts.rightInset or 2), -top)
         track:SetPoint("BOTTOMRIGHT", tp, "BOTTOMRIGHT", -(opts.rightInset or 2), opts.bottomInset or top)
         track:SetFrameLevel(tp:GetFrameLevel() + (opts.level or 2))
         track:Hide()
         SolidTex(track, "BACKGROUND", 1, 1, 1, opts.trackAlpha or 0.02):SetAllPoints()
-        thumb = CreateFrame("Button", nil, track)
+        thumb = Pool.CreateFrame("Button", nil, track)
         thumb:SetWidth(w)
         thumb:SetFrameLevel(track:GetFrameLevel() + 1)
         thumb:EnableMouse(true)
@@ -2228,7 +2573,14 @@ function EllesmereUI.AttachSmoothScrollbar(sf, opts)
     end
 
     local target, smoothing = 0, false
-    local smoothFrame = CreateFrame("Frame", nil, sf)
+    -- The smoothing frame is owned by the scroll frame on a pool host (shown only
+    -- while it lerps, as always).
+    local smoothFrame
+    if Pool.Gen and Pool.Gen(sf) then
+        smoothFrame = Pool.Owned(sf, "smooth", "Frame", sf)
+    else
+        smoothFrame = CreateFrame("Frame", nil, sf)
+    end
     smoothFrame:Hide()
     local function Stop() smoothing = false; smoothFrame:Hide() end
     local function Set(v)
@@ -2248,11 +2600,16 @@ function EllesmereUI.AttachSmoothScrollbar(sf, opts)
         Set(math.max(0, math.min(maxScroll, cur + diff * math.min(1, 12 * elapsed))))
     end)
     sf:EnableMouseWheel(true)
-    local panelWheel = opts.panelWheel
+    local panelWheel, passWheel = opts.panelWheel, opts.passWheel
     sf:SetScript("OnMouseWheel", function(self, delta)
         if panelWheel and EllesmereUI._ShiftWheelScale(delta) then return end
         local maxScroll = MaxScroll()
-        if maxScroll <= 0 then return end
+        if maxScroll <= 0 then
+            local page = passWheel and EllesmereUI._scrollFrame
+            local fn = page and page:GetScript("OnMouseWheel")
+            if fn then fn(page, delta) end
+            return
+        end
         local base = smoothing and target or self:GetVerticalScroll()
         target = math.max(0, math.min(maxScroll, base - delta * step))
         if not smoothing then smoothing = true; smoothFrame:Show() end
@@ -2285,7 +2642,7 @@ function EllesmereUI.AttachSmoothScrollbar(sf, opts)
         if not smoothing then smoothing = true; smoothFrame:Show() end
     end
     local function PadArrow(point, icon, delta)
-        local b = CreateFrame("Button", nil, padSteps)
+        local b = Pool.CreateFrame("Button", nil, padSteps)
         b:SetSize(track:GetWidth() + 10, 14)
         b:SetPoint(point, track, point, 0, 0)
         b:SetFrameLevel(track:GetFrameLevel() + 1)
@@ -2305,11 +2662,11 @@ function EllesmereUI.AttachSmoothScrollbar(sf, opts)
             return
         end
         if not padSteps then
-            padSteps = CreateFrame("Frame", nil, track)
+            padSteps = Pool.CreateFrame("Frame", nil, track)
             padSteps:SetAllPoints(track)
             padSteps:SetFrameLevel(track:GetFrameLevel())
             -- Page strip under the thumb: a click pages toward the pointer.
-            local strip = CreateFrame("Button", nil, padSteps)
+            local strip = Pool.CreateFrame("Button", nil, padSteps)
             strip:SetPoint("TOPLEFT", track, "TOPLEFT", -5, 0)
             strip:SetPoint("BOTTOMRIGHT", track, "BOTTOMRIGHT", 5, 0)
             strip:SetFrameLevel(track:GetFrameLevel())
@@ -2403,9 +2760,24 @@ EllesmereUI._IS_STANDALONE  = IS_STANDALONE
 --               nudge. Runs before the anchor chain reads the frame's rect.
 --    ownsPosition (boolean) the module alone places the frame from its saved
 --               position (main chat, whose spot Blizzard's Edit Mode also
---               applies): anchor links never move it and it offers no link or
---               screen-edge menu, so no link becomes a third owner of the frame.
---               Mover drags and nudges still move it and save through savePos
+--               applies): anchor links never move it and it offers no link,
+--               so no link becomes a third owner of the frame (one stored on
+--               it is deleted when Unlock Mode opens). Mover drags and nudges
+--               still move it and save through savePos
+--    getScreenPoint / setScreenPoint (function(key) -> point,
+--               function(key, point))  an ownsPosition element that keeps its
+--               own screen relation: the cog's Relative to Screen menu reads
+--               and picks one of UIParent's nine points through these (CENTER
+--               = centered) instead of a screen-edge link. Without them an
+--               ownsPosition element offers no Relative to Screen
+--    isPositionHeld (function(key)) -> bool  true while something else places
+--               the frame (the quest tracker inside Blizzard's managed frame
+--               container): outside an unlock session, saved positions and
+--               anchor links leave it where it is
+--    noSpecLayout (boolean) spec override unlock layouts neither bank nor
+--               restore the element: one spot for every spec (the quest
+--               tracker, whose spot lives in the shared Edit Mode layout and
+--               takes a reload to change)
 --    linkedKeys (table)  list of element keys that move with this one
 --    noResize   (boolean) true for Blizzard elements that cannot be resized
 --    sizeFixedByLook (boolean) the current look fixes the element's size
@@ -2418,7 +2790,8 @@ EllesmereUI._IS_STANDALONE  = IS_STANDALONE
 --               units, the mover extends BELOW the frame (a boss cast bar,
 --               the Blizzard Style cast bar text box)
 --    getInsets  (function(key) -> l, r, t, b)  visual insets from the frame's
---               box to the rect the mover outlines (Blizzard Style unit frames)
+--               box to the rect the mover outlines (Blizzard Style unit frames;
+--               negative reaches outside it: the minimap's square frame)
 --    detachedMover (boolean) the frame refuses dependents (it carries a
 --               forbidden layout aspect), so the mover takes its screen spot by
 --               absolute anchor instead of anchoring to it
@@ -2448,6 +2821,10 @@ function EllesmereUI.MakeUnlockElement(opts)
         isAnchored    = opts.isAnchored,
         onLiveMove    = opts.onLiveMove,
         ownsPosition  = opts.ownsPosition,
+        getScreenPoint = opts.getScreenPoint,
+        setScreenPoint = opts.setScreenPoint,
+        isPositionHeld = opts.isPositionHeld,
+        noSpecLayout  = opts.noSpecLayout,
         linkedKeys    = opts.linkedKeys,
         noResize          = opts.noResize,
         linkedDimensions  = opts.linkedDimensions,
@@ -2499,7 +2876,7 @@ if not EllesmereUI.ResolveThemeColor then
     EllesmereUI.ResolveThemeColor = function(theme)
         theme = ResolveFactionTheme(theme)
         if theme == "Class Colored" then
-            local clr = CLASS_COLOR_MAP[playerClass]
+            local clr = (EllesmereUI.GetRawClassColor and EllesmereUI.GetRawClassColor(playerClass)) or CLASS_COLOR_MAP[playerClass]
             if clr then return clr.r, clr.g, clr.b end
             return DEFAULT_ACCENT_R, DEFAULT_ACCENT_G, DEFAULT_ACCENT_B
         elseif theme == "Custom Color" then
@@ -2537,7 +2914,7 @@ if not EllesmereUI.ResolveActiveAccent then
         local acc = p and p.euiAccent
         -- 1) per-profile euiAccent
         if acc and acc.useClass then
-            local c = CLASS_COLOR_MAP[playerClass]
+            local c = (EllesmereUI.GetRawClassColor and EllesmereUI.GetRawClassColor(playerClass)) or CLASS_COLOR_MAP[playerClass]
             if c then return c.r, c.g, c.b end
         end
         if acc and acc.custom then
@@ -2546,7 +2923,7 @@ if not EllesmereUI.ResolveActiveAccent then
         end
         -- 2) frozen global root (only when no explicit per-profile euiAccent)
         if (not acc) and db and db.useClassAccentColor then
-            local c = CLASS_COLOR_MAP[playerClass]
+            local c = (EllesmereUI.GetRawClassColor and EllesmereUI.GetRawClassColor(playerClass)) or CLASS_COLOR_MAP[playerClass]
             if c then return c.r, c.g, c.b end
         end
         local gca = db and db.customAccentColor
@@ -2911,6 +3288,15 @@ function EllesmereUI:EnsureLoaded()
     -- open retries after the user re-enables the addon.
     if not EllesmereUI.EnsureOptionsLoaded() then return end
     self._deferredLoaded = true
+    -- The page pool came with the options addon (EllesmereUI_FramePool.lua), which
+    -- filled the core's own pool table: the panel's page path calls these captured
+    -- functions, never the public slot.
+    local Pool = POOL
+    if Pool.Kept then
+        EUI_NS.PoolKept, EUI_NS.PoolCreateFrame = Pool.Kept, Pool.CreateFrame
+        EUI_NS.PoolIsIdle, EUI_NS.PoolGen, EUI_NS.PoolDevEndPass = Pool.IsIdle, Pool.Gen, Pool._DevEndPass
+        EUI_NS.PoolManaged, EUI_NS.PoolPin = Pool.Managed, Pool.Pin
+    end
     -- Deferred inits run inside the suite registration window: some options
     -- files register their module page from here (e.g. Party Mode).
     for i, fn in ipairs(self._deferredInits) do
@@ -2922,7 +3308,7 @@ end
 -------------------------------------------------------------------------------
 --  Slash commands
 -------------------------------------------------------------------------------
-EllesmereUI.VERSION = "9.3.9"
+EllesmereUI.VERSION = "9.7.6"
 
 -- Register this addon's version into a shared global table (taint-free at load time)
 if not _G._EUI_AddonVersions then _G._EUI_AddonVersions = {} end
@@ -3011,6 +3397,15 @@ EllesmereUI._RunConflictCheck = function()
             if not EllesmereUIDB then return true end
             return EllesmereUIDB[key] ~= false
         end
+        -- Another Mythic+ timer addon only clashes with the Mythic+ Timer window,
+        -- so it is named only while that window is on, and the message points at
+        -- its switch (the rest of Mythic+ Tools keeps running beside it).
+        local function MPlusTimerOn()
+            return _G._EMT_IsTimerEnabled and _G._EMT_IsTimerEnabled()
+        end
+        local function MPlusTimerMsg(label)
+            return EllesmereUI.Lf("%1$s conflicts with EllesmereUI's Mythic+ Timer. Turn off Enable Mythic+ Timer on the Mythic+ Timer tab of Mythic+ Tools, or disable %1$s.", label)
+        end
         local conflicts = {
             { addon = "ElvUI",                    label = "ElvUI",                      targets = "all",                              message = "Many of ElvUI's modules are incompatible with EllesmereUI. Make sure to disable any conflicting modules." },
             { addon = "DandersFrames",            label = "Danders Frames",             targets = { "EllesmereUIRaidFrames" } },
@@ -3022,7 +3417,7 @@ EllesmereUI._RunConflictCheck = function()
             -- check; moduleCheck adds the HoverCast-enabled check.
             { addon = "Clique",                   label = "Clique",                     targets = { "EllesmereUIRaidFrames" },
               moduleCheck = function() return _G._ERF_IsHoverCastEnabled and _G._ERF_IsHoverCastEnabled() end,
-              message = "Clique controls click-casting on the same Raid Frames as EllesmereUI's HoverCast, so they conflict. Disable the Clique addon to use HoverCast." },
+              message = "Clique controls click-casting on the same Raid & Party Frames as EllesmereUI's HoverCast, so they conflict. Disable the Clique addon to use HoverCast." },
             { addon = "TellMeWhen",               label = "TellMeWhen",                 targets = "all",                              message = "TellMeWhen overlaps with EllesmereUI's core positional architecture. If you ONLY use for sound alerts it should be okay but may still cause issues." },
             { addon = "Bartender4",               label = "Bartender4",                 targets = { "EllesmereUIActionBars" } },
             { addon = "Dominos",                  label = "Dominos",                    targets = { "EllesmereUIActionBars" } },
@@ -3057,9 +3452,12 @@ EllesmereUI._RunConflictCheck = function()
             { addon = "SkironCooldownManager",    label = "Skiron Cooldown Manager",    targets = { "EllesmereUICooldownManager" } },
             { addon = "ArcUI",                    label = "ArcUI",                      targets = { "EllesmereUICooldownManager", } },
             { addon = "Ayije_CDM",                label = "Ayije CDM",                  targets = { "EllesmereUICooldownManager", "EllesmereUIResourceBars" } },
-            { addon = "MythicPlusTimer",          label = "Mythic Plus Timer",          targets = { "EllesmereUIMythicTimer" } },
-            { addon = "WarpDeplete",              label = "WarpDeplete",                targets = { "EllesmereUIMythicTimer" } },
-            { addon = "MPlusTimer",               label = "MPlusTimer",                 targets = { "EllesmereUIMythicTimer" } },
+            { addon = "MythicPlusTimer",          label = "Mythic Plus Timer",          targets = { "EllesmereUIMythicTimer" },
+              moduleCheck = MPlusTimerOn, message = MPlusTimerMsg("Mythic Plus Timer") },
+            { addon = "WarpDeplete",              label = "WarpDeplete",                targets = { "EllesmereUIMythicTimer" },
+              moduleCheck = MPlusTimerOn, message = MPlusTimerMsg("WarpDeplete") },
+            { addon = "MPlusTimer",               label = "MPlusTimer",                 targets = { "EllesmereUIMythicTimer" },
+              moduleCheck = MPlusTimerOn, message = MPlusTimerMsg("MPlusTimer") },
             { addon = "ChonkyCharacterSheet",     label = "Chonky Character Sheet",     targets = { "EllesmereUIBlizzardSkin" },
               moduleCheck = function() return BlizzardSkinSubEnabled("themedCharacterSheet") end,
               message = "Chonky Character Sheet conflicts with the EllesmereUI's Character Sheet. Disable either Chonky or the Character Sheet skin in Blizzard UI Enhanced settings." },
@@ -3174,12 +3572,15 @@ end
 C_Timer.After(2, function()
     if EllesmereUIDB and EllesmereUIDB.firstInstallPopupShown then
         -- Defer while any intro popup is still pending/open; each runs the conflict check itself
-        -- when dismissed (RaidFrames / PatchNotes / WindowSkins / SpecOverrides / PTRManagers
-        -- popup files, plus the 12.1 launch video announcement in EllesmereUI_VideoGuides.lua).
+        -- when dismissed (RaidFrames / PatchNotes / WindowSkins / SpecOverrides / PTRManagers /
+        -- StyleLaunch / GroupFinder / KickTracker popup files, plus the 12.1 launch video
+        -- announcement in EllesmereUI_VideoGuides.lua).
         if EllesmereUI._raidFramesIntroPending or EllesmereUI._patchNotesIntroPending
            or EllesmereUI._windowSkinsIntroPending or EllesmereUI._specOvIntroPending
            or EllesmereUI._ptrManagersIntroPending or EllesmereUI._launchVideoIntroPending
-           or EllesmereUI._styleLaunchIntroPending or EllesmereUI._styleChoicePending then return end
+           or EllesmereUI._styleLaunchIntroPending or EllesmereUI._groupFinderIntroPending
+           or EllesmereUI._kickTrackerIntroPending
+           or EllesmereUI._styleChoicePending then return end
         EllesmereUI._RunConflictCheck()
     end
 end)
@@ -3265,6 +3666,8 @@ SlashCmdList.EUIRESETHINT = function()
             EllesmereUIDB.sidebarUnlockTipSeen = nil
             EllesmereUIDB.rfEyeHintSeen = nil
             EllesmereUIDB.bmIconHintDismissed = nil
+            EllesmereUIDB.cdmButtonTipSeen = nil
+            EllesmereUIDB.bagCategoryTipSeen = nil
         end
         EllesmereUI.Print("|cff00ff00[EllesmereUI]|r All hints reset. /reload to see them again.")
     end)
@@ -3303,6 +3706,87 @@ SlashCmdList.EUIDEV = function()
 end
 
 -------------------------------------------------------------------------------
+--  Status badge: a small dark tag with a faint accent wash, a 1px accent border, a
+--  pulsing accent dot and an accent label (the /euidev DEV MODE ACTIVE badge, Simple
+--  Loot Council's SLC ACTIVE). Made hidden through the page pool's CreateFrame, so a
+--  kept options page hands it back; the caller places it and shows it while its
+--  state holds. The dot pulses only while the badge shows. The accent is read when
+--  the badge is made.
+--  opts (optional): dot = false leaves the dot out (a plain text tag, nothing
+--  animated). onClick makes the badge a button: the wash brightens on hover and
+--  tooltip (a string, or a function returning one or nil) shows beside it; the
+--  caller turns the mouse off (EnableMouse) while a click would do nothing.
+-------------------------------------------------------------------------------
+function EllesmereUI.BuildStatusBadge(parent, text, name, opts)
+    local accent = ELLESMERE_GREEN
+    local dotted = not (opts and opts.dot == false)
+    local onClick = opts and opts.onClick
+    local f = POOL.CreateFrame(onClick and "Button" or "Frame", name, parent)
+    f:SetHeight(26)
+    f:EnableMouse(onClick and true or false)
+    f:Hide()
+
+    -- Dark base + faint accent wash for an on-brand tint
+    local bg = f:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(0.02, 0.02, 0.03, 0.62)
+    local wash = f:CreateTexture(nil, "BORDER")
+    wash:SetAllPoints()
+    wash:SetColorTexture(accent.r, accent.g, accent.b, 0.06)
+
+    PP.CreateBorder(f, accent.r, accent.g, accent.b, 0.9, 1, "OVERLAY", 7)
+
+    local label = f:CreateFontString(nil, "OVERLAY")
+    label:SetFont(EllesmereUI.EXPRESSWAY, 11,
+        (EllesmereUI.SlugFlag("OUTLINE, SLUG")) or "OUTLINE")
+    label:SetText(text)
+    label:SetTextColor(accent.r, accent.g, accent.b, 1)
+
+    if dotted then
+        -- Pulsing accent "LED" dot (recording-indicator vibe)
+        local dot = f:CreateTexture(nil, "ARTWORK")
+        dot:SetTexture("Interface\\Buttons\\WHITE8x8")
+        dot:SetVertexColor(accent.r, accent.g, accent.b, 1)
+        dot:SetSize(7, 7)
+        dot:SetPoint("LEFT", f, "LEFT", 9, 0)
+        DisablePixelSnap(dot)
+        local ag = dot:CreateAnimationGroup()
+        ag:SetLooping("BOUNCE")
+        local pulse = ag:CreateAnimation("Alpha")
+        pulse:SetFromAlpha(1); pulse:SetToAlpha(0.1)
+        pulse:SetDuration(0.7); pulse:SetSmoothing("IN_OUT")
+        f:SetScript("OnShow", function() ag:Play() end)
+        f:SetScript("OnHide", function() ag:Stop() end)
+        label:SetPoint("LEFT", dot, "RIGHT", 8, 0)
+        -- Size to content: dotPad(9) + dot(7) + gap(8) + text + rightPad(12)
+        f:SetWidth(9 + 7 + 8 + label:GetStringWidth() + 12)
+    else
+        label:SetPoint("CENTER", f, "CENTER", 0, 0)
+        f:SetWidth(12 + label:GetStringWidth() + 12)
+    end
+
+    if onClick then
+        local tooltip = opts.tooltip
+        f:SetScript("OnEnter", function(self)
+            wash:SetColorTexture(accent.r, accent.g, accent.b, 0.16)
+            local tip = tooltip
+            if type(tip) == "function" then tip = tip() end
+            if tip then EllesmereUI.ShowWidgetTooltip(self, tip) end
+        end)
+        f:SetScript("OnLeave", function()
+            wash:SetColorTexture(accent.r, accent.g, accent.b, 0.06)
+            EllesmereUI.HideWidgetTooltip()
+        end)
+        f:SetScript("OnClick", function(self)
+            wash:SetColorTexture(accent.r, accent.g, accent.b, 0.06)
+            EllesmereUI.HideWidgetTooltip()
+            onClick(self)
+        end)
+    end
+    return f
+end
+
+-------------------------------------------------------------------------------
 --  Dev Mode badge: a small top-left indicator shown while /euidev is active (the addon-
 --  restriction-forced CVars are on, forcing the restricted / secret-value environment for
 --  testing). Toggled by /euidev and re-checked on login, since the CVars persist across sessions.
@@ -3316,71 +3800,17 @@ do
 
     local badge
 
-    local function CreateDevBadge()
-        if badge then return badge end
-        local PP = EllesmereUI.PP
-        local accent = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
-
-        local f = CreateFrame("Frame", "EllesmereUIDevModeBadge", UIParent)
-        f:SetFrameStrata("HIGH")
-        f:SetHeight(26)
-        f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 16, -41)
-        f:EnableMouse(false)
-        f:Hide()
-
-        -- Dark base + faint accent wash for an on-brand tint
-        local bg = f:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        bg:SetColorTexture(0.02, 0.02, 0.03, 0.62)
-        local wash = f:CreateTexture(nil, "BORDER")
-        wash:SetAllPoints()
-        wash:SetColorTexture(accent.r, accent.g, accent.b, 0.06)
-
-        -- Accent 1px border (our own frame, safe)
-        if PP and PP.CreateBorder then
-            PP.CreateBorder(f, accent.r, accent.g, accent.b, 0.9, 1, "OVERLAY", 7)
-        end
-
-        -- Pulsing accent "LED" dot (recording-indicator vibe)
-        local dot = f:CreateTexture(nil, "ARTWORK")
-        dot:SetTexture("Interface\\Buttons\\WHITE8x8")
-        dot:SetVertexColor(accent.r, accent.g, accent.b, 1)
-        dot:SetSize(7, 7)
-        dot:SetPoint("LEFT", f, "LEFT", 9, 0)
-        if dot.SetSnapToPixelGrid then dot:SetSnapToPixelGrid(false); dot:SetTexelSnappingBias(0) end
-        local ag = dot:CreateAnimationGroup()
-        ag:SetLooping("BOUNCE")
-        local pulse = ag:CreateAnimation("Alpha")
-        pulse:SetFromAlpha(1); pulse:SetToAlpha(0.1)
-        pulse:SetDuration(0.7); pulse:SetSmoothing("IN_OUT")
-        f._pulse = ag
-
-        -- Label
-        local label = f:CreateFontString(nil, "OVERLAY")
-        label:SetFont(EllesmereUI.EXPRESSWAY, 11,
-            (EllesmereUI.SlugFlag("OUTLINE, SLUG")) or "OUTLINE")
-        label:SetText("DEV MODE ACTIVE")
-        label:SetTextColor(accent.r, accent.g, accent.b, 1)
-        label:SetPoint("LEFT", dot, "RIGHT", 8, 0)
-
-        -- Size to content: dotPad(9) + dot(7) + gap(8) + text + rightPad(12)
-        f:SetWidth(9 + 7 + 8 + label:GetStringWidth() + 12)
-
-        badge = f
-        return f
-    end
-
     function EllesmereUI.UpdateDevModeIndicator()
         if not EllesmereUI.IsDevModeActive() then
-            if badge then
-                if badge._pulse then badge._pulse:Stop() end
-                badge:Hide()
-            end
+            if badge then badge:Hide() end
             return
         end
-        local f = CreateDevBadge()
-        f:Show()
-        if f._pulse then f._pulse:Play() end
+        if not badge then
+            badge = EllesmereUI.BuildStatusBadge(UIParent, "DEV MODE ACTIVE", "EllesmereUIDevModeBadge")
+            badge:SetFrameStrata("HIGH")
+            badge:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 16, -41)
+        end
+        badge:Show()
     end
 
     -- CVars persist across sessions: check on login (deferred so the theme accent is fully resolved). PLAYER_LOGIN re-fires on /reload, so this covers both.
@@ -3483,8 +3913,9 @@ do
                 if not EllesmereUIDB then EllesmereUIDB = {} end
                 EllesmereUIDB.showMinimapButton = false
                 btn:Hide()
+                -- an open page re-reads its rows (a closed panel catches up when it next shows)
                 local rl = EllesmereUI and EllesmereUI._widgetRefreshList
-                if rl then for i = 1, #rl do rl[i]() end end
+                if rl and #rl > 0 then EllesmereUI:RefreshPage() end
             end
         end)
 
@@ -3538,6 +3969,14 @@ do
     function EllesmereUI.HideMinimapButton()
         if btn then btn:Hide() end
     end
+end
+
+-- Spell ID on Tooltip (Blizzard Skins+ > Tooltips & Menus, Global Settings >
+-- Developer): on unless turned off. Accounts from before that default keep it
+-- off through the spellid_default_on_v1 migration (EllesmereUI_Migration.lua).
+function EllesmereUI.SpellIDOn()
+    local db = EllesmereUIDB
+    return db ~= nil and db.showSpellID ~= false
 end
 
 -------------------------------------------------------------------------------
@@ -3728,6 +4167,25 @@ initFrame:SetScript("OnEvent", function(self, event)
             frame:HookScript("OnHide", RefreshProxy)
         end
 
+        -- The options page pool (EllesmereUI_FramePool.lua) resets a frame it hands
+        -- out again to the state of a new frame, which drops the hooks above: the
+        -- registration goes with them, so the code that dresses the frame again
+        -- registers it again, exactly as it registered the new frame.
+        function EllesmereUI._ForgetEscapeClose(frame)
+            if not escOpts[frame] then return end
+            escOpts[frame] = nil
+            for i = #escFrames, 1, -1 do
+                if escFrames[i] == frame then table.remove(escFrames, i) end
+            end
+            for i = #escModal, 1, -1 do
+                if escModal[i] == frame then table.remove(escModal, i) end
+            end
+            for i = #padOpen, 1, -1 do
+                if padOpen[i] == frame then table.remove(padOpen, i) end
+            end
+            RefreshProxy()
+        end
+
         -- Register the Vault once, regardless of which shortcut opens it.
         -- Blizzard's frame: never handed to the controller cursor.
         local function RegisterVaultEscapeClose()
@@ -3753,7 +4211,7 @@ initFrame:SetScript("OnEvent", function(self, event)
 
     -- Add EllesmereUI + Unlock Mode buttons to the Game Menu (pause menu); both share a single Layout hook to avoid double-push conflicts.
     if GameMenuFrame and not EllesmereUI._GetFFD(GameMenuFrame).euiBtn then
-        -- Game menu frame+button skinning lives in EllesmereUIBlizzardSkin.lua so it only
+        -- Game menu frame+button skinning lives in EllesmereUIBlizzardSkin (EUI_BlizzardSkin_Dialogs.lua) so it only
         -- applies when that addon is enabled; detect whether the skin is active so EUI's own buttons match the skinned menu style.
         local _blizzSkinLoaded = C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("EllesmereUIBlizzardSkin")
         -- "Reskin Pause Menu" is an independent toggle (default on); the migration blizzskin_reskin_master_split_v1 seeds reskinGameMenu for existing users.
@@ -4047,7 +4505,7 @@ initFrame:SetScript("OnEvent", function(self, event)
         -- it re-asserts every login and on toggle edits. Modifier-gated configs skip it: the engine renders always-on, which would override the user's hold-a-modifier preference (their combat aura IDs stay unavailable -- inherent trade).
         function EllesmereUI.SyncAuraSpellIDCVar()
             local db = EllesmereUIDB
-            local on = db and db.showSpellID
+            local on = EllesmereUI.SpellIDOn()
                 and (db.spellIDModifier or "none") == "none"
             pcall(EllesmereUI.SetCVar, "tooltipShowAuraSpellIDs", on and "1" or "0")
         end
@@ -4098,7 +4556,7 @@ initFrame:SetScript("OnEvent", function(self, event)
         end
 
         local function SpellIDTooltipHook(tooltip, data)
-            if not (EllesmereUIDB and EllesmereUIDB.showSpellID) then return end
+            if not EllesmereUI.SpellIDOn() then return end
             if not IsSpellIDModifierHeld() then return end
             if not data or not data.id then return end
             if _isSecret and _isSecret(data.id) then return end
@@ -4124,7 +4582,7 @@ initFrame:SetScript("OnEvent", function(self, event)
         end
 
         local function ItemIDTooltipHook(tooltip, data)
-            if not (EllesmereUIDB and EllesmereUIDB.showSpellID) then return end
+            if not EllesmereUI.SpellIDOn() then return end
             if not IsSpellIDModifierHeld() then return end
             if not data or not data.id then return end
             if _isSecret and _isSecret(data.id) then return end
@@ -4173,7 +4631,7 @@ initFrame:SetScript("OnEvent", function(self, event)
         -- them (GetSpell() also returns nil on a macro tooltip). The spell #showtooltip resolved
         -- to (honoring conditionals) is exposed as the FIRST tooltip line's tooltipID, read from the tooltip data.
         local function MacroSpellIDTooltipHook(tooltip, _data)
-            if not (EllesmereUIDB and EllesmereUIDB.showSpellID) then return end
+            if not EllesmereUI.SpellIDOn() then return end
             if not IsSpellIDModifierHeld() then return end
             if not tooltip or not tooltip.GetName or not tooltip.GetTooltipData then return end
             local ok, info = pcall(tooltip.GetTooltipData, tooltip)
@@ -4221,7 +4679,7 @@ initFrame:SetScript("OnEvent", function(self, event)
             local db = EllesmereUIDB
             if not db then return end
             local relevant =
-                (db.showSpellID and KeyMatchesModifier(key, db.spellIDModifier or "none"))
+                (EllesmereUI.SpellIDOn() and KeyMatchesModifier(key, db.spellIDModifier or "none"))
                 or (db.showItemMaxStacks and KeyMatchesModifier(key, db.itemStackModifier or "none"))
             if not relevant then return end
             if GameTooltip and GameTooltip:IsShown() and GameTooltip.RefreshData then

@@ -66,6 +66,7 @@ local function FvTabs() return ns.ChatForever and ns.ChatForever() end
 local FV_TAB_H   = 28
 local FV_CLIP_UP = FV_TAB_H - 26
 local FV_LABEL_Y = -2
+local FV_LABEL_Y_HEAVY = -1   -- Border Style Heavy Bronze: the heavy tab's label seat
 
 local function TabHeight()
     if ClassicTabs() then return CLASSIC_TAB_H end
@@ -168,6 +169,11 @@ local floatGhosts = {} -- per-window-id ghosts for undocked windows
 local lcaLib
 local function TabAlerting(tab)
     if tab.alerting then return true end
+    -- Retail since 12.1.5 and WoW Forever keep the alert state off the tab,
+    -- so a tainted message filter cannot taint it, and never write
+    -- tab.alerting: ChatFrameUtil.IsTabAlerting is its reader there.
+    local util = ChatFrameUtil
+    if util and util.IsTabAlerting and util.IsTabAlerting(tab) then return true end
     lcaLib = lcaLib or (LibStub and LibStub("LibChatAnims", true))
     return lcaLib and lcaLib:IsAlerting(tab) and true or false
 end
@@ -513,6 +519,36 @@ end
 -------------------------------------------------------------------------------
 --  Float ghost refresh (file-scope, explicit args: no per-refresh closure).
 -------------------------------------------------------------------------------
+-- Float ghosts arm the geometry follower themselves -- the strip's motion
+-- catcher only covers the dock band, and the armed follower is what makes
+-- this window's panel (and the text frame anchored inside it) follow a native
+-- tab drag per-frame instead of freezing until the next deferred pass.
+-- Motion-only + full propagation: the tab beneath keeps its tooltip, clicks,
+-- and the drag itself. The propagation calls are blocked in combat on every
+-- frame, so a ghost first built in combat stays mouse-less (clicks and hover
+-- reach the tab; only the follower waits) until combat ends.
+local function ArmGhostMouse(g)
+    g._mouseArmed = true
+    if not g.SetMouseClickEnabled then return end
+    g:SetMouseClickEnabled(false)
+    g:SetMouseMotionEnabled(true)
+    if g.SetPropagateMouseClicks then g:SetPropagateMouseClicks(true) end
+    if g.SetPropagateMouseMotion then g:SetPropagateMouseMotion(true) end
+    g:SetScript("OnEnter", function()
+        if ECHAT.FollowArm then ECHAT.FollowArm() end
+        if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
+    end)
+    g:SetScript("OnLeave", function()
+        if ECHAT.FollowRelease then ECHAT.FollowRelease() end
+    end)
+end
+
+local function ArmPendingGhosts()
+    for _, g in pairs(floatGhosts) do
+        if not g._mouseArmed then ArmGhostMouse(g) end
+    end
+end
+
 local function RefreshFloatGhost(cf, height, fontPath, fontSize, padX, labelY, seen)
     local id = cf:GetID()
     local tab = _G[cf:GetName() .. "Tab"]
@@ -521,27 +557,14 @@ local function RefreshFloatGhost(cf, height, fontPath, fontSize, padX, labelY, s
     local g = floatGhosts[id]
     if not g then
         g = BuildGhost()
-        -- Float ghosts arm the geometry follower themselves -- the
-        -- strip's motion catcher only covers the dock band, and the
-        -- armed follower is what makes this window's panel (and the
-        -- text frame anchored inside it) follow a native tab drag
-        -- per-frame instead of freezing until the next deferred pass.
-        -- Motion-only + full propagation: the tab beneath keeps its
-        -- tooltip, clicks, and the drag itself.
-        if g.SetMouseClickEnabled then
-            g:SetMouseClickEnabled(false)
-            g:SetMouseMotionEnabled(true)
-            if g.SetPropagateMouseClicks then g:SetPropagateMouseClicks(true) end
-            if g.SetPropagateMouseMotion then g:SetPropagateMouseMotion(true) end
-            g:SetScript("OnEnter", function()
-                if ECHAT.FollowArm then ECHAT.FollowArm() end
-                if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
-            end)
-            g:SetScript("OnLeave", function()
-                if ECHAT.FollowRelease then ECHAT.FollowRelease() end
-            end)
-        end
         floatGhosts[id] = g
+    end
+    if not g._mouseArmed then
+        if InCombatLockdown() then
+            ns.CombatQueue.Defer(ArmPendingGhosts, ArmPendingGhosts)
+        else
+            ArmGhostMouse(g)
+        end
     end
     if g:GetParent() ~= d.bg then g:SetParent(d.bg) end
     local isTemp = cf.isTemporary and true or false
@@ -616,7 +639,8 @@ local function RefreshNow()
     local fontSize = cfg.tabFontSize or 11
     local fontFlag = TabFontFlag()
     local padX = cfg.tabInnerPaddingX or 12
-    local labelY = ClassicTabs() and CLASSIC_LABEL_Y or (FvTabs() and FV_LABEL_Y) or 0
+    local labelY = ClassicTabs() and CLASSIC_LABEL_Y
+        or (FvTabs() and (ns.ChatFvHeavy() and FV_LABEL_Y_HEAVY or FV_LABEL_Y)) or 0
 
     -- The chat panel extends left of ChatFrame1 by its inset while Blizzard's
     -- dock starts at the frame edge; the FIRST ghost (and the strip's clip
@@ -754,15 +778,15 @@ local function RefreshNow()
                 local isActive = cf == selected
                 StyleGhost(g, isActive)
                 -- Blizzard's own alert state is authoritative here: their
-                -- handler sets tab.alerting the moment a flash-worthy
-                -- message hits a hidden window (including the message that
-                -- CREATES a conversation window -- our ghost is born one
-                -- pass later and would miss the observer's flash), and
-                -- clears it on select. Read through TabAlerting, never
-                -- tab.alerting directly: under a LibChatAnims embedder the
-                -- field stays nil forever, and this mirror then STOPPED the
-                -- flash the observer lane had just started -- whisper alerts
-                -- died within one tab pass whenever such an addon was loaded.
+                -- handler sets it the moment a flash-worthy message hits a
+                -- hidden window (including the message that CREATES a
+                -- conversation window -- our ghost is born one pass later
+                -- and would miss the observer's flash), and clears it on
+                -- select. Read through TabAlerting, never tab.alerting
+                -- directly: under a LibChatAnims embedder, and on WoW
+                -- Forever, the field stays nil forever, and this mirror then
+                -- STOPPED the flash the observer lane had just started --
+                -- whisper alerts died within one tab pass.
                 if isActive then
                     g:StopFlash()
                 elseif TabAlerting(tab) then
@@ -1000,8 +1024,8 @@ local function OnTabMessage(cf, event)
         return
     end
     -- A conversation window CREATED by this message has no ghost yet; the
-    -- queued refresh above builds it and the tab.alerting mirror in the
-    -- refresh starts its flash.
+    -- queued refresh above builds it and the alert mirror (TabAlerting) in
+    -- the refresh starts its flash.
     local g = GhostFor(cf)
     if g and g:IsShown() then g:StartFlash() end
 end

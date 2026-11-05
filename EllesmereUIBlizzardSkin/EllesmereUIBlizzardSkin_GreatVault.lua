@@ -7,12 +7,7 @@ local ADDON_NAME, ns = ...
 local LOCK_TEXTURE = "Interface\\LFGFrame\\UI-LFG-ICON-LOCK"
 
 -- External weak-keyed lookup table for frame state (prevents tainting Blizzard frames)
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -------------------------------------------------------------------------------
 --  Config / Theme Access
@@ -656,8 +651,8 @@ local function RefreshActivityVisualState(frame, selectedActivity, theme)
             local ilvl
             if info and info.id and C_WeeklyRewards and C_WeeklyRewards.GetExampleRewardItemHyperlinks then
                 local itemLink = C_WeeklyRewards.GetExampleRewardItemHyperlinks(info.id)
-                if itemLink and GetDetailedItemLevelInfo then
-                    ilvl = GetDetailedItemLevelInfo(itemLink)
+                if itemLink then
+                    ilvl = C_Item.GetDetailedItemLevelInfo(itemLink)
                 end
             end
             if ilvl then

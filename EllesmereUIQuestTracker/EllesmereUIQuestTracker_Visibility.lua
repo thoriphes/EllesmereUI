@@ -102,6 +102,8 @@ EQT.TrackerIsVisible = TrackerIsVisible
 -- events (QUEST_LOG_UPDATE etc.) from doing skin/resize/classify work when
 -- the tracker is hidden anyway. Re-registers on zone-out / unsuppress.
 local _eventsSuspended = false
+-- Acts once per hide: no frame joins the set after the first suspend (all
+-- enroll at file load or in the login init, before any visibility pass).
 local function SuspendQTEvents()
     if _eventsSuspended then return end
     _eventsSuspended = true
@@ -118,9 +120,14 @@ local function ResumeQTEvents()
         for i, f in ipairs(EQT._eventFrames) do
             local evts = EQT._eventRegistrations[i]
             if evts then
+                local refresh
                 for _, ev in ipairs(evts) do
                     f:RegisterEvent(ev)
+                    if ev == "PLAYER_ENTERING_WORLD" then refresh = true end
                 end
+                -- Catch up on what was missed while unregistered.
+                local onEvent = refresh and f:GetScript("OnEvent")
+                if onEvent then onEvent(f, "PLAYER_ENTERING_WORLD") end
             end
         end
     end
@@ -130,11 +137,6 @@ end
 -- suppression composes with the user's chosen visibility mode / options.
 function EQT.ApplySuppression(on)
     _eqtSuppressed = on and true or false
-    if _eqtSuppressed then
-        SuspendQTEvents()
-    else
-        ResumeQTEvents()
-    end
     if EQT.UpdateVisibility then EQT.UpdateVisibility() end
 end
 
@@ -183,21 +185,19 @@ end
 
 local function UpdateVisibility()
     InstallShowHook()
+    local autoHide = ShouldAutoHide()
+    if _eqtSuppressed or autoHide then SuspendQTEvents() else ResumeQTEvents() end
     local otf = GetTracker()
     if not otf then return end
 
     -- Raid/arena auto-hide takes precedence and uses a hard Hide(); the
     -- Show-hook re-hides if Blizzard tries to bring it back.
-    -- Also suspend all QT event frames so quest events don't burn CPU
-    -- processing skin/resize/classify work for a hidden tracker.
-    if ShouldAutoHide() then
-        SuspendQTEvents()
+    if autoHide then
         HardHide(otf)
         if _bgFrame then _bgFrame:Hide() end
         return
     end
 
-    ResumeQTEvents()
     if not otf:IsShown() then
         -- Show() is protected in combat like Hide() (see HardHide). Skip;
         -- the dispatcher's PLAYER_REGEN_ENABLED pass re-runs us and the
@@ -324,20 +324,21 @@ local function GetLowestContentFrame()
     local modules = otf.modules or otf.MODULES
     if not modules then return nil end
     local lowestModule
-    local _scenarioTracker = _G.ScenarioObjectiveTracker
     local _widgetTracker = _G.UIWidgetObjectiveTracker
     for _, tracker in ipairs(modules) do
-        -- Skip ScenarioObjectiveTracker: its M+ challenge mode blocks
-        -- aren't quest content. Showing our bg/top-line around them
-        -- during M+ produces visible chrome with no actual quests.
-        --
         -- Skip UIWidgetObjectiveTracker: its blocks share Blizzard's widget
         -- pool with tooltip/AreaPOI widgets. ANY method call here (GetBottom,
         -- GetObjectType, IsShown) taints the pool, causing "attempt to compare
         -- a secret number value" in LayoutFrame.lua when GameTooltip later lays
         -- out an AreaPOI widget set. See HookTracker in the Skin module, which
         -- refuses to touch these frames for the same reason.
-        if tracker == _scenarioTracker or tracker == _widgetTracker then
+        --
+        -- ScenarioObjectiveTracker counts: a zone event's, a delve's or a
+        -- dungeon's objectives are content the background belongs behind, and
+        -- with no quest tracked they are the only content there is (its module
+        -- frame is a fixed XML frame, never a pooled widget). A key's blocks
+        -- stay bare through ResizeBGToContent's challenge mode gate.
+        if tracker == _widgetTracker then
             -- skip
         -- EndLayout hides a module that has nothing to display, so IsShown is
         -- the content gate, and a later module sits further down. Anchoring to

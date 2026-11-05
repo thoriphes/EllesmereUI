@@ -445,16 +445,20 @@ function ns.PT_ShownSide(auto)
     return (side == "above" and "top") or (side == "below" and "bottom") or side
 end
 
--- The room target frames along the stack (Top/Bottom beside stacked frames, Left/Right beside
--- horizontal ones) add to the party frames' pitch, so they sit between two frames: their length
--- on the stacking axis plus the gap past them. From the settings, so every slot placer agrees
--- whichever runs first. on: the enable state to read (the live one unless given; previews pass
--- the setting).
-function ns.PT_AlongPitch(s, on)
+function ns.PT_PositionAlongStack(position, horizontal)
+    return horizontal and (position == "left" or position == "right")
+        or not horizontal and (position == "top" or position == "bottom")
+end
+
+-- Only direction is needed here; calculating the gap would call RF_PartyDims again.
+function ns.PT_AlongStack(s, on)
     if on == nil then on = ns._ptEnabled end
-    if not on then return 0 end
-    local _, _, across = PT_Side(s)
-    if across then return 0 end
+    return on and ns.PT_PositionAlongStack(s.partyTargetPosition, s.partyHorizontal) or false
+end
+
+-- Target length on the stacking axis plus the party gap. Previews pass their enable state.
+function ns.PT_AlongPitch(s, on)
+    if not ns.PT_AlongStack(s, on) then return 0 end
     return PixelSnap(s.partyHorizontal and (s.partyTargetWidth or 70) or (s.partyTargetHeight or 33))
         + PixelSnap(PT_Gap(s))
 end
@@ -554,6 +558,24 @@ local function PT_FpExtra(t)
     t[n + 9], t[n + 10] = p.partyTargetBgDarkness, PT_Source().smoothBars
 end
 
+-- Textured Background on a target frame, from the party settings: the fixed health
+-- layer (the background follows the fill edge), shown while the fill is opaque.
+local function PT_TexBg(frame)
+    local s = PT_Source()
+    local path = ns.RF_TexBgPath(s)
+    if not (path or frame._rfTexBg) then return end
+    frame._rfTexBg = path and true or nil
+    local dark = db.profile.partyTargetHealthColorMode == "dark"
+    ns.RF_TexBgLayer(frame._health, frame._bg, (not dark or ns.RF_TexBgOpaque(s, true)) and path or nil)
+    if path then ns.RF_TexBgWatch() end
+end
+-- A colour push (ns.RF_TexBgRecheck): Dark Mode Fill can cross 100 with no restyle.
+-- ERF:UpdateAllFrames repaints the frames on screen right after.
+ns._PT_TexBgRecheck = function()
+    if not ns._ptEnabled then return end
+    for _, frame in ipairs(ns._partyTargetFrames) do PT_TexBg(frame) end
+end
+
 -- Texture, name font and border from the party settings (the stock edge under a stock style), and
 -- the colour settings the paint reads, fingerprinted together: a reload or setting that changed
 -- none of them touches nothing; one that did repaints the frames on screen, restyling them only
@@ -596,6 +618,7 @@ ns._PT_Restyle = function()
             styleBorder(frame)
         end
     end
+    for _, frame in ipairs(ns._partyTargetFrames) do PT_TexBg(frame) end
     ns._PT_RepaintVisible()
 end
 
@@ -668,8 +691,8 @@ local function PT_Build(owner, globalName)
     frame:RegisterForClicks("AnyUp")
     frame:Hide()
 
-    -- Background, health bar, texts and border frame (the stock edge under a stock style). The
-    -- font comes with the next restyle, before the frame can show. Name only: no health texts.
+    -- Background, health bar, name text and border frame (the stock edge under a stock style).
+    -- The font comes with the next restyle, before the frame can show.
     local FB = ns._FB
     FB.BuildVisuals(frame)
     local name = frame._nameText
@@ -677,8 +700,6 @@ local function PT_Build(owner, globalName)
     name:SetJustifyH("CENTER")
     name:SetJustifyV("MIDDLE")
     name:SetTextColor(1, 1, 1, 1)
-    frame._healthText:Hide()
-    frame._healAbsorbText:Hide()
 
     frame._ptOwner = owner
     FB.src[frame] = PT_Source
@@ -907,8 +928,6 @@ local function PT_PvFrame(i, parent, s, spec)
         name:SetJustifyH("CENTER")
         name:SetJustifyV("MIDDLE")
         name:SetTextColor(1, 1, 1, 1)
-        f._healthText:Hide()
-        f._healAbsorbText:Hide()
         PT.pv[i] = f
     elseif f:GetParent() ~= parent then
         f:SetParent(parent)
@@ -937,6 +956,8 @@ local function PT_PvFrame(i, parent, s, spec)
     health:SetValue(mock.hp)
     name:SetText(mock.name)
     local mode = s.partyTargetHealthColorMode or "class"
+    ns.RF_TexBgLayer(health, bg, (mode ~= "dark" or ns.RF_TexBgOpaque(st, true))
+        and ns.RF_TexBgPath(st) or nil)
     if mode == "dark" then
         local r, g, b, a = EUI.GetDarkModeFill()
         health:SetStatusBarColor(r, g, b, 1)
