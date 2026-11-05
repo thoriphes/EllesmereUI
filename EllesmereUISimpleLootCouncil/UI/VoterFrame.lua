@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
 
 
 
@@ -23,6 +23,7 @@ local entries = {}
 
 local view
 local laidOutCount, laidOutWidth
+local chimedCount = 0
 
 
 local rollLogPending
@@ -40,8 +41,7 @@ local suppressDismiss = false
 local ENTRY_HEIGHT
 local RESPONSE_BUTTON_H = 26
 
-
-local WISH_ICON, WISH_ICON_GAP, WISH_ICON_INSET = 12, 4, 1
+local WISH_ICON = 12
 
 local BUTTON_INSET
 
@@ -53,39 +53,40 @@ local CARDS_PER_PAINT = 4
 local SCROLL_CHANNEL
 
 local MIN_WIDTH = 400
-local scroll, compactButton
+local scroll, toggle
+
+
+local dock, scrollIn, dockLaid, dockSelect, dockSig
 local laidOutVisible
 
 local TAG_OFFSET
-local tagShift = 0
 
 
-local function CompactWidths()
-    compactButton:SetLabel(T["Expand"])
-    local expand = compactButton:GetWidth()
-    compactButton:SetLabel(T["Compact"])
-    local compact = compactButton:GetWidth()
-    compactButton:SetLabel(addon.db.voterCompact and T["Expand"] or T["Compact"])
-    return math.min(expand, compact), math.max(expand, compact)
-end
+local timerLabel, timerText
+local timerReserve, timerOn = 0, false
+
+local titleProbe
 
 
 
 local function PlaceTag()
     local tag = frame.Tag
-    if not tag:IsShown() then return end
-    local tagRight, compactRight = tag:GetRight(), compactButton:GetRight()
-    if not tagRight or not compactRight then return end
-    local narrow, wide = CompactWidths()
-    local tagBase = tagRight - tagShift
-    local gap = compactRight - narrow - tagBase
-    local room = compactRight - wide - S.size.GAP - tagBase
-    local shift = math.min(gap * 3 / 4, room)
-    shift = shift > 0 and P.Snap(shift, frame) or 0
-    if shift == tagShift then return end
-    tagShift = shift
     tag:ClearAllPoints()
-    P.Point(tag, "LEFT", frame.Title, "RIGHT", TAG_OFFSET + shift, 0)
+    if not toggle then
+        P.Point(tag, "RIGHT", frame.Badge, "LEFT", -S.size.GAP, 0)
+        return
+    end
+
+
+    P.Point(tag, "RIGHT", toggle, "LEFT", -frame.CloseInset, 0)
+    if timerText then
+        timerText:ClearAllPoints()
+        if tag:IsShown() then
+            timerText:SetPoint("RIGHT", tag, "LEFT", -S.size.GAP, -1)
+        else
+            timerText:SetPoint("RIGHT", toggle, "LEFT", -S.size.GAP, -1)
+        end
+    end
 end
 
 
@@ -123,6 +124,12 @@ end
 
 
 
+local function DockTop()
+    if not dock then return 0 end
+
+    return (dock.IsCompact and not dock.IsCompact()) and 2 or 1
+end
+
 local function AnchorEntry(e, index)
     local prev = entries[index - 1]
     e:ClearAllPoints()
@@ -130,8 +137,11 @@ local function AnchorEntry(e, index)
         P.Point(e, "TOPLEFT", prev, "BOTTOMLEFT", 0, -S.size.ITEM_GAP)
         P.Point(e, "TOPRIGHT", prev, "BOTTOMRIGHT", 0, -S.size.ITEM_GAP)
     else
-        P.Point(e, "TOPLEFT", scroll.Content, "TOPLEFT", 0, 0)
-        P.Point(e, "TOPRIGHT", scroll.Content, "TOPRIGHT", 0, 0)
+
+
+        local top = DockTop()
+        P.Point(e, "TOPLEFT", scroll.Content, "TOPLEFT", 0, -top)
+        P.Point(e, "TOPRIGHT", scroll.Content, "TOPRIGHT", 0, -top)
     end
 end
 
@@ -173,25 +183,13 @@ local function CreateEntry(parent, index)
     P.Point(e.detail, "TOPRIGHT", e.name, "BOTTOMRIGHT", 0, -2)
 
 
-    e.wish = S.Label(e, S.fontSmall, "LEFT")
-    P.Point(e.wish, "TOPLEFT", e.detail, "BOTTOMLEFT", 0, -2)
-    P.Point(e.wish, "RIGHT", e.name, "RIGHT", 0, 0)
 
-    e.wishIcon = e:CreateTexture(nil, "ARTWORK")
-    P.Size(e.wishIcon, WISH_ICON, WISH_ICON)
-    P.Point(e.wishIcon, "LEFT", e.wish, "LEFT", -(WISH_ICON + WISH_ICON_GAP), 0)
-    e.wishIcon:Hide()
-    e.wishIconShown = false
-
-
-
-
-    e.status = S.Label(e, S.fontSmall, "RIGHT")
-    P.Point(e.status, "TOPRIGHT", e.name, "BOTTOMRIGHT", S.size.ROW_PAD - S.size.GAP, -2)
+    e.status = S.Label(e, S.fontBody, "RIGHT")
+    P.Point(e.status, "TOPRIGHT", e, "TOPRIGHT", -S.size.GAP, -S.size.ROW_PAD)
     e.status:SetTextColor(S.Unpack(S.color.bad))
     e.status:Hide()
 
-    e.appearance = S.Label(e, S.fontSmall, "RIGHT")
+    e.appearance = S.Label(e, S.fontBody, "RIGHT")
     P.Point(e.appearance, "TOPRIGHT", e.status, "TOPLEFT", -S.size.GAP, 0)
     e.appearance:SetTextColor(S.Unpack(S.color.accent))
     e.appearance:SetText(T["Appearance available"])
@@ -327,7 +325,7 @@ local function EnsureNoteButton(e)
     if e.noteButton then return e.noteButton end
 
     e.noteButton = S.Button(e.buttonRow, "", {
-        width = NOTE_BUTTON_WIDTH, height = S.size.BTN_H_SM, glyph = "chat",
+        width = NOTE_BUTTON_WIDTH, height = RESPONSE_BUTTON_H, glyph = "chat",
     })
     e.noteButton:SetScript("OnClick", function()
         e.buttonRow:Hide()
@@ -336,19 +334,17 @@ local function EnsureNoteButton(e)
     end)
 
     e.noteButton.slcHoverIn = function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        S.TooltipSection(GameTooltip, T["Note"])
         local note = e.noteEdit:GetText() or ""
+        local body
         if note ~= "" then
-            for _, line in ipairs(addon.Locale.Wrap(note, NOTE_TOOLTIP_LETTERS)) do
-                GameTooltip:AddLine(line, 1, 1, 1, false)
-            end
+            body = table.concat(addon.Locale.Wrap(note, NOTE_TOOLTIP_LETTERS), "\n")
         else
-            GameTooltip:AddLine(T["Click to add a note"], 0.8, 0.8, 0.8)
+            body = S.Colorize(S.color.textMuted, T["Click to add a note"])
         end
-        GameTooltip:Show()
+        S.TextTooltip(self, S.Colorize(S.color.accent, addon.Locale.SectionTitle(T["Note"]))
+            .. "\n" .. body)
     end
-    e.noteButton.slcHoverOut = function() GameTooltip:Hide() end
+    e.noteButton.slcHoverOut = function() S.HideTextTooltip() end
     UpdateNoteButton(e)
     return e.noteButton
 end
@@ -356,7 +352,14 @@ end
 
 
 
+local REBIND_GUARD = 0.15
+
+local function JustRebound(e)
+    return e.boundAt ~= nil and GetTime() - e.boundAt < REBIND_GUARD
+end
+
 local function Respond(e, response)
+    if JustRebound(e) then return end
     e.flushNote()
     local note = e.noteEdit:GetText()
     if note == "" then note = nil end
@@ -399,7 +402,10 @@ local function LayoutRoll(e, group)
             { height = RESPONSE_BUTTON_H, primary = true })
 
 
-        e.rollButton:SetScript("OnClick", function() addon.Roll:Roll() end)
+        e.rollButton:SetScript("OnClick", function()
+            if JustRebound(e) then return end
+            addon.Roll:Roll()
+        end)
     end
 
     local responseStrip = EnsureResponseButtons(e, addon.Config:Responses())
@@ -543,9 +549,9 @@ end
 local function DetailText(group, me)
     local parts = {}
 
-    local ilvl = select(4, C_Item.GetItemInfo(group.link))
+    local ilvl = addon.Gear:ItemLevel(group.link)
     if ilvl then
-        parts[#parts + 1] = addon.Locale.Format(T["Item Level %s"], ilvl)
+        parts[#parts + 1] = addon.Locale.Format(T["ilvl %s"], ilvl)
     end
 
 
@@ -589,19 +595,15 @@ end
 
 
 
-local function PlaceWish(e, text)
-    local icon = text ~= "" and addon.Wishlist and addon.Wishlist:SourceIcon() or nil
-    if icon then e.wishIcon:SetTexture(icon) end
-    e.wishIcon:SetShown(icon ~= nil)
-    local shown = icon ~= nil
-    if e.wishIconShown ~= shown then
-        e.wishIconShown = shown
-        e.wish:ClearAllPoints()
-        P.Point(e.wish, "TOPLEFT", e.detail, "BOTTOMLEFT",
-            shown and WISH_ICON_INSET + WISH_ICON + WISH_ICON_GAP or 0, -2)
-        P.Point(e.wish, "RIGHT", e.name, "RIGHT", 0, 0)
+local function PlaceDetail(e, wish, detail)
+    if wish ~= "" then
+        local icon = addon.Wishlist and addon.Wishlist:SourceIcon()
+        if icon then
+            wish = "|T" .. icon .. ":" .. WISH_ICON .. ":" .. WISH_ICON .. "|t" .. " " .. wish
+        end
     end
-    e.wish:SetText(text)
+    local sep = wish ~= "" and detail ~= "" and S.Colorize(S.color.textFaint, "  -  ") or ""
+    e.detail:SetText(detail .. sep .. wish)
 end
 
 
@@ -679,40 +681,53 @@ local function AskingCount(groups)
 end
 
 
+local function Shown()
+    if dock then return dock.IsActive() end
+    return frame ~= nil and frame:IsShown()
+end
+
 function VoterFrame:UpdateTimers()
-    if not frame or not frame:IsShown() then return end
+    if not Shown() then return end
 
     local left = addon.Session:GetTimeLeft()
     local duration = addon.Session:GetTimerDuration()
 
+
     for _, e in ipairs(entries) do
         if e:IsShown() then
-            if left and duration and duration > 0 then
-                e.timerBar:Show()
-                e.clockBox:Show()
-                local fraction = left / duration
-                e.timerBar:SetProgress(fraction)
-
-
-                local text = Clock(left)
-                local template = (text:gsub("%d", "0"))
-                if e.clockTemplate ~= template then
-                    local width = ClockTemplateWidth(e.clock, template)
-                    e.clock:ClearAllPoints()
-                    P.Point(e.clock, "LEFT", e.clockBox, "CENTER", -width / 2, 0)
-                    e.clockTemplate = width > 0 and template or nil
-                end
-                e.clock:SetText(text)
-
-                e.clock:SetTextColor(S.Unpack(fraction <= 0 and S.color.bad
-                    or fraction <= 0.33 and S.color.warn or S.color.accentPale))
-            else
-                e.timerBar:Hide()
-                e.clockBox:Hide()
-                e.clock:SetText("")
-            end
+            e.timerBar:Hide()
+            e.clockBox:Hide()
+            e.clock:SetText("")
         end
     end
+    if dock then return end
+
+    local running = left and duration and duration > 0 and true or false
+    if running ~= timerOn then
+        timerOn = running
+        P.AfterLayout(PlaceTag)
+    end
+    if not running then
+        timerText:SetText("")
+        timerLabel:SetText("")
+        return
+    end
+
+    local fraction = left / duration
+    if fraction <= 0 then
+        timerLabel:SetText(T["TIME UP"])
+        timerLabel:SetTextColor(S.Unpack(S.color.bad))
+        S.PinClockWidth(timerText)
+        timerText:SetText(Clock(0))
+        timerText:SetTextColor(S.Unpack(S.color.bad))
+        return
+    end
+    local closing = fraction <= 0.33
+    timerLabel:SetText(closing and T["CLOSING"] or T["TIME TO RESPOND"])
+    timerLabel:SetTextColor(S.Unpack(closing and S.color.warn or S.color.textFaint))
+    S.PinClockWidth(timerText)
+    timerText:SetText(Clock(left))
+    timerText:SetTextColor(S.Unpack(closing and S.color.warn or S.color.accentPale))
 end
 
 
@@ -761,17 +776,18 @@ local function PaintStatus(e, group)
 
     local shown = text and (look and 2 or 1) or 0
 
+
     if e.statusShown ~= shown then
         e.statusShown = shown
         e.status:SetShown(shown > 0)
         e.appearance:SetShown(shown == 2)
-        e.detail:ClearAllPoints()
-        P.Point(e.detail, "TOPLEFT", e.name, "BOTTOMLEFT", 0, -2)
+        e.name:ClearAllPoints()
+        P.Point(e.name, "TOPLEFT", e.icon, "TOPRIGHT", S.size.GAP, 0)
         if shown > 0 then
-            P.Point(e.detail, "TOPRIGHT", shown == 2 and e.appearance or e.status,
+            P.Point(e.name, "TOPRIGHT", shown == 2 and e.appearance or e.status,
                 "TOPLEFT", -S.size.GAP, 0)
         else
-            P.Point(e.detail, "TOPRIGHT", e.name, "BOTTOMRIGHT", 0, -2)
+            P.Point(e.name, "TOPRIGHT", e, "TOPRIGHT", -S.size.ROW_PAD, -S.size.ROW_PAD)
         end
     end
     if e.warned ~= warn then
@@ -796,29 +812,53 @@ end
 
 local function Build()
     frame = S.Window("SimpleLootCouncilVoterFrame", "voter", 620, 400,
-        T["Loot response"], { squareTag = true })
+        T["Loot response"])
     frame:RestorePosition()
 
 
 
-    scroll = S.ScrollRegion(frame.Content, (ENTRY_HEIGHT + S.size.ITEM_GAP) / 2)
-    P.Point(scroll, "TOPLEFT", frame.Content, "TOPLEFT", 0, 0)
-    P.Point(scroll, "BOTTOMRIGHT", frame.Content, "BOTTOMRIGHT", SCROLL_CHANNEL, 0)
 
 
 
-    compactButton = S.Button(frame, "", { height = S.size.CLOSE })
-    compactButton:SetFrameLevel(frame.Close:GetFrameLevel())
-    P.Point(compactButton, "RIGHT", frame.Close, "LEFT", -S.size.GAP, 0)
-    compactButton:SetScript("OnClick", function()
-        VoterFrame:SetCompact(not addon.db.voterCompact)
-    end)
-    frame.Badge:ClearAllPoints()
-    P.Point(frame.Badge, "RIGHT", compactButton, "LEFT", -S.size.GAP, 0)
+
+
+
+    local probe = S.Label(frame, S.fontBody, "LEFT")
+    probe:Hide()
+    if frame.AddToggle then
+        toggle = frame:AddToggle(function() VoterFrame:SetCompact(not addon.db.voterCompact) end)
+        frame:SetToggleState(addon.db.voterCompact and true or false)
+    end
     P.Size(frame.Badge, 1, nil)
-    compactButton:SetLabel(addon.db.voterCompact and T["Expand"] or T["Compact"])
+
+
+    local strip = frame.Badge:GetParent()
+    timerText = S.Label(strip, S.fontNum, "RIGHT")
+    timerText:SetPoint("RIGHT", frame.Tag, "LEFT", -S.size.GAP, -1)
+    timerLabel = S.Label(strip, S.fontHeading, "RIGHT")
+    timerLabel:SetPoint("RIGHT", timerText, "LEFT", -6, 0)
+
+    local function Width(font, text)
+        probe:SetFontObject(font)
+        probe:SetText(text)
+        local width = probe:GetUnboundedStringWidth()
+        return (type(width) == "number" and width > 0) and math.ceil(width) or 0
+    end
+    local word = math.max(Width(S.fontHeading, T["TIME TO RESPOND"]),
+        Width(S.fontHeading, T["CLOSING"]), Width(S.fontHeading, T["TIME UP"]))
+    timerReserve = word + 6 + Width(S.fontNum, "00:00") + S.size.GAP
+    probe:SetText("")
     local refreshTitle = frame.RefreshTitle
-    frame.RefreshTitle = function() refreshTitle(); P.AfterLayout(PlaceTag) end
+    titleProbe = frame:CreateFontString(nil, "ARTWORK")
+    titleProbe:Hide()
+
+    frame.RefreshTitle = function()
+        refreshTitle()
+        laidOutCount = nil
+        addon.Callbacks:Invalidate("voter")
+        P.AfterLayout(PlaceTag)
+    end
+    PlaceTag()
 
 
 
@@ -843,17 +883,40 @@ local function Build()
     end)
 
     frame:HookScript("OnShow", function() addon.Callbacks:PaintNow("voter") end)
+end
 
 
-    ticker:SetParent(frame)
+
+local function Attach(container)
+    if not scroll then
+
+        scroll = S.ScrollRegion(container,
+            (P.Snap(ENTRY_HEIGHT) + P.Snap(S.size.ITEM_GAP)) / 2)
+        scrollIn = nil
+    end
+    if scrollIn == container then return end
+    scrollIn = container
+    scroll:SetParent(container)
+    scroll:ClearAllPoints()
+    P.Point(scroll, "TOPLEFT", container, "TOPLEFT", 0, 0)
+    P.Point(scroll, "BOTTOMRIGHT", container, "BOTTOMRIGHT", SCROLL_CHANNEL, 0)
+    ticker:SetParent(container)
     ticker:Show()
+    for i, e in ipairs(entries) do AnchorEntry(e, i) end
+end
+
+
+local function Release()
+    dock, dockLaid = nil, false
+    if addon.UI.MLFrame then addon.UI.MLFrame:SetResponseAvailable(false) end
+    HideInternally()
 end
 
 local function PaintWindow()
 
 
     if not addon.Session:IsRunning() then
-        HideInternally()
+        Release()
         return
     end
 
@@ -861,8 +924,27 @@ local function PaintWindow()
     local groups = GroupItems()
 
     if AskingCount(groups) == 0 then
-        HideInternally()
+        Release()
         return
+    end
+
+    local council = addon.UI.MLFrame
+    local host = council and council:ResponseSeat() and council:ResponseHost() or nil
+    if host then
+        dock = host
+        HideInternally()
+        council:SetResponseAvailable(true)
+        if dockSelect and not host.IsActive() then
+            dockSelect = nil
+            C_Timer.After(0, function() council:ShowResponse(true) end)
+        end
+        if not host.IsActive() then
+            dockLaid = false
+            return
+        end
+    elseif dock then
+        dock, dockLaid = nil, false
+        council:SetResponseAvailable(false)
     end
 
 
@@ -872,7 +954,7 @@ local function PaintWindow()
     for _, group in ipairs(groups) do owed = owed + group.rollOwed end
 
 
-    if dismissedRun ~= nil and dismissedRun == addon.Session:GetRunId() then
+    if not dock and dismissedRun ~= nil and dismissedRun == addon.Session:GetRunId() then
         if owed > 0 or OutstandingMax(groups) > dismissedMax then
             dismissedRun = nil
         else
@@ -881,17 +963,30 @@ local function PaintWindow()
         end
     end
 
-    if not frame then Build() end
+    if dock then
+        Attach(dock.pane)
+    else
+        if not frame then Build() end
+        Attach(frame.Content)
+    end
 
 
-    local reopening = not frame:IsShown()
+    local reopening
+    if dock then reopening = not dockLaid else reopening = not frame:IsShown() end
+    dockLaid = dock ~= nil
+    local sig = dock and dock.Signature()
+    if sig ~= dockSig then
+        reopening, dockSig = true, sig
+        for i, e in ipairs(entries) do AnchorEntry(e, i) end
+    end
 
     local shown = #groups
     local widestStrip = 0
     local pending = false
 
 
-    local visible = math.min(shown, addon.db.voterCompact and COMPACT_CARDS or VISIBLE_CARDS)
+    local compact = not dock and addon.db.voterCompact
+    local visible = math.min(shown, compact and COMPACT_CARDS or VISIBLE_CARDS)
     local built = math.min(shown, math.max(visible, #entries + CARDS_PER_PAINT))
 
     for i = 1, built do
@@ -915,15 +1010,17 @@ local function PaintWindow()
             e.name:SetTextColor(S.Unpack(S.color.text))
         end
 
-        e.detail:SetText(DetailText(group, me))
-        PlaceWish(e, WishText(group, me))
+        PlaceDetail(e, WishText(group, me), DetailText(group, me))
         if PaintStatus(e, group) then pending = true end
 
 
 
         local key = group.link or tostring(group.sessions[1])
         local sameItem = e.groupKey == key
-        if not sameItem and e.groupKey then e.flushNote() end
+        if not sameItem and e.groupKey then
+            e.flushNote()
+            e.boundAt = GetTime()
+        end
         e.groupKey = key
         e.noteSessions = group.sessions
         if not sameItem then
@@ -968,9 +1065,16 @@ local function PaintWindow()
 
 
 
-        frame.Title:SetText(T["Loot response"])
-        frame:SetTag(addon.Locale.Format(addon.Locale.Plural{ one = "%d ITEM", other = "%d ITEMS" },
-            #groups, #groups))
+        local countText = addon.Locale.Format(
+            addon.Locale.Plural{ one = "%d ITEM", other = "%d ITEMS" }, #groups, #groups)
+        if not dock then
+            frame.Title:SetText(T["Loot response"])
+
+            frame:SetTag((toggle and not addon.db.voterCompact) and "" or countText)
+            P.AfterLayout(PlaceTag)
+        elseif dock.SetCount then
+            dock.SetCount(countText)
+        end
 
 
         local entryH, gap = P.Snap(ENTRY_HEIGHT), P.Snap(S.size.ITEM_GAP)
@@ -980,21 +1084,57 @@ local function PaintWindow()
 
         local cardWidth = S.size.ROW_PAD + S.size.ICON + CLOCK_EXTRA / 2 + BUTTON_GAP
             + widestStrip + S.size.ROW_PAD
-        local windowWidth = math.max(MIN_WIDTH, cardWidth + S.size.PAD * 2)
-        P.Size(frame, windowWidth, nil)
-        frame.Content.slcWidth = windowWidth - S.size.PAD * 2
-        frame:ClampTitle()
-        P.AfterLayout(PlaceTag)
+        local dockContent
+        if dock then
 
 
-        frame:SetHeightFromTop(P.Snap(frame.HeaderHeight + S.size.PAD) + ListHeight(visible)
-            + P.Snap(S.size.PAD))
-        scroll:SetContentHeight(ListHeight(shown))
+            local top, pitch = DockTop(), entryH + gap
+            local space = dock.Fit(cardWidth, ListHeight(visible) + top)
+
+            local fit = math.max(1, math.floor((space - top + gap + 2) / pitch))
+            local listH = fit * pitch - gap + top
+            scroll:ClearAllPoints()
+            P.Point(scroll, "TOPLEFT", dock.pane, "TOPLEFT", 0, 0)
+            P.Point(scroll, "TOPRIGHT", dock.pane, "TOPRIGHT", SCROLL_CHANNEL, 0)
+            P.Size(scroll, nil, listH)
+            dockContent = listH + math.max(0, shown - fit) * pitch
+        else
+
+
+            titleProbe:SetFont(frame.Title:GetFont())
+            titleProbe:SetText(T["Loot response"])
+            local titleWidth = titleProbe:GetUnboundedStringWidth()
+            local bandWidth = (type(titleWidth) == "number" and math.ceil(titleWidth) or 0)
+                + TAG_OFFSET + frame.Tag:GetWidth()
+                + ((addon.Session:GetTimerDuration() or 0) > 0 and timerReserve or 0)
+                + S.size.GAP * 2 + (toggle and toggle:GetWidth() or 0) + frame.Close:GetWidth()
+                + S.size.PAD * 2 + 24
+            local windowWidth = math.max(MIN_WIDTH, cardWidth + S.size.PAD * 2, bandWidth)
+            frame:SetSizeFromTopRight(windowWidth, frame:GetHeight())
+            frame.Content.slcWidth = windowWidth - S.size.PAD * 2
+            frame:ClampTitle()
+            P.AfterLayout(PlaceTag)
+
+
+            frame:SetHeightFromTop(P.Snap(frame.HeaderHeight + S.size.PAD) + ListHeight(visible)
+                + P.Snap(S.size.PAD))
+        end
+        scroll:SetContentHeight(dockContent or ListHeight(shown))
     end
-    frame:Show()
+    if not dock then
+        local wasShown = frame:IsShown()
+        frame:Show()
+
+        if shown <= 0 then
+            chimedCount = 0
+        elseif not wasShown and shown > chimedCount then
+            S.PlayNotification("responseFrame")
+        end
+        if shown > 0 then chimedCount = math.max(chimedCount, shown) end
+    end
 
 
-    if reopening and owed > 0 then
+    if not dock and reopening and owed > 0 then
         frame:Raise()
         addon.Log:D("UI", "voter frame reopened for", owed, "owed roll(s)")
     end
@@ -1018,11 +1158,37 @@ local function Paint()
     if rollLogPending then
         addon.Log:D("UI", "roll requested,", rollLogPending, "owed by",
             tostring(addon.Player:GetFullName("player")),
-            "- window", frame and frame:IsShown() and "shown" or "still hidden")
+            "- window", Shown() and "shown" or "still hidden")
         rollLogPending = nil
     end
 end
 
+
+
+
+local measureButton
+function VoterFrame:MinWidth()
+    if not S then return MIN_WIDTH end
+    measureButton = measureButton or S.Button(frame or UIParent, "", { height = RESPONSE_BUTTON_H })
+    measureButton:Hide()
+    local strip = NOTE_BUTTON_WIDTH
+    local labels = {}
+    for _, response in ipairs(addon.Config:Responses()) do labels[#labels + 1] = response.text end
+    labels[#labels + 1] = T["Pass"]
+    for _, text in ipairs(labels) do
+        measureButton:SetLabel(text)
+        strip = strip + BUTTON_GAP + measureButton:GetWidth()
+    end
+    local card = S.size.ROW_PAD + S.size.ICON + CLOCK_EXTRA / 2 + BUTTON_GAP + strip
+        + S.size.ROW_PAD
+    return math.max(MIN_WIDTH, card + S.size.PAD * 2)
+end
+
+
+function VoterFrame:ForgetLayout()
+    dockLaid = false
+    laidOutCount, laidOutWidth, laidOutVisible = nil, nil, nil
+end
 
 function VoterFrame:Refresh()
     if not view then return end
@@ -1043,9 +1209,12 @@ function VoterFrame:Init()
     BUTTON_INSET = S.size.ROW_PAD - 2
 
 
+
+    local _, bodyHeight = S.fontBody:GetFont()
     ENTRY_HEIGHT = S.size.ROW_PAD
         + S.size.ICON + S.size.ITEM_GAP
         + RESPONSE_BUTTON_H + S.size.ROW_PAD
+        - (math.floor(tonumber(bodyHeight) or 12) + 2)
 
 
 
@@ -1106,7 +1275,7 @@ function VoterFrame:Init()
         for _, item in ipairs(addon.Session:GetItems()) do
             if not item.removed and addon.Roll.OwedBy(item, me) then owed = owed + 1 end
         end
-        if owed > 0 then dismissedRun, dismissedMax = nil, 0 end
+        if owed > 0 then dismissedRun, dismissedMax = nil, 0; dockSelect = true end
 
 
 
@@ -1114,8 +1283,15 @@ function VoterFrame:Init()
         addon.Callbacks:Invalidate("voter")
     end)
     addon.Callbacks:Register("RunEnded", function()
-        if frame then HideInternally() end
+        Release()
     end)
+
+
+    local function SeatChanged() addon.Callbacks:Invalidate("voter") end
+    addon.Callbacks:Register("LootMasterChanged", SeatChanged)
+    addon.Callbacks:Register("CouncilChanged", SeatChanged)
+    addon.Callbacks:Register("SharedConfigChanged", SeatChanged)
+    addon.Callbacks:Register("RosterChanged", SeatChanged)
 
 
 
@@ -1128,8 +1304,9 @@ end
 function VoterFrame:SetCompact(on)
     addon.db.voterCompact = on and true or false
     if not frame then return end
-    compactButton:SetLabel(on and T["Expand"] or T["Compact"])
+    if frame.SetToggleState then frame:SetToggleState(on and true or false) end
 
+    laidOutCount = nil
     P.AfterLayout(frame.ClampTitle)
     VoterFrame:Refresh()
 end
@@ -1137,13 +1314,16 @@ end
 
 
 function VoterFrame:Toggle()
-    if frame and frame:IsShown() then
+    if dock and dock.IsActive() then
+        addon.UI.MLFrame:Close()
+        return "closed"
+    end
+    if not dock and frame and frame:IsShown() then
         frame:Hide()
         return "closed"
     end
     return VoterFrame:Open()
 end
-
 
 
 function VoterFrame:Open()
@@ -1152,6 +1332,7 @@ function VoterFrame:Open()
 
     dismissedRun, dismissedMax = nil, 0
     VoterFrame:Refresh()
+    if dock then return addon.UI.MLFrame:ShowResponse() end
     if not (frame and frame:IsShown()) then return false end
     frame:Raise()
     return true

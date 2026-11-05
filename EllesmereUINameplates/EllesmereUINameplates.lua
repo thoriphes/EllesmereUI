@@ -1,6 +1,6 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 local addon, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI._Pool and EllesmereUI.Glows and EllesmereUI.Glows.FlatKeys and EllesmereUI.AbbreviateValue and EllesmereUI.IsZeroValue and EllesmereUI.UnitNameFormat) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the health texts format through the parent's AbbreviateValue, the [absorb:abr] tags blank at zero through its IsZeroValue, and the Name Format asks its UnitNameFormat)
 EllesmereUI._ModuleNS[addon] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -76,6 +76,10 @@ function ns._appendDisplayPresetKeys(t)
         "leftSlotSize", "leftSlotXOffset", "leftSlotYOffset", "leftSlotRaiseStrata",
         "toprightSlotSize", "toprightSlotXOffset", "toprightSlotYOffset", "toprightSlotGrowth", "toprightSlotRaiseStrata",
         "topleftSlotSize", "topleftSlotXOffset", "topleftSlotYOffset", "topleftSlotGrowth", "topleftSlotRaiseStrata",
+        -- Core Positions chains: the order of a slot's elements (a string) and their spacing.
+        "topSlotOrder", "rightSlotOrder", "leftSlotOrder", "toprightSlotOrder", "topleftSlotOrder", "bottomSlotOrder",
+        "topSlotElementSpacing", "rightSlotElementSpacing", "leftSlotElementSpacing",
+        "toprightSlotElementSpacing", "topleftSlotElementSpacing", "bottomSlotElementSpacing",
         "textSlotTopSize", "textSlotTopXOffset", "textSlotTopYOffset", "textSlotTopStrata",
         "textSlotRightSize", "textSlotRightXOffset", "textSlotRightYOffset", "textSlotRightStrata",
         "textSlotLeftSize", "textSlotLeftXOffset", "textSlotLeftYOffset", "textSlotLeftStrata",
@@ -117,9 +121,9 @@ function ns._appendDisplayPresetKeys(t)
         "classificationHideRare", "classificationHideQuest",
         "castNameSize", "castNameColor", "castCombineNameTarget",
         "castTargetSize", "castTargetClassColor", "castTargetColor",
-        "showCastTimer", "castTimerSize", "castTimerColor", "targetScale",
+        "showCastTimer", "castTimerSize", "castTimerColor", "targetScale", "minorEnemyScale", "nonEliteEnemyScale",
         "castNameSide", "castTargetSide", "castTimerSide",
-        "castNameWidthPct", "castNameWrap", "castTargetWidthPct", "castTargetWrap",
+        "castNameWidthPct", "castNameWrap", "castCombinedWidthPct", "castTargetWidthPct", "castTargetWrap",
         "enemyNameWidthPct", "enemyNameWrap", "wrapBorderCastbar", "wrapBorderSeam",
         "debuffSlot", "buffSlot", "ccSlot",
         "debuffYOffset", "sideAuraXOffset", "auraSpacing",
@@ -147,6 +151,9 @@ local defaults = {
     -- Solid border while it shows.
     debuffColorsBorder = false,
     debuffColorsBorderExtra = 0,
+    -- debuffColorsMode ("texture" = Texture Nameplate, "name" = Color Name) and
+    -- debuffColorsTexture have no defaults: unset reads debuffColorsBorder's
+    -- choice and the health bar's own texture.
     -- Blizzard Style (Global Settings > Style): the stock nameplate's bar,
     -- background, selection and cast bar art on our plates with every feature
     -- intact. Default OFF; reload-gated.
@@ -195,6 +202,14 @@ local defaults = {
     -- Enemies/Casters/Mini-Bosses/Bosses) collapse to owBasicColor; Neutral stays own color.
     owBasicColoring = false,
     owBasicColor = { r = 0.800, g = 0.137, b = 0.137 },
+    -- Color Casting Enemies: a mob without a mana pool takes the Interruptible color once it
+    -- casts something interruptible, else the Uninterruptible color once it casts something
+    -- that is not; each color applies to the mob types ticked for it.
+    castingEnemyColors = false,
+    castingIntColor   = { r = 0.310, g = 0.702, b = 1.000 },
+    castingUnintColor = { r = 0.953, g = 0.573, b = 0.000 },
+    castingIntNormal = true, castingIntElite = true, castingIntMiniBoss = true, castingIntBoss = true,
+    castingUnintNormal = true, castingUnintElite = true, castingUnintMiniBoss = false, castingUnintBoss = false,
     darkenEnemiesOOC = true,
     darkenOOCRecolor = false,  -- Modify Out of Combat "Change Color": recolor OOC enemies rather than dimming
     darkenOOCColor   = { r = 0.5, g = 0.5, b = 0.5 },
@@ -282,6 +297,8 @@ local defaults = {
     hideTrivialEnemies = false,
     hideNeutralEnemies = false,
     questMobAlwaysShow = false,
+    friendlyShowLevel = false,
+    friendlyLevelDiffColor = false,
     showEnemyPets = false,
     forceTargetPlate = false,  -- Force Nameplate on Current Target (EUI_Nameplates_TargetForce.lua)
     font = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF",
@@ -404,6 +421,7 @@ local defaults = {
     castNameWidthPct = 42,
     castNameWrap = false,
     castCombineNameTarget = false,
+    castCombinedWidthPct = 80,  -- combined "Spell - Target" width, % of cast bar
     castTargetSize = 10,
     castTargetClassColor = true,
     castTargetColor = { r = 1, g = 1, b = 1 },
@@ -424,7 +442,11 @@ local defaults = {
     enemyNameWidthPct = 100,
     enemyNameWrap = false,
     targetScale = 100,
+    minorEnemyScale = 100,  -- minor/trivial mob plates; 100 = off
+    nonEliteEnemyScale = 100,  -- normal (non-elite, non-minor) mob plates in dungeons; 100 = off
     nonTargetKeepFocus = true,
+    nonTargetCastFull = false,           -- casting plates ignore Non-Target Opacity
+    nonTargetCastImportantOnly = false,  -- ...only for casts the game flags important
     outOfRangeAlpha = 50,
     outOfRangeMode = "disabled",
     showAllDebuffs = false,
@@ -525,6 +547,14 @@ local defaults = {
     importantCastGlowSpeed = 4,
     importantCastGlowBackground = false,
     importantCastGlowBackgroundColor = { r = 0, g = 0, b = 0 },
+    castTargetGlow = false,  -- glow the cast bar while the cast targets the player
+    castTargetGlowStyle = 1,
+    castTargetGlowColor = { r = 1, g = 1, b = 1 },
+    castTargetGlowLines = 8,
+    castTargetGlowThickness = 2,
+    castTargetGlowSpeed = 4,
+    castTargetGlowBackground = false,
+    castTargetGlowBackgroundColor = { r = 0, g = 0, b = 0 },
     -- Core Positions: slot-based size + XY offsets
     topSlotSize = 26,        topSlotXOffset = 0,      topSlotYOffset = 0,      topSlotRaiseStrata = false,
     rightSlotSize = 24,      rightSlotXOffset = 0,    rightSlotYOffset = 0,    rightSlotRaiseStrata = false,
@@ -972,19 +1002,10 @@ end
 -- SetProfile, which runs them all.
 -- broken: true while an EUI_Nameplates_*.lua file loads; a file that fails
 -- leaves it set, and the files behind it return at their first lines.
-ns._npInternals = {
+EllesmereUI.NewInternals(ns, "_npInternals", {
     _npYOffsetState = _npYOffsetState, BAR_W = BAR_W, CAST_H = CAST_H, defaults = defaults,
     ENP = ENP, GetFont = GetFont, GetNPOutline = GetNPOutline, HP_BAR_SLOTS = HP_BAR_SLOTS,
     SetFSFont = SetFSFont,
     profileSetters = { function(v) p = v end },
-    SetProfile = function(v)
-        local list = ns._npInternals.profileSetters
-        for i = 1, #list do list[i](v) end
-    end,
-    broken = false,
-}
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._npInternals, { __index = function(_, k)
-    error("ns._npInternals has no entry " .. tostring(k), 2)
-end })
+    classPowerTypeSetters = {},
+}, { SetProfile = "profileSetters", SetClassPowerType = "classPowerTypeSetters" })

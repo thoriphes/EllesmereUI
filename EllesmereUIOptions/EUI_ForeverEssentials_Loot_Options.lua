@@ -29,7 +29,7 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     local LF = EllesmereUI._LootFeed
     local BLANK = EllesmereUI.BlankRowCfg
     local y = yOffset
-    local _, h
+    local _, h, hdr
     parent._showRowDivider = true
 
     EllesmereUI:SetContentHeader(HeaderBuilder)
@@ -43,8 +43,7 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     -- Auction prices count only while the tracker or an item price shows, and
     -- only with the price addon's API at hand.
     local function auctionSource()
-        local api = Auctionator and Auctionator.API and Auctionator.API.v1
-        return api and api.GetAuctionPriceByItemLink and true or false
+        return EllesmereUI._ModuleNS["EllesmereUIForeverEssentials"].AuctionAPI() ~= nil
     end
     local function pricesUnused()
         return not (LF.Get("tracker") or (LF.Get("items") and LF.Get("showPrice")))
@@ -111,7 +110,8 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     ---------------------------------------------------------------------------
     --  GENERAL
     ---------------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "LOOT FEED", y);  y = y - h
+    hdr, h = W:SectionHeader(parent, "LOOT FEED", y);  y = y - h
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = "EUI_LootFeed", disabled = off, disabledTooltip = "Loot Feed" })
 
     _, h = W:DualRow(parent, y,
         { type = "toggle", text = "Enable Loot Feed",
@@ -179,13 +179,7 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     ---------------------------------------------------------------------------
     _, h = W:SectionHeader(parent, "ITEMS", y);  y = y - h
 
-    local qualityValues, qualityOrder = {}, {}
-    for q = 0, 5 do
-        local key, color = tostring(q), ITEM_QUALITY_COLORS[q]
-        local label = _G["ITEM_QUALITY" .. q .. "_DESC"] or key
-        qualityValues[key] = color and (color.hex .. label .. "|r") or label
-        qualityOrder[q + 1] = key
-    end
+    local qualityValues, qualityOrder = _G._EUI_ItemQualityValues(Enum.ItemQuality.Legendary)
 
     _, h = W:DualRow(parent, y,
         Bind({ type = "dropdown", text = "Minimum Quality", values = qualityValues, order = qualityOrder,
@@ -295,7 +289,7 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
             apply = function() LF.ApplyStyle(); EllesmereUI:RefreshPage() end }
     );  y = y - h
     if not EllesmereUI._prebuilding then
-        local offsetX, offsetY = EllesmereUI.BorderOffsetRowCfgs{
+        local offsetX, offsetY = EllesmereUI.BorderOffsetCogRows{
             getTex = function() return LF.Get("borderTexture") end,
             getStep = function() return LF.Get("borderSize") end,
             getPx = function() return LF.Get("borderSizePx") end,
@@ -305,10 +299,6 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
             setY = function(v) LF.Cfg().borderTextureOffsetY = v end,
             apply = LF.ApplyStyle,
         }
-        local function CogRow(cfg)
-            return { type = "slider", label = cfg.text, min = cfg.min, max = cfg.max, step = cfg.step,
-                get = cfg.getValue, set = cfg.setValue }
-        end
         local function Shift(key, label)
             return { type = "slider", label = label, min = -10, max = 10, step = 1,
                 get = function() return LF.Get(key) or 0 end,
@@ -323,7 +313,7 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
             disabledTooltip = "This option requires a textured border.",
             rows = {
                 Shift("borderTextureShiftX", "Shift X"), Shift("borderTextureShiftY", "Shift Y"),
-                CogRow(offsetX), CogRow(offsetY),
+                offsetX, offsetY,
                 { type = "toggle", label = "Show Behind",
                   get = function() return LF.Get("borderBehind") end,
                   set = function(v) LF.Cfg().borderBehind = v; LF.ApplyStyle() end },

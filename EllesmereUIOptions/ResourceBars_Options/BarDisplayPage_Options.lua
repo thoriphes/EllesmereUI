@@ -29,10 +29,11 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     -- starts shown. Open eye = shown; a bar that cannot show (off, none for
     -- this spec) gets a dimmed crossed eye whose tooltip names what it needs.
     -- UpdatePreviewHeader re-reads every eye (ns._erbPvEyes): not every flip
-    -- that blocks a bar rebuilds the page.
+    -- that blocks a bar rebuilds the page. `after`: the title's Move in Unlock
+    -- Mode button, which the eye then follows instead of the title itself.
     ns._erbPvHidden = ns._erbPvHidden or {}
     if not EllesmereUI._prebuilding then ns._erbPvEyes = {} end
-    local function AddPreviewEye(hdr, label, key)
+    local function AddPreviewEye(hdr, label, key, after)
         if EllesmereUI._prebuilding or not hdr then return end
         local hidden = ns._erbPvHidden
         local lbl
@@ -43,13 +44,16 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
         end
         local eyeBtn = CreateFrame("Button", nil, hdr)
         PP.Size(eyeBtn, 24, 24)
-        if lbl then
+        if after then
+            PP.Point(eyeBtn, "LEFT", after, "RIGHT", 4, 0)
+        elseif lbl then
             PP.Point(eyeBtn, "LEFT", lbl, "RIGHT", 5, 0)
         else
             PP.Point(eyeBtn, "LEFT", hdr, "BOTTOMLEFT", 85, 8)
         end
         eyeBtn:SetFrameLevel(hdr:GetFrameLevel() + 5)
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function Blocked()
             local p = DB()
@@ -63,7 +67,7 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
             local shown = not blocked and not hidden[key]
             -- The art is named the other way round: EYE_INVISIBLE_ICON is the open eye.
             eyeTex:SetTexture(shown and EllesmereUI.EYE_INVISIBLE_ICON or EllesmereUI.EYE_VISIBLE_ICON)
-            eyeBtn:SetAlpha(blocked and 0.15 or 0.4)
+            EllesmereUI.SetGlyphAlpha(eyeBtn, blocked and 0.15 or 0.4)
         end
         ns._erbPvEyes[key] = RefreshEye
         RefreshEye()
@@ -78,7 +82,7 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                 EllesmereUI.ShowWidgetTooltip(self, blocked)
                 return
             end
-            self:SetAlpha(0.7)
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
             EllesmereUI.ShowWidgetTooltip(self, hidden[key] and EllesmereUI.L("Show in preview") or EllesmereUI.L("Hide in preview"))
         end)
         eyeBtn:SetScript("OnLeave", function()
@@ -524,6 +528,16 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                           })
                       end
                   end },
+                { type = "toggle", label = "Continuous Texture for Pip Resources",
+                  tooltip = "Spreads the texture across all pips instead of restarting it on each one. Useful for gradient textures.",
+                  get = function()
+                      local p = DB(); return (p and p.secondary.useContinuousTexture) or false
+                  end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.secondary.useContinuousTexture = v
+                      RebuildClass()
+                  end },
                 TexBgRowCfg("bars", SmoothRefresh),
             },
         })
@@ -861,11 +875,11 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     _, h = W:Spacer(parent, y, 16);  y = y - h
 
     -- CLASS RESOURCE BAR (header + Row 1 etc. now via the shared builder)
-    local classSection, classEnableRow, classResourceTextRow
-    y, classSection, classEnableRow, classResourceTextRow = ns.ERB_BuildClassResourceSection(parent, y, {
+    local classSection, classEnableRow, classResourceTextRow, classJump
+    y, classSection, classEnableRow, classResourceTextRow, classJump = ns.ERB_BuildClassResourceSection(parent, y, {
         cfg = function() return DB().secondary end, advanced = false, syncRows = _syncRows,
     })
-    AddPreviewEye(classSection, "CLASS RESOURCE BAR", "classResource")
+    AddPreviewEye(classSection, "CLASS RESOURCE BAR", "classResource", classJump)
 
     -- Row: Anchor to Cursor | Cursor Position (cog: X + Y). Appended outside the shared section builder, so it carries its own hidden-while-disabled gate (the builder's toggle rebuilds on flips)
     if DB().secondary.enabled then
@@ -880,11 +894,11 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     _, h = W:Spacer(parent, y, 16);  y = y - h
 
     -- POWER BAR (section header + Row 1 now via the shared builder)
-    local powerSection, powerEnableRow
-    y, powerSection, powerEnableRow = ns.ERB_BuildPowerSection(parent, y, {
+    local powerSection, powerEnableRow, powerJump
+    y, powerSection, powerEnableRow, powerJump = ns.ERB_BuildPowerSection(parent, y, {
         cfg = function() return DB().primary end, advanced = false, syncRows = _syncRows,
     })
-    AddPreviewEye(powerSection, "POWER BAR", "power")
+    AddPreviewEye(powerSection, "POWER BAR", "power", powerJump)
 
     -- Row: Anchor to Cursor | Cursor Position (cog: X + Y). Appended outside the shared section builder, so it carries its own hidden-while-disabled gate (the builder's toggle rebuilds on flips)
     if DB().primary.enabled then
@@ -902,7 +916,8 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
         -- A spec's third label is an extra choice ("always": Balance's Mana in
         -- every form); tip = the row's tooltip for the class.
         local SPEC_POWER_ALTS = {
-            DRUID  = { [1] = { "Mana (Match Form)", "Astral Power", "Mana (Always)" }, [2] = { "Energy", "Mana" }, [3] = { "Rage", "Mana" },
+            DRUID  = { [1] = { "Match Form", "Astral Power", "Mana" },
+                       [2] = { "Match Form", "Mana" }, [3] = { "Match Form", "Mana" }, [4] = { "Match Form", "Mana" },
                        tip = "The first choice follows your form: Energy in Cat Form, Rage in Bear Form and Mana in the others. The other choices keep their power in every form." },
             PRIEST = { [3] = { "Mana", "Insanity" } },
             SHAMAN = { [1] = { "Mana", "Maelstrom" } },
@@ -1261,11 +1276,11 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     _, h = W:Spacer(parent, y, 16);  y = y - h
 
     -- HEALTH BAR (section header + Row 1 now via the shared builder)
-    local healthSection, healthEnableRow
-    y, healthSection, healthEnableRow = ns.ERB_BuildHealthSection(parent, y, {
+    local healthSection, healthEnableRow, healthJump
+    y, healthSection, healthEnableRow, healthJump = ns.ERB_BuildHealthSection(parent, y, {
         cfg = function() return DB().health end, advanced = false, syncRows = _syncRows,
     })
-    AddPreviewEye(healthSection, "HEALTH BAR", "health")
+    AddPreviewEye(healthSection, "HEALTH BAR", "health", healthJump)
 
     -- Row: Anchor to Cursor | Cursor Position (cog: X + Y). Appended outside the shared section builder, so it carries its own hidden-while-disabled gate (the builder's toggle rebuilds on flips)
     if DB().health.enabled then
@@ -1282,10 +1297,11 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     -- ARCANE SOUL (SUNFURY)
     -- Mage-only: the section is absent entirely for every other class rather
     -- than built and disabled, since nothing in it can ever apply to them.
+    -- Absent on WoW Forever too, which has no Arcane spec or Sunfury.
     -- The spec/hero-tree gate itself lives in the module (it changes at
     -- runtime); this only decides whether the controls exist at all.
     local asSection, asEnableRow
-    if select(2, UnitClass("player")) == "MAGE" then
+    if select(2, UnitClass("player")) == "MAGE" and not EllesmereUI.IS_FOREVER then
         -- Straight to the module: this display is not part of the bar build,
         -- so a full ApplyAll would rebuild every bar to retint one string.
         -- The preview header shows the same sample, so it follows too.
@@ -1297,7 +1313,8 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
         local AS_TIP = "Arcane Soul Helper"
 
         asSection, h = W:SectionHeader(parent, "ARCANE SOUL (SUNFURY)", y);  y = y - h
-        AddPreviewEye(asSection, "ARCANE SOUL (SUNFURY)", "arcaneSoul")
+        local asJump = EllesmereUI.BuildSectionUnlockJump(asSection, { key = "EUI_ArcaneSoul", disabled = asOff, disabledTooltip = AS_TIP })
+        AddPreviewEye(asSection, "ARCANE SOUL (SUNFURY)", "arcaneSoul", asJump)
 
         -- Row: Enable Arcane Soul Helper (+ position cog) | Show Threshold
         asEnableRow, h = W:DualRow(parent, y,

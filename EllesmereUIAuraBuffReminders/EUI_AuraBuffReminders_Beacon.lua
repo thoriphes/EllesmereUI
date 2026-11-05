@@ -142,16 +142,18 @@ local function BeaconLayoutIcons()
             local spacing = p.iconSpacing or 8
             local baseScale = p.scale or 1.0
             local sz = floor(ICON_SIZE * baseScale + 0.5)
+            local iconH = sz
+            if p.iconShape and p.iconShape ~= "none" then sz, iconH = ns.IconDimensions(sz, p) end
             local totalW = (#visIcons * sz) + ((#visIcons - 1) * spacing)
             local startX = -(totalW / 2) + (sz / 2)
             for i, f in ipairs(visIcons) do
-                f:SetSize(sz, sz)
+                f:SetSize(sz, iconH)
                 f:SetAlpha(p.opacity or 1.0)
                 f:SetFrameStrata("TOOLTIP")
                 f:SetFrameLevel(9980)
                 EABR.ApplyIconBorder(f, false)
                 f:ClearAllPoints()
-                f:SetPoint("CENTER", cursorAnchor, "CENTER", startX + (i - 1) * (sz + spacing), -(sz + 8))
+                f:SetPoint("CENTER", cursorAnchor, "CENTER", startX + (i - 1) * (sz + spacing), -(iconH + 8))
             end
             cursorAnchor:Show()
             EllesmereUI.SetElementVisibility(cursorAnchor, true)
@@ -314,7 +316,6 @@ end
 
 -- Expose for options and anchor positioning
 _G._EABR_BeaconRefresh = BeaconRefresh
-_G._EABR_BeaconAnchor = function() return _B.anchor end
 
 -- Beacon tracking is retail Holy Paladin; WoW Forever registers nothing here
 -- (BeaconInit is skipped there too, so the handler would only ever return).

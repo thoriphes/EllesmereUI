@@ -788,7 +788,8 @@ local function ComputeCDMBarSize(barData, count)
     -- there is no match gate here: this is the pre-layout footprint estimate, and a matched bar's live frame rect (checked first by GetStableCDMBarSize) always wins over it.
     local resStride = ReserveStride(barData, stride)
     local grow = barData.growDirection or "CENTER"
-    local isH = (grow == "RIGHT" or grow == "LEFT" or grow == "CENTER")
+    -- Same orientation rule as LayoutCDMBar: a centred bar grows along its orientation.
+    local isH = (grow == "RIGHT" or grow == "LEFT" or (grow == "CENTER" and not barData.verticalOrientation))
     if isH then
         return resStride * iW + (resStride - 1) * sp,
                rows * iH + (rows - 1) * sp
@@ -1081,10 +1082,33 @@ LayoutCDMBar = function(barKey)
         local curW = frame:GetWidth() or 0
         local curH = frame:GetHeight() or 0
         if curW <= 1 or curH <= 1 then
-            local fallbackW, fallbackH = GetStableCDMBarSize(barKey, nil, barData)
-            -- EMPTY_CDM_BAR_SIZE is a raw coord-space placeholder; without snapping, often-empty buff-family bars render at non-pixel-aligned heights (43.20 px vs 43) at non-perfect UI scales.
-            fallbackW = SnapForScale(fallbackW, 1)
-            fallbackH = SnapForScale(fallbackH, 1)
+            local fallbackW, fallbackH
+            local minN = barData.minSizeIcons
+            local growMatched
+            if isHoriz then growMatched = widthMatchTarget else growMatched = heightMatchTarget end
+            if minN and minN > 0 and not growMatched then
+                -- Minimum Bar Size: an empty bar takes its reserved slots, in the same physical px
+                -- the first icon's layout gives (icons unmatched), so nothing matched to it moves
+                -- when that icon lands. The assigned-spell estimate would size it for every spell
+                -- on its list, learned or not (a low-level character).
+                local _, rows = ComputeTopRowStride(barData, 1)
+                if rows < 1 then rows = 1 end
+                local wPx = math.floor(iconW / onePx + 0.5)
+                local hPx = math.floor(iconH / onePx + 0.5)
+                local spPx = math.floor(spacing / onePx + 0.5)
+                local growPx = minN * (isHoriz and wPx or hPx) + (minN - 1) * spPx
+                local perpPx = rows * (isHoriz and hPx or wPx) + (rows - 1) * spPx
+                if isHoriz then
+                    fallbackW, fallbackH = growPx * onePx, perpPx * onePx
+                else
+                    fallbackW, fallbackH = perpPx * onePx, growPx * onePx
+                end
+            else
+                fallbackW, fallbackH = GetStableCDMBarSize(barKey, nil, barData)
+                -- EMPTY_CDM_BAR_SIZE is a raw coord-space placeholder; without snapping, often-empty buff-family bars render at non-pixel-aligned heights (43.20 px vs 43) at non-perfect UI scales.
+                fallbackW = SnapForScale(fallbackW, 1)
+                fallbackH = SnapForScale(fallbackH, 1)
+            end
             frame:SetSize(fallbackW, fallbackH)
             frame._prevLayoutW = fallbackW
             frame._prevLayoutH = fallbackH
@@ -1515,8 +1539,8 @@ LayoutCDMBar = function(barKey)
     if EllesmereUI.IsPointAnchored(unlockKey) then EllesmereUI.ReapplyOwnAnchor(unlockKey) end
 
     -- FocusKick: re-anchor against the focus nameplate after every layout pass so the bar tracks size/icon-count changes from the options panel.
-    if barKey == FOCUSKICK_BAR_KEY and ns.ApplyFocusKickAnchor then
-        ns.ApplyFocusKickAnchor()
+    if barKey == ns.FOCUSKICK_BAR_KEY and ns.ReapplyFocusKick then
+        ns.ReapplyFocusKick()
     end
 end
 
@@ -1625,13 +1649,9 @@ local function ApplyCDMTooltipState(barKey)
     else
         _tooltipBars[barKey] = nil
         -- Clear a tooltip showing for an icon on this bar
-        if _tooltipCurrentIcon then
-            local sfc = _ecmeFC[_tooltipCurrentIcon]
-            if sfc and sfc.barKey == barKey then
-                GameTooltip:Hide()
-                _tooltipCurrentIcon = nil
-            end
-        end
+        local owner = GameTooltip:GetOwner()
+        local sfc = owner and _ecmeFC[owner]
+        if sfc and sfc.barKey == barKey then GameTooltip:Hide() end
     end
     -- Mouse-motion follows the tooltip setting. A motion-enabled icon with no unit becomes the
     -- mouseover-focus frame and steals hover from unit frames underneath (raid frame hover

@@ -15,7 +15,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --    - Copy Chat button + session history (own message store)
 -------------------------------------------------------------------------------
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.PadGamepadUI) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 local EUI = _G.EllesmereUI
@@ -1269,15 +1269,18 @@ function ECHAT.SyncChatFrameState()
                 and (math.abs(w - sz.w) > 1.5 or math.abs(h - sz.h) > 1.5) then
                 drift = true
             end
-            -- Position drift too (canonical BOTTOMLEFT saves): Edit Mode's
-            -- late writes move the rect as well as resizing it.
-            if not drift and pos.point == "BOTTOMLEFT" and pos.x and pos.y then
+            -- Position drift too: Edit Mode's late writes move the rect as
+            -- well as resizing it.
+            local tx, ty
+            if not drift and ns.ChatSavedLeftBottom then
+                tx, ty = ns.ChatSavedLeftBottom(pos, sz.w, sz.h, cf1s)
+            end
+            if tx then
                 local l, b = cf1s:GetLeft(), cf1s:GetBottom()
                 -- Stock styles clamp against their art's reserve: compare with
                 -- the spot the clamp lets the frame reach, or a position saved
                 -- nearer an edge (the EllesmereUI look clamps at zero) would
                 -- read as drift on every pass and never converge.
-                local tx, ty = pos.x, pos.y
                 if ns.ChatStock() then
                     local il, ir, it, ib = cf1s:GetClampRectInsets()
                     local sw, sh = UIParent:GetWidth(), UIParent:GetHeight()
@@ -1517,7 +1520,7 @@ end
 -- the copies to start from.
 -- broken: true while an EUI_Chat_*.lua file loads; a file that fails leaves
 -- it set, and the files behind it return at their first lines.
-ns._internals = {
+EllesmereUI.NewInternals(ns, "_internals", {
     _chatAlphaCurrent = _chatAlphaCurrent, _chatFadeFrame = _chatFadeFrame,
     _sidebarFadeAlpha = _sidebarFadeAlpha, _sidebarFadeTarget = _sidebarFadeTarget,
     _sidebarMouseoverLayoutVisible = _sidebarMouseoverLayoutVisible, BG_A = BG_A, BG_B = BG_B,
@@ -1540,10 +1543,7 @@ ns._internals = {
     sidebarFadeFrameSetters = { function(v) _sidebarFadeFrame = v end },
     chatAlphaCurrentSetters = { function(v) _chatAlphaCurrent = v end },
     visChatVisibleSetters = {}, idleFadeActiveSetters = {},
-    broken = false,
-}
--- Set<Name> hands a new value to every copy registered in <name>Setters.
-for setter, listName in pairs({
+}, {
     SetBgR = "bgRSetters", SetBgG = "bgGSetters", SetBgB = "bgBSetters", SetBgA = "bgASetters",
     SetSidebarLayoutVisible = "sidebarLayoutVisibleSetters",
     SetSidebarFadeTarget = "sidebarFadeTargetSetters",
@@ -1551,12 +1551,7 @@ for setter, listName in pairs({
     SetSidebarFadeFrame = "sidebarFadeFrameSetters",
     SetChatAlphaCurrent = "chatAlphaCurrentSetters",
     SetVisChatVisible = "visChatVisibleSetters", SetIdleFadeActive = "idleFadeActiveSetters",
-}) do
-    local list = ns._internals[listName]
-    ns._internals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
-end
+})
 -- The Set<Name> functions this file calls itself (declared above BG_R).
 do
     local I = ns._internals
@@ -1564,8 +1559,3 @@ do
     SetSidebarLayoutVisible, SetSidebarFadeFrame = I.SetSidebarLayoutVisible, I.SetSidebarFadeFrame
     SetSidebarFadeTarget, SetSidebarFadeAlpha = I.SetSidebarFadeTarget, I.SetSidebarFadeAlpha
 end
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._internals, { __index = function(_, k)
-    error("ns._internals has no entry " .. tostring(k), 2)
-end })

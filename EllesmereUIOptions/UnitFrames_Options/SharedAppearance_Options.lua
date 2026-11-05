@@ -31,6 +31,13 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
     -------------------------------------------------------------------
     local sharedDisplayHeader
     sharedDisplayHeader, h = W:SectionHeader(parent, "DISPLAY", y); y = y - h
+    -- The Move in Unlock Mode button on the unit's first section: the selected
+    -- unit's own mover, which exists only for the EllesmereUI frame source (a
+    -- Blizzard or hidden frame has none), so the button explains itself otherwise.
+    EllesmereUI.BuildSectionUnlockJump(sharedDisplayHeader, {
+        key = function() return optState.selectedUnit end,
+        disabled = function() return ns.GetUnitFrameSource(optState.selectedUnit) ~= "eui" end,
+        disabledTooltip = "This option requires the EllesmereUI Frame Source." })
     y = EllesmereUI.BlizzStyle.Note(parent, y, "unitframes")
 
     -- Wire class theme subnav callbacks (per-unit context)
@@ -276,6 +283,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                   UpdatePreview(); EllesmereUI:RefreshPage()
               end },
             { type="toggle", text="Dark Mode",
+              tooltip="Dark Mode for this frame. Global Settings > Colors switches every frame.",
               getValue=function() return ns.UF_DarkThemeOn(SDB()) end,
               setValue=function(v)
                   SSet("darkTheme", v)
@@ -1261,6 +1269,28 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
                 set=function(v) SSet("portraitSeparator", v or nil) end,
             }
         end
+        if SVal("portraitStyle", "attached") == "detached" then
+            rows[#rows + 1] = { type="toggle", label="Clickable Portrait",
+                tooltip="Clicking or hovering the detached portrait acts like clicking or hovering the frame's bars.",
+                get=function() return SVal("detachedPortraitClickable", false) end,
+                set=function(v) SSet("detachedPortraitClickable", v or nil) end,
+            }
+            rows[#rows + 1] = { type="colorpicker", label="Background Color", hasAlpha=true,
+                tooltip="Fill color behind the detached portrait.",
+                disabled=function() return SVal("detachedPortraitShape", "portrait") == "none" end,
+                disabledTooltip="This option requires a Shape other than None.",
+                rawTooltip=true,
+                get=function()
+                    local c = SGet("detachedPortraitBgColor")
+                    if c then return c.r, c.g, c.b, c.a or 1 end
+                    return 0.1, 0.1, 0.1, 1
+                end,
+                set=function(r, g, b, a)
+                    SSet("detachedPortraitBgColor", { r=r, g=g, b=b, a=a or 1 })
+                    UpdatePreview()
+                end,
+            }
+        end
         EllesmereUI.BuildInlineCog(sharedPortraitModeRow._leftRegion, {
             title = "Portrait Settings",
             disabled = function()
@@ -2135,32 +2165,64 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
         })
     end
 
+    -- Custom on each slot opens the text slots' format popup; its format is
+    -- the slot's own, so it is never cleared from the other slots. A selection
+    -- keeps the page, so all three menus follow it.
+    local function RefreshBtbMenus()
+        local t, c = sharedBtbTextRow, sharedBtbCenterRow
+        ns.UFO_RefreshMenus(t and t._leftRegion, t and t._rightRegion, c and c._leftRegion)
+    end
+    local function SetBtbLeft(v)
+        SSet("btbLeftContent", v)
+        if ns.UF_IsUniqueContent(v) then
+            if SGet("btbRightContent") == v then SSet("btbRightContent", "none") end
+            if SGet("btbCenterContent") == v then SSet("btbCenterContent", "none") end
+        end
+        ReloadAndUpdate(); UpdatePreview(); RefreshBtbMenus()
+    end
+    local function SetBtbRight(v)
+        SSet("btbRightContent", v)
+        if ns.UF_IsUniqueContent(v) then
+            if SGet("btbLeftContent") == v then SSet("btbLeftContent", "none") end
+            if SGet("btbCenterContent") == v then SSet("btbCenterContent", "none") end
+        end
+        ReloadAndUpdate(); UpdatePreview(); RefreshBtbMenus()
+    end
+    local function SetBtbCenter(v)
+        SSet("btbCenterContent", v)
+        if v ~= "none" then
+            SSet("btbLeftContent", "none")
+            SSet("btbRightContent", "none")
+        end
+        ReloadAndUpdate(); UpdatePreview(); RefreshBtbMenus()
+    end
+    local function BtbValues(prefix, setValue)
+        return ns.UFO_CustomTextValues(btbTextValues,
+            function() return SVal(prefix .. "Content", "none") end,
+            function()
+                ns.UFO_EditCustomText(prefix, ctx.SDB(), optState.selectedUnit, function() setValue("custom") end)
+            end)
+    end
+
     -- Row 3: Left Text + Right Text
     sharedBtbTextRow, h = W:DualRow(parent, y,
-        { type="dropdown", text="Left Text", values=btbTextValues, order=btbTextOrder,
+        { type="dropdown", text="Left Text", values=BtbValues("btbLeft", SetBtbLeft), order=btbTextOrder,
           disabled=function() return not SVal("bottomTextBar", false) end,
           disabledTooltip="Text Bar",
           getValue=function() return SVal("btbLeftContent", "none") end,
-          setValue=function(v)
-              SSet("btbLeftContent", v)
-              if v ~= "none" then
-                  if SGet("btbRightContent") == v then SSet("btbRightContent", "none") end
-                  if SGet("btbCenterContent") == v then SSet("btbCenterContent", "none") end
-              end
-              ReloadAndUpdate(); UpdatePreview()
-          end },
-        { type="dropdown", text="Right Text", values=btbTextValues, order=btbTextOrder,
+          setValue=SetBtbLeft },
+        { type="dropdown", text="Right Text", values=BtbValues("btbRight", SetBtbRight), order=btbTextOrder,
           disabled=function() return not SVal("bottomTextBar", false) end,
           disabledTooltip="Text Bar",
           getValue=function() return SVal("btbRightContent", "none") end,
-          setValue=function(v)
-              SSet("btbRightContent", v)
-              if v ~= "none" then
-                  if SGet("btbLeftContent") == v then SSet("btbLeftContent", "none") end
-                  if SGet("btbCenterContent") == v then SSet("btbCenterContent", "none") end
-              end
-              ReloadAndUpdate(); UpdatePreview()
-          end });  y = y - h
+          setValue=SetBtbRight });  y = y - h
+    if not EllesmereUI._prebuilding then
+        local apply = function() ReloadAndUpdate(); UpdatePreview() end
+        ns.UFO_AddCustomFormatAccessor(sharedBtbTextRow._leftRegion, "BTB Left Text", "btbLeft",
+            SVal("btbLeftContent", "none"), ctx.SDB, apply)
+        ns.UFO_AddCustomFormatAccessor(sharedBtbTextRow._rightRegion, "BTB Right Text", "btbRight",
+            SVal("btbRightContent", "none"), ctx.SDB, apply)
+    end
     -- Inline color swatches on BTB Left Text: Custom + Class (CDM Border Size
     -- pattern). Power Color stays in the cog; the three modes are mutually exclusive.
     if not EllesmereUI._prebuilding then
@@ -2434,14 +2496,22 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
             region  = rgn,
             tooltip = "Apply Text Bar Left Text to all Frames",
             onClick = function()
-                local v = UNIT_DB_MAP[optState.selectedUnit]().btbLeftContent or "none"
-                for _, key in ipairs(GROUP_UNIT_ORDER) do UNIT_DB_MAP[key]().btbLeftContent = v end
+                local src = UNIT_DB_MAP[optState.selectedUnit]()
+                local v, fmt = src.btbLeftContent or "none", src.btbLeftCustomFormat
+                for _, key in ipairs(GROUP_UNIT_ORDER) do
+                    local d = UNIT_DB_MAP[key]()
+                    d.btbLeftContent = v
+                    if v == "custom" then d.btbLeftCustomFormat = fmt end
+                end
                 ReloadAndUpdate(); EllesmereUI:RefreshPage()
             end,
             isSynced = function()
-                local v = UNIT_DB_MAP[optState.selectedUnit]().btbLeftContent or "none"
+                local src = UNIT_DB_MAP[optState.selectedUnit]()
+                local v, fmt = src.btbLeftContent or "none", src.btbLeftCustomFormat or ""
                 for _, key in ipairs(GROUP_UNIT_ORDER) do
-                    if (UNIT_DB_MAP[key]().btbLeftContent or "none") ~= v then return false end
+                    local d = UNIT_DB_MAP[key]()
+                    if (d.btbLeftContent or "none") ~= v then return false end
+                    if v == "custom" and (d.btbLeftCustomFormat or "") ~= fmt then return false end
                 end
                 return true
             end,
@@ -2451,8 +2521,13 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
                 elementLabels = SHORT_LABELS,
                 getCurrentKey = function() return optState.selectedUnit end,
                 onApply       = function(checkedKeys)
-                    local v = UNIT_DB_MAP[optState.selectedUnit]().btbLeftContent or "none"
-                    for _, key in ipairs(checkedKeys) do UNIT_DB_MAP[key]().btbLeftContent = v end
+                    local src = UNIT_DB_MAP[optState.selectedUnit]()
+                    local v, fmt = src.btbLeftContent or "none", src.btbLeftCustomFormat
+                    for _, key in ipairs(checkedKeys) do
+                        local d = UNIT_DB_MAP[key]()
+                        d.btbLeftContent = v
+                        if v == "custom" then d.btbLeftCustomFormat = fmt end
+                    end
                     ReloadAndUpdate(); EllesmereUI:RefreshPage()
                 end,
             },
@@ -2464,14 +2539,22 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
             region  = rgn,
             tooltip = "Apply Text Bar Right Text to all Frames",
             onClick = function()
-                local v = UNIT_DB_MAP[optState.selectedUnit]().btbRightContent or "none"
-                for _, key in ipairs(GROUP_UNIT_ORDER) do UNIT_DB_MAP[key]().btbRightContent = v end
+                local src = UNIT_DB_MAP[optState.selectedUnit]()
+                local v, fmt = src.btbRightContent or "none", src.btbRightCustomFormat
+                for _, key in ipairs(GROUP_UNIT_ORDER) do
+                    local d = UNIT_DB_MAP[key]()
+                    d.btbRightContent = v
+                    if v == "custom" then d.btbRightCustomFormat = fmt end
+                end
                 ReloadAndUpdate(); EllesmereUI:RefreshPage()
             end,
             isSynced = function()
-                local v = UNIT_DB_MAP[optState.selectedUnit]().btbRightContent or "none"
+                local src = UNIT_DB_MAP[optState.selectedUnit]()
+                local v, fmt = src.btbRightContent or "none", src.btbRightCustomFormat or ""
                 for _, key in ipairs(GROUP_UNIT_ORDER) do
-                    if (UNIT_DB_MAP[key]().btbRightContent or "none") ~= v then return false end
+                    local d = UNIT_DB_MAP[key]()
+                    if (d.btbRightContent or "none") ~= v then return false end
+                    if v == "custom" and (d.btbRightCustomFormat or "") ~= fmt then return false end
                 end
                 return true
             end,
@@ -2481,8 +2564,13 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
                 elementLabels = SHORT_LABELS,
                 getCurrentKey = function() return optState.selectedUnit end,
                 onApply       = function(checkedKeys)
-                    local v = UNIT_DB_MAP[optState.selectedUnit]().btbRightContent or "none"
-                    for _, key in ipairs(checkedKeys) do UNIT_DB_MAP[key]().btbRightContent = v end
+                    local src = UNIT_DB_MAP[optState.selectedUnit]()
+                    local v, fmt = src.btbRightContent or "none", src.btbRightCustomFormat
+                    for _, key in ipairs(checkedKeys) do
+                        local d = UNIT_DB_MAP[key]()
+                        d.btbRightContent = v
+                        if v == "custom" then d.btbRightCustomFormat = fmt end
+                    end
                     ReloadAndUpdate(); EllesmereUI:RefreshPage()
                 end,
             },
@@ -2491,23 +2579,20 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
 
     -- Row 4: Center Text + Class Icon
     sharedBtbCenterRow, h = W:DualRow(parent, y,
-        { type="dropdown", text="Center Text", values=btbTextValues, order=btbTextOrder,
+        { type="dropdown", text="Center Text", values=BtbValues("btbCenter", SetBtbCenter), order=btbTextOrder,
           disabled=function() return not SVal("bottomTextBar", false) end,
           disabledTooltip="Text Bar",
           getValue=function() return SVal("btbCenterContent", "none") end,
-          setValue=function(v)
-              SSet("btbCenterContent", v)
-              if v ~= "none" then
-                  SSet("btbLeftContent", "none")
-                  SSet("btbRightContent", "none")
-              end
-              ReloadAndUpdate(); UpdatePreview()
-          end },
+          setValue=SetBtbCenter },
         { type="dropdown", text="Class Icon", values=classIconValues, order=classIconOrder,
           disabled=function() return not SVal("bottomTextBar", false) end,
           disabledTooltip="Text Bar",
           getValue=function() return SVal("btbClassIcon", "none") end,
           setValue=function(v) SSet("btbClassIcon", v); UpdatePreview() end });  y = y - h
+    if not EllesmereUI._prebuilding then
+        ns.UFO_AddCustomFormatAccessor(sharedBtbCenterRow._leftRegion, "BTB Center Text", "btbCenter",
+            SVal("btbCenterContent", "none"), ctx.SDB, function() ReloadAndUpdate(); UpdatePreview() end)
+    end
     -- Inline color swatches on BTB Center Text: Custom + Class (Power Color stays in
     -- the cog; the three modes are mutually exclusive).
     if not EllesmereUI._prebuilding then
@@ -2671,14 +2756,22 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
             region  = rgn,
             tooltip = "Apply Text Bar Center Text to all Frames",
             onClick = function()
-                local v = UNIT_DB_MAP[optState.selectedUnit]().btbCenterContent or "none"
-                for _, key in ipairs(GROUP_UNIT_ORDER) do UNIT_DB_MAP[key]().btbCenterContent = v end
+                local src = UNIT_DB_MAP[optState.selectedUnit]()
+                local v, fmt = src.btbCenterContent or "none", src.btbCenterCustomFormat
+                for _, key in ipairs(GROUP_UNIT_ORDER) do
+                    local d = UNIT_DB_MAP[key]()
+                    d.btbCenterContent = v
+                    if v == "custom" then d.btbCenterCustomFormat = fmt end
+                end
                 ReloadAndUpdate(); EllesmereUI:RefreshPage()
             end,
             isSynced = function()
-                local v = UNIT_DB_MAP[optState.selectedUnit]().btbCenterContent or "none"
+                local src = UNIT_DB_MAP[optState.selectedUnit]()
+                local v, fmt = src.btbCenterContent or "none", src.btbCenterCustomFormat or ""
                 for _, key in ipairs(GROUP_UNIT_ORDER) do
-                    if (UNIT_DB_MAP[key]().btbCenterContent or "none") ~= v then return false end
+                    local d = UNIT_DB_MAP[key]()
+                    if (d.btbCenterContent or "none") ~= v then return false end
+                    if v == "custom" and (d.btbCenterCustomFormat or "") ~= fmt then return false end
                 end
                 return true
             end,
@@ -2688,8 +2781,13 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
                 elementLabels = SHORT_LABELS,
                 getCurrentKey = function() return optState.selectedUnit end,
                 onApply       = function(checkedKeys)
-                    local v = UNIT_DB_MAP[optState.selectedUnit]().btbCenterContent or "none"
-                    for _, key in ipairs(checkedKeys) do UNIT_DB_MAP[key]().btbCenterContent = v end
+                    local src = UNIT_DB_MAP[optState.selectedUnit]()
+                    local v, fmt = src.btbCenterContent or "none", src.btbCenterCustomFormat
+                    for _, key in ipairs(checkedKeys) do
+                        local d = UNIT_DB_MAP[key]()
+                        d.btbCenterContent = v
+                        if v == "custom" then d.btbCenterCustomFormat = fmt end
+                    end
                     ReloadAndUpdate(); EllesmereUI:RefreshPage()
                 end,
             },
@@ -2858,9 +2956,10 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
         eyeBtn:SetSize(26, 26)
         eyeBtn:SetPoint("RIGHT", ciRgn._lastInline or ciRgn._control, "LEFT", -8, 0)
         eyeBtn:SetFrameLevel(ciRgn:GetFrameLevel() + 5)
-        eyeBtn:SetAlpha(0.4)
+        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         ciRgn._lastInline = eyeBtn
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshCombatEye()
             eyeTex:SetTexture(optState.showCombatIndicatorPreview and EYE_INVISIBLE or EYE_VISIBLE)
@@ -2872,11 +2971,11 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
             UpdatePreview()
         end)
         eyeBtn:SetScript("OnEnter", function(self)
-            self:SetAlpha(0.7)
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
             EllesmereUI.ShowWidgetTooltip(self, optState.showCombatIndicatorPreview and "Hide combat indicator preview" or "Show combat indicator preview")
         end)
         eyeBtn:SetScript("OnLeave", function(self)
-            self:SetAlpha(0.4)
+            EllesmereUI.SetGlyphAlpha(self, 0.4)
             EllesmereUI.HideWidgetTooltip()
         end)
 
@@ -2968,9 +3067,10 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
         eyeBtn:SetSize(26, 26)
         eyeBtn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
         eyeBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-        eyeBtn:SetAlpha(0.4)
+        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         rgn._lastInline = eyeBtn
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshEye()
             eyeTex:SetTexture(eyes[key] and EllesmereUI.EYE_INVISIBLE_ICON or EllesmereUI.EYE_VISIBLE_ICON)
@@ -2983,11 +3083,11 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
             UpdatePreview()
         end)
         eyeBtn:SetScript("OnEnter", function(self)
-            self:SetAlpha(0.7)
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
             EllesmereUI.ShowWidgetTooltip(self, (eyes[key] and "Hide " or "Show ") .. what .. " preview")
         end)
         eyeBtn:SetScript("OnLeave", function(self)
-            self:SetAlpha(0.4)
+            EllesmereUI.SetGlyphAlpha(self, 0.4)
             EllesmereUI.HideWidgetTooltip()
         end)
     end

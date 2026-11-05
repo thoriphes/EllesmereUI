@@ -881,11 +881,18 @@ local function RefreshCDMIconAppearance(barKey)
         -- zero-charge / Hide Charge Text alpha channel (CdmHooks); non-buff
         -- bars never write (csAlpha nil), so that channel keeps single
         -- ownership of its counters.
-        local csAlpha
+        local csAlpha, appsAlpha
         if barData.barType == "buffs" or barData.barType == "custom_buff" then
             local showCS = barData.showChargeStackText ~= false
             if ssb and ssb.showChargeStackText ~= nil then showCS = ssb.showChargeStackText end
             csAlpha = showCS and 1 or 0
+            appsAlpha = csAlpha
+        else
+            -- A buff hosted on a cd/utility bar: only its stack counter, which that
+            -- bar's charge-text channel never writes, follows the per-spell toggle.
+            if fd and fd._isBuffViewerFrame then
+                appsAlpha = (ssb and ssb.showChargeStackText == false) and 0 or 1
+            end
         end
         -- Text must render above borders. Levels are relative to the icon's own frame level (CdmHooks: border +13, text +23).
         local textLvl = icon:GetFrameLevel() + 23
@@ -897,7 +904,7 @@ local function RefreshCDMIconAppearance(barKey)
                 SetBlizzCDMFont(appsFS, scFont, scSize, scR, scG, scB)
                 appsFS:ClearAllPoints()
                 appsFS:SetPoint(scPoint, icon, scPoint, scX, scY)
-                if csAlpha then appsFS:SetAlpha(csAlpha) end
+                if appsAlpha then appsFS:SetAlpha(appsAlpha) end
             end
         end
         -- ChargeCount (spell charges like Sigil/Roll) -- not an item count. Blizzard manages show/hide based on charge state.
@@ -1053,7 +1060,7 @@ local function RefreshCDMIconAppearance(barKey)
             if m then cse, cseShift, cseUsable, cseForm = m.base, m.shift, m.usable, m.form end
             -- Stance Bar (EllesmereUICdmStanceBar.lua): one more hide reason. Alone,
             -- it runs as Hidden (On CD) with the cooldown never read.
-            local stance = ns.CdmStanceBarOf(csSs)
+            local stance = ns.CdmStanceBarOf(csSs, icon)
             local stanceOnly = false
             if stance and cse ~= "hiddenOnCD" and cse ~= "hiddenReady" and cse ~= "lowerAlphaOnCD" then
                 cse, stanceOnly = "hiddenOnCD", true

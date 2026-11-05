@@ -641,6 +641,8 @@ initFrame:SetScript("OnEvent", function(self)
                     or (slot.kind == "cycleworldmarker"
                         and "world marker, next on each press")
                     or (slot.kind == "randommount" and "mount")
+                    or (slot.kind == "randomhearth"
+                        and "random hearthstone, rolled again on each open")
                     or (slot.kind == "panel" and "interface panel")
                     or (slot.kind == "spec" and "specialization")
                     -- Same icon and same name as a fixed spec entry on the
@@ -952,6 +954,14 @@ initFrame:SetScript("OnEvent", function(self)
 
     local function ToyEntries()
         local out = {}
+        -- A different owned hearthstone on every open, pinned ahead of the
+        -- collection the way the random mount leads the mounts. Named for what
+        -- the ENTRY is rather than for the toy it happens to draw right now.
+        do
+            local slot = { kind = "randomhearth" }
+            local icon = ns.SlotDisplay(slot)
+            out[1] = { icon = icon, name = "Random Hearthstone", slot = slot, pin = true }
+        end
         ScanToysUnfiltered(function()
             for i = 1, (C_ToyBox.GetNumFilteredToys() or 0) do
                 local itemID = C_ToyBox.GetToyFromIndex(i)
@@ -1070,7 +1080,8 @@ initFrame:SetScript("OnEvent", function(self)
 
     -- Profession POSITIONS (DynamicSpecEntries counterpart): the five
     -- GetProfessions slots as openers, then the same five as second abilities,
-    -- then the two primary slots as gathering specialization abilities.
+    -- then the two primary slots as gathering specialization abilities (retail
+    -- only: WoW Forever's professions have no specializations).
     -- Unlearned or inapplicable positions resolve to nothing and go dark under
     -- Hide Unavailable Actions (see Dynamic Profession in EllesmereUIQuickdraw).
     local function DynamicProfessionEntries()
@@ -1086,7 +1097,7 @@ initFrame:SetScript("OnEvent", function(self)
             local icon = ns.SlotDisplay(slot)
             out[#out + 1] = { icon = icon, name = ns.ProfessionPositionName(i, true), slot = slot }
         end
-        for i = 1, 2 do
+        for i = 1, EllesmereUI.IS_FOREVER and 0 or 2 do
             local slot = { kind = "dynamicprofession", index = i, specialization = true }
             local icon = ns.SlotDisplay(slot)
             out[#out + 1] = {
@@ -1233,8 +1244,9 @@ initFrame:SetScript("OnEvent", function(self)
         { key = "spec",      label = "Specializations", build = AllSpecEntries,
           keepOrder = true, noSearch = true },
         -- keepOrder: Profession 1, Profession 2, Cooking, Fishing and
-        -- Archaeology in the fixed order the game lists them, then the same
-        -- five positions' second abilities. noSearch: ten rows.
+        -- Archaeology (First Aid on WoW Forever) in the fixed order the game
+        -- lists them, then the same five positions' second abilities.
+        -- noSearch: ten rows.
         { key = "profession", label = "Professions", build = DynamicProfessionEntries,
           keepOrder = true, noSearch = true },
         -- keepOrder: the panels run in the order the micro menu draws them,

@@ -472,7 +472,8 @@ function EAB._UpdateSpellbookNeverBars(resync)
         for _, info in ipairs(BAR_CONFIG) do
             local s = EAB.db.profile.bars[info.key]
             if s and s.spellbookShow and s.enabled ~= false
-               and ((s.barVisibility or "always") ~= "always" or s.alwaysHidden
+               and ((EllesmereUI.VisOverrideValue(s) or s.barVisibility or "always") ~= "always"
+                    or EAB.VisibilityCompat.IsNever(s)
                     or (EAB._padHide and s.gamepadHideBar == true))
                and not (EAB._visOverride and EAB._visOverride[info.key]) then
                 EAB._visOverride = EAB._visOverride or {}
@@ -511,9 +512,10 @@ end
 -- Trigger wiring: OnShow/OnHide HookScripts on the two panels (both are
 -- LoadOnDemand -- ADDON_LOADED installs late hooks, unregistering once both
 -- are in). WoW Forever's Gamepad interface style shows and hides both panels
--- from secure code, where a hook of ours would taint it: under that style the
--- option stands down for the session (EAB._sbOff), decided once logged in and
--- again before each late hook.
+-- from secure code, where a hook of ours would taint it on a client whose
+-- navigation still can be (EllesmereUI.PadTaintStandDown): there the option
+-- stands down for the session (EAB._sbOff), decided once logged in and again
+-- before each late hook.
 do
     local hooked = {}
     local function OnPanelToggle()
@@ -533,7 +535,7 @@ do
     ev:SetScript("OnEvent", function(self, event, addon)
         if event == "PLAYER_LOGIN" then
             self:UnregisterEvent("PLAYER_LOGIN")
-            if EllesmereUI.PadGamepadUI() then
+            if EllesmereUI.PadTaintStandDown() then
                 EAB._sbOff = true
                 return
             end
@@ -543,7 +545,7 @@ do
             local name = (addon == "Blizzard_PlayerSpells" and "PlayerSpellsFrame")
                 or (addon == "Blizzard_MacroUI" and "MacroFrame")
             if not name then return end
-            if EllesmereUI.PadGamepadUI() then
+            if EllesmereUI.PadTaintStandDown() then
                 -- Switched to that style since login: no late hook, and a hook
                 -- already in place sees both panels as closed from here on.
                 EAB._sbOff = true
