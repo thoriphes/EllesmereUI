@@ -1,6 +1,6 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 local addon, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI._Pool and EllesmereUI.Glows and EllesmereUI.Glows.FlatKeys and EllesmereUI.AbbreviateValue and EllesmereUI.IsZeroValue and EllesmereUI.UnitNameFormat) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the health texts format through the parent's AbbreviateValue, the [absorb:abr] tags blank at zero through its IsZeroValue, and the Name Format asks its UnitNameFormat)
 EllesmereUI._ModuleNS[addon] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -12,6 +12,11 @@ local p
 local ipairs = ipairs
 local PP = EllesmereUI.PP
 local UnitIsUnit = UnitIsUnit
+-- The core's table of the options page frame pool (EllesmereUI_PixelPerfect.lua
+-- makes it, the options addon fills it): the builders the options preview shares
+-- with the plates create through it, so a preview frame is handed back to the
+-- preview's next build. A plate's parent is no pool host: a plain CreateFrame.
+local Pool = EllesmereUI._Pool
 
 local function GetFont() return EllesmereUI.GetFontPath("nameplates") end
 -- Slug-gated at the source (GetFontOutlineFlag); SetFSFont gates the
@@ -71,6 +76,10 @@ function ns._appendDisplayPresetKeys(t)
         "leftSlotSize", "leftSlotXOffset", "leftSlotYOffset", "leftSlotRaiseStrata",
         "toprightSlotSize", "toprightSlotXOffset", "toprightSlotYOffset", "toprightSlotGrowth", "toprightSlotRaiseStrata",
         "topleftSlotSize", "topleftSlotXOffset", "topleftSlotYOffset", "topleftSlotGrowth", "topleftSlotRaiseStrata",
+        -- Core Positions chains: the order of a slot's elements (a string) and their spacing.
+        "topSlotOrder", "rightSlotOrder", "leftSlotOrder", "toprightSlotOrder", "topleftSlotOrder", "bottomSlotOrder",
+        "topSlotElementSpacing", "rightSlotElementSpacing", "leftSlotElementSpacing",
+        "toprightSlotElementSpacing", "topleftSlotElementSpacing", "bottomSlotElementSpacing",
         "textSlotTopSize", "textSlotTopXOffset", "textSlotTopYOffset", "textSlotTopStrata",
         "textSlotRightSize", "textSlotRightXOffset", "textSlotRightYOffset", "textSlotRightStrata",
         "textSlotLeftSize", "textSlotLeftXOffset", "textSlotLeftYOffset", "textSlotLeftStrata",
@@ -112,9 +121,9 @@ function ns._appendDisplayPresetKeys(t)
         "classificationHideRare", "classificationHideQuest",
         "castNameSize", "castNameColor", "castCombineNameTarget",
         "castTargetSize", "castTargetClassColor", "castTargetColor",
-        "showCastTimer", "castTimerSize", "castTimerColor", "targetScale",
+        "showCastTimer", "castTimerSize", "castTimerColor", "targetScale", "minorEnemyScale", "nonEliteEnemyScale",
         "castNameSide", "castTargetSide", "castTimerSide",
-        "castNameWidthPct", "castNameWrap", "castTargetWidthPct", "castTargetWrap",
+        "castNameWidthPct", "castNameWrap", "castCombinedWidthPct", "castTargetWidthPct", "castTargetWrap",
         "enemyNameWidthPct", "enemyNameWrap", "wrapBorderCastbar", "wrapBorderSeam",
         "debuffSlot", "buffSlot", "ccSlot",
         "debuffYOffset", "sideAuraXOffset", "auraSpacing",
@@ -142,6 +151,9 @@ local defaults = {
     -- Solid border while it shows.
     debuffColorsBorder = false,
     debuffColorsBorderExtra = 0,
+    -- debuffColorsMode ("texture" = Texture Nameplate, "name" = Color Name) and
+    -- debuffColorsTexture have no defaults: unset reads debuffColorsBorder's
+    -- choice and the health bar's own texture.
     -- Blizzard Style (Global Settings > Style): the stock nameplate's bar,
     -- background, selection and cast bar art on our plates with every feature
     -- intact. Default OFF; reload-gated.
@@ -190,6 +202,14 @@ local defaults = {
     -- Enemies/Casters/Mini-Bosses/Bosses) collapse to owBasicColor; Neutral stays own color.
     owBasicColoring = false,
     owBasicColor = { r = 0.800, g = 0.137, b = 0.137 },
+    -- Color Casting Enemies: a mob without a mana pool takes the Interruptible color once it
+    -- casts something interruptible, else the Uninterruptible color once it casts something
+    -- that is not; each color applies to the mob types ticked for it.
+    castingEnemyColors = false,
+    castingIntColor   = { r = 0.310, g = 0.702, b = 1.000 },
+    castingUnintColor = { r = 0.953, g = 0.573, b = 0.000 },
+    castingIntNormal = true, castingIntElite = true, castingIntMiniBoss = true, castingIntBoss = true,
+    castingUnintNormal = true, castingUnintElite = true, castingUnintMiniBoss = false, castingUnintBoss = false,
     darkenEnemiesOOC = true,
     darkenOOCRecolor = false,  -- Modify Out of Combat "Change Color": recolor OOC enemies rather than dimming
     darkenOOCColor   = { r = 0.5, g = 0.5, b = 0.5 },
@@ -240,6 +260,7 @@ local defaults = {
     castBarUninterruptible = { r = 0.45, g = 0.45, b = 0.45 },
     castBarImportant = { r = 1, g = 0.2, b = 0.2 },
     importantCastColorEnabled = false,
+    importantCastKickReadyAsInterruptible = false,
     castBarShieldEnabled = true,
     interruptedFlashEnabled = true,
     interruptedFlashColor = { r = 0.8, g = 0.0, b = 0.0 },
@@ -276,6 +297,8 @@ local defaults = {
     hideTrivialEnemies = false,
     hideNeutralEnemies = false,
     questMobAlwaysShow = false,
+    friendlyShowLevel = false,
+    friendlyLevelDiffColor = false,
     showEnemyPets = false,
     font = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF",
     textSlotTop = "enemyName",
@@ -376,7 +399,7 @@ local defaults = {
     factionStyle = "pvp",  -- Icon Style: a key of EllesmereUI.FACTION_ART
     classificationIncludeFaction = false,  -- "Rare/Quest + Faction": the badge shares the classification slot
     -- The classification element's two halves, each switchable in Core Positions:
-    -- the Rare Indicator (elite and rare marks) and the Quest Indicator.
+    -- the Elite/Rare Indicator (elite and rare marks) and the Quest Indicator.
     classificationHideRare = false,
     classificationHideQuest = false,
     factionOppositeOnly = false,
@@ -397,6 +420,7 @@ local defaults = {
     castNameWidthPct = 42,
     castNameWrap = false,
     castCombineNameTarget = false,
+    castCombinedWidthPct = 80,  -- combined "Spell - Target" width, % of cast bar
     castTargetSize = 10,
     castTargetClassColor = true,
     castTargetColor = { r = 1, g = 1, b = 1 },
@@ -417,7 +441,11 @@ local defaults = {
     enemyNameWidthPct = 100,
     enemyNameWrap = false,
     targetScale = 100,
+    minorEnemyScale = 100,  -- minor/trivial mob plates; 100 = off
+    nonEliteEnemyScale = 100,  -- normal (non-elite, non-minor) mob plates in dungeons; 100 = off
     nonTargetKeepFocus = true,
+    nonTargetCastFull = false,           -- casting plates ignore Non-Target Opacity
+    nonTargetCastImportantOnly = false,  -- ...only for casts the game flags important
     outOfRangeAlpha = 50,
     outOfRangeMode = "disabled",
     showAllDebuffs = false,
@@ -427,6 +455,7 @@ local defaults = {
     rangeTextOffsetY = 0,
     rangeTextColor = { r = 0.816, g = 0.357, b = 0.220 },  -- #D05B38
     maxDebuffs = 5,
+    showAuraTooltips = false,  -- Buff / Debuff icons show their tooltip on hover
     showBorder = true,
     borderSize = 1,
     borderColor = { r = 0.067, g = 0.067, b = 0.067 },
@@ -450,6 +479,10 @@ local defaults = {
     customBorderAlpha = 1,
     customBorderBehind = false,
     pandemicGlow = false,
+    -- The aura glow styles' saved keys from before 9.6, read as a view
+    -- (EUI_Nameplates_Layout.lua): this old default and nil mean Blizzard
+    -- Pandemic Border; a style picked from 9.6 on is pandemicGlowPick /
+    -- dispelGlowPick (no defaults: nil = no pick).
     pandemicGlowStyle = 1,
     pandemicGlowColor = { r = 1.0, g = 0.800, b = 0.329 },
     pandemicGlowLines = 8,
@@ -513,6 +546,14 @@ local defaults = {
     importantCastGlowSpeed = 4,
     importantCastGlowBackground = false,
     importantCastGlowBackgroundColor = { r = 0, g = 0, b = 0 },
+    castTargetGlow = false,  -- glow the cast bar while the cast targets the player
+    castTargetGlowStyle = 1,
+    castTargetGlowColor = { r = 1, g = 1, b = 1 },
+    castTargetGlowLines = 8,
+    castTargetGlowThickness = 2,
+    castTargetGlowSpeed = 4,
+    castTargetGlowBackground = false,
+    castTargetGlowBackgroundColor = { r = 0, g = 0, b = 0 },
     -- Core Positions: slot-based size + XY offsets
     topSlotSize = 26,        topSlotXOffset = 0,      topSlotYOffset = 0,      topSlotRaiseStrata = false,
     rightSlotSize = 24,      rightSlotXOffset = 0,    rightSlotYOffset = 0,    rightSlotRaiseStrata = false,
@@ -548,6 +589,8 @@ local defaults = {
     textSlotBottomLeftClassColor = false, textSlotBottomRightClassColor = false,
     healthBarTexture = "none",  -- bar texture overlay
     castBarTexture = "none",
+    healthTextureBg = false,  -- Textured Background (Bar Texture cog)
+    castTextureBg = false,    -- Textured Background (Cast Bar Texture cog)
 }
 local BAR_W = 150
 ns.defaults = defaults
@@ -622,6 +665,8 @@ function ns.ApplyCustomBorderStyle(plate, szOverride)
         bf = CreateFrame("Frame", nil, plate.health)
         bf:SetAllPoints(plate.health)
         plate._customBorder = bf
+        -- Plates move by sub-pixels: the Pixels styles need their edge fill.
+        EllesmereUI.SetBorderEdgeFill(bf, true)
     end
     -- Health bars flatten render layers: a BORDER-layer backdrop would be clipped by the
     -- ARTWORK health fill, so lift it onto MEDIUM strata (same escape the plate uses for
@@ -638,6 +683,9 @@ function ns.ApplyCustomBorderStyle(plate, szOverride)
     -- The size it is drawn at (a target/hover effect size included): the cast bar
     -- wrap's lower piece and seam copy it (ns.NP_UpdateCustomBorderWrap).
     bf._cbTex, bf._cbSz, bf._cbPx = tex, sz, px
+    -- A target/hover effect size redraws a rounded glow at that size (ApplyBorder
+    -- rounds after its own call).
+    if szOverride and plate._npRounded then ns.NP_ApplyRounding(plate, "health") end
 end
 function ns.ApplyCustomBorderColor(plate)
     if not plate or not plate._customBorder then return end
@@ -707,6 +755,7 @@ function ns.NP_UpdateCustomBorderWrap(plate)
             lower:SetPoint("TOPRIGHT", plate.health, "BOTTOMRIGHT", 0, 0)
             lower:SetPoint("BOTTOM", cast, "BOTTOM", 0, 0)
             plate._cbWrapLower = lower
+            EUI.SetBorderEdgeFill(lower, true)
         end
         -- Above the cast spell icon, re-set every pass (a strata change on the lifted
         -- cast bar resets its children's levels).
@@ -797,6 +846,7 @@ function ns.NP_SetWrapJoin(plate, on, tex, r, g, b, a)
             joined.BottomLeftCorner:Show()
             joined.BottomRightCorner:Show()
             bf._cbJoinBd = nil
+            EllesmereUI.SyncBorderEdgeFill(bf)
         end
         if lower and lower._cbFillL then
             lower._cbFillL:Hide()
@@ -811,6 +861,8 @@ function ns.NP_SetWrapJoin(plate, on, tex, r, g, b, a)
     lbd.TopEdge:Hide()
     lbd.TopLeftCorner:Hide()
     lbd.TopRightCorner:Hide()
+    EllesmereUI.SyncBorderEdgeFill(bf)
+    EllesmereUI.SyncBorderEdgeFill(lower)
     local fl, fr = lower._cbFillL, lower._cbFillR
     if not fl then
         fl = lower:CreateTexture(nil, "BORDER")
@@ -896,7 +948,7 @@ function ns.NP_SetWrapSeam(owner, anchor, show, tex, step, px, r, g, b, a, healt
         return
     end
     if not host then
-        host = CreateFrame("Frame", nil, owner)
+        host = Pool.CreateFrame("Frame", nil, owner)
         host:SetAllPoints(owner)
         host._seam = host:CreateTexture(nil, "OVERLAY", nil, 7)
         owner._cbSeamHost = host
@@ -949,19 +1001,10 @@ end
 -- SetProfile, which runs them all.
 -- broken: true while an EUI_Nameplates_*.lua file loads; a file that fails
 -- leaves it set, and the files behind it return at their first lines.
-ns._npInternals = {
+EllesmereUI.NewInternals(ns, "_npInternals", {
     _npYOffsetState = _npYOffsetState, BAR_W = BAR_W, CAST_H = CAST_H, defaults = defaults,
     ENP = ENP, GetFont = GetFont, GetNPOutline = GetNPOutline, HP_BAR_SLOTS = HP_BAR_SLOTS,
     SetFSFont = SetFSFont,
     profileSetters = { function(v) p = v end },
-    SetProfile = function(v)
-        local list = ns._npInternals.profileSetters
-        for i = 1, #list do list[i](v) end
-    end,
-    broken = false,
-}
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._npInternals, { __index = function(_, k)
-    error("ns._npInternals has no entry " .. tostring(k), 2)
-end })
+    classPowerTypeSetters = {},
+}, { SetProfile = "profileSetters", SetClassPowerType = "classPowerTypeSetters" })

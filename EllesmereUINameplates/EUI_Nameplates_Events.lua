@@ -79,78 +79,100 @@ ns.pendingUnits = pendingUnits
 
 -- Per-unit event watchers for pending friendly units: per-unit frames avoid the
 -- global UNIT_FLAGS firehose.
+-- pendingWatchers / enemyWatchers hold the ACTIVE watcher per unit token (nil = not
+-- watching). The frames themselves are pooled per token and reused, since WoW never
+-- frees a frame; nameplate tokens are a fixed set, so the pools stay bounded.
 local pendingWatchers = {}
--- Forward declarations so the two watcher creators can reference each other
-local CreatePendingWatcher, CreateEnemyWatcher
+local enemyWatchers = {}
+local pendingWatcherFrames = {}
+local enemyWatcherFrames = {}
+-- Forward declarations so the two watchers can reference each other
+local AcquirePendingWatcher, AcquireEnemyWatcher
 
 -- Watches a friendly/pending unit for becoming attackable (e.g. duel start)
-local enemyWatchers = {}
-CreatePendingWatcher = function(unit, nameplate)
-    local watcher = CreateFrame("Frame")
-    watcher:RegisterUnitEvent("UNIT_FLAGS", unit)
-    watcher:RegisterUnitEvent("UNIT_NAME_UPDATE", unit)
-    watcher:SetScript("OnEvent", function(self, event, u)
-        if not UnitCanAttack("player", u) then return end
-        -- Unit became attackable promote to enemy plate
-        self:UnregisterAllEvents()
-        pendingWatchers[u] = nil
-        pendingUnits[u] = nil
-        local currentPlate = C_NamePlate.GetNamePlateForUnit(u)
-        -- Name-only friendly NPCs are suppressed via a nameplate-keyed name
-        -- overlay, not the friendlyPlates[] pool the calls below clean up.
-        -- Tear it down here or the old friendly name text is left rendering
-        -- on top of the new enemy plate/bar.
-        if ns.RemoveFriendlyNPCOverlayForUnit then
-            ns.RemoveFriendlyNPCOverlayForUnit(u, currentPlate)
+local function PendingWatcherOnEvent(self, event, u)
+    if not UnitCanAttack("player", u) then return end
+    -- Unit became attackable -> promote to enemy plate
+    self:UnregisterAllEvents()
+    pendingWatchers[u] = nil
+    pendingUnits[u] = nil
+    local currentPlate = C_NamePlate.GetNamePlateForUnit(u)
+    -- Name-only friendly NPCs are suppressed via a nameplate-keyed name
+    -- overlay, not the friendlyPlates[] pool the calls below clean up.
+    -- Tear it down here or the old friendly name text is left rendering
+    -- on top of the new enemy plate/bar.
+    if ns.RemoveFriendlyNPCOverlayForUnit then
+        ns.RemoveFriendlyNPCOverlayForUnit(u, currentPlate)
+    end
+    -- Remove friendly plate WITHOUT restoring Blizzard UF (we'll suppress it as enemy)
+    if ns.RemoveFriendlyPlateNoRestore then
+        ns.RemoveFriendlyPlateNoRestore(u)
+    elseif ns.RemoveFriendlyPlate then
+        ns.RemoveFriendlyPlate(u)
+    end
+    if currentPlate then
+        local plate = frameCache:Acquire()
+        if not plate._mixedIn then
+            Mixin(plate, NameplateFrame)
+            plate._mixedIn = true
         end
-        -- Remove friendly plate WITHOUT restoring Blizzard UF (we'll suppress it as enemy)
-        if ns.RemoveFriendlyPlateNoRestore then
-            ns.RemoveFriendlyPlateNoRestore(u)
-        elseif ns.RemoveFriendlyPlate then
-            ns.RemoveFriendlyPlate(u)
-        end
-        if currentPlate then
-            local plate = frameCache:Acquire()
-            if not plate._mixedIn then
-                Mixin(plate, NameplateFrame)
-                plate._mixedIn = true
-            end
-            ns.plates[u] = plate
-            plate:SetUnit(u, currentPlate)
-        end
-        -- Watch for the reverse transition (enemy friendly, e.g. duel end)
-        enemyWatchers[u] = CreateEnemyWatcher(u)
-    end)
-    return watcher
+        ns.plates[u] = plate
+        plate:SetUnit(u, currentPlate)
+    end
+    -- Watch for the reverse transition (enemy -> friendly, e.g. duel end)
+    enemyWatchers[u] = AcquireEnemyWatcher(u)
 end
 
 -- Watches a promoted-enemy unit for becoming friendly again (e.g. duel end)
-CreateEnemyWatcher = function(unit)
-    local watcher = CreateFrame("Frame")
+local function EnemyWatcherOnEvent(self, event, u)
+    if UnitCanAttack("player", u) then return end
+    -- Unit became friendly again -> tear down enemy plate, restore to pending
+    self:UnregisterAllEvents()
+    enemyWatchers[u] = nil
+    local plate = ns.plates[u]
+    if plate then
+        if ns._ClearMouseoverPlate then ns._ClearMouseoverPlate(plate) end
+        -- Same cached-ref release as NAME_PLATE_UNIT_REMOVED.
+        if ns._cachedTargetPlate == plate then ns._cachedTargetPlate = nil end
+        if ns._cachedFocusPlate  == plate then ns._cachedFocusPlate  = nil end
+        plate:ClearUnit()
+        frameCache:Release(plate)
+        ns.plates[u] = nil
+    end
+    -- Re-add as pending friendly
+    local currentPlate = C_NamePlate.GetNamePlateForUnit(u)
+    if currentPlate then
+        -- The unit keeps this nameplate (no NAME_PLATE_UNIT_ADDED follows a
+        -- duel's end), so Blizzard's frame gets back here what the enemy plate
+        -- parked on it; else the friendly name stays hidden until the plate is
+        -- next added.
+        ns.NP_ReclaimBlizzardFrame(currentPlate.UnitFrame)
+        pendingUnits[u] = currentPlate
+        pendingWatchers[u] = AcquirePendingWatcher(u)
+        if ns.TryAddFriendlyPlate then ns.TryAddFriendlyPlate(u) end
+    end
+end
+
+AcquirePendingWatcher = function(unit)
+    local watcher = pendingWatcherFrames[unit]
+    if not watcher then
+        watcher = CreateFrame("Frame")
+        watcher:SetScript("OnEvent", PendingWatcherOnEvent)
+        pendingWatcherFrames[unit] = watcher
+    end
     watcher:RegisterUnitEvent("UNIT_FLAGS", unit)
-    watcher:SetScript("OnEvent", function(self, event, u)
-        if UnitCanAttack("player", u) then return end
-        -- Unit became friendly again tear down enemy plate, restore to pending
-        self:UnregisterAllEvents()
-        enemyWatchers[u] = nil
-        local plate = ns.plates[u]
-        if plate then
-            if ns._ClearMouseoverPlate then ns._ClearMouseoverPlate(plate) end
-            -- Same cached-ref release as NAME_PLATE_UNIT_REMOVED.
-            if ns._cachedTargetPlate == plate then ns._cachedTargetPlate = nil end
-            if ns._cachedFocusPlate  == plate then ns._cachedFocusPlate  = nil end
-            plate:ClearUnit()
-            frameCache:Release(plate)
-            ns.plates[u] = nil
-        end
-        -- Re-add as pending friendly
-        local currentPlate = C_NamePlate.GetNamePlateForUnit(u)
-        if currentPlate then
-            pendingUnits[u] = currentPlate
-            pendingWatchers[u] = CreatePendingWatcher(u, currentPlate)
-            if ns.TryAddFriendlyPlate then ns.TryAddFriendlyPlate(u) end
-        end
-    end)
+    watcher:RegisterUnitEvent("UNIT_NAME_UPDATE", unit)
+    return watcher
+end
+
+AcquireEnemyWatcher = function(unit)
+    local watcher = enemyWatcherFrames[unit]
+    if not watcher then
+        watcher = CreateFrame("Frame")
+        watcher:SetScript("OnEvent", EnemyWatcherOnEvent)
+        enemyWatcherFrames[unit] = watcher
+    end
+    watcher:RegisterUnitEvent("UNIT_FLAGS", unit)
     return watcher
 end
 
@@ -189,6 +211,7 @@ local function RefreshThreatContextAndPlateColors()
     for _, plate in pairs(ns.plates) do
         plate:UpdateHealthColor()
     end
+    ns.NP_RefreshTypeScale()
 end
 
 factionFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -343,7 +366,7 @@ manager:SetScript("OnEvent", function(self, event, unit)
         if not nameplate then return end
         if not UnitCanAttack("player", unit) then
             pendingUnits[unit] = nameplate
-            pendingWatchers[unit] = CreatePendingWatcher(unit, nameplate)
+            pendingWatchers[unit] = AcquirePendingWatcher(unit)
             if ns.TryAddFriendlyPlate then ns.TryAddFriendlyPlate(unit) end
             -- Color NPC names green in name-only mode
             if ns.TryColorFriendlyNPCName then ns.TryColorFriendlyNPCName(unit, nameplate) end
@@ -457,9 +480,9 @@ manager:SetScript("OnEvent", function(self, event, unit)
             ns._cachedTargetPlate:ApplyTarget()
             ns._cachedTargetPlate:UpdateHealthColor()
         end
-        -- Non-Target Opacity: gaining/losing a target flips every plate's fade state, so this
-        -- is the one full-iteration site. Zero cost while off (single compare).
-        if ns._ntAlpha < 1 then ns.NT_ApplyAll() end
+        -- Non-Target and Out of Combat Opacity: gaining/losing a target flips every plate's
+        -- fade state, so this is the one full-iteration site. Zero cost while off (compares).
+        if ns._ntAlpha < 1 or ns._oocAlpha < 1 then ns.NT_ApplyAll() end
         -- Gray-level plates show while targeted: only the old and new target change.
         if ns._trivOn then
             if oldTarget then ns.TRIV_Eval(oldTarget) end
@@ -497,9 +520,9 @@ manager:SetScript("OnEvent", function(self, event, unit)
         if ns._cachedFocusPlate and ns._cachedFocusPlate ~= oldFocus then
             UpdateFocusPlate(ns._cachedFocusPlate)
         end
-        -- Non-Target Opacity: only the old and new focus plates change
-        -- fade state on a focus swap.
-        if ns._ntAlpha < 1 then
+        -- Non-Target and Out of Combat Opacity: only the old and new focus
+        -- plates change fade state on a focus swap.
+        if ns._ntAlpha < 1 or ns._oocAlpha < 1 then
             if oldFocus then ns.NT_Apply(oldFocus) end
             if ns._cachedFocusPlate and ns._cachedFocusPlate ~= oldFocus then
                 ns.NT_Apply(ns._cachedFocusPlate)
@@ -519,15 +542,14 @@ manager:SetScript("OnEvent", function(self, event, unit)
             plate:UpdateRaidIcon()
             if p and p.nameRaidMarkerEnabled == true then plate:RefreshNamePosition(true) end
             -- A marker appearing/clearing in a side slot changes the side extents the target
-            -- arrows sit outside of, so re-run arrow positioning (no-op without arrows), then
-            -- reanchor the container-bearing sides -- same order as the target-swap path.
+            -- arrows sit outside of, so re-run arrow positioning (no-op without arrows).
             ns.PositionArrowsOutsideAuras(plate)
-            if ns.NPC_ReanchorArrows then ns.NPC_ReanchorArrows(plate) end
         end
     elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
         for _, plate in pairs(ns.plates) do
             plate:UpdateHealthColor()
         end
+        if ns._oocAlpha < 1 then ns.NT_ApplyAll() end
     elseif event == "DISPLAY_SIZE_CHANGED" or event == "UI_SCALE_CHANGED" then
         if ns.ApplyNamePlateClickArea then
             ns.ApplyNamePlateClickArea()

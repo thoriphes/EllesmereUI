@@ -6,7 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Secret-value-safe absorb shields matching UnitFrames visuals.
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.SetFrameScale and EllesmereUI.HideFrame and EllesmereUI._Pool and EllesmereUI.NewFrameData and EllesmereUI.AbbreviateValue and EllesmereUI.IsZeroValue and EllesmereUI.UnitNameFormat) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard raid and party frame suppression hides and scales through the parent's HideFrame and SetFrameScale, and the health texts format through the parent's AbbreviateValue, the [absorb:abr] tags blank at zero through its IsZeroValue, and the Name Format asks its UnitNameFormat)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 
 local ERF = EllesmereUI.Lite.NewAddon(ADDON_NAME)
@@ -48,7 +48,8 @@ end
 --  icons, Buff Manager icons/squares/bars) share one band ABOVE the
 --  threat/dispel/base border so the threat border renders behind them; each
 --  aura unit renders children (cooldown/border/text) up to +5 above base.
---  Bottom to top: base border (+8/strips +9) -> hover/target/aggro raise (LVL_RAISE,
+--  Bottom to top: base border (+8/strips +9) -> dispel ring and Buff Manager
+--  Frame Border (LVL_RAISE - 1, strips +10) -> hover/target/aggro raise (LVL_RAISE,
 --  strips +11, covering base/threat/dispel border strips) -> text band
 --  (LVL_TEXT: name/health text, role icon, leader crown) -> aura band ->
 --  marker carrier (also hosts ready-check/summon/rez icons). The raise sits
@@ -59,9 +60,11 @@ end
 --  children. On `ns`, shared with EUI_RaidFrames_BuffManager.lua.
 -------------------------------------------------------------------------------
 ns.LVL_DISPEL_OVERLAY = 7  -- Blizzard private-aura dispel gradient: below the border (+8) and name/health text (LVL_TEXT) so it renders BEHIND them (like the regular dispel overlay), but above the health bar so it stays visible. Per-slot private-aura icons stay above at LVL_AURA.
-ns.LVL_RAISE  = 10   -- hover/target/aggro-recolor border (strips +11: above base strips +9;
-                     -- ties threat/dispel strips +11 but the raise container is
-                     -- created later so it wins). MUST stay below ns.LVL_TEXT:
+ns.LVL_ROLE_BEHIND = 7  -- role icon with Show Behind Border: just under the base border (+8; strips +9)
+ns.LVL_RAISE  = 10   -- hover/target/aggro-recolor border (strips +11: above base strips +9
+                     -- and the dispel / Buff Manager border strips +10; ties threat
+                     -- strips +11 but the raise container is created later so it
+                     -- wins). MUST stay below ns.LVL_TEXT:
                      -- UpdateBorder creates strips lazily AFTER the text
                      -- carriers, so a tie with text puts the border on top.
 ns.LVL_TEXT   = 12   -- text band: name/health text, role icon, leader crown;
@@ -233,6 +236,28 @@ local function ApplyRoleIcon(texture, role, style)
     return true
 end
 
+-- Text shares the icon's carrier and anchor, and is created only when enabled.
+function ns.ApplyRoleText(icon, role, s)
+    if not s.roleText then return end
+    local text = icon._roleText
+    if not text then
+        text = icon:GetParent():CreateFontString(nil, "OVERLAY")
+        icon._roleText = text
+    end
+    local colorKey = role == "TANK" and "roleTextTankColor"
+        or role == "HEALER" and "roleTextHealerColor" or "roleTextDPSColor"
+    local color = s[colorKey] or ns._internals.defaults.profile[colorKey]
+    text:SetTextColor(color.r, color.g, color.b)
+    EllesmereUI.ApplyModuleFont(text, nil, s.roleIconSize or 14, "raidFrames")
+    local pos = icon:GetPoint() or "CENTER"
+    text:ClearAllPoints()
+    text:SetPoint(pos, icon, pos, 0, 0)
+    text:SetText(role == "TANK" and EllesmereUI.L("Tank")
+        or role == "HEALER" and EllesmereUI.L("Healer") or EllesmereUI.L("DPS"))
+    icon:Hide()
+    text:Show()
+end
+
 -- Raid marker textures
 local RAID_MARKER_TEXCOORDS = {
     [1] = { 0,    0.25, 0,    0.25 },  -- Star
@@ -307,8 +332,12 @@ local defaults = {
         frameHeight      = 60,
         cellSpacing      = -1,
         groupSpacing     = -1,
+        raidCompactMode  = false,
+        raidGridMode     = false,
+        partyCompactMode = false,
         groupGrowth      = "RIGHT",  -- "DOWN", "UP", "RIGHT", "LEFT", "DOWNRIGHT" (grid: ns._RF_GRID_ROWS per column)
         unitGrowth       = "DOWN",   -- any direction; same-axis as groupGrowth = one continuous line
+        groupGrowthCentered = false, -- center the shown groups in the mover box along the group axis (not for DOWNRIGHT)
         sortMode         = "ROLE",   -- "INDEX" (by group) or "ROLE" (by assigned role)
         roleOrder        = { "TANK", "HEALER", "DAMAGER" },
         prioritizeClass  = false,    -- sort by class within the main sort (raid)
@@ -383,12 +412,22 @@ local defaults = {
             -- unlockPos: saved by unlock mode (RF_HealerMana element)
         },
 
+        -- Player Group Label (Extras); unset style keys follow the raid frames.
+        playerGroup = {
+            enabled = false,
+            format  = "number", -- "number" | "full"
+            padding = 4,
+            -- width/height: nil = content-sized; unlockPos: saved by unlock
+            -- mode (RF_PlayerGroup element)
+        },
+
         -- Position (saved by unlock mode)
         unlockPos        = nil,
 
         -- Health bar
         healthBarTexture = "atrocity",
         healthBarOpacity = 100,
+        textureBg = false,  -- Textured Background (Health Bar Fill cog)
         healthColorMode  = "class",  -- "class", "dark", "classic", "custom", "customDynamic", "classReactive"
         customFillColor  = { r = 37/255, g = 193/255, b = 29/255 },
         -- Custom Dynamic Colors: health-percent gradient stops; defaults match
@@ -411,6 +450,8 @@ local defaults = {
         powerBgColor     = { r = 107/255, g = 107/255, b = 107/255 },
         powerBgPowerColored = false,
         powerBorderStyle = "eui",      -- "eui", "divider", "border"
+        powerBorderMatchFrame = false,
+        powerBorderMatchColor = false,
         powerBorderSize  = 1,
         powerBorderColor = { r = 0, g = 0, b = 0 },
         powerBorderAlpha = 1,
@@ -424,6 +465,8 @@ local defaults = {
         -- Top Name Bar: reserves height from the frame TOP (as the power bar does from the bottom); suppresses the in-frame Name.
         topNameBarEnabled       = false,
         topNameBarHeight        = 20,
+        topNameBarDivider       = false,
+        topNameBarDividerMatchColor = false,
         topNameBarBgColor       = { r = 17/255, g = 17/255, b = 17/255 },
         topNameBarBgOpacity     = 80,
         topNameBarTextSize      = 11,
@@ -478,6 +521,8 @@ local defaults = {
         borderAlpha      = 1,
         borderTexture    = "solid",
         borderBehind     = false,
+        cornerRadius     = 0,  -- rounded corners, 0 = off
+        cornerMask       = 15, -- the corners that round (bits: 1 TL, 2 TR, 4 BL, 8 BR)
         -- borderTextureOffset/OffsetY/ShiftX/ShiftY default via GetBorderDefaults
 
         -- Smooth bars
@@ -528,12 +573,20 @@ local defaults = {
 
         -- Indicators
         roleIconStyle    = "modern",  -- none/modern/modernCircle/styled/classicCircle/classic/blizzDefault/blizzLight/pixels
+        roleText         = false,
+        roleTextTankColor   = { r = 59/255, g = 130/255, b = 246/255 },
+        roleTextHealerColor = { r = 32/255, g = 201/255, b = 151/255 },
+        roleTextDPSColor    = { r = 240/255, g = 100/255, b = 54/255 },
         roleIconSize     = 13,
         roleIconPosition = "bottomleft",  -- topleft/top/topright/left/center/right/bottomleft/bottom/bottomright
         roleIconOffsetX  = 0,
         roleIconOffsetY  = 0,
         roleIconHideInCombat = false,
-        roleIconBehindBorder = false,  -- drop the carrier below the hover/target raise so borders draw over the icon
+        roleIconOnNameBar = false,     -- Attach Role Icons: on the Top Name Bar, with its own position/offsets
+        roleNameBarPosition = "left",
+        roleNameBarOffsetX = 0,
+        roleNameBarOffsetY = 0,
+        roleIconBehindBorder = false,  -- drop the carrier below the normal border so borders draw over the icon
         showRoleForTank    = true,
         showRoleForHealer  = true,
         showRoleForDPS     = false,
@@ -605,7 +658,7 @@ local defaults = {
 
         -- Dispels
         dispelBorderSize = 0,
-        dispelOverlay    = "fill",   -- "none", "fill", "full", "gradient", "gradient_sharp"
+        dispelOverlay    = "fill",   -- "none", "fill", "full", "gradient", "gradient_sharp", "gradient_reverse"
         dispelOverlayOpacity = 100,
         dispelShowAll             = true,   -- true = highlight any dispellable debuff; false = only player-dispellable
         dispelOverlayPosition     = 0,      -- 0=Top, 1=Bottom, 2=Left (aura-organization-type for private aura dispel container)
@@ -718,7 +771,7 @@ local defaults = {
 
         -- Range & misc
         oorAlpha         = 0.4,
-        -- showTooltip is the on/off fallback the "Show Raid Frames Tooltip"
+        -- showTooltip is the on/off fallback the "Show Raid & Party Frames Tooltip"
         -- dropdown derives from (ns._ResolveTooltipMode); picking an option writes
         -- tooltipMode = always|outOfCombat|outOfBossCombat|never. Raid/party only.
         showTooltip      = true,
@@ -866,7 +919,7 @@ do
     local function handleFrame(frame, doNotReparent)
         if not frame then return end
         frame:UnregisterAllEvents()
-        frame:Hide()
+        EllesmereUI.HideFrame(frame)
         if not doNotReparent then
             frame:SetParent(ns._blizzHiddenParent)
             if not hookedFrames[frame] then
@@ -893,13 +946,17 @@ do
     -- enough (Edit Mode force-shows registered systems): scale the system frame
     -- down so its Selection child renders invisibly small, plus alpha 0. SetScale
     -- is combat-blocked but Edit Mode is always entered OOC, so skip it when
-    -- locked. pcall-wrapped: protected Blizzard frames.
+    -- locked. pcall-wrapped: protected Blizzard frames. The scale goes through
+    -- the saved C method (Edit Mode's override would flag its anchor sweep and
+    -- snap state under our taint), keeping the frame's spot: Edit Mode's save
+    -- recomputes a moved party or raid frame's anchor from its geometry times
+    -- its scale.
     local function suppressEditModeOverlay(frame)
         if not frame then return end
         pcall(function()
             frame:SetAlpha(0)
             if not InCombatLockdown() then
-                frame:SetScale(0.001)
+                EllesmereUI.SetFrameScale(frame, 0.001, true)
             end
             -- Per-frame Blizzard selection textures. No-op if absent.
             if frame.selectionHighlight and frame.selectionHighlight.SetShown then
@@ -919,7 +976,10 @@ do
     if CompactRaidFrameContainer then
         handleFrame(CompactRaidFrameContainer)
         CompactRaidFrameContainer:HookScript("OnShow", function(self)
-            self:Hide()
+            -- A protected frame hides only out of combat; in combat
+            -- resetParent above takes it back under the hidden parent (a
+            -- protected one when combat ends).
+            if not InCombatLockdown() then EllesmereUI.HideFrame(self) end
             suppressEditModeOverlay(self)
         end)
     end
@@ -1002,12 +1062,7 @@ end
 
 -- FFD: external weak-keyed lookup for state on header-managed buttons
 -- (SecureGroupHeader buttons are Blizzard-owned, never write custom keys)
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -------------------------------------------------------------------------------
 --  Physical pixel snapping. PP.Scale uses PanelPP.mult, which can be 1 even
@@ -1141,7 +1196,8 @@ function ns.RF_PaintThreat(d, s, unit)
     local tf = d.threatFrame
     if not tf then return end
     local bs = s.threatBorderSize or 0
-    local rc = s.threatCustomBorder == true and ns.RF_CustomBorderOn(s)
+    local compact = ns.RF_ButtonCompact(d, s)
+    local rc = not compact and s.threatCustomBorder == true and ns.RF_CustomBorderOn(s)
     local status
     if bs > 0 or rc then
         status = UnitThreatSituation(unit)
@@ -1495,7 +1551,7 @@ ns._currentSizeTier = 20
 -- it writes through the Set<Name> function built below, which runs them all.
 -- broken: true while an EUI_RaidFrames_*.lua file loads; a file that fails
 -- leaves it set, and the files behind it return at their first lines.
-ns._internals = {
+EllesmereUI.NewInternals(ns, "_internals", {
     AbbreviateNumbers = AbbreviateNumbers, ABSORB_STYLE_ALPHA = ABSORB_STYLE_ALPHA,
     ABSORB_STYLE_TEX = ABSORB_STYLE_TEX, allButtons = allButtons, ApplyFont = ApplyFont,
     ApplyRoleIcon = ApplyRoleIcon, defaults = defaults, DISPEL_COLORS = DISPEL_COLORS,
@@ -1516,20 +1572,9 @@ ns._internals = {
     inCombatSetters = { function(v) inCombat = v end },
     readyCheckActiveSetters = {},
     framesVisibleSetters = {},
-    broken = false,
-}
--- Set<Name> hands a new value to every copy registered in <name>Setters.
-for setter, listName in pairs({ SetDB = "dbSetters", SetPP = "PPSetters",
-        SetContainerFrame = "containerFrameSetters", SetInCombat = "inCombatSetters",
-        SetReadyCheckActive = "readyCheckActiveSetters",
-        SetFramesVisible = "framesVisibleSetters" }) do
-    local list = ns._internals[listName]
-    ns._internals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
-end
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._internals, { __index = function(_, k)
-    error("ns._internals has no entry " .. tostring(k), 2)
-end })
+}, {
+    SetDB = "dbSetters", SetPP = "PPSetters",
+    SetContainerFrame = "containerFrameSetters", SetInCombat = "inCombatSetters",
+    SetReadyCheckActive = "readyCheckActiveSetters",
+    SetFramesVisible = "framesVisibleSetters",
+})

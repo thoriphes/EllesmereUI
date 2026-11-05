@@ -180,6 +180,7 @@ function npAddon:OnInitialize()
     -- so the apply loop no-ops; SetUnit fades new plates as they spawn).
     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
     if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
+    if ns.NP_RefreshTypeScaleSetting then ns.NP_RefreshTypeScaleSetting() end
     -- Append SharedMedia textures to runtime tables so SM texture keys resolve at runtime
     EllesmereUI.AppendSharedMediaTextures(
         ns.healthBarTextureNames,
@@ -218,20 +219,25 @@ function npAddon:OnEnable()
         end
         ns.NP_SeedClassic(p)
     end
-    -- WoW Forever: the same for its Left Text seed (the level box shows the
-    -- level), the other looks' value going to its Forever-only slot first,
-    -- and the level edges the box follows (armed only while it shows).
+    -- WoW Forever: the same for its own seeds (Left Text, the Elite/Rare
+    -- Indicator box), the other looks' value of each unseeded key going to
+    -- its Forever-only slot first, and the level edges the box follows (armed
+    -- only while it shows).
     if ns.NP_Forever() then
-        if not p.foreverLevelSlotSeeded then
+        if not (p.foreverLevelSlotSeeded and p.foreverRareSeeded) then
             local s = p._foreverStyleSlots
             if type(s) ~= "table" then s = {}; p._foreverStyleSlots = s end
-            s.eui = { textSlotLeft = p.textSlotLeft }
+            local eui = s.eui
+            if type(eui) ~= "table" then eui = {}; s.eui = eui end
+            if not p.foreverLevelSlotSeeded then eui.textSlotLeft = p.textSlotLeft end
+            if not p.foreverRareSeeded then eui.classificationHideRare = p.classificationHideRare end
             ns.NP_SeedForever(p)
         end
         ns.NP_ForeverWatchLevels()
     end
     SetRawSetTex((PP and PP.RawSetTexture) or function(t, v) t:SetTexture(v) end)
     SetupAuraCVars()
+    ns.ApplyKeptNameplateCVars()
     ApplyClassPowerSetting()
     -- Apply spec-assigned preset on login (before UI is opened)
     if ns._ApplySpecPresetFromDB then ns._ApplySpecPresetFromDB() end
@@ -241,6 +247,8 @@ function npAddon:OnEnable()
     ns.NP_RefreshSlotClassFlags()
     ns.NP_RefreshThreatPctFlag()
     ns.NP_RefreshThreatColorFlag()
+    -- PreSeedSpecProfile / the spec preset above may have changed the type scales.
+    if ns.NP_RefreshTypeScaleSetting then ns.NP_RefreshTypeScaleSetting() end
     if ns.RangeText_Apply then ns.RangeText_Apply() end
     -- Debuff coloring last: it reads the final profile, and Color Border reads
     -- the plate style, which latches for the session on its first read.
@@ -273,6 +281,8 @@ do
             anchorTo = plate.levelText
         elseif rightEl == "targetOfTarget" then
             anchorTo = plate.totText
+        elseif rightEl == "custom" then
+            anchorTo = plate.customRight
         elseif rightEl and rightEl ~= "none" then
             local ca = plate._cachedHealthSlots
             if ca then
@@ -492,6 +502,57 @@ ns._oocPlatesCtl:SetScript("OnEvent", function(self, event)
     end
 end)
 ns._oocPlatesCtl:RegisterEvent("PLAYER_LOGIN")
+
+-------------------------------------------------------------------------------
+--  Stacking Speed and Top Screen Inset (General): the client does not save
+--  nameplateMotionSpeed or nameplateTopInset, so a game restart puts both back
+--  to its default. The sliders keep their value account-wide
+--  (EllesmereUIDB.nameplateKeptCVars; a value at the client's default is not
+--  kept) and OnEnable writes it again, only where the CVar differs. Only these
+--  two names are ever read from the table. All state lives on ns -- this chunk
+--  is at the 200-local cap.
+-------------------------------------------------------------------------------
+ns._keptCVarNames = { "nameplateMotionSpeed", "nameplateTopInset" }
+
+-- Equal as numbers: the client keeps its own number format.
+ns.KeptCVarSame = function(a, b)
+    local x, y = tonumber(a), tonumber(b)
+    if x and y then return math.abs(x - y) < 1e-6 end
+    return a == b
+end
+
+-- The sliders' write: sets the CVar, then keeps what the client holds.
+ns.KeepNameplateCVar = function(name, value)
+    if not EllesmereUI.SetCVar(name, value, "EllesmereUINameplates") then return end
+    local cur = tonumber(GetCVar(name))
+    if not (cur and EllesmereUIDB) then return end
+    local kept = EllesmereUIDB.nameplateKeptCVars
+    if type(kept) ~= "table" then kept = nil end
+    if ns.KeptCVarSame(cur, C_CVar.GetCVarDefault(name)) then
+        if kept then kept[name] = nil end
+        if not (kept and next(kept)) then EllesmereUIDB.nameplateKeptCVars = nil end
+    else
+        if not kept then kept = {}; EllesmereUIDB.nameplateKeptCVars = kept end
+        kept[name] = cur
+    end
+end
+
+ns.ApplyKeptNameplateCVars = function()
+    local kept = EllesmereUIDB and EllesmereUIDB.nameplateKeptCVars
+    if type(kept) ~= "table" then return end
+    if InCombatLockdown() then
+        ns.CombatQueue.Defer("NPKeptCVars", ns.ApplyKeptNameplateCVars)
+        return
+    end
+    local names = ns._keptCVarNames
+    for i = 1, #names do
+        local name = names[i]
+        local v = tonumber(kept[name])
+        if v and C_CVar.GetCVarInfo(name) and not ns.KeptCVarSame(GetCVar(name), v) then
+            EllesmereUI.SetCVar(name, v, "EllesmereUINameplates")
+        end
+    end
+end
 
 
 I.broken = false

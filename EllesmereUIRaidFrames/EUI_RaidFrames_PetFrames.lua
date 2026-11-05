@@ -68,14 +68,15 @@ end
 -- The painter's Pet Health Color read (one setting for both tabs, off the per-tab view).
 PF.ColorSettings = PF.Raw
 
--- The Party and Raid tabs each keep their own Position, Extra Width/Height and Free Move spot. A tab
--- reads the shared key until it sets its own: a view over the saved table that never writes on
--- read. Every other key (the tab toggles, Pet Health Color, Pet Side) is the saved one.
+-- The Party and Raid tabs each keep their own Position, Extra Width/Height, Free Move spot and Free
+-- Move Growth Direction. A tab reads the shared key until it sets its own: a view over the saved
+-- table that never writes on read. Every other key (the tab toggles, Pet Health Color, Pet Side) is
+-- the saved one.
 PF.TAB_KEY = {
     party = { position = "party_position", extraWidth = "party_extraWidth", extraHeight = "party_extraHeight",
-              freePos = "party_freePos", freeRect = "party_freeRect" },
+              freePos = "party_freePos", freeRect = "party_freeRect", freeGrowth = "party_freeGrowth" },
     raid  = { position = "raid_position", extraWidth = "raid_extraWidth", extraHeight = "raid_extraHeight",
-              freePos = "raid_freePos", freeRect = "raid_freeRect" },
+              freePos = "raid_freePos", freeRect = "raid_freeRect", freeGrowth = "raid_freeGrowth" },
 }
 PF.views = {}
 PF.View = function(ctx)
@@ -366,7 +367,7 @@ PF.StyleButton = function(b, map)
     b:SetAttribute("*type1", "target")
     -- The engine gates SecureUnitButton's togglemenu; route right-click through a SecureActionButton proxy so the menu works without taint.
     EllesmereUI.AttachSecureUnitMenu(b)
-    FB.BuildVisuals(b)
+    FB.BuildVisuals(b, true)
 
     b:HookScript("OnShow", function(self)
         PF.visCount = (PF.visCount or 0) + 1
@@ -442,7 +443,7 @@ end
 -- its own), plus the UI scale its pixel-sized borders follow, gathered into a reused list, so a
 -- reload that changed none of them leaves the pets' fonts, textures and borders alone. The hover and
 -- target borders are painted, not styled.
-PF.STYLE_N = 35
+PF.STYLE_N = 26 + ns.RF_TEXT_STYLE_N
 PF.fp = {}
 PF.fpNew = {}
 PF.StyleInputs = function(t, s, texPath)
@@ -451,16 +452,16 @@ PF.StyleInputs = function(t, s, texPath)
     t[1], t[2], t[3], t[4], t[5] = bgc.r, bgc.g, bgc.b, s.bgDarkness, texPath
     t[6], t[7] = s.healthVerticalFill, s.healthBarOpacity
     t[8], t[9] = EllesmereUI.GetFontPath("raidFrames"), EllesmereUI.GetFontOutlineFlag("raidFrames")
-    t[10], t[11], t[12] = s.nameSize, s.healthTextSize, s.healAbsorbTextSize
-    t[13], t[14], t[15] = s.namePosition, s.nameOffsetX, s.nameOffsetY
-    t[16], t[17], t[18] = s.healthTextPosition, s.healthTextOffsetX, s.healthTextOffsetY
-    t[19], t[20], t[21] = s.healAbsorbTextPosition, s.healAbsorbTextOffsetX, s.healAbsorbTextOffsetY
-    t[22], t[23], t[24], t[25], t[26] = s.borderSize, bc and bc.r, bc and bc.g, bc and bc.b, s.borderAlpha
-    t[27], t[28], t[29] = s.borderTexture, s.borderSizePx, s.borderBehind
-    t[30], t[31] = s.borderTextureOffset, s.borderTextureOffsetY
-    t[32], t[33] = s.borderTextureShiftX, s.borderTextureShiftY
-    t[34] = UIParent:GetEffectiveScale()
-    t[35] = s.healthInvertFill
+    t[10], t[11], t[12], t[13], t[14] = s.borderSize, bc and bc.r, bc and bc.g, bc and bc.b, s.borderAlpha
+    t[15], t[16], t[17] = s.borderTexture, s.borderSizePx, s.borderBehind
+    t[18], t[19] = s.borderTextureOffset, s.borderTextureOffsetY
+    t[20], t[21] = s.borderTextureShiftX, s.borderTextureShiftY
+    t[22] = UIParent:GetEffectiveScale()
+    t[23] = s.healthInvertFill
+    t[24], t[25] = s.cornerRadius, s.cornerMask
+    -- The texts: the plan signature, then offsets and size of each (t[26] on).
+    ns.RF_TextStyleInputs(t, 25, s)
+    t[PF.STYLE_N] = s.textureBg  -- Textured Background
 end
 
 -- True when the inputs differ from the ones last styled under key ("hdr": the header, "owner": the
@@ -483,6 +484,10 @@ PF.StyleChanged = function(key, s, texPath, extra, n)
     PF.fp[key] = new
     PF.fpNew = old or {}
     return true, at
+end
+
+PF.CompactStyleInput = function(t)
+    t[PF.STYLE_N + 1] = ns.RF_CompactOn(PF.StyleSource(), PF.styleCtx == "party")
 end
 
 -- Header buttons: five in one column beside the party frames, all forty (eight columns) once raid
@@ -519,7 +524,7 @@ PF.EnsureBuilt = function()
         hdr:SetAttribute("columnAnchorPoint", "LEFT")
         PF.container = hdr
         -- Switched on with a preview up: dim it like the other real frames.
-        if ns.previewActive() or ns._partyPvActive then ns._SetRealFramesPreviewHidden(true) end
+        if ns._raidPvActive or ns._partyPvActive then ns._SetRealFramesPreviewHidden(true) end
     end
     if not hdr[cap] then
         local hider = PF.hider
@@ -536,6 +541,7 @@ PF.EnsureBuilt = function()
     for i = have + 1, cap do
         local b = hdr[i]
         if not b then break end
+        GetFFD(b)._petHeader = true
         PF.StyleButton(b, PF.byUnit)
         FB.src[b] = PF.StyleSource
         PF.styledGen[b] = 0
@@ -726,6 +732,7 @@ end
 
 -- A tab's pet size (its frames' size plus that tab's Extra Width/Height), spacing and growth: the
 -- party frames' size and stacking on the Party tab, the raid frame size and growth on the Raid tab.
+-- Free Move takes the tab's Growth Direction when one is set, its columns turned across it.
 PF.Geometry = function(ctx)
     local s = ns._scaledProfile or db.profile
     local w, h, sp, unitGrowth, groupGrowth
@@ -737,9 +744,21 @@ PF.Geometry = function(ctx)
         w, h, sp = s.frameWidth or 125, s.frameHeight or 60, s.cellSpacing or -1
         unitGrowth, groupGrowth = ns._RFEffectiveGrowth(s.unitGrowth or "DOWN", s.groupGrowth or "RIGHT", true)
     end
+    if ns.RF_CompactOn(ctx == "party" and ns._partyProxy or s, ctx == "party") then
+        sp = ns.RF_OnePixel(ctx == "party")
+    end
     local v = PF.View(ctx)
+    local fg = v.position == "free" and v.freeGrowth
+    if fg then
+        unitGrowth = fg
+        if ns._RFGrowthIsVertical(fg) == ns._RFGrowthIsVertical(groupGrowth) then
+            groupGrowth = ns._RFGrowthIsVertical(fg) and "RIGHT" or "DOWN"
+        end
+    end
     w = PixelSnap(math.max(10, w + (v.extraWidth or 0)))
     h = PixelSnap(math.max(10, h + (v.extraHeight or 0)))
+    -- Same grid as FB.FreePin: the pet header's own scale.
+    sp = EllesmereUI.PP.SnapForES(sp, (PF.container or UIParent):GetEffectiveScale())
     return w, h, sp, unitGrowth, groupGrowth
 end
 
@@ -1002,7 +1021,7 @@ PF.Layout = function(restyle)
     if restyle or flipped then
         PF.styleCtx = ctx
         local ss = PF.StyleSource()
-        restyled = PF.StyleChanged("hdr", ss, ResolveHealthTexture(ss))
+        restyled = PF.StyleChanged("hdr", ss, ResolveHealthTexture(ss), PF.CompactStyleInput, PF.STYLE_N + 1)
     end
     if resized then
         for _, b in ipairs(PF.buttons) do b:SetSize(w, h) end
@@ -1048,7 +1067,7 @@ PF.Layout = function(restyle)
     changed = SetAttr(hdr, "point", point, changed)
     changed = SetAttr(hdr, "xOffset", xOff, changed)
     changed = SetAttr(hdr, "yOffset", yOff, changed)
-    changed = SetAttr(hdr, "columnSpacing", PixelSnap(s.groupSpacing or 8), changed)
+    changed = SetAttr(hdr, "columnSpacing", party and PixelSnap(s.groupSpacing or 8) or ns.RF_GroupSpacing(s), changed)
     changed = SetAttr(hdr, "columnAnchorPoint", ns._RFColAnchor(unitGrowth, groupGrowth), changed)
     changed = SetAttr(hdr, "maxColumns", #PF.buttons >= PF.MAX and 8 or 1, changed)
     if changed then hdr:SetAttribute("_ignore", nil) end
@@ -1063,6 +1082,7 @@ PF.Layout = function(restyle)
     end
     -- Last, so a parent that shows here runs the header once on the final attributes.
     PF.SetHider(solo)
+    ns.RF_SyncPetCompact()
 end
 
 -- Free Move: the header is pinned at the corner its pets grow from, so pet 1 stays put as pets come
@@ -1087,7 +1107,7 @@ end
 
 PF.FreeAnchor = function(c, set)
     local corner, x, y = PF.FreeCorner(set, PF.Ctx())
-    FB.Pin(c, corner, UIParent, "CENTER", x, y)
+    FB.FreePin(c, corner, x, y)
     return true
 end
 
@@ -1107,7 +1127,7 @@ end
 PF.PlaceMover = function(m, set)
     local corner, x, y, w, h = PF.FreeCorner(set, PF.moverCtx or PF.Ctx())
     m:SetSize(w, h)
-    m:SetPoint(corner, UIParent, "CENTER", x, y)
+    FB.FreePin(m, corner, x, y)
 end
 
 PF.SaveFreeRect = function(mover)
@@ -1153,8 +1173,8 @@ PF.PvStyle = function()
     return PF.pvStyle
 end
 
--- One preview pass's shared paint values (reused table). Pets have no class: a class colour mode
--- reads white.
+-- One preview pass's shared paint values (reused table). The texts are the frame's texts (no
+-- class for pets: a class colour mode reads white).
 PF.pvc = {}
 PF.PvColors = function(s)
     local c = PF.pvc
@@ -1164,22 +1184,15 @@ PF.PvColors = function(s)
     local raw = PF.Raw()
     c.hc = raw and raw.healthColor
     c.opacity = (s.healthBarOpacity or 100) / 100
-    c.nr, c.ng, c.nb = ns.RF_PreviewTextColor(s.nameColorMode or "class", s.nameCustomColor, nil, 1, 1, 1)
-    c.tr, c.tg, c.tb = ns.RF_PreviewTextColor(s.healthTextColorMode or "custom",
-        s.healthTextCustomColor, nil, 1, 1, 1)
-    c.ar, c.ag, c.ab = ns.RF_PreviewTextColor(s.healAbsorbTextColorMode or "custom",
-        s.healAbsorbTextCustomColor, nil, 1, 0.3, 0.3)
-    c.mode = s.healthTextMode or "none"
-    c.haMode = s.healAbsorbTextMode or "none"
     return c
 end
 
 -- Preview pet i at w x h, styled and painted (the caller places it).
-PF.PvFrame = function(i, parent, s, w, h, c)
+PF.PvFrame = function(i, parent, s, w, h, c, grouped)
     local f = PF.pv[i]
     if not f then
         f = CreateFrame("Frame", nil, parent)
-        FB.BuildVisuals(f)
+        FB.BuildVisuals(f, true)
         FB.src[f] = PF.PvStyle
         PF.pv[i] = f
     elseif f:GetParent() ~= parent then
@@ -1187,6 +1200,11 @@ PF.PvFrame = function(i, parent, s, w, h, c)
     end
     f:SetFrameStrata(parent == UIParent and "HIGH" or parent:GetFrameStrata())
     f:SetSize(w, h)
+    local d = I.FFD[f]
+    if grouped and ns.RF_CompactOn(s, ns._partyPvActive == true) then
+        d = GetFFD(f)
+        d._petGroupedPreview, d._petPreviewParty = true, ns._partyPvActive == true
+    elseif d then d._petGroupedPreview = nil end
     FB.StyleVisuals(f, s, w, h, c.texPath, c.bgc)
 
     local pet = PF.PV_PETS[i]
@@ -1197,14 +1215,12 @@ PF.PvFrame = function(i, parent, s, w, h, c)
     -- inverted fill (the _euiInv stamp FB.StyleVisuals just left).
     f._health:SetValue(f._health._euiInv and (100 - pct) or pct)
     f._health:SetStatusBarColor(hc and hc.r or 23/255, hc and hc.g or 172/255, hc and hc.b or 49/255, c.opacity)
-    f._nameText:SetText(pet.name)
-    f._nameText:SetTextColor(c.nr, c.ng, c.nb)
-    -- Made-up health (3000 per percent) and a heal absorb of a quarter of it, in the raid preview's
-    -- proportions.
-    ns.RF_HealthTextInto(f._healthText, c.mode, pct, nil, 3000)
-    f._healthText:SetTextColor(c.tr, c.tg, c.tb, 0.9)
-    ns.FormatHealAbsorbInto(f._healAbsorbText, pct * 750, c.haMode)
-    f._healAbsorbText:SetTextColor(c.ar, c.ag, c.ab, 0.9)
+    -- The texts with the boss/pet rules: made-up health (3000 per percent) and a heal absorb
+    -- of a quarter of it, in the raid preview's proportions.
+    local st = FB.txs[f]
+    local pv = st._txPv or {}
+    pv.hpPct, pv.hpPer, pv.ha, pv.name = pct, 3000, pct * 750, ns.CapName(pet.name, s)
+    ns.RF_TextPreview(st, s, pv)
     f:Show()
     return f
 end
@@ -1290,7 +1306,7 @@ function ns.PF_PreviewSpec(party, s, w, h, sp, boxW, boxH, ptSpec)
         if s.partyHorizontal then side = before and "UP" or "DOWN"
         else side = before and "LEFT" or "RIGHT" end
     else
-        gap = PixelSnap(s.groupSpacing or 8)
+        gap = ns.RF_GroupSpacing(s)
         grow = s.unitGrowth or "DOWN"
         side = s.groupGrowth or "RIGHT"
         -- The grid flow ends in the rightmost column too, so the pets hang off
@@ -1325,7 +1341,7 @@ end
 function ns.PF_ShowPreview(spec, s, parent, rel, x, y)
     local c = PF.PvColors(s)
     for i = 1, spec.n do
-        local f = PF.PvFrame(i, parent, s, spec.w, spec.h, c)
+        local f = PF.PvFrame(i, parent, s, spec.w, spec.h, c, true)
         local off = i - 1
         local fx, fy = x, y
         if spec.grow == "RIGHT" then
@@ -1341,11 +1357,13 @@ function ns.PF_ShowPreview(spec, s, parent, rel, x, y)
         f:SetPoint("TOPLEFT", rel, "TOPLEFT", fx, fy)
     end
     for i = spec.n + 1, #PF.pv do PF.pv[i]:Hide() end
+    ns.RF_PreviewPetCompact(PF.pv, s, ns._partyPvActive == true, spec.grow)
 end
 
 -- Beside Owner preview: a pet beside each shown party preview frame, and with Hide Self one after
 -- lastF (the last frame along the growth). s: the settings they are styled from.
 function ns.PF_ShowOwnerPreview(spec, s, parent, lastF)
+    ns.RF_PreviewPetCompact(nil)
     local c = PF.PvColors(s)
     local n = 0
     for i = 1, 5 do
@@ -1367,6 +1385,7 @@ function ns.PF_ShowOwnerPreview(spec, s, parent, lastF)
 end
 
 function ns.PF_HidePreview()
+    ns.RF_PreviewPetCompact(nil)
     for _, f in ipairs(PF.pv) do f:Hide() end
 end
 
@@ -1519,6 +1538,7 @@ function ns.PF_Apply(restyle)
 
     if chosen or not PF.Wanted() or not PF.EnsureBuilt() then
         PF.active = nil
+        ns.RF_SyncPetCompact()
         PF.chainTgt = nil
         if PF.built then PF.container:Hide() end
         PF.ClearHider()

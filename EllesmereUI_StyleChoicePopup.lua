@@ -12,8 +12,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  shows IN USE and stays lit as on the Style page; it keeps its hover and
 --  closes the popup with nothing written, and so does Escape; any other card
 --  sets every loaded module's Style flags at once through the Style page's
---  registry, then reloads. The default look (the first card, tagged DEFAULT)
---  is the EllesmereUI style, or WoW Forever on that client; either is
+--  registry, then reloads. The default look (tagged DEFAULT) is the
+--  EllesmereUI style, or WoW Forever on that client, whose card still sits
+--  second, after EllesmereUI's; either is
 --  normally the look in use (on WoW Forever the module picker applies it as
 --  its reload is confirmed).
 --  Once per install; an existing user never sees it, since only a first
@@ -53,7 +54,7 @@ end
 -- registry (LoadOnDemand options), so one code path owns what "all modules"
 -- means. False when the options addon cannot load. The module picker runs it
 -- too on WoW Forever (EllesmereUI_FirstInstall.lua), as its reload's
--- pre-reload step. The caller reloads.
+-- pre-reload work. The caller reloads.
 local function ApplyLook(styleKey)
     if not EllesmereUI.EnsureOptionsLoaded() then return false end
     local BS = EllesmereUI.BlizzStyle
@@ -63,16 +64,16 @@ local function ApplyLook(styleKey)
 end
 EllesmereUI.ApplyFirstInstallLook = ApplyLook
 
--- A look other than the one this session renders: applied, then the reload
--- every style change needs. When the options addon cannot load, the popup
--- (dimmer) closes on the chat hint instead of staying up.
+-- A look other than the one this session renders: the reload every style
+-- change needs, asked for first in the click, then the look written as its
+-- pre-reload work (RequestReload). When the options addon is turned off,
+-- the popup (dimmer) closes on the chat hint instead of reloading.
 local function ChooseOtherLook(styleKey, label, dimmer)
     Stamp()
-    if ApplyLook(styleKey) then
-        EllesmereUI.RequestReload(nil, EllesmereUI.L("Style changed for this profile. A UI reload is needed to apply it."))
-        -- On the Forever client the reload waits on its popup: the choice is
-        -- made, so the picker closes under it. Retail is already reloading.
-        if dimmer then dimmer:Hide() end
+    if C_AddOns.IsAddOnLoaded("EllesmereUIOptions")
+        or C_AddOns.GetAddOnEnableState("EllesmereUIOptions") > 0 then
+        EllesmereUI.RequestReload(nil, EllesmereUI.L("Style changed for this profile. A UI reload is needed to apply it."),
+            function() ApplyLook(styleKey) end)
         return
     end
     EllesmereUI.Print("|cff00ff98EllesmereUI:|r " .. label .. " can be switched on under Global Settings > Style.")
@@ -149,7 +150,7 @@ local function ShowStyleChoicePopup()
     end
 
     -- The look cards (EllesmereUI_StyleCards.lua, shared with the Style page
-    -- header): three, plus WoW Forever on that client, the default card first.
+    -- header): three, plus WoW Forever on that client, EllesmereUI's first.
     -- Set 10 below the description so the IN USE badge above a card clears it.
     local cards = EllesmereUI.BuildStyleCards(popup, -138, {
         buttonText = {

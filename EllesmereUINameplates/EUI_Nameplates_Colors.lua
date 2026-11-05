@@ -35,8 +35,9 @@ local _isTankRole      = false
 -- UnitDetailedThreatSituation(tankToken, mob) (plain tokens in; isTanking
 -- boolean out, plain or secret; field-probed real boolean in keys) folded
 -- through C_CurveUtil.EvaluateColorValueFromBoolean so no secret is ever read
--- in Lua. Returns ok plus possibly-SECRET r,g,b: the caller must hand them to
--- SETTERS ONLY -- never compare, cache, multiply or format them. Tank tokens
+-- in Lua. Returns ok plus possibly-SECRET r,g,b, and a: 1 while another tank
+-- holds the mob, else 0 (the debuff colors' bad-threat alpha). The caller must
+-- hand them to SETTERS ONLY -- never compare, cache, multiply or format them. Tank tokens
 -- rebuild lazily off ns._otherTanksDirty (set by RefreshThreatCache's existing
 -- roster/role/zone events -- zero new registrations; own-group role reads are
 -- plain). On ns (file is at the 200-local cap).
@@ -66,7 +67,7 @@ function ns.ComputeOffTankFold(unit, br, bg, bb, otr, otg, otb)
     if not toks[1] then return false end
     -- All colors arrive from the caller: the _C accessor is declared far BELOW
     -- this function, so resolving colors here read a nil global (field crash).
-    local r, g, b = br, bg, bb
+    local r, g, b, a = br, bg, bb, 0
     if not (r and otr) then return false end
     for i = 1, #toks do
         local isTanking = UnitDetailedThreatSituation(toks[i], unit)
@@ -77,25 +78,179 @@ function ns.ComputeOffTankFold(unit, br, bg, bb, otr, otg, otb)
             r = eval(isTanking, otr, r)
             g = eval(isTanking, otg, g)
             b = eval(isTanking, otb, b)
+            a = eval(isTanking, 1, a)
         end
     end
-    return true, r, g, b
+    return true, r, g, b, a
 end
 
--- Show Threat Colors (threatColorMode): "always" colors every plate that has threat data,
--- "instances" only inside threat content (the zone verdict RefreshThreatCache caches),
--- "never" switches the whole threat-color feature off (health-bar arm, Border / Name
--- channels, Near Aggro glow, off-tank fold). Materialized into ns._npThreatColorsOn so
--- the per-plate color paths pay one field read; re-derived by RefreshThreatCache (zone,
--- role, spec), RefreshAllSettings (profile and override swaps), OnEnable and the options
--- setter. An unknown saved value reads as the default. On ns (file is at the 200-local cap).
+-- A damage dealer's or healer's threat colors mean something only while someone else can
+-- hold the mob: in a group, or solo with a pet out (the pet tanking). Solo without one,
+-- every mob that has the player on its threat table is on the player. Show Threat Colors
+-- "alwaysSolo" (Always) drops the rule: threatAll, set by NP_RefreshThreatColorFlag.
+local threatAll = false
+local function ThreatShared()
+    return threatAll or IsInGroup() or UnitExists("pet")
+end
+
+-- The pet coming or going changes that answer for a solo non-tank, so the plates repaint
+-- then. Listens only while the threat colors are on (NP_RefreshThreatColorFlag).
+local petFrame, petOn
+local function PetSync(on)
+    on = on and true or false
+    if on == (petOn or false) then return end
+    petOn = on
+    if not petFrame then
+        petFrame = CreateFrame("Frame")
+        petFrame:SetScript("OnEvent", function()
+            if not _isTankRole and not IsInGroup() then
+                for _, plate in pairs(ns.plates) do plate:UpdateHealthColor() end
+            end
+        end)
+    end
+    if on then
+        petFrame:RegisterUnitEvent("UNIT_PET", "player")
+    else
+        petFrame:UnregisterAllEvents()
+    end
+end
+
+-- WoW Forever has no specs, so the effective role is only the group's assigned one there:
+-- the player also counts as the tank in Bear Form, Dire Bear Form or Defensive Stance
+-- (EllesmereUI.ForeverTankForm) or with Righteous Fury up, while nobody in the group has
+-- the tank role assigned (fvRoleTank; with one, the role alone decides). FV_TANK_CLASS (nil
+-- off Forever and for every other class) names what a warrior, druid or paladin is watched
+-- for. The watcher is armed only while the threat colors are on: the form event for the
+-- shapes, the player's aura event for Righteous Fury, its payload probed for that one aura
+-- (a restricted read keeps the last answer). A changed verdict repaints the plates.
+local FV_TANK_CLASS = EllesmereUI.IS_FOREVER
+    and ({ WARRIOR = "form", DRUID = "form", PALADIN = "fury" })[select(2, UnitClass("player"))] or nil
+local FV_FURY = 25780
+local fvFury, fvFuryInst = false, nil
+local fvTankFrame, fvTankOn
+local fvRoleTank = false
+
+-- The group's assigned tank, read as the watcher arms and on every roster and role event
+-- while it is armed (RefreshThreatCache); a restricted read that finds none keeps the last
+-- answer.
+local function FvReadRoleTank()
+    local has, unsure = EllesmereUI.GroupHasTankRole()
+    if has or not unsure then fvRoleTank = has end
+end
+
+-- Righteous Fury's state, read only while the aura is readable (outside an aura
+-- restriction nothing is secret).
+local function FvReadFury()
+    local S = C_Secrets
+    if S and S.ShouldSpellAuraBeSecret then
+        local ok, secret = pcall(S.ShouldSpellAuraBeSecret, FV_FURY)
+        if not ok or issecretvalue(secret) or secret ~= false then return end
+    end
+    local aura = C_UnitAuras.GetPlayerAuraBySpellID(FV_FURY)
+    if issecretvalue(aura) then return end
+    fvFury = aura ~= nil
+    local iid = aura and aura.auraInstanceID
+    fvFuryInst = (not issecretvalue(iid)) and iid or nil
+end
+
+-- The player aura event: true when Righteous Fury may have come or gone (re-read on a full
+-- update; an added instance of it, or the removal of the one held, otherwise).
+local function FvFuryProbe(info)
+    if issecretvalue(info) then return false end
+    if not info then FvReadFury(); return true end
+    local full = info.isFullUpdate
+    if issecretvalue(full) then return false end
+    if full then FvReadFury(); return true end
+    local added = info.addedAuras
+    if not issecretvalue(added) and added then
+        for i = 1, #added do
+            local a = added[i]
+            if not issecretvalue(a) then
+                local sid = a.spellId
+                if not issecretvalue(sid) and sid == FV_FURY then
+                    local iid = a.auraInstanceID
+                    fvFury = true
+                    fvFuryInst = (not issecretvalue(iid)) and iid or nil
+                    return true
+                end
+            end
+        end
+    end
+    local removed = info.removedAuraInstanceIDs
+    if fvFuryInst and not issecretvalue(removed) and removed then
+        for i = 1, #removed do
+            local iid = removed[i]
+            if not issecretvalue(iid) and iid == fvFuryInst then
+                fvFury, fvFuryInst = false, nil
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- The player's tank verdict: the effective role, plus the Forever shapes and Righteous Fury
+-- while the group has no assigned tank.
+local function PlayerTankVerdict()
+    if EllesmereUI.UnitEffectiveRole("player") == "TANK" then return true end
+    if not FV_TANK_CLASS or fvRoleTank then return false end
+    return EllesmereUI.ForeverTankForm() or fvFury
+end
+
+local function FvTankOnEvent(_, event, _, info)
+    if event == "UNIT_AURA" and not FvFuryProbe(info) then return end
+    local was = _isTankRole
+    _isTankRole = PlayerTankVerdict()
+    if _isTankRole ~= was then
+        for _, plate in pairs(ns.plates) do plate:UpdateHealthColor() end
+    end
+end
+
+-- Arms the watcher while the threat colors are on (re-reading the verdict as it arms: the
+-- shape or the aura may have changed while it slept), parks it otherwise.
+local function FvTankSync(on)
+    if not FV_TANK_CLASS then return end
+    on = on and true or false
+    if on == (fvTankOn or false) then return end
+    fvTankOn = on
+    if not fvTankFrame then
+        fvTankFrame = CreateFrame("Frame")
+        fvTankFrame:SetScript("OnEvent", FvTankOnEvent)
+    end
+    if on then
+        if FV_TANK_CLASS == "fury" then
+            fvTankFrame:RegisterUnitEvent("UNIT_AURA", "player")
+            FvReadFury()
+        else
+            fvTankFrame:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
+        end
+        FvReadRoleTank()
+        _isTankRole = PlayerTankVerdict()
+    else
+        fvTankFrame:UnregisterAllEvents()
+    end
+end
+
+-- Show Threat Colors (threatColorMode): "always" (Group or Pet) colors every plate that
+-- has threat data, "alwaysSolo" (Always) too and drops the group-or-pet rule for damage
+-- dealers and healers (ThreatShared), "instances" colors only inside threat content (the
+-- zone verdict RefreshThreatCache caches), "never" switches the whole threat-color
+-- feature off (health-bar arm, Border / Name channels, Near Aggro glow, off-tank fold).
+-- Materialized into ns._npThreatColorsOn (and threatAll) so the per-plate color paths pay
+-- one field read; re-derived by RefreshThreatCache (zone, role, spec), RefreshAllSettings
+-- (profile and override swaps), OnEnable and the options setter. An unknown saved value
+-- reads as the default. Arms the Forever tank watcher with it, and the pet listener while
+-- a pet can still change the answer.
 ns._npThreatColorsOn = false
 function ns.NP_RefreshThreatColorFlag()
     local mode = p and p.threatColorMode
-    if mode ~= "never" and mode ~= "instances" and mode ~= "always" then
+    if mode ~= "never" and mode ~= "instances" and mode ~= "always" and mode ~= "alwaysSolo" then
         mode = defaults.threatColorMode
     end
-    ns._npThreatColorsOn = (mode == "always" or (mode == "instances" and _inThreatContent)) and true or false
+    threatAll = mode == "alwaysSolo"
+    ns._npThreatColorsOn = (threatAll or mode == "always" or (mode == "instances" and _inThreatContent)) and true or false
+    PetSync(ns._npThreatColorsOn and not threatAll)
+    FvTankSync(ns._npThreatColorsOn)
 end
 
 local function RefreshThreatCache()
@@ -117,9 +272,12 @@ local function RefreshThreatCache()
     -- Role: cache so we don't recalculate on every nameplate update. Effective
     -- role (EllesmereUI.UnitEffectiveRole): the player's spec wins over a stale
     -- premade-listing role (listed as tank, playing dps), and still covers the
-    -- solo "NONE" case the old spec fallback existed for.
-    local role = EllesmereUI.UnitEffectiveRole("player")
-    _isTankRole = (role == "TANK")
+    -- solo "NONE" case the old spec fallback existed for; WoW Forever adds the
+    -- tank shapes and Righteous Fury while the group has no assigned tank
+    -- (PlayerTankVerdict).
+    if FV_TANK_CLASS == "fury" then FvReadFury() end
+    if fvTankOn then FvReadRoleTank() end
+    _isTankRole = PlayerTankVerdict()
     ns.NP_RefreshThreatColorFlag()
 end
 
@@ -307,12 +465,16 @@ ns._npSlotLevelCK = {}  -- parallel: the owning slot's colour key (unreadable-le
 -- either owns one (the cast show / hide re-anchor runs only then), and the slot
 -- showing Target of Target (false = none; its UNIT_TARGET registration follows
 -- it) plus whether that slot is in class mode. _npToTUnits caches "<unit>target".
+-- _npCustomTgt: a custom text reads [target] (UNIT_TARGET follows it too).
+-- _npTgtTexts: either is shown, the one gate of every target-text trigger.
 ns._npBottomFS = { false, false }
 ns._npBottomUsed = false
 ns._npToTSlot = false
 ns._npToTClass = false
 ns._npToTColorKey = nil
 ns._npToTUnits = {}
+ns._npCustomTgt = false
+ns._npTgtTexts = false
 do
     -- The order ApplyHealthTextAppearance lays the slots out in (bar slots, then top):
     -- the last slot writing a shared font string owns it.
@@ -321,8 +483,10 @@ do
     local owner, ownerSlot, lastIdx = {}, {}, {}
     local COLOR_KEY = {}  -- slot -> its colour key (prebuilt for UpdateToT and the painter)
     for i = 1, #SLOTS do COLOR_KEY[SLOTS[i]] = SLOTS[i] .. "Color" end
-    -- The plate font string key an element renders on (nil for None).
-    function ns.NP_ElementFSKey(el)
+    -- The plate font string key an element renders on (nil for None). slot: the slot
+    -- showing it, which picks a custom text's own font string.
+    function ns.NP_ElementFSKey(el, slot)
+        if el == "custom" then return slot and ns.NP_CustomFSKey[slot] end
         if ns.IsNameElement(el) then return "name" end
         if el == "level" then return "levelText" end
         if el == "targetOfTarget" then return "totText" end
@@ -341,13 +505,19 @@ do
         wipe(lastIdx)
         ns._npToTSlot = false
         ns._npToTClass = false
+        ns._npCustomTgt = false
         local B = ns._npBottomFS
         -- The name is placed in FindNameSlot's slot (the first holding one), the
         -- other shared font strings by the last slot writing them.
         local nameSlot = ns.FindNameSlot()
         for i = 1, #SLOTS do
             local s = SLOTS[i]
-            local key = ns.NP_ElementFSKey(GetTextSlot(s))
+            local el = GetTextSlot(s)
+            local key = ns.NP_ElementFSKey(el, s)
+            if el == "custom" and not ns._npCustomTgt then
+                local parsed = ns.NP_CustomParse(s)
+                ns._npCustomTgt = (parsed and parsed.reads.tgt) or false
+            end
             if key == "totText" then
                 -- Painted by UpdateToT from the target's class, never the plate unit's.
                 ns._npToTSlot = s
@@ -367,6 +537,7 @@ do
             end
         end
         ns._npToTColorKey = ns._npToTSlot and COLOR_KEY[ns._npToTSlot] or nil
+        ns._npTgtTexts = (ns._npToTSlot or ns._npCustomTgt) and true or false
         ns._npBottomUsed = (B[1] or B[2]) and true or false
         for key, mode in pairs(owner) do
             if mode == "class" then
@@ -395,7 +566,8 @@ end
 -- slot colours are written statically. Returns true while the name's slot is in either
 -- mode. An inline colour escape in the text (a Level | Name part colour) still wins over
 -- it. skipName leaves the name alone (Threat Colors "Text" holds it) and drops its memo
--- entry, so the first call without it repaints the name.
+-- entry, so the first call without it repaints the name. A custom text's font string
+-- is missing until the plate's next appearance pass builds it: skipped until then.
 function ns.NP_PaintSlotClassColors(plate, unit, skipName)
     local m = plate._scMemo
     if not m then m = {}; plate._scMemo = m end
@@ -426,7 +598,7 @@ function ns.NP_PaintSlotClassColors(plate, unit, skipName)
                     local e = m[key]
                     if e then e[1] = nil end
                     if not (skipName and key == "name") then
-                        plate[key]:SetTextColor(sr, sg, sb, 1)
+                        local fs = plate[key]; if fs then fs:SetTextColor(sr, sg, sb, 1) end
                     end
                 end
             end
@@ -450,7 +622,7 @@ function ns.NP_PaintSlotClassColors(plate, unit, skipName)
                     e[1] = nil
                 elseif e[1] ~= r or e[2] ~= g or e[3] ~= b then
                     e[1], e[2], e[3] = r, g, b
-                    plate[key]:SetTextColor(r, g, b, 1)
+                    local fs = plate[key]; if fs then fs:SetTextColor(r, g, b, 1) end
                 end
             end
         end
@@ -469,38 +641,15 @@ function ns.NP_PaintSlotClassColors(plate, unit, skipName)
                     e[1] = false
                     local ck = ns._npSlotLevelCK[i]
                     local c = (p and p[ck]) or defaults[ck]
-                    plate[key]:SetTextColor(c.r, c.g, c.b, 1)
+                    local fs = plate[key]; if fs then fs:SetTextColor(c.r, c.g, c.b, 1) end
                 end
             elseif e[1] ~= r or e[2] ~= g or e[3] ~= b then
                 e[1], e[2], e[3] = r, g, b
-                plate[key]:SetTextColor(r, g, b, 1)
+                local fs = plate[key]; if fs then fs:SetTextColor(r, g, b, 1) end
             end
         end
     end
     return ns._npSlotClassName
-end
--- Blizzard's own plate for this unit, colored by untainted code. Under HideBlizzardFrame the
--- UnitFrame keeps its unit (its events are killed), so its health bar still carries whatever
--- CompactUnitFrame_UpdateHealthColor resolved in the driver's SetUnit -- including the class
--- color we are not allowed to look up ourselves. Returns a PLAIN "have it" boolean plus three
--- numbers that may be secret: never branch on the numbers, only ever hand them to a setter.
--- On ns (module file is at the 200-local cap).
-function ns.GetBlizzardBarColor(frame)
-    local np = frame.nameplate
-    local uf = np and np.UnitFrame
-    -- Blizzard's plates are pooled too. Until ITS CompactUnitFrame_SetUnit has run for our
-    -- unit, that bar still wears the previous occupant's colour, and latching onto it would
-    -- paint a confidently WRONG class colour. No match, no mirror: the plain fallback applies
-    -- and the next pass retries.
-    if not uf or uf.unit ~= frame.unit then return false end
-    local hb = uf.healthBar or (uf.HealthBarsContainer and uf.HealthBarsContainer.healthBar)
-    if not hb or not hb.GetStatusBarColor then return false end
-    -- Same filter HideBlizzardFrame applies to this frame's children: reading a forbidden
-    -- widget throws, which would abort the rest of UpdateHealthColor on every health event.
-    if hb.IsForbidden and hb:IsForbidden() then return false end
-    local r, g, b = hb:GetStatusBarColor()
-    if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then return false end
-    return true, r, g, b
 end
 -- Threat Colors channels (multi-check on the Threat Colors section). All three on ns:
 -- the module file is at the 200-local cap. Health Bar defaults ON so nothing changes
@@ -530,24 +679,31 @@ end
 --               has aggro only with Tank Has Aggro (or Classic Tank Aggro) enabled
 --   non-tank  -- has aggro / near aggro always; no aggro only with DPS No Aggro enabled
 -- Returns nothing when there is no signal to show (Show Threat Colors off here, no threat
--- data, solo, or the state's color is opt-in and switched off) -- the caller then leaves
--- the border/name at its normal color. The fourth return is a SECRET flag: true means
+-- data, a non-tank solo with no pet out, or the state's color is opt-in and switched off);
+-- the caller then leaves the border/name at its normal color. The fourth return is a
+-- SECRET flag: true means
 -- r/g/b are secret values (an off-tank C-fold over a secret isTanking read), so the caller
 -- must hand them to setters only and never cache or compare them. status: the threat
 -- situation this pass already read (false = no threat data), or nil to read it here; the
 -- nil test reads the type tag only, since the situation read can be secret.
+-- ns._threatOkA: 1 while nothing is wrong, 0 on bad threat (a non-tank with or
+-- near aggro, a tank without or losing it), or the off-tank fold's secret answer;
+-- the debuff colors give way on the border and name channels by it.
 function ns.ResolveThreatColor(unit, status)
+    ns._threatOkA = 1
     if not ns._npThreatColorsOn then return end
     if type(status) == "nil" then status = UnitThreatSituation("player", unit) end
     if not status then return end
     local db = p or defaults
     if not _isTankRole then
-        -- Solo players always have aggro: the signal only means something in a group.
-        if not IsInGroup() then return end
+        -- Solo with no pet out the player always has aggro: no signal (ThreatShared).
+        if not ThreatShared() then return end
         if status >= 3 then
+            ns._threatOkA = 0
             local c = _C("dpsHasAggro")
             return c.r, c.g, c.b, false
         elseif status >= 2 then
+            ns._threatOkA = 0
             local c = _C("dpsNearAggro")
             return c.r, c.g, c.b, false
         end
@@ -577,6 +733,7 @@ function ns.ResolveThreatColor(unit, status)
         return
     end
     if status >= 2 then
+        ns._threatOkA = 0
         local c = _C("tankLosingAggro")
         return c.r, c.g, c.b, false
     end
@@ -597,12 +754,14 @@ function ns.ResolveThreatColor(unit, status)
     end
     if otE and roleSecret then
         local otc = _C("offTankAggro")
-        local folded, fr, fg, fb = ns.ComputeOffTankFold(unit, base.r, base.g, base.b, otc.r, otc.g, otc.b)
+        local folded, fr, fg, fb, fa = ns.ComputeOffTankFold(unit, base.r, base.g, base.b, otc.r, otc.g, otc.b)
         -- Secret when an isTanking read was: those components reach setters only. A
         -- plain fold goes through the caller's memos like any other colour.
         if folded then
+            ns._threatOkA = fa
             return fr, fg, fb, (issecretvalue(fr) or issecretvalue(fg) or issecretvalue(fb))
         end
+        ns._threatOkA = 0
         return base.r, base.g, base.b, false
     end
     if targetRole == "TANK" then
@@ -612,16 +771,18 @@ function ns.ResolveThreatColor(unit, status)
         local c = _C("offTankAggro")
         return c.r, c.g, c.b, false
     end
+    ns._threatOkA = 0
     return base.r, base.g, base.b, false
 end
-local function GetReactionColor(unit)
+-- castSeen: the plate's Color Casting Enemies memory (plate._castSeen).
+local function GetReactionColor(unit, castSeen)
     -- Per-call marker read SYNCHRONOUSLY by UpdateHealthColor right after this
     -- returns: true only when this resolution landed on the non-tank Near
     -- Aggro color, so the near-aggro glow rides the exact same decision.
     -- On ns (module file is at the 200-local cap).
     ns._reactionNearAggro = false
     -- Same idiom, for the enemy player class color at step 6: set when the class token
-    -- came back redacted, so UpdateHealthColor knows to mirror Blizzard's bar instead.
+    -- came back redacted, so UpdateHealthColor paints the bar from C_ClassColor instead.
     ns._reactionMirrorClass = false
     -- Same idiom, for the off-tank color under identity restriction: set when the
     -- mob-target ROLE read came back secret with Off-Tank Color enabled, so
@@ -632,6 +793,12 @@ local function GetReactionColor(unit)
     -- (false = no threat data), which UpdateHealthColor hands to ns.ResolveThreatColor
     -- instead of a second UnitThreatSituation read.
     ns._reactionThreatStatus = nil
+    -- Same idiom: true when this resolution landed on bad threat (a non-tank with or
+    -- near aggro, a tank without or losing it), where the debuff colors give way.
+    ns._reactionBadThreat = false
+    -- Same idiom: the mob-type tier Color Casting Enemies may tint, nil when it may not.
+    -- ns._reactionCastLit (plainly in combat, for Modify Out of Combat) is set with it.
+    ns._reactionCastTier = nil
     local db = p or defaults
     -- 1. Tapped always highest
     if UnitIsTapDenied(unit) then
@@ -647,6 +814,8 @@ local function GetReactionColor(unit)
     -- Non-tank: has aggro, near aggro Tank: losing aggro, no aggro
     local isThreatUnit = false   -- set true when threat data exists
     local threatStatus = 0
+    -- A non-tank's threat colors apply (in a group, or solo with a pet out: ThreatShared).
+    local threatShared = false
     -- Show Threat Colors (Never / Instances / Always): one cached field read.
     if ns._npThreatColorsOn then
         local status = UnitThreatSituation("player", unit)
@@ -654,6 +823,7 @@ local function GetReactionColor(unit)
         if status then
             isThreatUnit = true
             threatStatus = status
+            threatShared = not _isTankRole and ThreatShared()
             -- Threat Colors "Health Bar" channel off: the bar carries no threat color at
             -- all. Clearing isThreatUnit here is what makes that complete -- it also
             -- switches off the LOW-priority has-aggro / no-aggro steps further down
@@ -663,19 +833,21 @@ local function GetReactionColor(unit)
             -- is still marked here; ns._reactionOffTankFold is a health-bar mechanism and
             -- deliberately stays unset (ns.ResolveThreatColor does its own fold).
             if not ns.GetThreatColorHealth() then
-                if not _isTankRole and IsInGroup() and status >= 2 and status < 3 then
+                if threatShared and status >= 2 and status < 3 then
                     ns._reactionNearAggro = true
                 end
-                isThreatUnit, threatStatus = false, 0
+                isThreatUnit, threatStatus, threatShared = false, 0, false
             elseif not _isTankRole then
                 -- Non-tank: has aggro / near aggro absolute priority
-                -- Only apply when in a group (solo players always have aggro)
-                if IsInGroup() then
+                -- Only in a group or with a pet out (solo without one, the player always has aggro)
+                if threatShared then
                 if status >= 3 then
+                    ns._reactionBadThreat = true
                     local c = _C("dpsHasAggro")
                     return c.r, c.g, c.b
                 elseif status >= 2 then
                     ns._reactionNearAggro = true
+                    ns._reactionBadThreat = true
                     local c = _C("dpsNearAggro")
                     return c.r, c.g, c.b
                 end
@@ -694,6 +866,7 @@ local function GetReactionColor(unit)
                 if otE == nil then otE = defaults.offTankAggroEnabled end
                 if otE then ns._reactionOffTankFold = true end
                 if status < 3 and status >= 2 then
+                    ns._reactionBadThreat = true
                     local c = _C("tankLosingAggro")
                     return c.r, c.g, c.b
                 elseif status < 3 then
@@ -721,6 +894,7 @@ local function GetReactionColor(unit)
                         if otE then ns._reactionOffTankFold = true end
                     end
                     if targetRole ~= "TANK" then
+                        ns._reactionBadThreat = true
                         local c = _C("tankNoAggro")
                         return c.r, c.g, c.b
                     end
@@ -776,16 +950,13 @@ local function GetReactionColor(unit)
     if UnitIsPlayer(unit) and UnitCanAttack("player", unit) then
         local _, class = UnitClass(unit)
         -- A secret class token (identity-restricted, i.e. instanced PvP) cannot key a
-        -- color table. Blizzard resolves the same lookup UNTAINTED on its own plate and
-        -- its bar keeps updating under our suppression, so flag the plate here and let
-        -- UpdateHealthColor copy that color across without ever inspecting it. We still
-        -- fall through to the reaction color so every plain-number consumer downstream
-        -- (the skip-if-unchanged compare, the No Tint overlay tints) keeps plain numbers.
-        -- Gated on the CVar because that is what decides whether Blizzard's bar is a class
-        -- color at all: with it off the bar carries a selection/threat color, and copying
-        -- that would overwrite the user's Enemy Types color with red.
+        -- plain color table, but C_ClassColor accepts it and returns a color that may only
+        -- reach setters. Flag the plate so UpdateHealthColor paints the bar that way. We
+        -- still fall through to the reaction color so every plain-number consumer
+        -- downstream (the skip-if-unchanged compare, the No Tint overlay tints) keeps
+        -- plain numbers.
         if issecretvalue(class) then
-            ns._reactionMirrorClass = GetCVarBool("nameplateShowClassColor") == true
+            ns._reactionMirrorClass = true
             class = nil
         end
         local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
@@ -849,10 +1020,24 @@ local function GetReactionColor(unit)
     -- Spell Caster color instead of Bosses. Mirrors the mutual exclusivity boss/mini-boss
     -- already have with each other.
     local _isCaster = not owBasic and not _isBossUnit and UnitHasPowerType(unit, Enum.PowerType.Mana)
+    -- Color Casting Enemies (opt-in): a mob that has cast gets its tier here, where the
+    -- mob-type steps start, so its tints cover what Spell Casters would; the threat
+    -- overrides and neutral returns below clear it again. Mobs painted Spell Casters keep
+    -- it (a mini-boss with mana is painted Mini-Boss, step 7, so it can be tinted).
+    -- castSeen is never set for players (ns.NP_NoteCastKind).
+    if castSeen and db.castingEnemyColors and not owBasic and (_isMiniBoss or not _isCaster) then
+        if _isBossUnit then ns._reactionCastTier = "Boss"
+        elseif _isMiniBoss then ns._reactionCastTier = "MiniBoss"
+        elseif classification == "elite" or classification == "rareelite"
+            or classification == "worldboss" then ns._reactionCastTier = "Elite"
+        else ns._reactionCastTier = "Normal" end
+        ns._reactionCastLit = not (issecretvalue and issecretvalue(inCombat)) and inCombat == true
+    end
     -- DPS/healer No Aggro override state (mirrors tank has-aggro overrides at 6b). Each
     -- override independently promotes the No Aggro color above one mob-type step (mini-boss 7,
-    -- caster 8). Active only for a non-tank without aggro in a group (matches step 10).
-    local dpsNoAggroActive = isThreatUnit and (not _isTankRole) and threatStatus < 2 and IsInGroup()
+    -- caster 8). Active only for a non-tank without aggro in a group or with a pet out
+    -- (matches step 10).
+    local dpsNoAggroActive = threatShared and threatStatus < 2
     if dpsNoAggroActive then
         local en = defaults.dpsNoAggroEnabled
         if db.dpsNoAggroEnabled ~= nil then en = db.dpsNoAggroEnabled end
@@ -868,6 +1053,7 @@ local function GetReactionColor(unit)
         local ovr = defaults.tankHasAggroOverrideMobType
         if db.tankHasAggroOverrideMobType ~= nil then ovr = db.tankHasAggroOverrideMobType end
         if hae and ovr then
+            ns._reactionCastTier = nil
             local c = _C("tankHasAggro")
             return c.r, c.g, c.b
         end
@@ -881,6 +1067,7 @@ local function GetReactionColor(unit)
             local ovr = defaults.dpsNoAggroOverrideMiniBoss
             if db.dpsNoAggroOverrideMiniBoss ~= nil then ovr = db.dpsNoAggroOverrideMiniBoss end
             if ovr then
+                ns._reactionCastTier = nil
                 local c = _C("dpsNoAggro")
                 return c.r, c.g, c.b
             end
@@ -902,15 +1089,19 @@ local function GetReactionColor(unit)
         -- neutral mobs stay enemy-red for tanks. Other viewers: neutral beats trash/DPS
         -- carve-out/Caster (7b sits above step 8). Non-trash neutral units defer to 10d.
         local tankAggroPending = isThreatUnit and _isTankRole and threatStatus >= 3 and thae
-        if isNeutral and not tankAggroPending then return ResolveNeutralColor(unit) end
+        if isNeutral and not tankAggroPending then
+            ns._reactionCastTier = nil
+            return ResolveNeutralColor(unit)
+        end
         if not (_isTankRole and thae) then
             -- DPS "No Aggro" still wins over the promoted Mini Enemies color, so a DPS/healer
             -- without aggro sees the warning on trash. Scoped to this trash branch so Caster
             -- still outranks DPS No Aggro on non-trash casters (step 10, same condition).
-            if isThreatUnit and not _isTankRole and threatStatus < 2 and IsInGroup() then
+            if threatShared and threatStatus < 2 then
                 local dpsNA = defaults.dpsNoAggroEnabled
                 if db.dpsNoAggroEnabled ~= nil then dpsNA = db.dpsNoAggroEnabled end
                 if dpsNA then
+                    ns._reactionCastTier = nil
                     local c = _C("dpsNoAggro")
                     return c.r, c.g, c.b
                 end
@@ -944,6 +1135,7 @@ local function GetReactionColor(unit)
             local ovrBoss = defaults.tankHasAggroOverrideBoss
             if db.tankHasAggroOverrideBoss ~= nil then ovrBoss = db.tankHasAggroOverrideBoss end
             if ovrBoss or not _isBossUnit then
+                ns._reactionCastTier = nil
                 local c = _C("tankHasAggro")
                 return c.r, c.g, c.b
             end
@@ -955,13 +1147,14 @@ local function GetReactionColor(unit)
     -- ovrBoss check at step 9 above -- previously unconditional, so a DPS/healer without aggro
     -- always lost the Bosses color on engage with no way to turn that off (unlike Mini-Boss/
     -- Caster, which already had their own override toggles here, both off by default).
-    if isThreatUnit and not _isTankRole and threatStatus < 2 and IsInGroup() then
+    if threatShared and threatStatus < 2 then
         local enabled = defaults.dpsNoAggroEnabled
         if db.dpsNoAggroEnabled ~= nil then enabled = db.dpsNoAggroEnabled end
         if enabled then
             local ovrBoss = defaults.dpsNoAggroOverrideBoss
             if db.dpsNoAggroOverrideBoss ~= nil then ovrBoss = db.dpsNoAggroOverrideBoss end
             if ovrBoss or not _isBossUnit then
+                ns._reactionCastTier = nil
                 local c = _C("dpsNoAggro")
                 return c.r, c.g, c.b
             end
@@ -988,6 +1181,7 @@ local function GetReactionColor(unit)
     -- 10d. Neutral, deferred (dungeons only -- step 5 skipped it there): a neutral unit
     -- matching no mob-type/threat color lands here, just above the generic enemy fallback.
     if isNeutral then
+        ns._reactionCastTier = nil
         return ResolveNeutralColor(unit)
     end
     -- 11. Fallback: enemy in/out of combat. With Simple Coloring When Not In M+ active, every mob-type

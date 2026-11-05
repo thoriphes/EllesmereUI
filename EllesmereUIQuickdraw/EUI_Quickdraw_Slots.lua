@@ -149,11 +149,12 @@ end
 -------------------------------------------------------------------------------
 --  Dynamic Profession: a dynamicprofession slot names a POSITION (1/2 = the
 --  two primary professions in GetProfessions order, 3/4/5 = Cooking, Fishing,
---  Archaeology), resolved live to that profession's opener spell, or with
+--  Archaeology; on WoW Forever 5 is First Aid, which holds that third
+--  GetProfessions slot there), resolved live to that profession's opener spell, or with
 --  slot.extra its second non-passive spell. slot.specialization resolves the
 --  first known specialization ability for Mining, Herbalism, or Skinning.
 --  Unlearned positions and professions with no second ability resolve to nil
---  and go dark under Hide Unusable Entries. Resolvers live on ns (from the
+--  and go dark under Hide Unavailable Actions. Resolvers live on ns (from the
 --  200-local ceiling of the module as one file). SlotUsable, ResolveAction
 --  and SlotDisplay share a memo per position and ability kind.
 --  PushAllPalettes wipes it beside usableMemo; SPELLS_CHANGED covers the
@@ -233,7 +234,16 @@ ns.ProfessionPositionName = function(index, extra, specialization)
     local base
     if index == 3 then base = COOKING or "Cooking"
     elseif index == 4 then base = FISHING or "Fishing"
-    elseif index == 5 then base = ARCHAEOLOGY or "Archaeology"
+    elseif index == 5 then
+        -- WoW Forever's professions book reads GetProfessions as prof1, prof2,
+        -- First Aid, fishing, cooking: there the position is First Aid, named
+        -- by its skill line (129) as the client spells it.
+        if EllesmereUI.IS_FOREVER then
+            base = C_TradeSkillUI.GetTradeSkillDisplayName(129)
+            if type(base) ~= "string" or base == "" then base = EllesmereUI.L("First Aid") end
+        else
+            base = ARCHAEOLOGY or "Archaeology"
+        end
     else base = EllesmereUI.Lf("Profession %1$d", index or 0)
     end
     if specialization then
@@ -393,21 +403,23 @@ do
     -- loses its toggle. PanelAvailable then answers no, which keeps it out of
     -- the picker and the preset and makes it fire nothing, while a saved
     -- vault slot still draws its own icon and name and goes dark under Hide
-    -- Unusable Entries like any other panel the client cannot open.
+    -- Unavailable Actions like any other panel the client cannot open.
     -- Forever also splits the spellbook and the talents into two micro
     -- buttons. Its combined button still exists but opens on whichever tab
     -- was last shown, so there the spellbook entry clicks the spellbook's own
-    -- button and a Talents entry follows it.
+    -- button and a Talents entry follows it. Forever Essentials' routes come
+    -- first: they open its Classic Spellbook and Classic Talents while those
+    -- are on and click the micro buttons otherwise.
     if EllesmereUI.IS_FOREVER then
         for _, def in ipairs(PANELS) do
             if def.key == "greatvault" then def.fire = nil end
         end
         for i, def in ipairs(PANELS) do
             if def.key == "spellbook" then
-                def.button, def.label, def.default = "SpellbookMicroButton", "SPELLBOOK", "Spellbook"
+                def.button, def.label, def.default = { "EUI_SpellbookRoute", "SpellbookMicroButton" }, "SPELLBOOK", "Spellbook"
                 tinsert(PANELS, i + 1, { key = "talents",
                     icon = ART .. "menu-achievements.png",
-                    button = "TalentMicroButton",
+                    button = { "EUI_TalentsRoute", "TalentMicroButton" },
                     label = "TALENTS",                  default = "Talents" })
                 break
             end
@@ -462,7 +474,7 @@ do
     -- Whether this client has the panel at all: Housing arrived in 12.0, the
     -- Shop is not built into every region's client, and a panel whose addon
     -- never loaded has no toggle to call. An entry that answers no goes dark
-    -- under Hide Unusable Entries rather than sitting there firing nothing.
+    -- under Hide Unavailable Actions rather than sitting there firing nothing.
     ns.PanelAvailable = function(def)
         if not def then return false end
         if def.button then return PanelButton(def) ~= nil end

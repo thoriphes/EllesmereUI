@@ -15,6 +15,8 @@ local TRIGGER_DEFAULTS = {
     log5pp      = true,
     logArena    = true,
     logScenario = false,
+    logRBG      = false,
+    logBlitz    = false,
     delaystop   = true,
 }
 
@@ -26,11 +28,14 @@ local TRIGGER_ITEMS = {
     { key = "log5pp",      label = "Mythic+ Dungeons" },
     { key = "logArena",    label = "Arena" },
     { key = "logScenario", label = "Scenarios" },
+    { key = "logRBG",      label = "Rated Battlegrounds" },
+    { key = "logBlitz",    label = "Battleground Blitz" },
 }
 -- WoW Forever: every raid instance logs on the Raids trigger (the Normal Raid
 -- key and its default) and every dungeon on the Dungeons trigger (a key only
 -- that client offers, off until the player turns it on). The retail
--- difficulty, Mythic+, arena and scenario rows have nothing to match there.
+-- difficulty, Mythic+, arena, scenario and rated battleground rows have
+-- nothing to match there.
 if EllesmereUI.IS_FOREVER then
     TRIGGER_ITEMS = {
         { key = "logNormal",  label = "Raids" },
@@ -58,6 +63,19 @@ local function TeleCfg()
     if not EllesmereUIDB then return {} end
     EllesmereUIDB.teleportPrompt = EllesmereUIDB.teleportPrompt or {}
     return EllesmereUIDB.teleportPrompt
+end
+
+-- Read-only: the /way table appears on the first write, so viewing the page
+-- saves nothing.
+local NO_WAY_CFG = {}
+local function WayCfg()
+    return EllesmereUIDB and EllesmereUIDB.waypointCmd or NO_WAY_CFG
+end
+
+local function SetWay(key, value)
+    if not EllesmereUIDB then return end
+    EllesmereUIDB.waypointCmd = EllesmereUIDB.waypointCmd or {}
+    EllesmereUIDB.waypointCmd[key] = value
 end
 
 -- Built as the tail of the Quality of Life page (chained from BuildQoLPage),
@@ -186,6 +204,53 @@ local function BuildAutoLoggingPage(pageName, parent, yOffset)
     end -- not IS_FOREVER
 
     ---------------------------------------------------------------------------
+    --  WAYPOINT COMMAND (/way, runtime in EllesmereUIQoL_Waypoint.lua)
+    ---------------------------------------------------------------------------
+    _, h = W:SectionHeader(parent, "WAYPOINT COMMAND", y); y = y - h
+
+    local wayRow
+    wayRow, h = W:DualRow(parent, y,
+        { type    = "toggle",
+          text    = "Enable /way Command",
+          tooltip = "Adds /way, which prints a map pin link.",
+          -- Off by default.
+          getValue = function() return WayCfg().enabled == true end,
+          setValue = function(v)
+              SetWay("enabled", v or nil)
+              EllesmereUI:RefreshPage()
+              EllesmereUI:ShowConfirmPopup({
+                  title = "Reload Required",
+                  message = "Changing the /way command requires a reload to update slash command registration.",
+                  confirmText = "Reload",
+                  cancelText = "Later",
+                  reload    = true,
+              })
+          end },
+        EllesmereUI.BlankRowCfg()
+    ); y = y - h
+
+    -- The arrival message for hand-placed pins (off by default). The runtime
+    -- reads it live and listens for arrivals only while it or a /way list
+    -- needs them, so a change re-syncs that listener.
+    EllesmereUI.BuildInlineCog(wayRow._leftRegion, {
+        title = "/way Command",
+        disabled = function() return WayCfg().enabled ~= true end,
+        disabledTooltip = "Enable /way Command",
+        rows = {
+            { type="toggle", label="Hand-Placed Pin Arrival",
+              tooltip="Also announces arrival at pins you place.",
+              get=function() return WayCfg().manualArrival == true end,
+              set=function(v)
+                  SetWay("manualArrival", v or nil)
+                  local sync = EllesmereUI._ModuleNS["EllesmereUIQoL"].WaypointArrivalSync
+                  if sync then sync() end
+              end },
+        },
+    })
+
+    _, h = W:Spacer(parent, y, 20); y = y - h
+
+    ---------------------------------------------------------------------------
     --  AUTO COMBAT LOGGING
     ---------------------------------------------------------------------------
     _, h = W:SectionHeader(parent, "AUTO COMBAT LOGGING", y); y = y - h
@@ -259,11 +324,25 @@ local function BuildAutoLoggingPage(pageName, parent, yOffset)
           setValue = function(v)
               Cfg().delaystop = v
           end },
-        { type = "label", text = "" }
+        { type    = "toggle",
+          text    = "Chat Notification",
+          tooltip = "Prints a chat message when auto logging starts or stops.",
+          getValue = function() return Cfg().notify == true end,
+          setValue = function(v)
+              Cfg().notify = v or nil
+          end }
     ); y = y - h
     end   -- close Auto Logging hidden-while-disabled gate
 
     _, h = W:Spacer(parent, y, 20); y = y - h
+
+    ---------------------------------------------------------------------------
+    --  ALERTS (Combat Alert, Potion Ready, Unspent Talents; one shared anchor)
+    ---------------------------------------------------------------------------
+    if _G._EUI_BuildAlertsSection then
+        local alertsH = _G._EUI_BuildAlertsSection(parent, y, W, EllesmereUI.PP)
+        y = y - alertsH
+    end
 
     ---------------------------------------------------------------------------
     --  BATTLE RES (no shared battle res charges on WoW Forever: the indicator

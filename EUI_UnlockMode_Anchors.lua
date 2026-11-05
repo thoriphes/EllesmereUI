@@ -114,9 +114,15 @@ local function GetAnchorDB()
     return EllesmereUIDB.unlockAnchors
 end
 
+-- A link saved on an element that places itself (ownsPosition: main chat) is
+-- inert, so it reads as none: no anchor rows in its cog, and no false circle
+-- when another element links to it. ValidateStoredLinks deletes it when
+-- Unlock Mode opens.
 local function GetAnchorInfo(barKey)
     local db = GetAnchorDB()
     if not db then return nil end
+    local elem = registeredElements[barKey]
+    if elem and elem.ownsPosition then return nil end
     return db[barKey]
 end
 
@@ -125,6 +131,7 @@ end
 -- Defined here, after its dependencies, so the closure captures the right upvalues.
 function EllesmereUI.RecenterBarAnchor(barKey)
     if not UM.isUnlocked then return end
+    if ns.PointAnchors.Recenter(barKey, UM) then return end
     local elem = registeredElements[barKey]
     if elem and elem.isAnchored and elem.isAnchored() then return end
     local b = UM.GetBarFrame(barKey)
@@ -226,6 +233,7 @@ local function SetAnchorInfo(childKey, targetKey, side, offsetX, offsetY)
     -- Link-change stamp: modules with memoized views over the anchor DB (e.g.
     -- the tracking bar growth-edge extent watch) re-derive lazily.
     EllesmereUI._anchorLinksStamp = (EllesmereUI._anchorLinksStamp or 0) + 1
+    EllesmereUI._EnsureFallbackWatchers()
 end
 
 local function ClearAnchorInfo(childKey)
@@ -233,6 +241,7 @@ local function ClearAnchorInfo(childKey)
     if not db then return end
     db[childKey] = nil
     EllesmereUI._anchorLinksStamp = (EllesmereUI._anchorLinksStamp or 0) + 1
+    EllesmereUI._EnsureFallbackWatchers()
 end
 
 local function IsAnchored(barKey)
@@ -664,7 +673,14 @@ local function ValidateStoredLinks()
     local anchors = EllesmereUIDB.unlockAnchors
     if anchors then
         for childKey, info in pairs(anchors) do
-            if LinkGone(childKey, info and info.target)
+            local cElem = elems[childKey]
+            if cElem and cElem.ownsPosition then
+                -- A link on an element that places itself (main chat) never
+                -- takes effect, yet the passes that walk the whole store still
+                -- see it: a line to its old target, and a loop that pulls back
+                -- an element linked to it. Dropped on every spec.
+                anchors[childKey] = nil
+            elseif LinkGone(childKey, info and info.target)
                and not OverrideProtected(childKey) then
                 anchors[childKey] = nil
             elseif info and info.edge and info.edge.key and LinkGone(childKey, info.edge.key)
@@ -923,6 +939,8 @@ local function ScheduleAnchorBatch()
     C_Timer.After(0, function()
         _anchorBatchScheduled = false
         if UM.isUnlocked then return end  -- unlock mode handles its own saves
+        -- Runs only outside a session or while combat hides one, so its
+        -- re-placements never mark the session (noMark below).
         local keys = UM._pendingAnchorKeys
         UM._pendingAnchorKeys = {}
         -- Profile swap: skip AB bars entirely (LayoutBar already positioned them from
@@ -941,15 +959,15 @@ local function ScheduleAnchorBatch()
                     -- Skip AB growth bars: LayoutBar/applyPos owns their position;
                     -- reapplying from a stale offset yields the wrong edge and visible drift.
                     local isAB = EllesmereUI._abBarKeys and EllesmereUI._abBarKeys[k]
-                    if not isAB then
-                        UM.ApplyAnchorPosition(k, ownInfo.target, ownInfo.side)
+                    if not isAB or ownInfo.mode == "POINT" then
+                        UM.ApplyAnchorPosition(k, ownInfo.target, ownInfo.side, true)
                     end
                 end
                 -- An alias key (global tracking bar group riding this bar's hooks) may itself be anchored: re-apply on a shared resize.
                 local aliasK = EllesmereUI._unlockKeyAliases and EllesmereUI._unlockKeyAliases[k]
                 local aliasInfo = aliasK and anchorDB[aliasK]
                 if aliasInfo and aliasInfo.target then
-                    UM.ApplyAnchorPosition(aliasK, aliasInfo.target, aliasInfo.side)
+                    UM.ApplyAnchorPosition(aliasK, aliasInfo.target, aliasInfo.side, true)
                 end
             end
             -- Propagate with axis filter (nil = all axes)
@@ -1015,7 +1033,7 @@ do
         local adb = GetAnchorDB()
         if not adb then return end
         for childKey, info in pairs(adb) do
-            if info.target and (childKey:sub(1, 4) == "CDM_"
+            if info.target and info.mode ~= "POINT" and (childKey:sub(1, 4) == "CDM_"
                or (EllesmereUI._abBarKeys and EllesmereUI._abBarKeys[childKey])) then
                 pcall(MigrateOne, childKey, info)
             end
@@ -1562,7 +1580,9 @@ local function HookFrameSizeChanged(key)
     -- No hooks on chat frames: ChatFrame1 is docked inside Blizzard's secure
     -- FCF_OpenTemporaryWindow chain and any addon code in OnSizeChanged/SetPoint
     -- hooks taints the execution context. Chat persists its own position/size.
-    if key and key:find("^ECHAT_") then return end
+    -- The quest tracker is laid out by Blizzard's managed frame container, in
+    -- combat too, and places itself from its Edit Mode layout entry.
+    if key and (key:find("^ECHAT_") or key == "EQT_Tracker") then return end
     local bar = UM.GetBarFrame(key)
     if not bar then return end
     if not _sizeHookedFrames[bar] then
@@ -1620,6 +1640,7 @@ end
 -- Cancel any active pick mode (width/height match, anchor to, snap select) and
 -- restore overlay text and screen brightness.
 local function CancelPickMode()
+    if UM.PointPicker then UM.PointPicker.Cancel() end
     if UM.pickModeMover then
         local m = UM.pickModeMover
         -- Restore overlay text visibility only if still hovered
@@ -1973,12 +1994,18 @@ do
         local info = db and db[childKey]
         if info then info.fallback = nil end
         EllesmereUI._anchorLinksStamp = (EllesmereUI._anchorLinksStamp or 0) + 1
+        EllesmereUI._EnsureFallbackWatchers()
         if EllesmereUI._RefreshFallbackGhosts then EllesmereUI._RefreshFallbackGhosts() end
     end
 
-    -- Pet watcher: created only once a pet-target fallback exists (free until
-    -- opted in). UNIT_PET fires on summon AND dismiss/death, so one debounced reapply covers both.
+    -- Pet watcher: created the first time a pet-target fallback exists (free until
+    -- opted in) and kept. Every link change made here (SetAnchorInfo,
+    -- ClearAnchorInfo, SetAnchorFallback, ClearAnchorFallback), ApplySavedPositions
+    -- and an Unlock Mode discard re-check it: UNIT_PET is registered while such a
+    -- fallback is stored and unregistered once none is. UNIT_PET fires on summon AND
+    -- dismiss/death, so one debounced reapply covers both.
     local petWatcher
+    local petWatchOn
     local petPassPending
     function EllesmereUI._EnsureFallbackWatchers()
         local db = GetAnchorDB()
@@ -1990,24 +2017,26 @@ do
                 break
             end
         end
-        if needPet and not petWatcher then
-            petWatcher = CreateFrame("Frame")
-            petWatcher:RegisterUnitEvent("UNIT_PET", "player")
-            petWatcher:SetScript("OnEvent", function()
-                if petPassPending then return end
-                petPassPending = true
-                C_Timer.After(0.1, function()
-                    petPassPending = nil
-                    if UM.isUnlocked then return end
-                    if EllesmereUI.ReapplyAllUnlockAnchors then
-                        EllesmereUI.ReapplyAllUnlockAnchors()
-                    end
+        if needPet and not petWatchOn then
+            if not petWatcher then
+                petWatcher = CreateFrame("Frame")
+                petWatcher:SetScript("OnEvent", function()
+                    if petPassPending then return end
+                    petPassPending = true
+                    C_Timer.After(0.1, function()
+                        petPassPending = nil
+                        if UM.isUnlocked then return end
+                        if EllesmereUI.ReapplyAllUnlockAnchors then
+                            EllesmereUI.ReapplyAllUnlockAnchors()
+                        end
+                    end)
                 end)
-            end)
-        elseif not needPet and petWatcher then
-            petWatcher:UnregisterAllEvents()
-            petWatcher:SetScript("OnEvent", nil)
-            petWatcher = nil
+            end
+            petWatcher:RegisterUnitEvent("UNIT_PET", "player")
+            petWatchOn = true
+        elseif not needPet and petWatchOn then
+            petWatcher:UnregisterEvent("UNIT_PET")
+            petWatchOn = false
         end
     end
 

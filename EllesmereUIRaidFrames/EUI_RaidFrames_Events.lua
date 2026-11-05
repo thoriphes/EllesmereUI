@@ -36,6 +36,17 @@ I.readyCheckActiveSetters[#I.readyCheckActiveSetters + 1] = function(v) readyChe
 local framesVisible = false
 I.framesVisibleSetters[#I.framesVisibleSetters + 1] = function(v) framesVisible = v end
 
+-- Healer Mana Display: its rebuild normally rides the raid/party frame paths
+-- (UpdatePowerEventRegistration tails). A roster change that lands with BOTH
+-- frame sets hidden -- leaving a raid to solo, or to a party while EUI party
+-- frames are disabled -- skips every rebuild, so the display would keep its
+-- last group's content (raid-mode names included) indefinitely.
+local function RebuildHealerManaIfFramesHidden()
+    if not framesVisible and not ns._partyFramesVisible and ns.HM_Rebuild then
+        ns.HM_Rebuild()
+    end
+end
+
 -------------------------------------------------------------------------------
 --  Event handlers
 -------------------------------------------------------------------------------
@@ -97,6 +108,12 @@ local function OnEvent(self, event, arg1, ...)
             if event ~= "UNIT_MAX_HEALTH_MODIFIERS_CHANGED" then ns._AbArm(btn, arg1, dd) end
             ns._MarkAbsorbDirty(btn, arg1)
             if event == "UNIT_HEAL_ABSORB_AMOUNT_CHANGED" then ns.UpdateHealAbsorbTextFor(btn, arg1) end
+            -- Custom texts showing the amount this event moved (two field reads while
+            -- none does); the max-health-modifier edge moves health only.
+            local tp = dd._txP
+            if tp and tp.reads and event ~= "UNIT_MAX_HEALTH_MODIFIERS_CHANGED" then
+                ns.RF_TextRepaintCustom(dd, arg1, event == "UNIT_ABSORB_AMOUNT_CHANGED" and "abs" or "habs")
+            end
             if event == "UNIT_MAX_HEALTH_MODIFIERS_CHANGED" then
                 dd._rmhPct = nil -- reduced-max cache: this is its only value edge
                 ns._UpdateButtonHealth(btn, arg1)
@@ -166,6 +183,7 @@ local function OnEvent(self, event, arg1, ...)
             if ns._partyFramesVisible then
                 ns._LayoutPartyFrames()
             end
+            if rosterDirty then RebuildHealerManaIfFramesHidden() end
         end
         -- Party container geometry deferred by a combat-time _ERF_RefreshAll.
         if ns._partyGeomDirtyInCombat then
@@ -348,6 +366,12 @@ local function OnEvent(self, event, arg1, ...)
             local numMembers = ns._GetEffectiveRaidSize()
             local newW, newH = ns._GetRaidSizeFrameDimensions(numMembers > 0 and numMembers or 1)
             local tierChanged = (newW ~= ns._activeSizeW or newH ~= ns._activeSizeH)
+            -- Same-sized tiers can still differ in growth or Center Groups (the
+            -- combat path checks this too); ReloadFrames re-resolves the override.
+            if not tierChanged and numMembers > 0 then
+                local _, newOv = ns._RFResolveTierOverride(numMembers)
+                tierChanged = newOv ~= ns._activeTierOverride
+            end
             local wasVis = framesVisible
             ns._visForceRebuild = nil
             UpdateVisibility()
@@ -387,15 +411,7 @@ local function OnEvent(self, event, arg1, ...)
             if ns._partyFramesVisible then
                 ns._LayoutPartyFrames()
             end
-            -- Healer Mana Display: its rebuild normally rides the raid/party
-            -- frame paths above (UpdatePowerEventRegistration tails). A roster
-            -- change that lands with BOTH frame sets hidden -- leaving a raid
-            -- to solo, or to a party while EUI party frames are disabled --
-            -- skipped every rebuild, so the display kept its last group's
-            -- content (raid-mode names included) indefinitely.
-            if not framesVisible and not ns._partyFramesVisible then
-                if ns.HM_Rebuild then ns.HM_Rebuild() end
-            end
+            RebuildHealerManaIfFramesHidden()
             -- Pet frames: once per roster pass, after the groups they attach to are laid out.
             ns.PF_Flush()
         end)
@@ -439,8 +455,8 @@ local function OnEvent(self, event, arg1, ...)
         local hmRows = ns._hmUnitRows
         if hmRows and hmRows[arg1] then ns._HMUpdateValue(arg1) end
         local btn = unitToButton[arg1] or ns._partyUnitToButton[arg1]
-        if btn and GetFFD(btn).power then
-            local d = GetFFD(btn)
+        local d = btn and GetFFD(btn)
+        if d and d.power then
             -- Value only (Blizzard's CompactUnitFrame_UpdatePower shape): type,
             -- color and bounds belong to the UNIT_DISPLAYPOWER edge below; nil
             -- = not derived yet for this occupant, derive once.
@@ -452,21 +468,22 @@ local function OnEvent(self, event, arg1, ...)
             -- Percent-based, secret-safe (see UpdateButton power block).
             local ppct = UnitPowerPercent(arg1, pType, true, CurveConstants.ScaleTo100)
             d.power:SetValue(ppct)
-            -- Power Text rides the same value (nil = off: this one field test).
-            local pwtMode = d._pwtMode
-            if pwtMode then ns.RF_PowerTextInto(d.powerText, pwtMode, ppct, arg1, pType) end
+            -- Power Texts and the Custom texts reading power ride the same value
+            -- (two field reads while the button has neither).
+            local tp = d._txP
+            if tp and (d._pwtOn or tp.reads) then ns.RF_TextPower(d, arg1, ppct, pType) end
         end
     elseif event == "UNIT_DISPLAYPOWER" then
         -- The displayed power type changed (forms, spec swaps, vehicles):
         -- re-derive type + color + bounds once (Power Text's colour too), then push the value.
         local btn = unitToButton[arg1] or ns._partyUnitToButton[arg1]
-        if btn and GetFFD(btn).power then
-            local d = GetFFD(btn)
+        local d = btn and GetFFD(btn)
+        if d and d.power then
             ns._RFPowerTypeEdge(d, arg1)
             local ppct = UnitPowerPercent(arg1, d._pwType, true, CurveConstants.ScaleTo100)
             d.power:SetValue(ppct)
-            local pwtMode = d._pwtMode
-            if pwtMode then ns.RF_PowerTextInto(d.powerText, pwtMode, ppct, arg1, d._pwType) end
+            local tp = d._txP
+            if tp and (d._pwtOn or tp.reads) then ns.RF_TextPower(d, arg1, ppct, d._pwType) end
         end
     elseif event == "UNIT_NAME_UPDATE" then
         local btn = unitToButton[arg1] or ns._partyUnitToButton[arg1]
@@ -501,12 +518,17 @@ local function OnEvent(self, event, arg1, ...)
             end)
         end
     elseif event == "UNIT_LEVEL" then
-        -- Level Text only (registered while a view shows it): the level alone repaints,
-        -- on its spot or in front of the name.
+        -- Level only (registered while a view shows it): the name and level texts repaint.
         local btn = unitToButton[arg1]
         if btn then ns._RFRepaintLevel(btn) end
         btn = ns._partyUnitToButton[arg1]
         if btn then ns._RFRepaintLevel(btn) end
+    elseif event == "UNIT_TARGET" then
+        -- Custom texts showing [target] only (registered while a view's Custom text does).
+        local btn = unitToButton[arg1]
+        if btn then ns.RF_TextRepaintCustom(GetFFD(btn), arg1, "tgt") end
+        btn = ns._partyUnitToButton[arg1]
+        if btn then ns.RF_TextRepaintCustom(GetFFD(btn), arg1, "tgt") end
     elseif event == "UNIT_THREAT_LIST_UPDATE" or event == "UNIT_THREAT_SITUATION_UPDATE" then
         local btn = unitToButton[arg1] or ns._partyUnitToButton[arg1]
         if btn then
@@ -534,16 +556,14 @@ local function OnEvent(self, event, arg1, ...)
         -- fallback for a unit no button maps yet (token shape we do not route).
         local btn = arg1 and (unitToButton[arg1] or ns._partyUnitToButton[arg1])
         if btn then
-            local pv = GetFFD(btn)._isParty and ns._partyPvActive or previewActive
+            local pv = GetFFD(btn)._isParty and ns._partyPvActive
             if not pv and btn:IsVisible() then UpdateButton(btn) end
             local xf = ns._xfUnitToButton[arg1]
-            if xf and not previewActive and xf:IsVisible() then UpdateButton(xf) end
+            if xf and xf:IsVisible() then UpdateButton(xf) end
         else
-            if not previewActive then
-                for _, b in ipairs(allButtons) do
-                    local u = b:GetAttribute("unit")
-                    if u and b:IsVisible() then UpdateButton(b) end
-                end
+            for _, b in ipairs(allButtons) do
+                local u = b:GetAttribute("unit")
+                if u and b:IsVisible() then UpdateButton(b) end
             end
             if not ns._partyPvActive then
                 for _, b in ipairs(ns._partyAllButtons) do
