@@ -1,5 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
-
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
 
 
 
@@ -18,12 +17,7 @@ local panel, host, scroll, summary
 local rows = {}
 
 
-local owner
-
-
-
-
-local floating, dismissed = false, false
+local floating = false
 
 
 
@@ -52,14 +46,10 @@ local HEADER_SIZE
 
 local SCROLL_CHANNEL
 
-
-local HEADER_SCALE = 1.6
-
 local ROW_H = 34
 
 
 local HEADING_SCALE = 2
-
 
 
 local FLOAT_ROWS = 8
@@ -242,8 +232,8 @@ end
 
 local function FitColumns(parent)
     SCROLL_CHANNEL = S.size.SCROLLBAR_W + S.size.SCROLLBAR_GAP
-    local face, microSize, flags = S.fontMicro:GetFont()
-    HEADER_SIZE = math.floor((microSize or 10.5) * HEADER_SCALE + 0.5)
+    local face, headerSize, flags = (S.fontColumnHeader or S.fontMicro):GetFont()
+    HEADER_SIZE = headerSize or 14.75
 
     local probe = parent:CreateFontString(nil, "ARTWORK")
     probe:SetFontObject(S.fontMicro)
@@ -263,7 +253,7 @@ local function FitColumns(parent)
 
 
     local responseHead = Widest(T["RESPONSE"], 0)
-    if responseHead > 0 then RESPONSE_W = responseHead end
+    if responseHead > 0 then RESPONSE_W = math.max(RESPONSE_W, responseHead) end
     WINNER_W   = Widest(T["AWARDED"],  WINNER_W)
 
 
@@ -287,44 +277,12 @@ end
 
 
 
-
-
-local function DockedWanted()
-    if not addon.db or addon.db.sessionFrame == false then return false end
-    if dismissed then return false end
-    return (owner and owner:IsShown()) and true or false
-end
-
-
 local function Anchor()
-    panel:ClearAllPoints()
-
-    if DockedWanted() then
-
-
-        P.Point(panel, "TOPRIGHT", owner, "TOPLEFT", -S.size.ITEM_GAP, 0)
-        P.Point(panel, "BOTTOMRIGHT", owner, "BOTTOMLEFT", -S.size.ITEM_GAP, 0)
-        return
-    end
-
-
     P.Size(panel, PANEL_W, PANEL_H)
 
 
-    local pos = addon.db and addon.db.windows and addon.db.windows.sessionFrame
-    if pos and pos.point then
-        panel:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
-    else
-
-        panel:SetPoint("CENTER", UIParent, "CENTER", -300, 0)
-    end
+    panel:RestorePosition()
 end
-
-
-local function Wanted()
-    return DockedWanted() or floating
-end
-
 
 
 local function HidePanel()
@@ -342,7 +300,7 @@ end
 local function Paint()
     if not panel then return end
 
-    local list = Wanted() and Collect() or nil
+    local list = floating and Collect() or nil
     if not list then
         HidePanel()
         return
@@ -409,42 +367,53 @@ local function Build()
     panel:SetWidth(PANEL_W)
     panel.slcWidth = PANEL_W
 
+    S.InstallPlacement(panel, "sessionFrame", { "CENTER", "CENTER", -300, 0 })
     S.FollowWindowAlpha(panel)
+    S.FollowWindowScale(panel)
+    panel:HookScript("OnShow", function() S.ApplyWindowScale(panel) end)
 
 
     panel:HookScript("OnHide", function()
         if suppressDismiss then return end
-
-        local wasFloating, wasDismissed = floating, dismissed
-        if floating then floating = false else dismissed = true end
-        local nowFloating, nowDismissed = floating, dismissed
+        local wasFloating = floating
+        floating = false
 
         addon.AutoClose:AfterHide(function(swept)
             if not swept then return end
-            if floating ~= nowFloating or dismissed ~= nowDismissed then return end
-            floating, dismissed = wasFloating, wasDismissed
+            if floating then return end
+            floating = wasFloating
             SessionPanel:Refresh()
         end)
     end)
 
 
-    tinsert(UISpecialFrames, "SimpleLootCouncilSessionFrame")
+    if S.RegisterEscape then S.RegisterEscape(panel)
+    else tinsert(UISpecialFrames, "SimpleLootCouncilSessionFrame") end
 
 
 
     S.CanvasFill(panel, S.color.canvas, 0.96)
-    S.RoundBorder(panel, S.color.border, "OVERLAY")
 
-    local cursor = L.Cursor(panel, { x = S.size.PAD, top = S.size.PAD,
+    local edge = CreateFrame("Frame", nil, panel)
+    edge:EnableMouse(false)
+    edge:SetAllPoints()
+    edge:SetFrameLevel(panel:GetFrameLevel() + 6)
+    S.RoundBorder(edge, S.color.windowEdge, "OVERLAY", S.radius.WINDOW)
+
+    local _, base = S.fontHeading:GetFont()
+    local titleSize = math.floor((base or 11.5) * HEADING_SCALE + 0.5)
+
+
+    local headingH = math.ceil(titleSize * 1.7)
+    local titleTop = math.max(0, math.floor((S.HeaderHeight() - headingH) / 2))
+
+    local cursor = L.Cursor(panel, { x = S.size.PAD, top = titleTop,
                                      width = PANEL_W - S.size.PAD * 2 })
 
 
 
     cursor:Add(function(parent, x, width, y)
         local closeW = S.size.CLOSE
-
-        local _, base = S.fontHeading:GetFont()
-        local titleSize = math.floor((base or 11.5) * HEADING_SCALE + 0.5)
 
 
         local heading, headingH = S.Heading(parent, x,
@@ -462,16 +431,9 @@ local function Build()
         heading:EnableMouse(true)
         heading:RegisterForDrag("LeftButton")
         heading:SetScript("OnDragStart", function()
-            if DockedWanted() then return end
-            panel:StartMoving()
+            P.StartDrag(panel)
         end)
-        heading:SetScript("OnDragStop", function()
-            panel:StopMovingOrSizing()
-            if DockedWanted() then return end
-            local point, _, relPoint, px, py = panel:GetPoint()
-            addon.db.windows.sessionFrame =
-                { point = point, relPoint = relPoint, x = px, y = py }
-        end)
+        heading:SetScript("OnDragStop", function() S.StopWindowDrag(panel) end)
 
         return heading, headingH
     end)
@@ -498,7 +460,7 @@ local function Build()
         local function Head(justify)
             local fs = S.Label(h, S.fontMicro, justify)
             if face then fs:SetFont(face, headerSize, flags) end
-            fs:SetTextColor(S.Unpack(S.color.text))
+            fs:SetTextColor(S.Unpack(S.color.textFaint))
             return fs
         end
 
@@ -548,45 +510,8 @@ local function Build()
 end
 
 
-function SessionPanel:Attach(window)
-    Build()
-
-    if not owner then
-        owner = window
-
-        window:HookScript("OnShow", function()
-            dismissed = false
-
-            if addon.db and addon.db.sessionFrame ~= false then
-                floating = false
-            end
-            SessionPanel:Refresh()
-        end)
-
-
-        window:HookScript("OnHide", function() SessionPanel:Refresh() end)
-    end
-
-    SessionPanel:Refresh()
-    return panel
-end
-
-
-
-function SessionPanel:SetDocked(enabled)
-    if enabled then floating = false end
-    SessionPanel:Refresh()
-end
-
-
-
 function SessionPanel:Toggle()
     Build()
-
-
-    if DockedWanted() then
-        return panel:IsShown() and "docked" or "norun"
-    end
 
 
     if floating and panel:IsShown() then
@@ -603,7 +528,6 @@ function SessionPanel:Toggle()
     floating = false
     return "norun"
 end
-
 function SessionPanel:Init()
     S = addon.Style
     L = addon.Layout
@@ -614,7 +538,7 @@ function SessionPanel:Init()
     SessionPanel.view = addon.Callbacks:RegisterView("session", {
         shown = function()
             if not panel then return false end
-            return panel:IsShown() or (Wanted() and addon.Session:IsRunning())
+            return panel:IsShown() or (floating and addon.Session:IsRunning())
         end,
         paint = Paint,
     })

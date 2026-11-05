@@ -48,7 +48,7 @@ end
 -------------------------------------------------------------------------------
 --  Zone data
 -------------------------------------------------------------------------------
--- CURRENT SEASON ONLY (12.1): the season raid + the Mythic+ pool. Rotated-
+-- SEASON UPDATE: the season raid + the Mythic+ pool (12.1 Season 2). Rotated-
 -- out zones are removed from this picker list, but stored reminders for
 -- them are kept (hidden in options) and still name-match at runtime --
 -- re-adding a zone here revives its reminders in the options list too.
@@ -458,4 +458,3 @@ end)
 -------------------------------------------------------------------------------
 _G._EABR_TR_RequestRefresh = RequestRefresh
 _G._EABR_TR_HideIcons = HideIcons
-_G._EABR_TR_GetAnchor = function() return talentIconAnchor end

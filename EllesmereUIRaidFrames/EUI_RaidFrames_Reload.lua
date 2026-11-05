@@ -144,37 +144,12 @@ local function ReloadFrames(skipButtons)
         end
         if d.UpdatePowerBorder then d.UpdatePowerBorder(true) end
 
-        -- Name text
-        if d.nameText then
-            ApplyFont(d.nameText, s.nameSize or 10)
-            if d.AnchorNameText then d.AnchorNameText() end
-        end
-
-        -- Health text
-        if d.healthText then
-            ApplyFont(d.healthText, s.healthTextSize or 9)
-            if d.AnchorHealthText then d.AnchorHealthText() end
-        end
-
-        -- Power text (exists once a mode has needed it): hidden with the bar above until
-        -- UpdateAllButtons below shows it again, and restyled.
-        if d.powerText then
-            d.powerText:Hide(); d._pwtMode = nil
-            ApplyFont(d.powerText, s.powerTextSize or 8)
-            ns._RFAnchorPowerText(d)
-        end
-
-        -- Level text (exists once a position has needed it): restyled; the full paint
-        -- that follows shows or hides it by position.
-        if d.levelText then
-            ApplyFont(d.levelText, s.levelTextSize or 10)
-            ns._RFAnchorLevelText(d)
-        end
-
-        -- Heal absorb text
-        if d.healAbsorbText then
-            ApplyFont(d.healAbsorbText, s.healAbsorbTextSize or 9)
-            if d.AnchorHealAbsorbText then d.AnchorHealAbsorbText() end
+        -- The texts: Power Text hidden with the bar above until UpdateAllButtons
+        -- below shows it again; every text restyled and re-anchored (the full paint that
+        -- follows fills them).
+        if d.AnchorTexts then
+            ns.RF_TextPowerHide(d)
+            d.AnchorTexts()
         end
 
         -- Status text (DEAD/OFFLINE/AFK)
@@ -246,6 +221,8 @@ local function ReloadFrames(skipButtons)
     -- (growth changes move the anchor points, not just the anchored-to header).
     if ns.FB_Apply then ns.FB_Apply() end
     if ns.XF_Apply then ns.XF_Apply() end
+    -- Player Group Label follows the raid frame style.
+    if ns.PG_Apply then ns.PG_Apply() end
     -- Pet frames (the ones styled from the raid settings restyle here, the rest in the party
     -- reload): the login window's pass skips them (OnEnable builds them once the party frames
     -- exist, which the Beside Owner pets need).
@@ -339,7 +316,7 @@ ns._ResizeButtons = function(w, h)
             if d.health then
                 d.health:SetHeight(((d.power and d.power:IsShown()) and xhealthH or xbh) - topBarH)
             end
-            if d.nameText then d.nameText:SetWidth(xbw * ns.RF_NAME_WIDTH_FRACTION) end
+            ns.RF_TextNameWidth(d, xbw)
         end
     end
     ns._activeSizeW = w
@@ -385,7 +362,7 @@ ns._ResizePartyButtons = function(w, h)
                     local hh = ((d.power and d.power:IsShown()) and healthH or bh) - topBarH
                     d.health:SetHeight(hh)
                 end
-                if d.nameText then d.nameText:SetWidth(barW * ns.RF_NAME_WIDTH_FRACTION) end
+                ns.RF_TextNameWidth(d, barW)
                 -- Party portrait: the attached square follows the height.
                 if d.pt then ns.RF_PtApply(btn, d, ns._scaledPartyProxy, bw, bh, nil) end
             end
@@ -413,11 +390,7 @@ ns._ResizePartyButtons = function(w, h)
                     d.combatIcon:SetSize(cciSz, cciSz)
                     if d.AnchorCombatIcon then d.AnchorCombatIcon() end
                 end
-                if d.nameText then ApplyFont(d.nameText, pp.nameSize or 10) end
-                if d.healthText then ApplyFont(d.healthText, pp.healthTextSize or 9) end
-                if d.powerText then ApplyFont(d.powerText, pp.powerTextSize or 8) end
-                if d.levelText then ApplyFont(d.levelText, pp.levelTextSize or 10) end
-                if d.healAbsorbText then ApplyFont(d.healAbsorbText, pp.healAbsorbTextSize or 9) end
+                ns.RF_TextFonts(d, pp)
                 if d.statusText then ApplyFont(d.statusText, pp.statusTextSize or 14) end
             end
         end
@@ -617,10 +590,34 @@ end
 -- tie-break (UP beats BOTTOM, LEFT beats RIGHT, default TOP+LEFT) is what existing
 -- per-tier offsets are calibrated against -- matching Blizzard's own same-axis corner instead
 -- would be dead code here for merged and a silent position-shift regression for separated.
-ns._RFGrowthCorner = function(unitGrowth, groupGrowth)
+-- With centered (Center Groups), the group axis pins its MIDPOINT instead: the
+-- result is the edge midpoint on the other axis (TOP/BOTTOM for a horizontal
+-- group run, LEFT/RIGHT for a vertical one).
+ns._RFGrowthCorner = function(unitGrowth, groupGrowth, centered)
     local h = (unitGrowth == "LEFT" or groupGrowth == "LEFT") and "RIGHT" or "LEFT"
     local v = (unitGrowth == "UP" or groupGrowth == "UP") and "BOTTOM" or "TOP"
+    if centered then
+        return ns._RFGrowthIsVertical(groupGrowth) and h or v
+    end
     return v .. h
+end
+
+-- Whether Center Groups applies for an effective (self-healed) group growth: the
+-- tier override's own value when it has one, else the base key. The grid flow has
+-- two group axes and never centers.
+ns._RFGroupCentered = function(ov, groupGrowth)
+    if groupGrowth == "DOWNRIGHT" then return false end
+    local c = db.profile.groupGrowthCentered
+    if ov and ov.groupGrowthCentered ~= nil then c = ov.groupGrowthCentered end
+    return c == true
+end
+
+-- Pixel-snapped shift that centers a run of n groups inside the MOVER_GROUPS box,
+-- along the per-slot step of a _RFGroupFlow slot list (needs slots 0 and 1). More
+-- than MOVER_GROUPS groups give a negative shift: the run overflows both sides.
+ns._RFCenterShift = function(slots, n)
+    local f = (MOVER_GROUPS - n) / 2
+    return PixelSnap(f * (slots[1][1] - slots[0][1])), PixelSnap(f * (slots[1][2] - slots[0][2]))
 end
 
 -- Signed corner terms: how far a tier footprint's TOPLEFT shifts from the base
@@ -628,12 +625,13 @@ end
 -- corner arithmetic -- the forward origin (_RFTierTopLeft), the one-time offset rebase
 -- (conversion #2 in _NormalizeTierOffsetAnchors) and the mover save-path inverse
 -- (_RFRebaseSavedCenter) all read these two values. Both terms are zero when the
--- footprints match, so the base tier is exact by arithmetic.
-ns._RFCornerTerms = function(tw, th, bw, bh, unitGrowth, groupGrowth)
-    local corner = ns._RFGrowthCorner(unitGrowth, groupGrowth)
-    local kx = (corner:find("RIGHT") and (bw - tw)) or 0
-    local ky = (corner:find("BOTTOM") and -(bh - th)) or 0
-    return kx, ky
+-- footprints match, so the base tier is exact by arithmetic. A centered axis pins the
+-- midpoint, so it moves by half the size difference.
+ns._RFCornerTerms = function(tw, th, bw, bh, unitGrowth, groupGrowth, centered)
+    local corner = ns._RFGrowthCorner(unitGrowth, groupGrowth, centered)
+    local fx = (corner:find("RIGHT") and 1) or (corner:find("LEFT") and 0) or 0.5
+    local fy = (corner:find("BOTTOM") and 1) or (corner:find("TOP") and 0) or 0.5
+    return fx * (bw - tw), -fy * (bh - th)
 end
 
 -- THE centralized growth-corner origin: returns the TOPLEFT (UIParent bottom-left space)
@@ -643,10 +641,10 @@ end
 -- exactly where live frames land. Base footprint / zero offsets: every corner term
 -- cancels, plain base top-left -- profiles without raidSizeOverrides unaffected. Returns
 -- nil with no saved unlock position.
-ns._RFTierTopLeft = function(tw, th, unitGrowth, groupGrowth, ox, oy)
+ns._RFTierTopLeft = function(tw, th, unitGrowth, groupGrowth, ox, oy, centered)
     local bl, bt, bw, bh = ns._RFBaseTopLeft()
     if not bl then return nil end
-    local kx, ky = ns._RFCornerTerms(tw, th, bw, bh, unitGrowth, groupGrowth)
+    local kx, ky = ns._RFCornerTerms(tw, th, bw, bh, unitGrowth, groupGrowth, centered)
     return bl + (ox or 0) + kx, bt + (oy or 0) + ky
 end
 
@@ -708,7 +706,7 @@ ns._RFRebaseSavedCenter = function(cx, cy)
         ov.unitGrowth or s.unitGrowth or "DOWN", ov.groupGrowth or s.groupGrowth or "RIGHT", s.mergeGroups)
     local tw, th = ns._RFFootprint(ov.width or s.frameWidth or 72,
         ov.height or s.frameHeight or 46, ug, gg, cs, gs)
-    local kx, ky = ns._RFCornerTerms(tw, th, bw, bh, ug, gg)
+    local kx, ky = ns._RFCornerTerms(tw, th, bw, bh, ug, gg, ns._RFGroupCentered(ov, gg))
     return cx - (ov.offsetX or 0) - kx - (tw - bw) / 2,
         cy - (ov.offsetY or 0) - ky - (bh - th) / 2
 end
@@ -860,7 +858,7 @@ ns._ApplyTierOffset = function()
         (ov and ov.groupGrowth) or s.groupGrowth or "RIGHT", s.mergeGroups)
     local tw, th = ns._RFFootprint(fw, fh, ug, gg, cs, gs)
     local x, y = ns._RFTierTopLeft(tw, th, ug, gg,
-        (ov and ov.offsetX) or 0, (ov and ov.offsetY) or 0)
+        (ov and ov.offsetX) or 0, (ov and ov.offsetY) or 0, ns._RFGroupCentered(ov, gg))
     if not x then return end
     containerFrame:ClearAllPoints()
     containerFrame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", PixelSnap(x), PixelSnap(y))

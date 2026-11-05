@@ -249,8 +249,10 @@ local function ApplyContainerAnchorAndGrowth(container, parent, cfg, grid)
     if directionChanged then container:Hide() end
 
     local size = PabSnap(cfg.iconSize or 32)
+    local height = cfg.iconShape == "cropped"
+        and PabSnap(ns.PAB_CroppedHeight(cfg.iconSize or 32, cfg)) or size
     container:ClearAllPoints()
-    container:SetSize(size, size)
+    container:SetSize(size, height)
     container:SetPoint(containerAnchor, parent, containerAnchor, 0, 0)
     AK.SetContainerAnchor(container, spec.layout.anchorPoint)
     AK.SetContainerAxis(container, vertical)
@@ -280,7 +282,7 @@ local function BarPositionKey(isBuff)
 end
 
 -- Snaps a saved (x, y) to the physical pixel grid before SetPoint, matching
--- EllesmereUIUnitFrames.lua's ApplyFramePosition. An unsnapped coordinate is only
+-- EUI_UnitFrames_Layout.lua's ApplyFramePosition. An unsnapped coordinate is only
 -- wrong at a non-pixel-perfect UIParent scale (1 coord unit == 1 physical pixel at
 -- PP.PixelBestSize()). CENTER/CENTER anchors need SnapCenterForDim -- its odd-
 -- dimension handling keeps both edges on whole pixels, while plain SnapForES would
@@ -518,6 +520,8 @@ do
         end
         return n
     end
+    -- Unit Frames widens the player buff row by the same cells.
+    ns.PAB_ActiveEnchantCount = ActiveEnchantCount
 
     -- Aura cap for the Buffs bar: "Max Icons" is the whole bar's budget, so the
     -- cells actually showing come off it and the rendered total stays at the
@@ -1157,7 +1161,7 @@ local function ApplyLiveConfig(isBuff)
 end
 ns.PAB_ApplyLiveConfig = ApplyLiveConfig
 -- Bridge for EllesmereUF:GetGrowDirectionForBar/SetGrowDirectionForBar, kept here
--- rather than in EllesmereUIUnitFrames.lua so the settings-field names stay defined
+-- rather than in EUI_UnitFrames_Lifecycle.lua so the settings-field names stay defined
 -- in one place.
 --
 -- Also handles custom-bar keys ("PAB_CustomBuff_<id>"/"PAB_CustomDebuff_<id>", the

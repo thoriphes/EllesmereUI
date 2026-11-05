@@ -1,4 +1,4 @@
-if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
 
 
 
@@ -65,18 +65,36 @@ end)
 local STANDALONE_SV = "SimpleLootCouncilDB"
 local svName = STANDALONE_SV
 
+local function Trace(e)
+    local stack = debugstack and debugstack(2, 6, 0)
+    return tostring(e) .. (stack and ("\n" .. tostring(stack)) or "")
+end
+
+local function Step(label, fn, ...)
+    local args, count = { ... }, select("#", ...)
+    local result
+    local ok, err = xpcall(function() result = fn(unpack(args, 1, count)) end, Trace)
+    if not ok then
+        addon.Log:Bug("Core", "load step " .. label .. " failed: " .. tostring(err))
+    end
+    return ok, result
+end
+
 function OnAddOnLoaded()
     svName = addon.SAVED_VARIABLES or STANDALONE_SV
     local db = type(_G[svName]) == "table" and _G[svName] or {}
     if svName ~= STANDALONE_SV then
 
         local mirror = type(_G[STANDALONE_SV]) == "table" and _G[STANDALONE_SV] or nil
-        db = addon.SharedSaved.Reconcile(db, mirror)
-        local standalone = C_AddOns.IsAddOnLoaded and select(2, C_AddOns.IsAddOnLoaded("SimpleLootCouncil"))
-        if mirror or standalone then _G[STANDALONE_SV] = db end
+        local reconciled, merged = Step("Reconcile", addon.SharedSaved.Reconcile, db, mirror)
+        if reconciled and type(merged) == "table" then
+            db = merged
+            local standalone = C_AddOns.IsAddOnLoaded and select(2, C_AddOns.IsAddOnLoaded("SimpleLootCouncil"))
+            if mirror or standalone then _G[STANDALONE_SV] = db end
+        end
     end
-    addon.SharedSaved.Expire(db)
-    addon.SharedSaved.Compact(db)
+    Step("Expire", addon.SharedSaved.Expire, db)
+    Step("Compact", addon.SharedSaved.Compact, db)
     _G[svName] = db
 
 
@@ -84,13 +102,14 @@ function OnAddOnLoaded()
     if db.pseudoLocale then addon.Locale.Pseudo(true) end
 
 
-    pendingNotices = addon.RunMigrations(db)
-    addon.ApplyDefaults(db, addon.defaults)
+    local migrated, notices = Step("RunMigrations", addon.RunMigrations, db)
+    pendingNotices = migrated and type(notices) == "table" and notices or {}
+    Step("ApplyDefaults", addon.ApplyDefaults, db, addon.defaults)
 
     addon.db = db
 
 
-    addon.Log:Init(db)
+    Step("Log:Init", addon.Log.Init, addon.Log, db)
 
     addon.Log:I("Core", "loaded", addon.VERSION, "schema", db.schemaVersion,
         "edition", addon.EDITION == "eui" and "eui" or "sa", "saved", svName)
@@ -187,6 +206,7 @@ function OnPlayerLogin()
 
     Init(addon.Wishlist)
     Init(addon.Loot)
+    Init(addon.AutoStart)
     Init(addon.Trade)
 
     Init(addon.BagShare)
@@ -241,6 +261,7 @@ function OnPlayerLogin()
     Init(addon.UI.VersionFrame)
     Init(addon.UI.ConfigShareFrame)
     Init(addon.UI.SessionPanel)
+    Init(addon.UI.MinimapButton)
     Init(addon.UI.Options)
     LogLoginCost()
 
@@ -258,8 +279,7 @@ function OnPlayerLogin()
     end
 
 
-    addon.Chat.Raw(addon.Locale.Format(T["|cff478cebSimpleLootCouncil|r v%s loaded.  |cff73716C/slc|r for options."],
-        tostring(addon.VERSION)))
+    addon.Chat.Raw(T["|cff478cebSimpleLootCouncil|r loaded.  |cff73716C/slc|r for options."])
 
     for _, notice in ipairs(pendingNotices) do
         addon.Chat.Print(notice)
@@ -300,7 +320,7 @@ end
 function AutoClose:AfterHide(decide)
     local swept, generation = sweeping, sweepGeneration
     C_Timer.After(0, function()
-        decide(swept or sweepGeneration ~= generation)
+        decide(swept or sweepGeneration ~= generation or not UIParent:IsShown())
     end)
 end
 
@@ -317,18 +337,24 @@ end
 
 
 
-addon.Comms:Register("ping", "any", function(args, sender)
+if addon.DEV_TOOLS then
+    addon.Comms:Register("ping", "any", function(args, sender)
 
 
-    if not (addon.Player:IsSelf(sender)
-        or (type(args) == "table" and type(args.to) == "string" and addon.Player:IsSelf(args.to))) then
-        return
-    end
-    local size = args and args.size or 0
-    addon.Chat.Print(("ping from %s, %d bytes intact=%s")
-        :format(tostring(sender), size,
-            tostring(args and args.blob and #args.blob == size)))
-end)
+        if type(args) ~= "table" then return end
+        if not (addon.Player:IsSelf(sender)
+            or (type(args.to) == "string" and addon.Player:IsSelf(args.to))) then
+            return
+        end
+        local size, blob = args.size, args.blob
+        if type(size) ~= "number" or not (size >= 0 and size <= 1000000) or size ~= math.floor(size) then
+            return
+        end
+        addon.Chat.Print(("ping from %s, %d bytes intact=%s")
+            :format(tostring(sender), size,
+                tostring(type(blob) == "string" and #blob == size)))
+    end)
+end
 
 
 
@@ -472,8 +498,35 @@ function addon.ShowHistoryCSV(scope)
             one = "History CSV - %d row",
             other = "History CSV - %d rows",
         }
-    ShowDump(addon.Locale.Format(title, count, count),
-        addon.History:ToCSV(scope))
+    title = addon.Locale.Format(title, count, count)
+    local S = addon.Style
+    if S.PrideActive() then title = S.PrideText(title) end
+    ShowDump(title, addon.History:ToCSV(scope))
+end
+
+
+local function HandGameMasterLoot(unit, name)
+    if not addon.GetGameMasterLooter() then return end
+    if addon.SetGameMasterLooter(unit) then
+        Print(addon.Locale.Format(T["%s is now the group's Master Looter."], name))
+    else
+        Print(addon.Locale.Format(T["could not make %s the group's Master Looter - set it from your portrait's Loot Method menu."], name))
+    end
+end
+
+
+
+function addon.PromoteLootMaster(record)
+    addon.db.lootMaster = record.guid
+    addon.db.lootMasterKept = { guid = record.guid, name = record.fullName, classFile = record.classFile }
+    addon.InvalidateMasterLooter()
+
+
+    addon.Config:ClearShared("promotion changed")
+    addon.Council:ForgetPromoteHeard()
+    addon.Council:Broadcast(true)
+    Print(addon.Locale.Format(T["Loot Master set to %s for this raid"], record.fullName))
+    HandGameMasterLoot(addon.Player:UnitFor(record.guid), record.fullName)
 end
 
 SLASH_SIMPLELOOTCOUNCIL1 = "/slc"
@@ -541,9 +594,14 @@ end
 
 
 
-local HELP_TITLE = "|cff478cebSimpleLootCouncil|r %s"
+local HELP_TITLE = "|cff478cebSimpleLootCouncil|r"
 local HELP_HEADER = "|cff96c2fa%s|r"
 local HELP_LINE = "  |cff478ceb%s|r - %s"
+
+local SHORT_COMMANDS = { l = "log", e = "end", s = "start" }
+local LOG_SHORT = { h = "history" }
+local SHORT_OF = {}
+for short, full in pairs(SHORT_COMMANDS) do SHORT_OF[full] = short end
 
 local function HelpSections(dev)
     if dev then
@@ -556,33 +614,36 @@ local function HelpSections(dev)
                     or addon.Locale.Format(
                         T["simulated run; a count of 1-%d draws at random from %d classic raid items, no argument gives 3; a link is attributed to its boss and difficulty from the Adventure Guide and its upgrade track, 'from' overrides (any case, partial name)"],
                         addon.TestLoot.MAX, addon.TestLoot:Count()) },
+                { T["activetest / at [on / off]"], T["allow a session solo or in a party (nothing automatic)"] },
                 { T["ftest [<count>]"], addon.Locale.Format(
                     T["simulated run of 1-%d items from %d rare dungeon boss drops that WoW: Forever serves; no argument gives 3"],
-                    addon.TestLoot.MAX, addon.TestLoot:DungeonCount()) },
-                { T["fakecoins [<count>] [Name-Realm] [#item] / clear"], T["fake coin history at each queued item's boss, and a live coin on #item"], retailOnly = true },
-                { T["stress [<raiders> [<items> [<seconds>]] / stop]"], T["replay a raid's answers"] },
-                { T["pseudo [on / off]"], T["localisation test mode"] },
+                    addon.TestLoot.MAX, addon.TestLoot:DungeonCount()), devTools = true },
+                { T["fakecoins [<count>] [Name-Realm] [#item] / clear"], T["fake coin history at each queued item's boss, and a live coin on #item"], retailOnly = true, devTools = true },
+                { T["stress [<raiders> [<items> [<seconds>]] / stop]"], T["replay a raid's answers"], devTools = true },
+                { T["pseudo [on / off]"], T["localisation test mode"], devTools = true },
+                { T["prompt <lootmaster / raider / guard>"], T["show a group question, answers do nothing"], devTools = true },
             },
             { T["State"],
-                { "show", T["current run state"] },
+                { "show", T["current run state"], devTools = true },
                 { "status", T["restrictions, queue depth, leader"] },
-                { "boss", T["current boss and encounter log"] },
-                { "coins", T["recent bonus-roll results"], retailOnly = true },
-                { "guild", T["the guild-group gate"] },
-                { "names", T["what the name APIs return here"] },
-                { T["item <link>"], T["why the funnel takes an item"] },
-                { "set", T["equipped set facts"] },
-                { "taint", T["blocked-action counts"] },
+                { "boss", T["current boss and encounter log"], devTools = true },
+                { "coins", T["recent bonus-roll results"], retailOnly = true, devTools = true },
+                { "guild", T["the guild-group gate"], devTools = true },
+                { "names", T["what the name APIs return here"], devTools = true },
+                { "localecheck", T["which locale files loaded"], devTools = true },
+                { T["item / why <link>"], T["why the funnel takes an item"], devTools = true },
+                { "set", T["equipped set facts"], devTools = true },
+                { "taint", T["blocked-action counts"], devTools = true },
             },
             { T["Comms and logs"],
                 { T["ping [bytes]"], T["comms round-trip test"], devTools = true },
                 { T["comms [reset]"], T["addon message counters"], devTools = true },
                 { T["snapshotsize <candidates> <items>"], T["recovery sizes"], devTools = true },
-                { T["perf [start [label] / stop / all]"], T["CPU profiler"] },
+                { T["perf [start [label] / stop / all]"], T["CPU profiler"], devTools = true },
                 { T["log history"], T["the log across sessions"] },
                 { T["log level [quiet / normal / verbose]"], T["how much the log records"] },
                 { "dump", T["saved variables as Lua"] },
-                { "debug", T["toggle log echo to chat"] },
+                { "debug", T["toggle log echo to chat"], devTools = true },
             },
         }
     end
@@ -592,21 +653,22 @@ local function HelpSections(dev)
             { T["on / off"], T["use SLC for this group, or stop"] },
             { T["council [add / remove <name>]"], T["manage the council"] },
             { "resend", T["push the council and settings again"] },
-            { T["lootmaster [<name> / clear]"], T["delegate loot (alt. lm)"] },
+            { T["lootmaster / lm / ml [<name> / clear]"], T["promote loot"] },
             { T["alt [<alt> <main> / remove <alt>]"], T["link an alt to its main"] },
         },
         { T["Running loot"],
             { T["additem <link>"], T["queue an item"] },
-            { "queue", T["staging window (alt. q)"] },
+            { T["queue / q"], T["staging window"] },
             { "start", T["start a run on the queued items"] },
-            { "vote", T["reopen the council window (alt. v)"] },
-            { "response", T["reopen your response window (alt. r)"] },
-            { "session", T["your view of the run (alt. sess)"] },
+            { T["vote / v"], T["reopen the council window"] },
+            { T["response / r"], T["reopen your response window"] },
+            { T["session / sess"], T["your view of the run"] },
             { T["roll [ask / random / clear]"], T["rolls on unawarded items"] },
-            { T["whisper [text]"], T["the whisper fallback (alt. w)"] },
+            { T["whisper / w [text]"], T["the whisper fallback"] },
+            { "raidguide", T["send the response guide to the raid"] },
             { "end", T["end the run"] },
             { "clear", T["discard the staged items"] },
-            { "clearframe", T["remove loot roll frames left on screen"] },
+            { "simc", T["SimC lines for the run's items, to copy"], retailOnly = true },
             { T["test [<count>]"], T["simulated run; /slc help dev for more"] },
         },
         { T["Trades and history"],
@@ -614,12 +676,12 @@ local function HelpSections(dev)
             { "held", T["items you owe or hold"] },
             { T["trade [name]"], T["trade someone you owe"] },
             { "trades", T["the Loot to Trade window"] },
-            { "history", T["loot history browser (alt. h)"] },
-            { T["import [addon]"], T["import another addon's history"] },
+            { T["minimap / mm"], T["show or hide the minimap button"] },
+            { T["history / h"], T["loot history browser"] },
             { T["csv [slc] [comma / semicolon]"], T["export history"] },
-            { T["team [season [date / clear]]"], T["raid team loot (alt. t)"] },
-            { T["attendance [name / nights]"], T["attendance (alt. att)"] },
-            { "version", T["who runs which build (alt. ver)"] },
+            { T["team / t [season [date / clear]]"], T["raid team loot"] },
+            { T["attendance / att [name / nights]"], T["attendance"] },
+            { T["version / ver"], T["the Raid versions window"] },
             { "log", T["the diagnostic log, copyable"] },
         },
     }
@@ -630,15 +692,20 @@ local function HelpLine(command, text)
 end
 
 local function PrintHelp(dev)
-    local version = addon.Locale.Format(dev and T["v%s - developer commands"] or T["v%s"], addon.VERSION)
-    addon.Chat.Raw(HELP_TITLE:format(version))
+    addon.Chat.Raw(dev and addon.Locale.Format(T["%s - developer commands"], HELP_TITLE) or HELP_TITLE)
     for _, section in ipairs(HelpSections(dev)) do
         addon.Chat.Raw(HELP_HEADER:format(section[1]))
         for i = 2, #section do
 
             if not (addon.IsForever and section[i].retailOnly)
                 and (addon.DEV_TOOLS or not section[i].devTools) then
-                HelpLine(section[i][1], section[i][2])
+                local command = section[i][1]
+                if SHORT_OF[command] then
+                    command = command .. " / " .. SHORT_OF[command]
+                elseif command == T["log history"] then
+                    command = command .. " / " .. SHORT_OF.log .. " " .. next(LOG_SHORT)
+                end
+                HelpLine(command, section[i][2])
             end
         end
     end
@@ -648,10 +715,45 @@ local function PrintHelp(dev)
     end
 end
 
+local DEV_COMMANDS = {
+    ping = true, comms = true, snapshotsize = true, perf = true, stress = true,
+    ftest = true, fakecoins = true, pseudo = true, debug = true, names = true,
+    taint = true, show = true, boss = true, coins = true, guild = true,
+    item = true, why = true, set = true, localecheck = true, prompt = true,
+}
+
+
+
+function SimpleLootCouncil_OnCompartmentClick()
+    local slash = SlashCmdList["SIMPLELOOTCOUNCIL"]
+    if slash then slash("") end
+end
+
+function SimpleLootCouncil_OnCompartmentEnter(_, button)
+    GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+    GameTooltip:AddLine("SimpleLootCouncil")
+    GameTooltip:AddLine(T["Open settings"], 1, 1, 1)
+    GameTooltip:Show()
+end
+
+function SimpleLootCouncil_OnCompartmentLeave()
+    GameTooltip:Hide()
+end
+
 SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
-    local cmd = (input or ""):lower():match("^(%S*)")
-    if not addon.DEV_TOOLS and (cmd == "ping" or cmd == "comms" or cmd == "snapshotsize") then
-        Print(addon.Locale.Format(T["unknown command '%s' - /slc help for the list"], cmd))
+    input = input or ""
+    local cmd = input:lower():match("^(%S*)")
+
+    local full = SHORT_COMMANDS[cmd]
+    if full then
+        local rest = input:match("^%S+%s*(.*)$")
+        local word = full == "log" and rest:lower():match("^(%S+)")
+        if word and LOG_SHORT[word] then rest = LOG_SHORT[word] .. rest:sub(#word + 1) end
+        input = rest ~= "" and (full .. " " .. rest) or full
+        cmd = full
+    end
+    if not addon.DEV_TOOLS and DEV_COMMANDS[cmd] then
+        Print(addon.Locale.Format(T["unknown command '%s' - /slc help for the list"], (cmd:gsub("|", "||"))))
         return
     end
 
@@ -675,11 +777,14 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             return
         end
 
-        local count = ("%d lines"):format(#entries)
+        local level = addon.Log:GetDetail()
+        local count = ("%d lines - %s"):format(#entries, level:sub(1, 1):upper() .. level:sub(2))
         if wantAll then
-            ShowDump("Log - full history", table.concat(entries, "\n"), count)
+            ShowDump(addon.Style.PrideActive() and "Gay log - full history" or "Log - full history",
+                table.concat(entries, "\n"), count)
         else
-            ShowDump("Log - this session (/slc log history for all)",
+            ShowDump(addon.Style.PrideActive() and "Gay log - this session"
+                or "Log - this session (/slc log history for all)",
                 table.concat(entries, "\n"), count)
         end
 
@@ -720,7 +825,7 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
 
     elseif cmd == "ping" then
 
-        local size = tonumber(input:match("%s(%d+)")) or 1200
+        local size = math.max(1, math.min(tonumber(input:match("%s(%d+)")) or 1200, 60000))
         local chars = {}
         for i = 1, size do
             chars[i] = string.char(math.random(33, 126))
@@ -915,11 +1020,11 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
 
             Print(addon.Locale.Format(addon.GetGameMasterLooter()
                 and T["Loot Master: %s (the group's Master Looter)"]
-                or addon.IsLootDelegated() and T["Loot Master: %s (delegated)"]
+                or addon.IsLootPromoted() and T["Loot Master: %s (promoted)"]
                 or T["Loot Master: %s (group leader)"], tostring(current)))
             Print(addon.IsForever and T["usage: /slc lootmaster <Name>  ||  /slc lootmaster clear"]
                 or T["usage: /slc lootmaster <Name-Realm>  ||  /slc lootmaster clear"])
-            Print(T["a delegation lasts for this raid - it is forgotten when you leave the group"])
+            Print(T["a promotion is remembered after you leave - when you lead a raid with them in it, you are asked to promote again"])
             return
         end
 
@@ -928,23 +1033,15 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             return
         end
 
-
-        local onMasterLoot = addon.GetGameMasterLooter() ~= nil
-        local function HandGameMasterLoot(unit, name)
-            if addon.SetGameMasterLooter(unit) then
-                Print(addon.Locale.Format(T["%s is now the group's Master Looter."], name))
-            else
-                Print(addon.Locale.Format(T["could not make %s the group's Master Looter - set it from your portrait's Loot Method menu."], name))
-            end
-        end
-
         if who:lower() == "clear" then
             addon.db.lootMaster = nil
+            addon.db.lootMasterKept = nil
             addon.InvalidateMasterLooter()
-            if onMasterLoot then
-                HandGameMasterLoot("player", addon.Player:GetFullName("player") or "?")
-            end
-            addon.Council:Broadcast()
+            addon.Config:ClearShared("promotion cleared")
+            addon.Council:ForgetPromoteHeard()
+            HandGameMasterLoot("player", addon.Player:GetFullName("player") or "?")
+
+            addon.Council:Broadcast(true)
             Print(addon.Locale.Format(T["Loot Master reset to the group leader: %s"],
                 tostring(addon.Player:GetFullName("player") or addon.GetMasterLooter())))
             return
@@ -965,14 +1062,7 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             return
         end
 
-        addon.db.lootMaster = record.guid
-        addon.InvalidateMasterLooter()
-        addon.Council:Broadcast()
-        Print(addon.Locale.Format(T["Loot Master set to %s for this raid"],
-            record.fullName))
-        if onMasterLoot then
-            HandGameMasterLoot(addon.Player:UnitFor(record.guid), record.fullName)
-        end
+        addon.PromoteLootMaster(record)
 
     elseif cmd == "additem" then
 
@@ -993,6 +1083,11 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             Print(addon.Locale.Format(
                 T["could not queue %s - a run is in progress, and only the Loot Master can add to it."],
                 link))
+            return
+        end
+        local refusal = addon.Session:StageRefusal()
+        if refusal then
+            Print(addon.BagShare.RefusalText(refusal, link))
             return
         end
 
@@ -1019,7 +1114,7 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             }, count, count))
         elseif why == "empty" then
             Print(T["nothing to start - the staging queue is empty."])
-        elseif why ~= "emptied" then
+        elseif why ~= "emptied" and why ~= "blocked" and why ~= "raid" then
 
             Print(T["could not start - see /slc log"])
         end
@@ -1111,7 +1206,7 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
 
         local function StartNow()
             local ok, countOrWhy = addon.Session:StartTest(links, count,
-                anySource and sources or nil)
+                anySource and sources or nil, true)
             if not ok then
                 Print(addon.Locale.Format(T["could not start simulated run - %s"],
                     tostring(countOrWhy)))
@@ -1204,7 +1299,8 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             Print(T["no run is active."])
             return
         end
-        if not addon.UI.VoterFrame:Open() then
+        local shown = addon.UI.VoterFrame:Toggle()
+        if shown ~= "closed" and not shown then
             Print(T["nothing in this run is waiting for your answer."])
         end
 
@@ -1225,6 +1321,11 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
         end
         for _, line in ipairs(addon.Whisper:Describe(text)) do
             Print(line)
+        end
+
+    elseif cmd == "raidguide" then
+        if not addon.Whisper:SendRaidGuide() then
+            Print(T["only the Loot Master, in a group, can send the response guide to the raid."])
         end
 
     elseif cmd == "show" then
@@ -1333,33 +1434,20 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
         Print(T["cleared"])
 
 
-    elseif cmd == "clearframe" then
-        local cleared, open = addon.Loot:ClearRollFrames()
-        if not cleared then
-            Print(T["loot roll frames cannot be cleared during combat - run /slc clearframe after it."])
+    elseif cmd == "simc" then
+        local text, reason
+        if addon.SimC and addon.SimC.ExportText then text, reason = addon.SimC:ExportText() end
+        if type(text) ~= "string" or text == "" then
+            Print(type(reason) == "string" and reason or T["nothing to export for SimC."])
             return
         end
-        if cleared > 0 then
-            Print(addon.Locale.Format(addon.Locale.Plural{
-                one = "cleared %d loot roll frame.", other = "cleared %d loot roll frames.",
-            }, cleared, cleared))
-        elseif open == 0 then
-            Print(T["nothing to clear - no loot roll frame is left on screen."])
-        else
-            Print(T["nothing to clear - every loot roll frame on screen is still open."])
-        end
-        if open > 0 then
-            Print(addon.Locale.Format(addon.Locale.Plural{
-                one = "%d loot roll is still open and was left alone.",
-                other = "%d loot rolls are still open and were left alone.",
-            }, open, open))
-        end
+        ShowDump(T["SimC - this run's items"], text)
 
 
 
     elseif cmd == "on" or cmd == "off" then
-        if not IsInGroup() then
-            Print(T["you are not in a group."])
+        if not IsInRaid() then
+            Print(T["you are not in a raid."])
             return
         end
         if not addon.PlayerIsMasterLooter() then
@@ -1382,12 +1470,14 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
         local items = addon.Storage:GetTradeableItems()
 
 
-        local eligible, filtered, owed = {}, {}, {}
+        local eligible, filtered, owed, won = {}, {}, {}, {}
         for _, entry in ipairs(items) do
             if not entry.eligible then
                 filtered[#filtered + 1] = entry
             elseif entry.owed then
                 owed[#owed + 1] = entry
+            elseif entry.won then
+                won[#won + 1] = entry
             else
                 eligible[#eligible + 1] = entry
             end
@@ -1401,9 +1491,17 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
                 Print(T["only the Loot Master can add items"])
                 return
             end
-            if #eligible == 0 then
-                Print(#owed > 0
+            local me = addon.Player:GetFullName("player")
+            local picks, skipped = addon.BagShare.FreeToStage(items, me)
+            local kept = 0
+            for _, entry in ipairs(owed) do
+                if entry.kept then kept = kept + 1 end
+            end
+            local staged = #eligible + #owed - kept - #picks - skipped
+            if #picks == 0 then
+                Print(skipped > 0
                     and T["nothing eligible in bags - every eligible copy is already owed to a winner in Loot to Trade."]
+                    or staged > 0 and T["nothing to add - every eligible item in your bags is already queued or in the run."]
                     or T["nothing eligible in bags"])
                 return
             end
@@ -1411,23 +1509,22 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
 
             local count
             if wantAdd == "all" then
-                count = #eligible
+                count = #picks
             else
                 count = tonumber(wantAdd)
                 if not count or count < 1 then
                     Print(T["usage: /slc bags add <number>  ||  /slc bags add all"])
                     return
                 end
-                count = math.min(count, #eligible)
+                count = math.min(count, #picks)
             end
 
-            local me = addon.Player:GetFullName("player")
             local links, bosses, encounterIDs = {}, {}, {}
             for i = 1, count do
-                links[i] = eligible[i].link
+                links[i] = picks[i].link
 
                 bosses[i], encounterIDs[i] =
-                    addon.Encounter:ForTradeableItem(eligible[i].secondsLeft)
+                    addon.Encounter:ForTradeableItem(picks[i].secondsLeft)
             end
 
             local added = #addon.Session:AddItems(links, me, bosses, encounterIDs)
@@ -1443,11 +1540,17 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
                     other = "added %d items to the queue",
                 }, added, added))
             end
-            if #owed > 0 then
+            if skipped > 0 then
                 Print(addon.Locale.Format(addon.Locale.Plural{
                     one = "skipped %d copy already owed to a winner in Loot to Trade - click it in the bags panel to queue it anyway.",
                     other = "skipped %d copies already owed to winners in Loot to Trade - click one in the bags panel to queue it anyway.",
-                }, #owed, #owed))
+                }, skipped, skipped))
+            end
+            if staged > 0 then
+                Print(addon.Locale.Format(addon.Locale.Plural{
+                    one = "skipped %d item already queued or in the run",
+                    other = "skipped %d items already queued or in the run",
+                }, staged, staged))
             end
             if addon.UI.QueueFrame then addon.UI.QueueFrame:Refresh() end
             return
@@ -1473,6 +1576,10 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
                     entry.link, owedTo)
                 or addon.Locale.Format(T["  -  %s  |cff73716C%dm left, owed to %s|r"],
                     entry.link, math.floor(entry.secondsLeft / 60), owedTo))
+        end
+        for _, entry in ipairs(won) do
+            Print(addon.Locale.Format(T["  -  %s  |cff73716C%dm left,|r |cff96C2FAawarded to you|r"],
+                entry.link, math.floor((entry.secondsLeft or 0) / 60)))
         end
         for _, entry in ipairs(filtered) do
             Print(addon.Locale.Format(T["  -  %s  |cff73716C%dm left, filtered out|r"],
@@ -1692,6 +1799,41 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
         end
 
 
+    elseif cmd == "activetest" or cmd == "at" then
+        local arg = (input:match("^%S+%s*(.*)$") or ""):lower():match("^%s*(%S*)")
+        if IsInRaid() then
+            if addon.GroupTestActive() then addon.SetGroupTest(false) end
+            Print(T["/slc activetest needs a party or no group: a raid is already active."])
+            return
+        end
+        if not addon.PlayerIsMasterLooter() then
+            Print(T["only the Loot Master can turn the active test on or off."])
+            return
+        end
+        local on
+        if arg == "on" then on = true
+        elseif arg == "off" then on = false
+        else on = not addon.GroupTestActive() end
+        local grouped = IsInGroup()
+        if on then
+            addon.SetGroupTest(true)
+            if grouped then addon.Loot:SetHandling(true)
+            else addon.Loot:ApplyHandling(true, addon.Player:GetFullName("player"), false, true) end
+            Print(T["active test is on: sessions work here. Nothing starts by itself. /slc activetest off turns it off."])
+        else
+            if grouped then addon.Loot:SetHandling(false)
+            else addon.Loot:ApplyHandling(false, addon.Player:GetFullName("player"), false, true) end
+            addon.SetGroupTest(false)
+            Print(T["active test is off."])
+        end
+
+    elseif cmd == "prompt" then
+        local kind = (input:match("^%S+%s+(%S+)") or ""):lower()
+        if not addon.UI.RaidPrompt:Preview(kind) then
+            Print(T["usage: /slc prompt lootmaster / raider / guard"])
+        end
+
+
     elseif cmd == "ftest" then
         local args = input:match("^%S+%s*(.*)$") or ""
         local count = 3
@@ -1790,12 +1932,25 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             Ambiguate(candidate, "short"), item.link, tostring(boss)))
 
     elseif cmd == "guild" then
+        local sub, scenario = input:match("^%S+%s+(%S+)%s*(%S*)")
+        if sub == "sim" then
+            if not addon.Loot.Simulate(scenario:lower()) then
+                Print("/slc guild sim <" .. table.concat(addon.Loot.SimulationNames(), "|")
+                    .. "|clear>")
+                return
+            end
+            Print("guild guard simulation: " .. scenario:lower())
+        end
+        if addon.Loot.IsSimulating() then
+            Print("|cffFFD54FSIMULATED inputs - /slc guild sim clear to go live|r")
+        end
 
         Print("in a group: " .. tostring(IsInGroup())
             .. ", in a guild: " .. tostring(IsInGuild())
             .. ", in an instance: " .. tostring(addon.Loot.InInstance()))
+        local state = addon.Loot.GuildGroupState()
         Print("gate says guild group: "
-            .. tostring(addon.Loot.IsGuildGroup())
+            .. (state == nil and "unknown (held, not asked)" or tostring(state))
             .. " (funnel.guildGroupOnly is "
             .. ((addon.db.funnel and addon.db.funnel.guildGroupOnly)
                 and "on" or "off") .. ")")
@@ -1819,34 +1974,6 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
         end
         Print(("InGuildParty(): %d of %d present are guild members, %d required"):format(present, GetNumGroupMembers(), required))
 
-    elseif cmd == "import" then
-
-        local Import = addon.HistoryImport
-
-
-        local want = input:match("^%S+%s+(%S+)")
-        local keys = {}
-        if want then
-            keys[1] = want:lower()
-        else
-            for _, source in ipairs(Import:Available()) do keys[#keys + 1] = source.key end
-        end
-        if #keys == 0 then
-            local names = {}
-            for _, source in ipairs(Import.SOURCES) do
-                names[#names + 1] = addon.Locale.Format(T["%s (%s)"], source.label, source.key)
-            end
-            Print(addon.Locale.Format(
-                T["No supported loot addon's history is loaded. Supported: %s."],
-                table.concat(names, ", ")))
-        else
-            for _, result in ipairs(Import:FromSources(keys)) do
-                Print(addon.Locale.Format(T["%s: %s"], result.label,
-                    result.stats and Import:Describe(result.stats)
-                        or (result.error or T["import failed"])))
-            end
-        end
-
     elseif cmd == "csv" then
 
 
@@ -1869,7 +1996,6 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
 
 
     elseif cmd == "session" or cmd == "sess" then
-
         local result = addon.UI.SessionPanel:Toggle()
         if result == "norun" then
 
@@ -1880,7 +2006,6 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             end
         end
 
-
     elseif cmd == "trades" then
 
 
@@ -1888,6 +2013,11 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
 
     elseif cmd == "config" or cmd == "options" then
         addon.UI.Options:Toggle()
+
+    elseif cmd == "minimap" or cmd == "mm" then
+        local button = addon.UI.MinimapButton
+        button:SetShown(not button:IsShown())
+        Print(button:IsShown() and T["minimap button shown."] or T["minimap button hidden."])
 
     elseif cmd == "trade" then
         local who = input:match("^%S+%s+(.+)$")
@@ -1923,6 +2053,11 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
                     math.floor(remaining / 60)) or T["no timer"]))
         end
 
+    elseif cmd == "localecheck" then
+        local files, count = addon.Locale.Loaded()
+        Print(("client locale %s  files run: %s  strings installed: %d"):format(
+            addon.Locale.clientLocale, table.concat(files, ", "), count))
+
 
     elseif cmd == "names" then
         local P = addon.Player
@@ -1950,13 +2085,18 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
             if UnitExists(unit) then
                 local guid = UnitGUID(unit)
                 local full = P:GetFullName(unit)
-                local short = full and Ambiguate(full, "none")
+                local short
+                if not addon.IsSecret(full) and full then short = Ambiguate(full, "none") end
+                local same = "<secret>"
+                if not addon.IsSecret(guid, full) then
+                    local known = full ~= nil and P:Get(full).guid
+                    same = addon.IsSecret(known) and "<secret>" or tostring(full ~= nil and known == guid)
+                end
                 line(("%s  UnitName %s  UnitFullName %s  GetUnitName %s"):format(unit,
                     show(UnitName(unit)), show(UnitFullName(unit)), show(GetUnitName(unit, true))))
                 line(("  byGUID %s  slc %s  Ambiguate %s  UnitExists(that) %s  Get=same %s"):format(
                     show(select(6, GetPlayerInfoByGUID(guid))), show(full), show(short),
-                    tostring(short and UnitExists(short)),
-                    tostring(full ~= nil and P:Get(full).guid == guid)))
+                    tostring(short and UnitExists(short)), same))
             end
         end
         if IsInRaid() then
@@ -1972,7 +2112,7 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
                 addon.Restrictions:GetQueueDepth(),
                 tostring(addon.GetGroupLeader()),
                 tostring(addon.GetMasterLooter()),
-                addon.IsLootDelegated() and " (delegated)" or "",
+                addon.IsLootPromoted() and " (promoted)" or "",
                 tostring(addon.PlayerIsMasterLooter()),
                 (function()
                     local n = 0
@@ -1981,27 +2121,7 @@ SlashCmdList["SIMPLELOOTCOUNCIL"] = function(input)
                 end)()))
 
     elseif cmd == "version" or cmd == "ver" then
-
-        addon.Version:Poll()
-
-        Print(addon.Locale.Format(T["you are on v%s; newest seen in the group is v%s"],
-            addon.Version.OWN, addon.Version:Highest()))
-
-        local rows = addon.Version:Survey()
-        if #rows == 0 then
-            Print(T["no candidates resolved yet."])
-        end
-        for _, row in ipairs(rows) do
-            local short = Ambiguate(row.name, "short")
-            if not row.version then
-
-                Print(addon.Locale.Format(T["  %s - |cff808080no reply yet|r"], short))
-            elseif row.behind then
-                Print(addon.Locale.Format(T["  %s - |cffff8040v%s (behind)|r"], short, row.version))
-            else
-                Print(addon.Locale.Format(T["  %s - v%s"], short, row.version))
-            end
-        end
+        addon.UI.VersionFrame:Toggle()
 
     elseif cmd == "taint" then
         local counts = addon.Log:GetBlockedCounts()

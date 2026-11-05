@@ -537,14 +537,16 @@ local function CreateDMWindow(winIdx)
                 end
             end
             -- The combat message only for rows the API keeps unreadable:
-            -- own breakdown, death recaps, and group rows resolvable through
-            -- the identity-exempt token channel all fall through to the
-            -- normal hover path, whose builders are secret-safe.
+            -- own breakdown, death recaps, enemies inside this season's
+            -- dungeons (matched against their listed NPC IDs), and group rows
+            -- resolvable through the identity-exempt token channel all fall
+            -- through to the normal hover path, whose builders are secret-safe.
             -- Gated on Show Breakdown on Hover like ShowBarTooltip: with the option off
             -- this branch still showed the disclaimer for ally rows.
             if InCombatLockdown() and DB().showHoverTooltip ~= false
                and not IsOwnRow(bar._src)
                and W.curDMType ~= Enum.DamageMeterType.Deaths
+               and not (W.curDMType == Enum.DamageMeterType.EnemyDamageTaken and ns.DMSeasonMobsHere())
                and not ns._ResolveGroupGUID(bar._src) then
                 EnsureTooltipFrame()
                 -- Show header with player name + type
@@ -633,7 +635,7 @@ local function CreateDMWindow(winIdx)
     frame._bg = frame:CreateTexture(nil, "BACKGROUND")
     frame._bg:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -GetHeaderH())
     frame._bg:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-    ns.DMPaintWindowBg(frame._bg, cfg.bgR or 0, cfg.bgG or 0, cfg.bgB or 0, cfg.bgAlpha or 0.75, true)
+    ns.DMPaintWindowBg(frame._bg, cfg.bgR or 0, cfg.bgG or 0, cfg.bgB or 0, cfg.bgAlpha or 0.75, true, cfg.bgTexture)
 
     -- Header (inside the classic box's line; flush on every other look)
     local ci = ns.DMClassicInset()
@@ -1239,8 +1241,9 @@ local function CreateDMWindow(winIdx)
         -- Tracked through guarded pin/unpin resizes too, so "grew" compares against the real last height.
         local grew = h and h > (W._vpH or 0)
         W._vpH = h
-        if W.stickyGuard then return end
+        -- Before the guard: a profile swap's resize can land inside a sticky pass.
         if w and w > 0 then content:SetWidth(w) end
+        if W.stickyGuard then return end
         W.UpdateSticky(nil, W.visibleCount)
         if W._decorSync then ns.DMSyncRowDecor(W) end
         -- A taller viewport reveals rows the last pass skipped; the grip drag queues once on release.
@@ -1297,7 +1300,7 @@ local function CreateDMWindow(winIdx)
     W.sourceFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -ci, ci)
     W.sourceFrame:SetFrameLevel(frame:GetFrameLevel() + 20); W.sourceFrame:EnableMouse(true); W.sourceFrame:Hide()
     W.sourceFrame._bg = W.sourceFrame:CreateTexture(nil, "BACKGROUND"); W.sourceFrame._bg:SetAllPoints()
-    ns.DMPaintWindowBg(W.sourceFrame._bg, cfg.bgR or 0, cfg.bgG or 0, cfg.bgB or 0, cfg.bgAlpha or 0.75)
+    ns.DMPaintWindowBg(W.sourceFrame._bg, cfg.bgR or 0, cfg.bgG or 0, cfg.bgB or 0, cfg.bgAlpha or 0.75, nil, cfg.bgTexture)
 
     W.srcViewport = CreateFrame("ScrollFrame", nil, W.sourceFrame); W.srcViewport:SetAllPoints()
     W.srcContent = CreateFrame("Frame", nil, W.srcViewport); W.srcContent:SetSize(1, 1); W.srcViewport:SetScrollChild(W.srcContent)
@@ -1641,6 +1644,7 @@ local function CreateDMWindow(winIdx)
         -- re-pointed at whatever source holds the player's rank.
         local classFile = src.classFilename
         local specIcon = src.specIconID
+        if issecretvalue(specIcon) then specIcon = nil end  -- WoW Forever 1.60.1: always secret
         if classFile ~= W._stickyClassCache or specIcon ~= W._stickySpecCache then
             W._stickyClassCache = classFile
             W._stickySpecCache = specIcon
@@ -1703,7 +1707,7 @@ local function CreateDMWindow(winIdx)
             ns.DMPaintValueGradient(bar, W, src, playerIdx)
             bar._valueGradientActive = true
         elseif bar._valueGradientActive then
-            bar._valueGradientActive = nil
+            bar._valueGradientActive, bar._gradT = nil, nil
             local color = c.rightTextUseClassColor and classFile and EUI.GetClassColor(classFile) or c.rightTextColor
             bar.amount:SetTextColor(color and color.r or 1, color and color.g or 1, color and color.b or 1)
         end
@@ -1812,7 +1816,7 @@ local function CreateDMWindow(winIdx)
                         end
                         -- false: never a classFilename, so the next visible pass always re-seats the fill cleared above
                         bar._cachedClass = false; bar._cachedSpecIcon = nil; bar._cachedColorClass = false
-                        bar._cachedRank = nil; bar._cachedThreatColor = nil
+                        bar._cachedRank = nil; bar._cachedThreatColor = nil; bar._gradT = nil
                     end
 
                     -- Per-tick content: only for visible bars
@@ -1825,6 +1829,7 @@ local function CreateDMWindow(winIdx)
                         -- and the row kept the previous player's spec icon.
                         local classFile = src.classFilename
                         local specIcon = src.specIconID
+                        if issecretvalue(specIcon) then specIcon = nil end  -- WoW Forever 1.60.1: always secret
                         if classFile ~= bar._cachedClass or specIcon ~= bar._cachedSpecIcon then
                             bar._cachedClass = classFile
                             bar._cachedSpecIcon = specIcon
@@ -2201,7 +2206,10 @@ local function CreateDMWindow(winIdx)
                 if ok then srcData = sd end
             end
             local c = DB(); local barH, _, stride = ns._RowMetrics(c.barHeight or 18, c.barSpacing or 2, frame:GetEffectiveScale())
-            local players = AggregateEnemyPlayers(srcData, GetBreakdownDuration(W.curSession, W.curSessionID))
+            -- Rows and the icon lookup's source are kept on the window: this
+            -- runs on every meter refresh while the breakdown is open.
+            W._enemyRows = W._enemyRows or {}
+            local players, playerCount = AggregateEnemyPlayers(srcData, GetBreakdownDuration(W.curSession, W.curSessionID), W._enemyRows)
             if not players then
                 if W.spellPool then for i = 1, BAR_POOL_SIZE do W.spellPool[i].row:Hide() end end
                 return
@@ -2209,7 +2217,9 @@ local function CreateDMWindow(winIdx)
             local leftFS = c.leftFontSize or c.fontSize or 11; local rightFS = c.rightFontSize or c.fontSize or 11
             local texPath, texKey = GetBarTexturePath()
             local maxAmt = players[1].total
-            local pCount = math.min(#players, BAR_POOL_SIZE)
+            local pCount = math.min(playerCount, BAR_POOL_SIZE)
+            local iconSrc = W._enemyIconSrc or {}
+            W._enemyIconSrc = iconSrc
             for i = 1, BAR_POOL_SIZE do
                 local bar = W.spellPool[i]
                 if i <= pCount then
@@ -2219,8 +2229,8 @@ local function CreateDMWindow(winIdx)
                     bar.row:SetPoint("TOPRIGHT", W.srcContent, "TOPRIGHT", 0, -((i-1) * stride))
                     bar.row:SetHeight(barH)
                     -- Class/spec icon via ResolveIcon (consistent with main bars)
-                    local fakeSrc = { classFilename = p.class, specIconID = p.specIcon }
-                    local iconOffset = ResolveIcon(fakeSrc, bar.classIcon, barH)
+                    iconSrc.classFilename, iconSrc.specIconID = p.class, p.specIcon
+                    local iconOffset = ResolveIcon(iconSrc, bar.classIcon, barH)
                     bar.fill:ClearAllPoints(); bar.fill:SetPoint("TOPLEFT", bar.row, "TOPLEFT", iconOffset, 0)
                     bar.fill:SetPoint("TOPRIGHT", bar.row, "TOPRIGHT", 0, 0); bar.fill:SetHeight(barH)
                     ApplyBarTexture(bar.fill, texPath, texKey); bar.fill:SetMinMaxValues(0, maxAmt); bar.fill:SetValue(p.total)
@@ -2727,7 +2737,7 @@ local function CreateDMWindow(winIdx)
         local _, iType = IsInInstance()
         if wdb.hideInDungeon and iType == "party" then return true end
         if wdb.hideInRaid and iType == "raid" then return true end
-        if wdb.hideInDelve and C_PartyInfo and C_PartyInfo.IsDelveInProgress and C_PartyInfo.IsDelveInProgress() then return true end
+        if wdb.hideInDelve and EUI.IsInDelve() then return true end
         if wdb.hideInPvP and (iType == "pvp" or iType == "arena") then return true end
         if wdb.hideOutOfInstance and (iType == "none" or iType == nil) then return true end
         return false
@@ -2898,8 +2908,8 @@ local function CreateDMWindow(winIdx)
         frame._bg:ClearAllPoints()
         frame._bg:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -hdrH)
         frame._bg:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-        ns.DMPaintWindowBg(frame._bg, bgR, bgG, bgB, bgA, true)
-        ns.DMPaintWindowBg(W.sourceFrame._bg, bgR, bgG, bgB, bgA)
+        ns.DMPaintWindowBg(frame._bg, bgR, bgG, bgB, bgA, true, c.bgTexture)
+        ns.DMPaintWindowBg(W.sourceFrame._bg, bgR, bgG, bgB, bgA, nil, c.bgTexture)
         header:SetHeight(hdrH)
         local hc = c.hdrBgColor
         ns.DMPaintHeaderBg(header._hdrBg, hc and hc.r or 0x1B/255, hc and hc.g or 0x1B/255, hc and hc.b or 0x1B/255, c.hdrBgAlpha or 1)

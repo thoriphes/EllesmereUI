@@ -1341,12 +1341,19 @@ local function ResolveLayout(anchor, growth)
     return ia, fp[1], fp[2], fp[3], g[1], g[2]
 end
 
--- Column cap from the growth SETTING string: explicit per-row cap wins;
--- explicit vertical growth = one column; anything else = unlimited row.
-local function ResolveColumns(growth, maxCount, maxPerRow)
-    if maxPerRow and maxPerRow >= 1 and maxPerRow < maxCount then return maxPerRow end
-    if growth == "up" or growth == "down" then return 1 end
-    return nil
+-- Column cap from the growth SETTING string: a per-row cap below maxCount
+-- wins; explicit vertical growth = one column; anything else = Max Per Row,
+-- or maxCount while it is unset (what its slider shows). Never unlimited:
+-- Max Count caps each group, not the container, so several active groups
+-- (filters, the Purgeable Glow split, Max Important) would otherwise
+-- stretch one row past it.
+-- rowMax = Max Count; maxCount may be Max Important instead (ApplyGroupConfig).
+-- Second return: true when the cap is a single row (not a grid or a column).
+local function ResolveColumns(growth, maxCount, maxPerRow, rowMax)
+    if maxPerRow and maxPerRow >= 1 and maxPerRow < maxCount then return maxPerRow, false end
+    if growth == "up" or growth == "down" then return 1, false end
+    if maxPerRow and maxPerRow >= 1 then return maxPerRow, true end
+    return rowMax, true
 end
 
 local FLOWDIR = { RIGHT = nil, LEFT = nil, UP = nil, DOWN = nil } -- filled on first use
@@ -1583,6 +1590,69 @@ local function SideOn(unit, base, s)
     return (s.debuffAnchor or "none") ~= "none" or (BossSimple(unit, base, s))
 end
 ns.UF_AuraSideOn = SideOn
+
+-- Player weapon enchant cells (AnchorContainer declares them): they flow
+-- ahead of the buffs in the same row, so a capped row widens by the cells
+-- showing (only duration-bearing ones, hidePermanent). Equipment state, not
+-- aura data: no secret values, in restricted combat either.
+local WeaponCells = {}
+
+-- On = the buff row is in a broad mode, which declares the cells.
+function WeaponCells.On(unit, base, s)
+    return unit == "player" and base == "HELPFUL" and SideOn(unit, base, s)
+        and (s.buffShowAll ~= false or s.buffHasDuration == true)
+end
+
+-- Shown = the cells render on the player buff row: the engine cannot
+-- undeclare them, so once declared (AnchorContainer stamps the container)
+-- they stay after a switch out of the broad modes until the next /reload.
+function WeaponCells.Shown(unit, base, s)
+    if WeaponCells.On(unit, base, s) then return true end
+    local entry = registry.player
+    return unit == "player" and base == "HELPFUL" and WeaponCells.declared ~= nil
+        and entry ~= nil and entry.buffs == WeaponCells.declared and SideOn(unit, base, s)
+end
+
+-- Player Aura Bars' count (all three slots: AK declares them all here).
+function WeaponCells.Count()
+    return ns.PAB_ActiveEnchantCount and ns.PAB_ActiveEnchantCount(3) or 0
+end
+
+-- Registered only while the cells are on; the count is change-guarded
+-- (WEAPON_ENCHANT_CHANGED also fires for charge ticks). The count rides the
+-- player buff fingerprint, so the reload re-runs only that config pass.
+-- n = the current count when the caller already has it.
+function WeaponCells.Sync(want, n)
+    local f = WeaponCells.frame
+    if want then
+        if not f then
+            f = CreateFrame("Frame")
+            f:SetScript("OnEvent", function()
+                local entry = registry.player
+                -- Player frame no longer ours (source switched away without a
+                -- /reload): nothing to widen, stop listening.
+                if not (entry and entry.frame)
+                    or (ns.GetUnitFrameSource and ns.GetUnitFrameSource("player") ~= "eui") then
+                    WeaponCells.Sync(false)
+                    return
+                end
+                local n = WeaponCells.Count()
+                if n == WeaponCells.last then return end
+                WeaponCells.last = n
+                if ns.UF_ReloadAuraContainers then
+                    ns.UF_ReloadAuraContainers(entry.frame, "player")
+                end
+            end)
+            WeaponCells.frame = f
+        end
+        WeaponCells.last = n or WeaponCells.Count()
+        f:RegisterEvent("WEAPON_ENCHANT_CHANGED")
+        f:RegisterEvent("WEAPON_SLOT_CHANGED")
+    elseif f then
+        f:UnregisterAllEvents()
+        WeaponCells.last = nil
+    end
+end
 
 -- Element pixel size; boss simple mode matches the frame's bar-stack height.
 local function ElementSize(unit, base, s)
@@ -2148,8 +2218,7 @@ local function AnchorContainer(container, frame, unit, base, s, buffContainer, r
         -- mode (this pass re-runs on a chain change and when the row turns
         -- on), and -- the engine has no addon-facing unregister -- kept until
         -- the next /reload should the row or the mode turn off again.
-        if not reanchorOnly and unit == "player" and isBuff and SideOn(unit, base, s)
-            and (s.buffShowAll ~= false or s.buffHasDuration == true) then
+        if not reanchorOnly and WeaponCells.On(unit, base, s) then
             local PP = EllesmereUI.PP
             local w, h = ElementSize(unit, base, s)
             local gap = PP.FromPixels(s.buffSpacingX or 1)
@@ -2178,6 +2247,10 @@ local function AnchorContainer(container, frame, unit, base, s, buffContainer, r
                     placement = placement and placement.BeforeAuraGroups,
                 },
             })
+            -- Only where AK could declare them (it no-ops without the API).
+            if container.AddItemEnchantment and AuraContainerItemEnchantmentSlot then
+                WeaponCells.declared = container
+            end
         end
     end
     AK.SetContainerGrowth(container, FlowDir(gX), FlowDir(gY))
@@ -2405,12 +2478,22 @@ local function ApplyGroupConfig(container, unit, base, s, chain, declared)
             if chain[i].important then capMax = mi break end
         end
     end
-    local cols = ResolveColumns(growth, capMax > 0 and capMax or 1, maxPerRow)
-    local rowWidth = nil
-    if cols then
-        rowWidth = cols * size + (cols - 1) * spX + 0.4
+    local cols, oneRow = ResolveColumns(growth, capMax > 0 and capMax or 1, maxPerRow, num > 0 and num or 1)
+    -- Weapon enchant cells share the first row. The engine applies one line
+    -- size to every row, so only a single-row cap over at most one shown
+    -- group (which never overflows it) widens by the cells showing; a grid
+    -- or several groups keep the cells in their rows.
+    local cellsOn = WeaponCells.Shown(unit, base, s)
+    local cellN = cellsOn and WeaponCells.Count() or 0
+    if unit == "player" and isBuff then WeaponCells.Sync(cellsOn, cellN) end
+    if cellN > 0 and oneRow then
+        local groups = 0
+        for i = 1, #chain do
+            if not chain[i].hidden then groups = groups + 1 end
+        end
+        if groups <= 1 then cols = cols + cellN end
     end
-    AK.SetContainerRowWidth(container, rowWidth)
+    AK.SetContainerRowWidth(container, cols * size + (cols - 1) * spX + 0.4)
 
     -- Candidate filters: (debuffs) the always-hide and Hide Exhaustion
     -- excludes. Caster scope rides the chain links' own PLAYER tokens, never
@@ -2649,6 +2732,12 @@ local function CfgFP(unit, base, s, frame)
     -- Max Important (Important or Own) caps the important-from-others links in
     -- ApplyGroupConfig. Marked only while set, so a default fingerprint stays.
     if not isBuff and s.maxImportantDebuffs then fp = fp .. "|mi" .. s.maxImportantDebuffs end
+    -- Weapon enchant cells widen the player buff row (ApplyGroupConfig).
+    -- Marked only while some show, so a default fingerprint stays.
+    if WeaponCells.Shown(unit, base, s) then
+        local n = WeaponCells.Count()
+        if n > 0 then fp = fp .. "|we" .. n end
+    end
     return fp
 end
 
@@ -2660,6 +2749,16 @@ end
 -- without the addon ever reading dispel data. The engine shows/hides the slot button;
 -- the overlay is its child. Priority when multiple debuff types are present: fixed
 -- layer order (Magic on top), replacing the old first-by-scan-index behavior.
+--
+-- Two slot sets, one per container. The health bar and its absorb bars sit
+-- inside the frame's bar clip (_barClip, SetClipsChildren), which draws its
+-- whole subtree as one group at its own level: anything outside it covers every
+-- bar inside it, whatever the levels. The overlay set therefore lives under the
+-- health bar, where it sorts below the absorbs. The decoration set (Color
+-- Custom Borders copies, Type Icon) reaches past the health bar and would be
+-- clipped there, so it stays on the unit frame. Each set is built the first
+-- time its feature is on: with the overlay, Color Custom Borders and the Type
+-- Icon all off (the defaults), neither is.
 ------------------------------------------------------------------------------
 
 local DISPEL_SLOTS = {
@@ -2670,6 +2769,11 @@ local DISPEL_SLOTS = {
     { key = "bleed",   colorKey = "dispelColorBleed",   fallback = { 0.75, 0.15, 0.15 },   level = 1, atlas = "RaidFrame-Icon-DebuffBleed" },
 }
 local DISPEL_TYPE_TOKENS = { magic = "Magic", curse = "Curse", disease = "Disease", poison = "Poison", bleed = "Bleed" }
+
+-- Type Icon Position: the stacked icons (ApplyDispelSlotStyle) and the Growth
+-- Direction row (TypeIcons.CreateRow) both draw at health+LIFT+level, over the
+-- border and the texts.
+local TypeIcons = { LIFT = 18, GROW = { up = "UP", down = "DOWN", left = "LEFT", right = "RIGHT" } }
 
 -- Use Dispel Colors: the player's Dispel Colors (profile root, the palette the
 -- dispel overlay uses) as a customDispelColorMap (dispel type -> Color) for the
@@ -2755,7 +2859,9 @@ local function ApplyDispelSlotStyle(button, d, style)
     local health = style.healthFrame
     if not health then return end
 
-    if not d.overlay then
+    -- Overlay set only: the decoration set never draws one. Still created on
+    -- the first run (the creation window) even under Overlay None.
+    if not d.overlay and style.fillSet then
         -- Sublevel 2+level (3..7): higher-priority types get the higher
         -- sublevel, since every slot shares one frame level (see below).
         d.overlay = button:CreateTexture(nil, "ARTWORK", nil, 2 + (style.level or 1))
@@ -2770,26 +2876,37 @@ local function ApplyDispelSlotStyle(button, d, style)
     -- legal); on later restyles the level rarely changes, and a denied
     -- attempt throws so the worker defers this key to the lift re-queue.
     -- The health bar's own level, where the legacy overlay texture lived:
-    -- below the shield and heal-absorb bars at hpBar+1, so fill/full overlays
-    -- never cover them. All slots share this level; the Magic > Curse > ...
-    -- priority is encoded in the overlay's ARTWORK sublevel above.
+    -- over the fill and below the shield and heal-absorb bars at
+    -- hpBar+1, so fill/full overlays never cover them. That order only holds
+    -- for the overlay set, which shares the bar clip with them (see the section
+    -- header). All slots share this level; the Magic > Curse > ... priority is
+    -- encoded in the overlay's ARTWORK sublevel above.
     local lvl = health:GetFrameLevel()
     if d.lvl ~= lvl then
         button:SetFrameLevel(lvl)
         d.lvl = lvl
     end
 
-    tex:ClearAllPoints()
-    if style.mode == "none" then
-        -- Overlay None with Color Custom Borders on: the slots show for the
-        -- border copy alone.
+    if not tex then
+        -- Decoration set: no overlay texture.
+    elseif style.mode == "none" then
+        -- Overlay None; the overlay set's container is hidden then anyway.
+        tex:ClearAllPoints()
         tex:Hide()
-    elseif style.mode == "gradient" or style.mode == "gradient_sharp" then
+    elseif style.mode == "gradient" or style.mode == "gradient_sharp" or style.mode == "gradient_reverse" then
+        tex:ClearAllPoints()
         tex:Show()
         tex:SetAllPoints(health)
-        tex:SetTexture(style.mode == "gradient_sharp" and GRADIENT_SHARP_TEXTURE or GRADIENT_TEXTURE)
+        tex:SetTexture(style.mode == "gradient" and GRADIENT_TEXTURE or GRADIENT_SHARP_TEXTURE)
+        -- Gradient Sharp Reverse: the sharp texture flipped vertically (bottom-up).
+        if style.mode == "gradient_reverse" then
+            tex:SetTexCoord(0, 1, 1, 0)
+        else
+            tex:SetTexCoord(0, 1, 0, 1)
+        end
         tex:SetVertexColor(c.r, c.g, c.b, alpha)
     elseif style.mode == "fill" then
+        tex:ClearAllPoints()
         tex:Show()
         local fillTex = health.GetStatusBarTexture and health:GetStatusBarTexture()
         -- Both corners come off the fill texture so the overlay follows vertical and
@@ -2799,11 +2916,14 @@ local function ApplyDispelSlotStyle(button, d, style)
         else
             tex:SetAllPoints(health)
         end
+        tex:SetTexCoord(0, 1, 0, 1)
         tex:SetColorTexture(c.r, c.g, c.b, alpha)
         tex:SetVertexColor(1, 1, 1, 1)
     else -- "full"
+        tex:ClearAllPoints()
         tex:Show()
         tex:SetAllPoints(health)
+        tex:SetTexCoord(0, 1, 0, 1)
         tex:SetColorTexture(c.r, c.g, c.b, alpha)
         tex:SetVertexColor(1, 1, 1, 1)
     end
@@ -2891,7 +3011,7 @@ local function ApplyDispelSlotStyle(button, d, style)
     end
 
     -- Type Icon Position: the type's icon on a corner of the health bar (Raid
-    -- Frames parity). Only the live twin carries style.icon. health+18+level
+    -- Frames parity). Only the live twin carries style.icon. health+LIFT+level
     -- (frame+21..+25) draws it over the border and the texts (frame+20), in
     -- the Magic > ... > Bleed order, at most level with the raid marker.
     local ic = style.icon
@@ -2904,7 +3024,7 @@ local function ApplyDispelSlotStyle(button, d, style)
             d.ufIconHost = host
         end
         local host = d.ufIconHost
-        host:SetFrameLevel(health:GetFrameLevel() + 18 + (style.level or 1))
+        host:SetFrameLevel(health:GetFrameLevel() + TypeIcons.LIFT + (style.level or 1))
         d.ufIconTex:SetAtlas(ic.atlas)
         host:SetSize(ic.size, ic.size)
         host:ClearAllPoints()
@@ -2915,8 +3035,92 @@ local function ApplyDispelSlotStyle(button, d, style)
     end
 end
 
-local function DispelStyleKey(slotKey)
-    return "uf:player:dispel:" .. slotKey
+-- Type Icon Position Growth Direction ("none" keeps the stacked slot icons):
+-- the icons move to a row of their own, one engine group per type in DISPEL_SLOTS
+-- order (Magic first), each capped at one icon, so every type present shows once
+-- and the engine packs the shown ones from the Type Icon Position point. A cell
+-- draws its type's atlas, as the stacked icons do; no aura data is read. "Only
+-- Dispellable by You" picks each type's plain or by-me group, as the slot twins.
+function TypeIcons.StyleKey(slotKey)
+    return "uf:player:dispelicon:" .. slotKey
+end
+
+-- applyExtra: the cell's icon host, made on the first run (the creation window,
+-- the only one that may anchor to the cell), with its type's art at the stacked
+-- icons' level.
+function TypeIcons.ApplyCell(button, d, style)
+    local host = d.ufRowIconHost
+    if not host then
+        host = CreateFrame("Frame", nil, button)
+        host:SetAllPoints(button)
+        host:EnableMouse(false)
+        d.ufRowIconTex = host:CreateTexture(nil, "ARTWORK")
+        d.ufRowIconTex:SetAllPoints(host)
+        d.ufRowIconHost = host
+    end
+    d.ufRowIconTex:SetAtlas(style.atlas)
+    local health = style.healthFrame
+    if health then host:SetFrameLevel(health:GetFrameLevel() + TypeIcons.LIFT + (style.level or 1)) end
+end
+
+-- Declared at cap 0, so no cell exists until a debuff of its type shows.
+function TypeIcons.CreateRow(frame, entry)
+    if entry.dispelIconsBuilt then return end
+    local container = entry.dispelIcons
+    if not container then
+        container = AK.CreateContainerShell(frame, { point = { "CENTER", frame, "CENTER" } })
+        entry.dispelIcons = container
+    end
+    for i = 1, #DISPEL_SLOTS do
+        local slot = DISPEL_SLOTS[i]
+        local cand = { includeDispelTypes = { [DISPEL_TYPE_TOKENS[slot.key]] = true } }
+        for t = 1, 2 do
+            local key = (t == 1) and slot.key or (slot.key .. "_byme")
+            if not container:HasAuraGroup(key) then
+                AK.AddGroupToContainer(container, {
+                    key = key, maxFrameCount = 0, candidateFilters = cand,
+                    filter = (t == 1) and { "HARMFUL" } or { "HARMFUL", "RAID_PLAYER_DISPELLABLE" },
+                    style = TypeIcons.StyleKey(slot.key),
+                })
+            end
+        end
+    end
+    AK.FinishContainer(container, "player")
+    entry.dispelIconsBuilt = true
+end
+
+-- Anchors the row on the Type Icon Position point, grows it, and lights each
+-- type's live group at one icon.
+function TypeIcons.LayoutRow(frame, entry, p)
+    local container, health = entry.dispelIcons, frame.Health
+    if not (container and health) then return end
+    local point = (p.dispelIconPosition or "right"):upper()
+    local grow = TypeIcons.GROW[p.dispelIconGrowth or "none"] or "LEFT"
+    local size = p.dispelIconSize or 16
+    local gap = EllesmereUI.PP.FromPixels(1)
+    container:ClearAllPoints()
+    container:SetPoint(point, health, point, p.dispelIconOffsetX or 0, p.dispelIconOffsetY or 0)
+    AK.SetContainerAnchor(container, point)
+    local vertical = grow == "UP" or grow == "DOWN"
+    local gX = vertical and (point:find("LEFT") and "RIGHT" or "LEFT") or grow
+    local gY = vertical and grow or (point:find("BOTTOM") and "UP" or "DOWN")
+    AK.SetContainerRowWidth(container, vertical and (size + 0.4) or nil)
+    AK.SetContainerGrowth(container, FlowDir(gX), FlowDir(gY))
+    local layout = { elementWidth = size, elementHeight = size, elementSpacing = gap, lineSpacing = gap }
+    local byMe = p.dispelOverlayByMe == true
+    for i = 1, #DISPEL_SLOTS do
+        local key = DISPEL_SLOTS[i].key
+        local byMeLive = byMe and not TokenBlindDispelSlot(key)
+        container:SetAuraGroupLayout(key, layout)
+        container:SetAuraGroupLayout(key .. "_byme", layout)
+        AK.SetGroupCap(container, key, byMeLive and 0 or 1)
+        AK.SetGroupCap(container, key .. "_byme", byMeLive and 1 or 0)
+    end
+end
+
+-- `fill` picks the overlay set's key, otherwise the decoration set's.
+local function DispelStyleKey(slotKey, fill)
+    return (fill and "uf:player:dispelfill:" or "uf:player:dispel:") .. slotKey
 end
 
 -- Color Custom Borders is live: the toggle, over a custom border (runtime twin
@@ -2926,12 +3130,15 @@ local function DispelCustomBorderOn(p)
     return p.dispelCustomBorder == true and ns.UF_CustomBorderOn(p.player)
 end
 
--- The slots show while the overlay, Color Custom Borders or the type icon
--- needs them; all off (the default), the container stays hidden and parses
--- nothing.
+-- Returns decoration shown, overlay shown. The decoration set shows while
+-- Color Custom Borders or the type icon needs it, the overlay set while an
+-- overlay mode is picked; off (the default), a container stays hidden and
+-- parses nothing.
 local function DispelSlotsShown(p)
-    return (p.dispelOverlay or "none") ~= "none" or DispelCustomBorderOn(p)
-        or p.showDispelIcons == true
+    local icons = p.showDispelIcons == true
+    local grow = icons and (p.dispelIconGrowth or "none") ~= "none"
+    return DispelCustomBorderOn(p) or (icons and not grow),
+        (p.dispelOverlay or "none") ~= "none", grow
 end
 
 local function BuildDispelStyles(frame)
@@ -2961,7 +3168,10 @@ local function BuildDispelStyles(frame)
     -- The Outer Ring copy's lift over the portrait backdrop (ApplyDispelSlotStyle).
     local ringLift = (customBorder and ns.UF_CastIconOnPortrait("player", p.player)) and 4 or 1
     -- Type Icon Position: one geometry for every type's icon (its art per slot).
-    local iconCorner = p.showDispelIcons == true and (p.dispelIconPosition or "right"):upper() or nil
+    -- A Growth Direction moves the icons to their own row (TypeIcons.CreateRow).
+    local iconCorner = p.showDispelIcons == true and (p.dispelIconGrowth or "none") == "none"
+        and (p.dispelIconPosition or "right"):upper() or nil
+    local rowSize = p.dispelIconSize or 16
     for i = 1, #DISPEL_SLOTS do
         local slot = DISPEL_SLOTS[i]
         -- A type the engine token can never match keeps using the PLAIN slot in
@@ -2971,63 +3181,73 @@ local function BuildDispelStyles(frame)
         local byMeLive = byMe and not tokenBlind
         local col = p[slot.colorKey]
         local color = { r = col and col.r or slot.fallback[1], g = col and col.g or slot.fallback[2], b = col and col.b or slot.fallback[3] }
-        -- The border copy and the type icon ride the live twin only; the inactive
-        -- one draws nothing.
-        local plainCB, byMeCB
-        if byMeLive then byMeCB = customBorder else plainCB = customBorder end
         local icon = iconCorner and {
             atlas = slot.atlas, corner = iconCorner, size = p.dispelIconSize or 16,
             offX = p.dispelIconOffsetX or 0, offY = p.dispelIconOffsetY or 0,
         } or nil
-        local plainIcon, byMeIcon
-        if byMeLive then byMeIcon = icon else plainIcon = icon end
-        AK.styles[DispelStyleKey(slot.key)] = {
-            width = 1, height = 1,
+        -- Plain twin, then the by-me twin. The overlay, the border copy and the
+        -- type icon ride the live twin only; the inactive one draws nothing.
+        for t = 1, 2 do
+            local key = (t == 1) and slot.key or (slot.key .. "_byme")
+            local live = (t == 2) == byMeLive
+            AK.styles[DispelStyleKey(key)] = {
+                width = 1, height = 1,
+                noRegions = true,
+                mode = "none",
+                color = color,
+                level = slot.level,
+                healthFrame = frame.Health,
+                unitFrame = frame,
+                customBorder = live and customBorder or nil,
+                ringLift = ringLift,
+                icon = live and icon or nil,
+                applyExtra = ApplyDispelSlotStyle,
+            }
+            AK.styles[DispelStyleKey(key, true)] = {
+                width = 1, height = 1,
+                noRegions = true,
+                fillSet = true,
+                mode = mode,
+                color = color,
+                opacity = live and op or 0,
+                level = slot.level,
+                healthFrame = frame.Health,
+                applyExtra = ApplyDispelSlotStyle,
+            }
+        end
+        -- The Growth Direction row's cells for this type (both twins).
+        AK.styles[TypeIcons.StyleKey(slot.key)] = {
+            width = rowSize, height = rowSize,
             noRegions = true,
-            mode = mode,
-            color = color,
-            opacity = byMeLive and 0 or op,
+            noTooltips = true,
+            atlas = slot.atlas,
             level = slot.level,
             healthFrame = frame.Health,
-            unitFrame = frame,
-            customBorder = plainCB,
-            ringLift = ringLift,
-            icon = plainIcon,
-            applyExtra = ApplyDispelSlotStyle,
-        }
-        AK.styles[DispelStyleKey(slot.key .. "_byme")] = {
-            width = 1, height = 1,
-            noRegions = true,
-            mode = mode,
-            color = color,
-            opacity = byMeLive and op or 0,
-            level = slot.level,
-            healthFrame = frame.Health,
-            unitFrame = frame,
-            customBorder = byMeCB,
-            ringLift = ringLift,
-            icon = byMeIcon,
-            applyExtra = ApplyDispelSlotStyle,
+            applyExtra = TypeIcons.ApplyCell,
         }
     end
     return DispelSlotsShown(p)
 end
 
-local function CreateDispelSlots(frame, entry)
-    local shown = BuildDispelStyles(frame)
-
-    local container = entry.dispel
+-- One set: the decoration set (fill false) on the unit frame, or the overlay
+-- set (fill true) under the health bar, inside the bar clip with the absorbs
+-- (section header). Built once and kept; `<field>Adds` counts the set's
+-- completed slot declarations, so a resumed build skips what already landed
+-- instead of re-declaring existing slot keys.
+local function CreateDispelSet(frame, entry, fill)
+    local field = fill and "dispelFill" or "dispel"
+    if entry[field .. "Built"] then return end
+    local addsField = field .. "Adds"
+    local container = entry[field]
     if not container then
-        container = AK.CreateContainerShell(frame, {
+        container = AK.CreateContainerShell(fill and frame.Health or frame, {
             point = { "CENTER", frame, "CENTER" },
         })
         -- Stashed BEFORE the slot adds so a watchdog-killed build resumes on
         -- the same container instead of birthing a second one.
-        entry.dispel = container
+        entry[field] = container
     end
 
-    -- `dispelAdds` counts completed slot declarations: a resumed build skips
-    -- what already landed instead of re-declaring existing slot keys.
     local n = 0
     for i = 1, #DISPEL_SLOTS do
         local slot = DISPEL_SLOTS[i]
@@ -3040,38 +3260,53 @@ local function CreateDispelSlots(frame, entry)
             slotButton:SetPoint("CENTER", frame.Health or frame, "CENTER")
         end
         n = n + 1
-        if n > (entry.dispelAdds or 0) then
+        if n > (entry[addsField] or 0) then
             AK.AddSlotToContainer(container, {
                 key = slot.key,
                 filter = { "HARMFUL" },
                 candidateFilters = { includeDispelTypes = { [DISPEL_TYPE_TOKENS[slot.key]] = true } },
-                style = DispelStyleKey(slot.key),
+                style = DispelStyleKey(slot.key, fill),
                 extraInit = ParkSlot,
             })
-            entry.dispelAdds = n
+            entry[addsField] = n
         end
         -- "Only Dispellable by You" variant: identical slot with the engine
         -- by-me filter token added. Declared upfront -- slot filters cannot
         -- change after declaration -- and mutually exclusive with the plain
-        -- slot via style opacity (BuildDispelStyles zeroes the inactive one).
+        -- slot via its style (BuildDispelStyles blanks the inactive one).
         n = n + 1
-        if n > (entry.dispelAdds or 0) then
+        if n > (entry[addsField] or 0) then
             AK.AddSlotToContainer(container, {
                 key = slot.key .. "_byme",
                 filter = { "HARMFUL", "RAID_PLAYER_DISPELLABLE" },
                 candidateFilters = { includeDispelTypes = { [DISPEL_TYPE_TOKENS[slot.key]] = true } },
-                style = DispelStyleKey(slot.key .. "_byme"),
+                style = DispelStyleKey(slot.key .. "_byme", fill),
                 extraInit = ParkSlot,
             })
-            entry.dispelAdds = n
+            entry[addsField] = n
         end
     end
     AK.FinishContainer(container, "player")
-
-    container:SetShown(shown)
+    entry[field .. "Built"] = true
 end
 
-local function DispelFP(p)
+-- Builds a set the first time its feature is on (decorated from the current
+-- styles: callers run BuildDispelStyles first), then shows each built set
+-- only while its feature is on; a hidden container parses nothing.
+local function SyncDispelSets(frame, entry, decorShown, fillShown, iconsShown)
+    if decorShown then CreateDispelSet(frame, entry, false) end
+    if fillShown then CreateDispelSet(frame, entry, true) end
+    if iconsShown and not entry.dispelIconsBuilt then
+        TypeIcons.CreateRow(frame, entry)
+        local p = ns.UF_GetProfile and ns.UF_GetProfile()
+        if p then TypeIcons.LayoutRow(frame, entry, p) end
+    end
+    if entry.dispel then entry.dispel:SetShown(decorShown and true or false) end
+    if entry.dispelFill then entry.dispelFill:SetShown(fillShown and true or false) end
+    if entry.dispelIcons then entry.dispelIcons:SetShown(iconsShown and true or false) end
+end
+
+local function DispelFP(p, frame)
     -- The poison capability is a talent (Poison Cleansing Totem), so it rides
     -- the fingerprint; race can't change mid-session.
     -- Color Custom Borders copies the frame border, so while it is on every input
@@ -3099,25 +3334,39 @@ local function DispelFP(p)
     -- Type Icon Position: marked only while on, so an off print stays as it was.
     if p.showDispelIcons == true then
         fp = fp .. "|ti|" .. FP(p.dispelIconPosition, p.dispelIconSize,
-            p.dispelIconOffsetX, p.dispelIconOffsetY)
+            p.dispelIconOffsetX, p.dispelIconOffsetY, p.dispelIconGrowth)
+    end
+    -- The health bar's level: the slot buttons copy it only on a restyle, and
+    -- the overlay must stay under the absorbs at hpBar+1.
+    local health = frame and frame.Health
+    if health then
+        fp = fp .. "|hl|" .. health:GetFrameLevel()
     end
     return fp
 end
 
 local function ReloadDispelSlots(frame, entry)
-    if not entry.dispel then return end
+    -- The build's dispel stage makes the styles; nothing to reload before it.
+    if not entry.dispelDone then return end
     local p = ns.UF_GetProfile and ns.UF_GetProfile()
     if not p then return end
-    local v = DispelFP(p)
+    local v = DispelFP(p, frame)
     if ufFP.dispel ~= v then
         ufFP.dispel = v
         BuildDispelStyles(frame)
         for i = 1, #DISPEL_SLOTS do
-            AK.RestyleSoon(DispelStyleKey(DISPEL_SLOTS[i].key))
-            AK.RestyleSoon(DispelStyleKey(DISPEL_SLOTS[i].key .. "_byme"))
+            local key = DISPEL_SLOTS[i].key
+            AK.RestyleSoon(DispelStyleKey(key))
+            AK.RestyleSoon(DispelStyleKey(key .. "_byme"))
+            AK.RestyleSoon(DispelStyleKey(key, true))
+            AK.RestyleSoon(DispelStyleKey(key .. "_byme", true))
+            AK.RestyleSoon(TypeIcons.StyleKey(key))
         end
+        if entry.dispelIconsBuilt then TypeIcons.LayoutRow(frame, entry, p) end
     end
-    entry.dispel:SetShown(DispelSlotsShown(p))
+    -- A set turned on for the first time is built here, from the styles just
+    -- made current.
+    SyncDispelSets(frame, entry, DispelSlotsShown(p))
 end
 
 -- Options-panel poke (via ns.UpdatePlayerDispelOverlay): re-run the
@@ -3282,7 +3531,7 @@ end
 -- watch a pile of game events, Resource Bars ARMS this one-shot throttle at the end of
 -- BuildBars via EllesmereUI.UF_RequestResourceReanchor(). Arming reads no geometry; the
 -- throttle's OnUpdate re-anchors once on the next frame, after the build has settled,
--- then disarms. Mirrors the reloadThrottle pattern in EllesmereUIUnitFrames.lua. Zero cost when idle:
+-- then disarms. Mirrors the reloadThrottle pattern in EUI_UnitFrames_OptionsSetup.lua. Zero cost when idle:
 -- no registered events, and non-bottom-anchored players never arm anything. Per-bar
 -- VISIBILITY modes (combat/target/group alpha) are intentionally NOT handled -- the
 -- footprint (ERB_PlayerStackBars) is predicate-based, so alpha toggles do not move it.
@@ -3334,6 +3583,8 @@ local function RefreshUnit(unitKey)
     if entry.buffs then entry.buffs:UpdateAllAuras() end
     if entry.debuffs then entry.debuffs:UpdateAllAuras() end
     if entry.dispel then entry.dispel:UpdateAllAuras() end
+    if entry.dispelFill then entry.dispelFill:UpdateAllAuras() end
+    if entry.dispelIcons then entry.dispelIcons:UpdateAllAuras() end
 end
 
 -- Pet swap (a different pet summoned while one is out): the frame stays shown
@@ -3476,7 +3727,7 @@ end
 --
 -- Deliberately NOT a hook on EllesmereUI._applySavedPositions: that field is
 -- passed by reference into C_Timer.After by the action bars module
--- (EllesmereUIActionBars.lua), and replacing it there made that call raise.
+-- (EUI_ActionBars_Setup.lua), and replacing it there made that call raise.
 do
     local pending = false
     local function Settle()
@@ -3607,17 +3858,19 @@ local function BuildUnitContainers(frame, unit)
         return "again"
     end
 
-    -- Stage 4: player dispel slots (batch-1 slot adds; internally resumable
-    -- via entry.dispel / entry.dispelAdds).
+    -- Stage 4: player dispel styles, and the slot sets whose feature is on
+    -- (batch-1 slot adds; each set resumable via its container and add
+    -- count). A set that is off is built by the reload that first sees it on.
     if unit == "player" and not entry.dispelDone then
-        CreateDispelSlots(frame, entry)
+        local decorShown, fillShown, iconsShown = BuildDispelStyles(frame)
+        SyncDispelSets(frame, entry, decorShown, fillShown, iconsShown)
         entry.dispelDone = true
         -- Prime the dispel fingerprint: creation just applied these exact
         -- settings, so the final-stage reload must not queue a redundant
         -- restyle (harmless noise OOC, but denied button writes when built
         -- under restriction -- the in-instance /reload case).
         local p = ns.UF_GetProfile and ns.UF_GetProfile()
-        if p then ufFP.dispel = DispelFP(p) end
+        if p then ufFP.dispel = DispelFP(p, frame) end
         return "again"
     end
 

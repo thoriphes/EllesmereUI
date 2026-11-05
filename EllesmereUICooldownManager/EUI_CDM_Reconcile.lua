@@ -13,6 +13,7 @@ if not I or I.broken then return end
 I.broken = true
 
 local ALL_RACIAL_SPELLS, ECME, _myRacialsSet = I.ALL_RACIAL_SPELLS, I.ECME, I._myRacialsSet
+local ResolveActiveRacial = I.ResolveActiveRacial
 local GHOST_CD_BAR_KEY, MAIN_BAR_KEYS = I.GHOST_CD_BAR_KEY, I.MAIN_BAR_KEYS
 local SaveCurrentSpecProfile, barDataByKey = I.SaveCurrentSpecProfile, I.barDataByKey
 local CaptureCDMPositions = I.CaptureCDMPositions
@@ -259,6 +260,23 @@ function ns.ReseedAssignedSpellsFromLiveIcons(cdUtilOnly)
                                 insertPos = pos
                                 didInsert = true
                             end
+                        elseif ns.IsItemPresetKey(sid) and not icon._isItemPresetFrame then
+                            -- Blizzard's own potion / healthstone row, rendering under
+                            -- an item preset key no bar lists (EUI_CDM_HookReanchor.lua,
+                            -- Phase 1): list the key where the row renders, so it gets
+                            -- a slot and the per-icon menu, marked as the row's own
+                            -- (sd.nativeItems: the preset's frame never stands in for
+                            -- it). Never while the key is ghosted: a removed entry
+                            -- stays removed.
+                            local ghosted = ghostList and FindVar and FindVar(ghostList, sid)
+                            if not ghosted then
+                                local pos = insertPos and (insertPos + 1) or 1
+                                table.insert(sd.assignedSpells, pos, sid)
+                                insertPos = pos
+                                if not sd.nativeItems then sd.nativeItems = {} end
+                                sd.nativeItems[sid] = true
+                                didInsert = true
+                            end
                         end
                     end
                 end
@@ -426,6 +444,63 @@ function ns.ReconcileAssignedSpellDrops(barKey)
         end
     end
 
+    -- Blizzard's own item rows (sd.nativeItems: entries the reseed listed for them):
+    -- such an entry drops once Blizzard no longer tracks the row -- no live frame
+    -- renders under its key AND the spec-agnostic category sets, populated and
+    -- holding item rows, show no visible row of its category. Neither source judges
+    -- alone: a frame is absent mid-rebuild, and a set can lack a viewer-bound id.
+    -- Both built on first need, once per pass.
+    local nativeLive, nativeCats
+    local function NativeRowTracked(id)
+        if nativeLive == nil then
+            nativeLive = {}
+            local icons = ns.cdmBarIcons
+            if icons then
+                for _, list in pairs(icons) do
+                    for i = 1, #list do
+                        local ic = list[i]
+                        local fcN = ic and ns._ecmeFC[ic]
+                        local k = fcN and fcN.spellID
+                        if k and not ic._isItemPresetFrame and ns.IsItemPresetKey(k) then
+                            nativeLive[k] = true
+                        end
+                    end
+                end
+            end
+        end
+        if nativeLive[id] then return true end
+        local pr = ns.ItemPresetForKey(id)
+        local cat = pr and pr.nativeCategory
+        if not cat then return true end
+        if nativeCats == nil then
+            nativeCats = false
+            local evc = Enum and Enum.CooldownViewerCategory
+            local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+            if evc and gci and ns.CDMBuildLiveCategorySetLookup then
+                local cats = { evc.SpecAgnosticEssential or 5, evc.SpecAgnosticTracked or 6 }
+                for ci = 1, #cats do
+                    local set = ns.CDMBuildLiveCategorySetLookup(cats[ci])
+                    if set and next(set) then
+                        for cdID in pairs(set) do
+                            local info = gci(cdID)
+                            local sc = info and info.spellCategoryID
+                            if type(sc) == "number" and not (issecretvalue and issecretvalue(sc)) then
+                                -- An item row enumerates through this source: it may
+                                -- judge. A hidden or removed row is not visible.
+                                if not nativeCats then nativeCats = {} end
+                                local verdict = ns.CDMEntryHiddenOrRemoved
+                                    and ns.CDMEntryHiddenOrRemoved(cdID, nil, info, set)
+                                if verdict == nil then nativeCats[sc] = true end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if not nativeCats then return true end -- no item row enumerates: keep
+        return nativeCats[cat] == true
+    end
+
     local custom  = sd.customSpellIDs
     local racials = _myRacialsSet
     local cdurs   = sd.customSpellDurations
@@ -513,6 +588,13 @@ function ns.ReconcileAssignedSpellDrops(barKey)
                 -- rank as the safe fallback so a transient gap never wipes
                 -- an untalented assignment.
                 keep = true
+            end
+        elseif sd.nativeItems and sd.nativeItems[id] and ns.IsItemPresetKey(id) then
+            -- An entry the reseed listed for Blizzard's own item row: it goes
+            -- once Blizzard no longer tracks the row (NativeRowTracked above).
+            if not NativeRowTracked(id) then
+                keep = false
+                sd.nativeItems[id] = nil
             end
         end
         if keep then
@@ -1093,19 +1175,37 @@ end
 --- maps and reanchors. Preserves user-added entries:
 ---   * Negative IDs (trinket slots -13/-14, item presets <= -100)
 ---   * Custom spell IDs (entries in sd.customSpellIDs)
----   * Racial spells (entries in _myRacialsSet)
-function ns.RepopulateFromBlizzard()
+---   * Racial spells (entries in _myRacialsSet), except on a repopulate another
+---     addon requested (fromRequest, EllesmereUI.RequestCDMRepopulate) while the
+---     racial has a place: the bar ns.RACIAL_REPOP_BAR lists for it, else where
+---     Blizzard's viewers show it.
+function ns.RepopulateFromBlizzard(fromRequest)
     local p = ECME.db and ECME.db.profile
     if not p or not p.cdmBars then return end
     local specKey = ns.GetActiveSpecKey()
     if not specKey or specKey == "0" then return end
+
+    -- Requested repopulate: the racial slot's place. A listed racial goes to the
+    -- end of its bar (below); an unlisted one shown by Blizzard's viewers is
+    -- placed by the reseed like any spell; with neither the slot stays as it is.
+    local racialSid, racialBar, racialMoves
+    if fromRequest then
+        racialSid = ResolveActiveRacial()
+        racialBar = racialSid and ns.RACIAL_REPOP_BAR[racialSid]
+        racialMoves = racialBar ~= nil
+        if racialSid and not racialMoves then
+            for _, e in ipairs(ns.EnumerateCDMViewerSpells(false)) do
+                if _myRacialsSet[e.sid] then racialMoves = true; break end
+            end
+        end
+    end
 
     -- A spell ID is "user-added" (preserved across repopulate) if it's a negative preset marker, a custom spell ID added via the picker, or a racial belonging to this character.
     local function IsUserAdded(sd, id)
         if type(id) ~= "number" or id == 0 then return false end
         if id < 0 then return true end
         if sd.customSpellIDs and sd.customSpellIDs[id] then return true end
-        if _myRacialsSet and _myRacialsSet[id] then return true end
+        if _myRacialsSet and _myRacialsSet[id] and not racialMoves then return true end
         -- A positive id carrying a stored duration is one of OUR injected preset/custom buffs
         -- (Bloodlust/Heroism, potions, Time Spiral, custom buff IDs). Blizzard-tracked buffs are
         -- never written into assignedSpells with a duration, so this can only be a user-added entry -- preserve it. Presets predate the customSpellIDs flag, so the flag alone is not enough.
@@ -1175,12 +1275,151 @@ function ns.RepopulateFromBlizzard()
 
     ns.ReseedAssignedSpellsFromLiveIcons()
 
+    -- A listed racial: its one slot at the end of its bar, wherever the reseed
+    -- put Blizzard's copy. Buff bars keep their entries (a racial's buff can
+    -- share its spell ID).
+    local racialSD = racialBar and ns.GetBarSpellData(racialBar)
+    if racialSD then
+        for _, b in ipairs(p.cdmBars.bars) do
+            local isBuff = b.barType == "custom_buff" or ns.IsBarBuffFamily(b)
+            local sd = not isBuff and b.key and ns.GetBarSpellData(b.key)
+            local list = sd and sd.assignedSpells
+            if list then
+                for i = #list, 1, -1 do
+                    if ALL_RACIAL_SPELLS[list[i]] then table.remove(list, i) end
+                end
+            end
+        end
+        if not racialSD.assignedSpells then racialSD.assignedSpells = {} end
+        racialSD.assignedSpells[#racialSD.assignedSpells + 1] = racialSid
+        ns._spellOrderDirty = true
+        if ns.RebuildSpellRouteMap then ns.RebuildSpellRouteMap() end
+        if ns.QueueReanchor then ns.QueueReanchor() end
+    end
+
     C_Timer.After(1, function()
         local sk = ns.GetActiveSpecKey()
         if sk and sk ~= "0" then
             SaveCurrentSpecProfile()
         end
     end)
+    return true
+end
+
+-------------------------------------------------------------------------------
+--  Queued repopulate (public API, PLUGINS_API.md)
+--  EllesmereUI.RequestCDMRepopulate([specIDs]) queues the Repopulate from
+--  Blizzard CDM button's work for this character: each requested spec is
+--  repopulated the next time it is active and settled, at the final layout
+--  pass of a login, reload or spec swap (Blizzard's viewer pools hold that
+--  spec's icons by then) once Blizzard has loaded its saved layouts, never
+--  during combat. A profile installer that writes
+--  Blizzard CDM layouts calls it before its ReloadUI. Requests are kept per
+--  character, by the game's own spec IDs, in EllesmereUIDB.cdmRepopulatePending.
+--  EllesmereUI.GetCDMRepopulateStatus([specID]) tells the installer how a
+--  request went: "pending" while queued, then "done" with the time and the
+--  Blizzard layout ID the run read (EllesmereUIDB.cdmRepopulateDone, cleared by
+--  a new request for that spec), or nil when no run finished.
+-------------------------------------------------------------------------------
+local function LiveSpecID()
+    local index = C_SpecializationInfo.GetSpecialization()
+    if not index or index == 0 then return nil end
+    local id = C_SpecializationInfo.GetSpecializationInfo(index)
+    if not id or id == 0 then return nil end
+    return id
+end
+
+local function IsSpecID(id)
+    return type(id) == "number" and id > 0 and id == math.floor(id)
+end
+
+-- specIDs: nil = every spec of the player's class, or one spec ID, or a list of them.
+-- Returns true once queued, false when nothing valid was given.
+function EllesmereUI.RequestCDMRepopulate(specIDs)
+    if not EllesmereUIDB then return false end
+    local ids = {}
+    if specIDs == nil then
+        local _, _, classID = UnitClass("player")
+        local count = classID and C_SpecializationInfo.GetNumSpecializationsForClassID(classID) or 0
+        for i = 1, count do
+            local id = GetSpecializationInfoForClassID(classID, i)
+            if IsSpecID(id) then ids[#ids + 1] = id end
+        end
+    elseif IsSpecID(specIDs) then
+        ids[1] = specIDs
+    elseif type(specIDs) == "table" then
+        for _, id in ipairs(specIDs) do
+            if IsSpecID(id) then ids[#ids + 1] = id end
+        end
+    end
+    if #ids == 0 then return false end
+    local pending = EllesmereUIDB.cdmRepopulatePending or {}
+    EllesmereUIDB.cdmRepopulatePending = pending
+    local charKey = ns.GetCharKey()
+    local mine = pending[charKey] or {}
+    pending[charKey] = mine
+    -- A new request's status starts over: an older run's record never stands
+    -- in for this one.
+    local done = EllesmereUIDB.cdmRepopulateDone
+    local runs = done and done[charKey]
+    for _, id in ipairs(ids) do
+        mine[id] = true
+        if runs then runs[id] = nil end
+    end
+    if runs and not next(runs) then done[charKey] = nil end
+    if done and not next(done) then EllesmereUIDB.cdmRepopulateDone = nil end
+    return true
+end
+
+-- "pending" while the spec (default: the live one) is queued for this
+-- character; "done", time(), layoutID once its queued run finished (layoutID
+-- nil when no saved Blizzard layout was active); nil otherwise.
+function EllesmereUI.GetCDMRepopulateStatus(specID)
+    if not EllesmereUIDB then return nil end
+    if specID == nil then specID = LiveSpecID() end
+    if not IsSpecID(specID) then return nil end
+    local charKey = ns.GetCharKey()
+    local pending = EllesmereUIDB.cdmRepopulatePending
+    if pending and pending[charKey] and pending[charKey][specID] then return "pending" end
+    local done = EllesmereUIDB.cdmRepopulateDone
+    local run = done and done[charKey] and done[charKey][specID]
+    if run then return "done", run.time, run.layoutID end
+    return nil
+end
+
+-- Runs the live spec's queued repopulate, if any. Called a frame after the
+-- final layout pass; in combat it waits for combat to end and checks again.
+-- Until Blizzard has loaded its saved layouts its viewers show the class
+-- defaults (a new character's first login can reach the final pass first),
+-- so the request waits for the data-loaded wake in EUI_CDM_Lifecycle.lua.
+function ns.RunQueuedRepopulate()
+    local pending = EllesmereUIDB and EllesmereUIDB.cdmRepopulatePending
+    if not pending then return end
+    local charKey = ns.GetCharKey()
+    local mine = pending[charKey]
+    if not mine then return end
+    local id = LiveSpecID()
+    if not id or not mine[id] then return end
+    if not ns._cdmDataLoaded then
+        ns._repopAwaitsLayouts = true
+        return
+    end
+    if InCombatLockdown() then
+        ns.CombatQueue.Defer("CDMQueuedRepopulate", ns.RunQueuedRepopulate)
+        return
+    end
+    -- Taken off the queue before it runs, so a failure can never repeat it.
+    mine[id] = nil
+    if not next(mine) then pending[charKey] = nil end
+    if not next(pending) then EllesmereUIDB.cdmRepopulatePending = nil end
+    -- Recorded only once the run finished (GetCDMRepopulateStatus).
+    if ns.RepopulateFromBlizzard(true) then
+        local done = EllesmereUIDB.cdmRepopulateDone or {}
+        EllesmereUIDB.cdmRepopulateDone = done
+        local runs = done[charKey] or {}
+        done[charKey] = runs
+        runs[id] = { time = time(), layoutID = ns.GetActiveCDMLayoutID() }
+    end
 end
 
 I.CDMFirstLoginCapture = CDMFirstLoginCapture

@@ -250,6 +250,10 @@ function EllesmereUI.BuildKeybindButton(parent, opts)
                 -- is consumed down AND up (padHeld): a controller cursor clicks on release, so
                 -- a loose release would click this button again (re-arm, or unbind).
                 self:SetScript("OnGamePadButtonDown", function(s, key)
+                    -- SetPropagateKeyboardInput is blocked in combat on every
+                    -- frame: the key and pad handlers stand aside there, as the
+                    -- popup helpers' do (every host closes as combat starts).
+                    if InCombatLockdown() then return end
                     if not listening then
                         s:SetPropagateKeyboardInput(true)
                         return
@@ -271,6 +275,7 @@ function EllesmereUI.BuildKeybindButton(parent, opts)
                     Commit(CreateKeyChordStringUsingMetaKeyState(k))
                 end)
                 self:SetScript("OnGamePadButtonUp", function(s, key)
+                    if InCombatLockdown() then return end
                     if key ~= padHeld then
                         s:SetPropagateKeyboardInput(true)
                         return
@@ -285,6 +290,7 @@ function EllesmereUI.BuildKeybindButton(parent, opts)
         end
     end)
     btn:SetScript("OnKeyDown", function(self, key)
+        if InCombatLockdown() then return end
         -- Bare modifiers pass through so they can be held for the chord.
         if not listening or IsKeyPressIgnoredForBinding(key) then
             self:SetPropagateKeyboardInput(true)
@@ -455,7 +461,7 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
             local defaultTrackW = isRussian and 120 or 160
             local scfg = PixelizeSliderCfg(cfg)
             local trackFrame, valBox, _, slThumb = BuildSliderCore(region, cfg.trackWidth or defaultTrackW, 4, 14, 40, 26, 13, SL.INPUT_A,
-                scfg.min, scfg.max, scfg.step, scfg.getValue, scfg.setValue, true, cfg.snapPoints)
+                scfg.min, scfg.max, scfg.step, scfg.getValue, scfg.setValue, true, cfg.snapPoints, cfg.valueSnap)
             PP.Point(valBox, "RIGHT", region, "RIGHT", -SIDE_PAD, 0)
             PP.Point(trackFrame, "RIGHT", valBox, "LEFT", -12, 0)
             controlFrame = nil  -- slider owns its disabled state; keep the generic handler off its mouse
@@ -699,8 +705,10 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
             local boxBg = box:CreateTexture(nil, "BACKGROUND")
             boxBg:SetAllPoints()
             if isPopupStyle then
+                -- cfg.inputJustify == "CENTER" centers the text and placeholder (default left).
+                local centered = cfg.inputJustify == "CENTER"
                 box:SetFont(EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
-                box:SetJustifyH("LEFT")
+                box:SetJustifyH(centered and "CENTER" or "LEFT")
                 box:SetTextInsets(10, 10, 0, 0)
                 boxBg:SetColorTexture(0, 0, 0, 0.5)
                 MakeBorder(box, 1, 1, 1, 0.2)
@@ -708,7 +716,11 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
                     local ph = box:CreateFontString(nil, "ARTWORK")
                     ph:SetFont(EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
                     ph:SetTextColor(0.7, 0.7, 0.7, 0.45)
-                    ph:SetPoint("LEFT", box, "LEFT", 10, 0)
+                    if centered then
+                        ph:SetPoint("CENTER", box, "CENTER", 0, 0)
+                    else
+                        ph:SetPoint("LEFT", box, "LEFT", 10, 0)
+                    end
                     ph:SetText(EllesmereUI.L(cfg.placeholder))
                     box:SetScript("OnTextChanged", function(self)
                         ph:SetShown((self:GetText() or "") == "")
@@ -903,7 +915,7 @@ function WidgetFactory:TripleRow(parent, yOffset, leftCfg, midCfg, rightCfg, spl
             local defaultTrackW = isRussian and 100 or 130
             local scfg = PixelizeSliderCfg(cfg)
             local trackFrame, valBox, _, slThumb = BuildSliderCore(region, cfg.trackWidth or defaultTrackW, 4, 14, 40, 26, 13, SL.INPUT_A,
-                scfg.min, scfg.max, scfg.step, scfg.getValue, scfg.setValue, true, cfg.snapPoints)
+                scfg.min, scfg.max, scfg.step, scfg.getValue, scfg.setValue, true, cfg.snapPoints, cfg.valueSnap)
             PP.Point(valBox, "RIGHT", region, "RIGHT", -SIDE_PAD, 0)
             PP.Point(trackFrame, "RIGHT", valBox, "LEFT", -12, 0)
             RegisterWidgetRefresh(function()
@@ -1290,7 +1302,7 @@ function WidgetFactory:DropdownWithOffsets(parent, yOffset, dropdownCfg, xSlider
         axisLabel:SetText(EllesmereUI.L(slCfg.text or ""))
 
         local trackFrame, valBox, _, slThumb = BuildSliderCore(rightRegion, MINI_TRACK_W, 4, 12, MINI_VALBOX_W, SLIDER_H, 11, SL.INPUT_A,
-            slCfg.min, slCfg.max, slCfg.step, slCfg.getValue, slCfg.setValue, true, slCfg.snapPoints)
+            slCfg.min, slCfg.max, slCfg.step, slCfg.getValue, slCfg.setValue, true, slCfg.snapPoints, slCfg.valueSnap)
 
         if isLeft then
             PP.Point(axisLabel, "LEFT", rightRegion, "LEFT", 4, 0)
