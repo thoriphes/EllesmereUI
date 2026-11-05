@@ -11,6 +11,7 @@ local _, ns = ...
 local _G = _G
 local ipairs, pairs = ipairs, pairs
 local InCombatLockdown = InCombatLockdown
+local RegisterAttributeDriver, UnregisterAttributeDriver = RegisterAttributeDriver, UnregisterAttributeDriver
 local EFD = ns.EFD
 
 local EAB, EAB_VTABLE = ns.EAB, ns.EAB_VTABLE
@@ -39,35 +40,9 @@ EAB_VTABLE.PAGING_STATES = {
         { id = "help",  macro = "[help]",      label = "Friendly Target" },
         { id = "harm",  macro = "[harm]",      label = "Hostile Target" },
     },
-    class = {
-        DRUID = {
-            { id = "prowl",   macro = "[bonusbar:1,stealth]", label = "Prowl" },
-            { id = "cat",     macro = "[bonusbar:1]",         label = "Cat Form" },
-            { id = "bear",    macro = "[bonusbar:3]",         label = "Bear Form" },
-            { id = "moonkin", macro = "[bonusbar:4]",         label = "Moonkin Form" },
-        },
-        ROGUE = {
-            { id = "stealth", macro = "[bonusbar:1]", label = "Stealth" },
-        },
-        WARRIOR = {
-            { id = "battle",    macro = "[bonusbar:1]", label = "Battle Stance" },
-            { id = "defensive", macro = "[bonusbar:2]", label = "Defensive Stance" },
-        },
-        EVOKER = {
-            { id = "soar", macro = "[bonusbar:1]", label = "Soar" },
-        },
-    },
+    -- Shared with the CDM's Stance Bar hide (EllesmereUI_VisibilityRules.lua).
+    class = EllesmereUI.CLASS_PAGING_STATES,
 }
--- A form pages only where the client gives it a bonus bar: on WoW Forever
--- Berserker Stance has one (3) and Moonkin Form none, on retail the other way
--- round. Tree of Life has none on either client, so it is not listed.
-if EllesmereUI.IS_FOREVER == true then
-    local states = EAB_VTABLE.PAGING_STATES.class
-    table.insert(states.WARRIOR, { id = "berserker", macro = "[bonusbar:3]", label = "Berserker Stance" })
-    for i = #states.DRUID, 1, -1 do
-        if states.DRUID[i].id == "moonkin" then table.remove(states.DRUID, i) end
-    end
-end
 
 -- Modifier/Target Paging (the bar's modTargetPaging): false switches the five
 -- modifier and target states off without clearing them; never set, they apply
@@ -89,9 +64,10 @@ end
 
 -- Auto-paging opt-outs for MainBar. Returns noForm, noSky: suppress implicit bonusbar
 -- swaps for forms/stealth/stance (bonusbar 1-4) and skyriding (bonusbar 5). Does NOT
--- cover vehicle/override/possess -- those replace abilities outright, so suppressing
--- them would leave no way to use the vehicle. Only ever true for MainBar, the only bar
--- the engine drives off bonusbar and the only one with these toggles.
+-- cover vehicle/override/possess or a temporary transformation's bar -- those replace
+-- abilities outright, so suppressing them would leave no way to use them. Only ever
+-- true for MainBar, the only bar the engine drives off bonusbar and the only one with
+-- these toggles.
 function EAB_VTABLE.GetAutoPagingOptOuts(barKey)
     if barKey ~= "MainBar" then return false, false end
     local bs = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars.MainBar
@@ -113,6 +89,9 @@ function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
         end
         if EAB_VTABLE.GetVehicleBarIndex then
             parts[#parts + 1] = "[vehicleui][possessbar] " .. EAB_VTABLE.GetVehicleBarIndex()
+        end
+        if EAB_VTABLE.GetTempShapeshiftBarIndex then
+            parts[#parts + 1] = "[shapeshift] " .. EAB_VTABLE.GetTempShapeshiftBarIndex()
         end
     end
     if not noModTarget then
@@ -189,13 +168,18 @@ local function GetClassPagingConditions()
     local noForm, noSky = EAB_VTABLE.GetAutoPagingOptOuts("MainBar")
     local conditions = ""
 
-    -- Override bar (soft vehicle/quest abilities) and possess bar: remap bar
-    -- 1 to those slots so our buttons stay visible and keybinds work.
+    -- Override bar (soft vehicle/quest abilities), possess bar and a temporary
+    -- transformation's bar ([shapeshift], e.g. a quest that turns you into a
+    -- creature): remap bar 1 to those slots so our buttons stay visible and
+    -- keybinds work, in Blizzard's own order (ActionBarController_UpdateAll).
     if EAB_VTABLE.GetOverrideBarIndex then
         conditions = conditions .. "[overridebar] " .. EAB_VTABLE.GetOverrideBarIndex() .. "; "
     end
     if EAB_VTABLE.GetVehicleBarIndex then
         conditions = conditions .. "[vehicleui][possessbar] " .. EAB_VTABLE.GetVehicleBarIndex() .. "; "
+    end
+    if EAB_VTABLE.GetTempShapeshiftBarIndex then
+        conditions = conditions .. "[shapeshift] " .. EAB_VTABLE.GetTempShapeshiftBarIndex() .. "; "
     end
 
     -- Manual page switching (pages 2-6): [bar:N] responds to the internal page set by
@@ -268,7 +252,7 @@ function ns.GetPagingSkipMask()
     for barKey, page in pairs(EAB_VTABLE.BAR_KEY_TO_PAGE) do
         if barKey ~= "MainBar" and page >= 1 and page <= NUM_AB_PAGES then
             local settings = bars[barKey]
-            if settings and settings.enabled ~= false and not settings.alwaysHidden then
+            if settings and settings.enabled ~= false and not EAB.VisibilityCompat.IsNever(settings) then
                 skip[page] = true
             end
         end
@@ -401,31 +385,20 @@ local function SetupPagingFrame()
     f._downBtn = downBtn
     InitPagingQuickKeybindButton(downBtn, "UI-HUD-ActionBar-PageDownArrow-Mouseover")
 
-    -- Update page text and handle combat visibility / vehicle state
+    -- Update page text and vehicle state. Combat visibility is the bar's own:
+    -- the frame is parented to MainBar, whose visibility driver shows and
+    -- hides it in combat (a Show or Hide here would also fight the paged
+    -- driver in LayoutPagingFrame).
     f:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
     f:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
     f:RegisterEvent("UPDATE_OVERRIDE_ACTIONBAR")
     f:RegisterEvent("UPDATE_VEHICLE_ACTIONBAR")
-    f:RegisterEvent("PLAYER_REGEN_DISABLED")
-    f:RegisterEvent("PLAYER_REGEN_ENABLED")
     f:SetScript("OnEvent", function(_, event)
         if event == "UPDATE_OVERRIDE_ACTIONBAR" or event == "UPDATE_VEHICLE_ACTIONBAR" then
             LayoutPagingFrame()
             -- Trigger page sync; the Queue callback early-returns in combat,
             -- so the sync only runs out of combat.
             EAB_VTABLE.MainBarPageSync.Queue()
-            return
-        end
-        if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
-            local s = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars and EAB.db.profile.bars["MainBar"]
-            if s and not InCombatLockdown() then
-                local inCombat = (event == "PLAYER_REGEN_DISABLED")
-                if s.combatShowEnabled then
-                    if inCombat then f:Show() else f:Hide() end
-                elseif s.combatHideEnabled then
-                    if inCombat then f:Hide() else f:Show() end
-                end
-            end
             return
         end
         local page = EAB_VTABLE.GetActionBarPage()
@@ -454,15 +427,35 @@ function ns.AB_PagingArrowMetrics(btnH)
     return arrow, math.max(10, math.floor(arrow * 0.7)), 2, 4
 end
 
+-- Paging Arrows off with Show While Paged on: a secure driver shows the
+-- arrows while bar 1 is on a page the player paged to. [bar:N] follows only
+-- that manual page (the paging keys and arrows), never the bonus bar a form,
+-- stealth or skyriding pages bar 1 by, so those never bring the arrows up.
+-- Hidden while a vehicle, override, possess or temporary shapeshift bar takes
+-- the bar's place, as the always-shown arrows are. The manager applies its
+-- verdict on every pass, so nothing else shows or hides the frame meanwhile.
+local PAGED_VIS = "[overridebar][vehicleui][possessbar][shapeshift] hide; [bar:1] hide; show"
+local function SetPagedDriver(f, on)
+    if on then
+        if not f._pagedVis then
+            f._pagedVis = true
+            RegisterAttributeDriver(f, "state-visibility", PAGED_VIS)
+        end
+    elseif f._pagedVis then
+        f._pagedVis = nil
+        UnregisterAttributeDriver(f, "state-visibility")
+    end
+end
+
 LayoutPagingFrame = function()
     local f = _pagingFrame
     if not f then return end
     if InCombatLockdown() then return end
     local mainFrame = barFrames and barFrames["MainBar"]
-    if not mainFrame then f:Hide(); return end
+    if not mainFrame then SetPagedDriver(f, false); f:Hide(); return end
 
     local s = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars and EAB.db.profile.bars["MainBar"]
-    if not s then f:Hide(); return end
+    if not s then SetPagedDriver(f, false); f:Hide(); return end
 
     -- Parenting to MainBar makes it inherit secure show/hide + mouseover-fade
     -- alpha automatically, including in combat. Reparenting secure children is
@@ -478,16 +471,24 @@ LayoutPagingFrame = function()
     local lvl = (mainFrame:GetFrameLevel() or 1) + 1 + (caps and caps.lvl or 4)
     if f:GetFrameLevel() ~= lvl then f:SetFrameLevel(lvl) end
 
-    if s.alwaysHidden or s.enabled == false or not s.showPagingArrows then
+    -- Paging Arrows: always shown. Off: shown only while paged (Show While
+    -- Paged, on unless turned off), through the paged driver above.
+    local always = s.showPagingArrows
+    local whilePaged = not always and s.pagingArrowsWhilePaged ~= false
+    if EAB.VisibilityCompat.IsNever(s) or s.enabled == false or not (always or whilePaged) then
+        SetPagedDriver(f, false)
         f:Hide()
         return
     end
 
-    -- Hide during vehicle/override (paging doesn't apply)
-    local overridePage = mainFrame:GetAttribute("state-overridepage") or 0
-    if overridePage > 0 then
-        f:Hide()
-        return
+    if always then
+        SetPagedDriver(f, false)
+        -- Hide during vehicle/override (paging doesn't apply)
+        local overridePage = mainFrame:GetAttribute("state-overridepage") or 0
+        if overridePage > 0 then
+            f:Hide()
+            return
+        end
     end
 
     local isVertical = (s.orientation == "vertical")
@@ -531,7 +532,11 @@ LayoutPagingFrame = function()
         f._downBtn:SetPoint("BOTTOM", f, "BOTTOM", 0, 0)
     end
 
-    f:Show()
+    if whilePaged then
+        SetPagedDriver(f, true)
+    else
+        f:Show()
+    end
 end
 ns.LayoutPagingFrame = LayoutPagingFrame
 

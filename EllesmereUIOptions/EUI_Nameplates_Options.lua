@@ -126,6 +126,8 @@ initFrame:SetScript("OnEvent", function(self)
     --  Refresh helpers
     ---------------------------------------------------------------------------
     local function RefreshAllPlates()
+        -- Color Casting Enemies repaints its tint colors (its swatches, Modify Out of Combat).
+        if ns.NP_CastTintsDirty then ns.NP_CastTintsDirty() end
         for _, plate in pairs(plates) do
             plate:UpdateHealth()
         end
@@ -216,10 +218,10 @@ initFrame:SetScript("OnEvent", function(self)
     EllesmereUI:RegisterOnShow(UpdatePreview)
 
     ---------------------------------------------------------------------------
-    --  Glow sites: the Dispel, Pandemic and Important Cast glows as shared glow
+    --  Glow sites: the Dispel, Pandemic, Important Cast and Cast Targets You glows as shared glow
     --  descriptors, used by the page rows and the Global Settings Glows page.
     ---------------------------------------------------------------------------
-    local npDispelGlowDesc, npImpCastGlowDesc, npPandemicGlowDesc
+    local npDispelGlowDesc, npImpCastGlowDesc, npPandemicGlowDesc, npCastTargetGlowDesc
     do
         local GO = EllesmereUI.GlowOptions
         -- The aura glows (Dispel, Pandemic) share one refresh, so the Glows
@@ -273,35 +275,40 @@ initFrame:SetScript("OnEvent", function(self)
                   end },
             },
         }
-        -- The cast bar is a bar host (no Shape).
-        npImpCastGlowDesc = {
-            view = ns.NP_GLOW_VIEW, host = "bar",
-            caps = { mode = true, params = true, bg = true },
-            defaultColor = { r = 1, g = 0.2, b = 0.2 },
-            isOff = function()
-                local d = DB()
-                local on = d and d.importantCastGlow
-                if on == nil then on = defaults.importantCastGlow end
-                return not on
-            end,
-            onChange = RefreshAllPlates,
-            get = function(f)
-                local d = DB()
-                if f == "style" then return d.importantCastGlowStyle or defaults.importantCastGlowStyle or 1
-                elseif f == "mode" then return d.importantCastGlowColorMode or "custom"
-                end
-                return EllesmereUI.GlowOptions.FlatGet(d, "importantCastGlow", f, defaults)
-            end,
-            set = function(f, a, b2, c2)
-                local d = DB()
-                if f == "style" then
-                    if a == 0 then d.importantCastGlow = false
-                    else d.importantCastGlow = true; d.importantCastGlowStyle = a end
-                elseif f == "mode" then d.importantCastGlowColorMode = a
-                else EllesmereUI.GlowOptions.FlatSet(d, "importantCastGlow", f, a, b2, c2)
-                end
-            end,
-        }
+        -- The cast bar glows (flat <prefix>* keys, on/off in <prefix>): the cast bar is a
+        -- bar host (no Shape). An edit reaches the casts already showing.
+        local function RefreshCastGlows()
+            if ns.NP_RefreshCastGlows then ns.NP_RefreshCastGlows() end
+        end
+        local function CastBarGlowDesc(prefix)
+            local k = EllesmereUI.Glows.FlatKeys(prefix)
+            return {
+                view = ns.NP_GLOW_VIEW, host = "bar",
+                caps = { mode = true, params = true, bg = true },
+                defaultColor = defaults[k.color],
+                isOff = function() return DBVal(prefix) ~= true end,
+                onChange = RefreshCastGlows,
+                get = function(f)
+                    local d = DB()
+                    if f == "style" then return d[k.style] or defaults[k.style] or 1
+                    elseif f == "mode" then return d[k.mode] or "custom"
+                    end
+                    return GO.FlatGet(d, prefix, f, defaults)
+                end,
+                set = function(f, a, b2, c2)
+                    local d = DB()
+                    if f == "style" then
+                        if a == 0 then d[prefix] = false
+                        else d[prefix] = true; d[k.style] = a end
+                    elseif f == "mode" then d[k.mode] = a
+                    else GO.FlatSet(d, prefix, f, a, b2, c2)
+                    end
+                end,
+            }
+        end
+        npImpCastGlowDesc = CastBarGlowDesc("importantCastGlow")
+        -- Casts targeting the player (off by default).
+        npCastTargetGlowDesc = CastBarGlowDesc("castTargetGlow")
         -- Debuffs in their pandemic window (pandemicGlow* keys; the same mode
         -- key the CDM pandemic sync writes). An unset color mode is Custom:
         -- the swatch color this glow always drew (the profile merge fills it
@@ -340,6 +347,9 @@ initFrame:SetScript("OnEvent", function(self)
         GO.RegisterSite({ id = "np_importantcast", label = "Important Cast Glow", group = "module",
             module = "EllesmereUINameplates", page = PAGE_DISPLAY, section = SECTION_CASTBAR,
             highlight = "Important Cast Glow", desc = npImpCastGlowDesc })
+        GO.RegisterSite({ id = "np_casttarget", label = "Cast Targets You Glow", group = "module",
+            module = "EllesmereUINameplates", page = PAGE_DISPLAY, section = SECTION_CASTBAR,
+            highlight = "Cast Targets You Glow", desc = npCastTargetGlowDesc })
     end
 
     ---------------------------------------------------------------------------
@@ -488,26 +498,6 @@ initFrame:SetScript("OnEvent", function(self)
         local function RefreshAllSlots()
             RefreshAllAuras()
             for _, plate in pairs(plates) do
-                local ds, bs, cs = ns.GetAuraSlots()
-                if bs ~= "none" then
-                    local buffSz = ns.GetBuffIconSize()
-                    local buffH = ns.GetAuraCropHeight(ns.GetAuraCrop("buffs"), buffSz)
-                    local bxOff, byOff = ns.GetSlotOffsets(bs)
-                    ns.PositionAuraSlot(plate.buffs, 4, bs, plate, buffSz, buffH, ns.GetAuraSpacing("buffs"), bxOff, byOff)
-                else
-                    for i = 1, 4 do plate.buffs[i]:Hide() end
-                end
-                if cs ~= "none" then
-                    local ccSz = ns.GetCCIconSize()
-                    local ccH = ns.GetAuraCropHeight(ns.GetAuraCrop("ccs"), ccSz)
-                    local cxOff, cyOff = ns.GetSlotOffsets(cs)
-                    ns.PositionAuraSlot(plate.cc, 2, cs, plate, ccSz, ccH, ns.GetAuraSpacing("ccs"), cxOff, cyOff)
-                else
-                    for i = 1, 2 do plate.cc[i]:Hide() end
-                end
-                if ds == "none" then
-                    for i = 1, 4 do plate.debuffs[i]:Hide() end
-                end
                 plate:UpdateRaidIcon()
                 plate:UpdateClassification()
                 -- Rare/Quest + Faction: the classification pass already ran it.
@@ -527,7 +517,8 @@ initFrame:SetScript("OnEvent", function(self)
         local textSlotKeys = ns.textSlotKeys
         local function SetTextElementAtSlot(slotKey, element)
             local db = DB()
-            if element ~= "none" then
+            -- Custom keeps its template per slot: any number of slots may show it.
+            if element ~= "none" and element ~= "custom" then
                 for _, key in ipairs(textSlotKeys) do
                     if key ~= slotKey then
                         local cur = db[key] or defaults[key]
@@ -562,91 +553,9 @@ initFrame:SetScript("OnEvent", function(self)
             return defaults[oldKey]
         end
 
-        -- Shared helper: apply a timer position to live plates for one aura type
-        local function LiveApplyTimerPos(auraFrames, count, v, kind)
-            local durC = AuraDurationVal(kind, "Color")
-            local durSz = AuraDurationVal(kind, "Size")
-            local durX = AuraDurationVal(kind, "X")
-            local durY = AuraDurationVal(kind, "Y")
-            for _, plate in pairs(plates) do
-                for i = 1, count do
-                    local af = auraFrames(plate, i)
-                    if af and af.cd then
-                        if v == "none" then
-                            if af.cd.SetHideCountdownNumbers then
-                                af.cd:SetHideCountdownNumbers(true)
-                            end
-                        else
-                            if af.cd.SetHideCountdownNumbers then
-                                af.cd:SetHideCountdownNumbers(false)
-                            end
-                            if af.cd.text then
-                                SetFSFont(af.cd.text, durSz, "OUTLINE, SLUG")
-                                af.cd.text:SetTextColor(durC.r, durC.g, durC.b, 1)
-                                af.cd.text:ClearAllPoints()
-                                if v == "center" then
-                                    af.cd.text:SetPoint("CENTER", af, "CENTER", durX, durY)
-                                    af.cd.text:SetJustifyH("CENTER")
-                                elseif v == "topright" then
-                                    PP.Point(af.cd.text, "TOPRIGHT", af, "TOPRIGHT", 3 + durX, 4 + durY)
-                                    af.cd.text:SetJustifyH("RIGHT")
-                                elseif v == "bottomleft" then
-                                    PP.Point(af.cd.text, "BOTTOMLEFT", af, "BOTTOMLEFT", -3 + durX, -4 + durY)
-                                    af.cd.text:SetJustifyH("LEFT")
-                                elseif v == "bottomright" then
-                                    PP.Point(af.cd.text, "BOTTOMRIGHT", af, "BOTTOMRIGHT", 3 + durX, -4 + durY)
-                                    af.cd.text:SetJustifyH("RIGHT")
-                                else
-                                    PP.Point(af.cd.text, "TOPLEFT", af, "TOPLEFT", -3 + durX, 4 + durY)
-                                    af.cd.text:SetJustifyH("LEFT")
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-            -- 12.1 aura containers render the text through the style pass instead of the legacy frames above (fingerprint-guarded; nil on 12.0).
-            if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
-        end
-
-        -- Shared helper: apply a stack-count position to live plates for one aura type
-        local function LiveApplyStackPos(auraFrames, count, v)
-            local stkC = (DB() and DB().auraStackTextColor) or defaults.auraStackTextColor
-            local stkSz = DBVal("auraStackTextSize") or defaults.auraStackTextSize
-            local stkX = DBVal("auraStackTextX") or defaults.auraStackTextX
-            local stkY = DBVal("auraStackTextY") or defaults.auraStackTextY
-            for _, plate in pairs(plates) do
-                for i = 1, count do
-                    local af = auraFrames(plate, i)
-                    if af and af.count then
-                        if v == "none" then
-                            af.count:Hide()
-                        else
-                            af.count:Show()
-                            SetFSFont(af.count, stkSz, "OUTLINE, SLUG")
-                            af.count:SetTextColor(stkC.r, stkC.g, stkC.b, 1)
-                            af.count:ClearAllPoints()
-                            if v == "center" then
-                                af.count:SetPoint("CENTER", af, "CENTER", stkX, stkY)
-                                af.count:SetJustifyH("CENTER")
-                            elseif v == "topright" then
-                                PP.Point(af.count, "TOPRIGHT", af, "TOPRIGHT", 3 + stkX, 4 + stkY)
-                                af.count:SetJustifyH("RIGHT")
-                            elseif v == "bottomleft" then
-                                PP.Point(af.count, "BOTTOMLEFT", af, "BOTTOMLEFT", -3 + stkX, -4 + stkY)
-                                af.count:SetJustifyH("LEFT")
-                            elseif v == "topleft" then
-                                PP.Point(af.count, "TOPLEFT", af, "TOPLEFT", -3 + stkX, 4 + stkY)
-                                af.count:SetJustifyH("LEFT")
-                            else
-                                PP.Point(af.count, "BOTTOMRIGHT", af, "BOTTOMRIGHT", 3 + stkX, -4 + stkY)
-                                af.count:SetJustifyH("RIGHT")
-                            end
-                        end
-                    end
-                end
-            end
-            -- 12.1 aura containers: stacks render through the style pass (fingerprint-guarded; nil on 12.0).
+        -- Aura duration and stack text draw through the aura containers' style
+        -- pass, which a settings edit re-runs (fingerprint-guarded).
+        local function LiveApplyAuraText()
             if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
         end
 
@@ -661,7 +570,7 @@ initFrame:SetScript("OnEvent", function(self)
             SetElementAtPosition = SetElementAtPosition,
             SetTextElementAtSlot = SetTextElementAtSlot, asFallback = asFallback,
             atFallback = atFallback, AuraDurationVal = AuraDurationVal,
-            LiveApplyStackPos = LiveApplyStackPos, LiveApplyTimerPos = LiveApplyTimerPos,
+            LiveApplyAuraText = LiveApplyAuraText,
             timerPosOrder = timerPosOrder, timerPosValues = timerPosValues,
         }
         local styleHeader, coreHeader, coreRow1, coreRow2, coreRow3, coreTextHeader, textSlotCells
@@ -775,6 +684,14 @@ initFrame:SetScript("OnEvent", function(self)
                 return { section = coreTextHeader, target = info.row, slotSide = (info.side == "_leftRegion") and "left" or "right" }
             end,
         }
+        -- Custom texts: each position's own font string, that position's row.
+        for _, slotKey in ipairs(ns.textSlotKeys) do
+            dynamicMappings["custom_" .. slotKey] = function()
+                local info = textSlotToRow[slotKey]
+                if not info then return { section = coreTextHeader, target = textFirstRow } end
+                return { section = coreTextHeader, target = info.row, slotSide = (info.side == "_leftRegion") and "left" or "right" }
+            end
+        end
         -- The font strings a single element owns: the row of the slot showing it.
         for mapKey, element in pairs({ healthNumber = "healthNumber", levelText = "level", targetOfTarget = "targetOfTarget" }) do
             dynamicMappings[mapKey] = function()
@@ -937,6 +854,15 @@ initFrame:SetScript("OnEvent", function(self)
                 local fs = pv[fsKey]
                 if fs then
                     local ov = CreateHitOverlay(fs, mapKey, true)
+                    ov._syncFS = fs
+                    ov:SetShown(fs:IsShown())
+                    textOverlays[#textOverlays + 1] = ov
+                end
+            end
+            -- Custom texts: one font string per position, shown while it holds one.
+            if pv._customFS then
+                for slotKey, fs in pairs(pv._customFS) do
+                    local ov = CreateHitOverlay(fs, "custom_" .. slotKey, true)
                     ov._syncFS = fs
                     ov:SetShown(fs:IsShown())
                     textOverlays[#textOverlays + 1] = ov
@@ -1199,9 +1125,26 @@ initFrame:SetScript("OnEvent", function(self)
         return proxy
     end
 
+    -- Textured Background: the Texture Settings cog row, shared by the Display
+    -- page and Global Settings > Textures. kind: "health" or "cast"; apply: the
+    -- page's own refresh after a write.
+    local function TexBgRowCfg(kind, apply)
+        local cast = kind == "cast"
+        local key = cast and "castTextureBg" or "healthTextureBg"
+        local texKey = cast and "castBarTexture" or "healthBarTexture"
+        return ns.NP_BlizzOnlyGate({ type = "toggle", label = "Textured Background",
+            tooltip = cast and "Draws the bar texture on the cast bar background too."
+                or "Draws the bar texture on the health bar background too.",
+            disabled = function() return (DBVal(texKey) or "none") == "none" end,
+            disabledTooltip = cast and "This option requires a Cast Bar Texture other than None."
+                or "This option requires a Bar Texture other than None.",
+            get = function() return DBVal(key) == true end,
+            set = function(v) DB()[key] = v and true or false; apply() end })
+    end
     -- Shared with the page builders under Nameplates_Options\ (read in their
     -- prologs). Every field is final here: optState holds the mutable state.
     ns._NPO_OptEnv = {
+        TexBgRowCfg = TexBgRowCfg,
         _colorPagePreviews = _colorPagePreviews, ADDON_NAME = ADDON_NAME, BAR_W = BAR_W, DB = DB,
         DBColor = DBColor, DBVal = DBVal, defaults = defaults, displayCastIcons = displayCastIcons,
         FOCUS_LETTER_ANCHOR_ORDER = FOCUS_LETTER_ANCHOR_ORDER,
@@ -1210,7 +1153,7 @@ initFrame:SetScript("OnEvent", function(self)
         LazyColorPreviewBar = LazyColorPreviewBar, NAME_RAID_MARKER_GAP = NAME_RAID_MARKER_GAP,
         NextCastFill = NextCastFill, NextCastIcon = NextCastIcon,
         npDispelGlowDesc = npDispelGlowDesc, npImpCastGlowDesc = npImpCastGlowDesc,
-        npPandemicGlowDesc = npPandemicGlowDesc,
+        npPandemicGlowDesc = npPandemicGlowDesc, npCastTargetGlowDesc = npCastTargetGlowDesc,
         optState = optState, pairs = pairs, pcall = pcall, plates = plates, PP = PP,
         RandomizePreviewValues = RandomizePreviewValues, RefreshAllAuras = RefreshAllAuras,
         RefreshAllPlates = RefreshAllPlates, SECTION_AURA = SECTION_AURA,

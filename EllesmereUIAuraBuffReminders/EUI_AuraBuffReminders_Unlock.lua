@@ -16,6 +16,7 @@ local floor, abs = math.floor, math.abs
 
 local _B, EABR, activeIcons, ICON_SIZE = I._B, I.EABR, I.activeIcons, I.ICON_SIZE
 local LayoutIcons, ResizeAnchorCentered = I.LayoutIcons, I.ResizeAnchorCentered
+local CursorAttachActive = I.CursorAttachActive
 
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
@@ -133,10 +134,12 @@ local function RegisterUnlockElements()
                 local p = db.profile.display
                 local baseScale = p.scale or 1.0
                 local sz = floor(ICON_SIZE * baseScale + 0.5)
+                local iconH = sz
+                if p.iconShape and p.iconShape ~= "none" then sz, iconH = ns.IconDimensions(sz, p) end
                 local spacing = p.iconSpacing or 8
                 -- Fits all active icons (same set LayoutIcons places: reminders + merged beacon icons unless cursor-routed); falls back to a 2-wide grabbable box when empty so the mover overlay stays draggable.
                 local count = #activeIcons
-                local beaconsOnCursor = p.cursorAttach and cursorAnchor
+                local beaconsOnCursor = CursorAttachActive(p) and cursorAnchor
                 if _B.icons and not beaconsOnCursor then
                     for _, id in ipairs(_B.ALL or {}) do
                         if _B.iconState and _B.iconState[id] and _B.icons[id] then count = count + 1 end
@@ -148,7 +151,7 @@ local function RegisterUnlockElements()
                 if p.showText then
                     textH = (p.textSize or 11) + abs(p.textYOffset or -2)
                 end
-                local h = sz + textH
+                local h = iconH + textH
                 -- Resizes the anchor for the overlay
                 if iconAnchor then ResizeAnchorCentered(w, h) end
                 return w, h

@@ -379,7 +379,8 @@ function ns.LayoutCastIcon(plate, castH)
 end
 
 -- How far the cast icon protrudes past the bar edge, plus that side ("left"/"right"). The
--- target arrow + side-slot core icons reserve this so they never land under the icon. Returns
+-- target arrows and the side-slot elements step out by it (ns.NP_SideIconPush,
+-- ns.NP_FullIconPush) so they never land under the icon. Returns
 -- 0 for left/normal and in-width-tucked icons. Optional `plate` matters only for the full-size
 -- icon (a cast-bar child rendered only during a cast): its reserve is gated on the cast bar
 -- being shown; a settings-only query (no plate) assumes the space is reserved.
@@ -403,6 +404,44 @@ function ns.GetCastIconReserve(plate)
         return GetCastBarHeight() * (GetCastIconScale() or 1), side
     end
     return 0, side
+end
+
+-- Whether an element beside the bars meets the full-size cast icon. The element spans y0..y1
+-- above the health bar's bottom; the icon runs from the health bar's top (barH) down to the
+-- cast bar's bottom (castBottom, from the health bar's bottom), both moved by its Y offset.
+-- The options preview passes its own bar measures.
+function ns.NP_MeetsFullIcon(y0, y1, barH, castBottom)
+    local iy = (p and p.castIconOffsetY) or defaults.castIconOffsetY or 0
+    return y0 < barH + iy and castBottom + iy < y1
+end
+
+-- The full-size cast icon's push on `side` for an element spanning y0..y1 above the health
+-- bar's bottom: the icon's width while it shows there (a cast is up) and the two meet, else 0,
+-- so an element its slot's Y offset moved clear of the icon stays put.
+function ns.NP_FullIconPush(plate, side, y0, y1)
+    if not ns.GetCastIconFullSize() then return 0 end
+    local res, iconSide = ns.GetCastIconReserve(plate)
+    if res <= 0 or iconSide ~= side then return 0 end
+    if ns.NP_MeetsFullIcon(y0, y1, GetHealthBarHeight(), plate._castDrop or -GetCastBarHeight()) then
+        return res
+    end
+    return 0
+end
+
+-- How far an icon in a side slot (raid marker, classification, faction; the target arrows
+-- too) steps out on `side`. It centres on the bar plus y and is sz tall. The normal-size cast
+-- icon's reserve always applies, the full-size icon's only where the two meet; plus Classic
+-- WoW UI's border reach or WoW Forever's level box (ns.NP_ClassicSide).
+function ns.NP_SideIconPush(plate, side, y, sz)
+    local push
+    if ns.GetCastIconFullSize() then
+        local mid = GetHealthBarHeight() / 2 + y
+        push = ns.NP_FullIconPush(plate, side, mid - sz / 2, mid + sz / 2)
+    else
+        local res, iconSide = ns.GetCastIconReserve(plate)
+        push = (iconSide == side) and res or 0
+    end
+    return push + ns.NP_ClassicSide(side)
 end
 local function GetKickTickEnabled()
     if p and p.kickTickEnabled ~= nil then return p.kickTickEnabled end
@@ -661,10 +700,11 @@ do
     -- r, g, b for a readable level: the skull's colour below 0, else the difficulty
     -- colour (nil when attackability or the player's level is secret). "player" is the
     -- options preview's stand-in mob, ranked as attackable like a hostile mob.
-    local function LevelRGB(unit, lvl)
+    -- friendly: rank friendly units by difficulty whatever levelDifficultyColorFriendly says.
+    local function LevelRGB(unit, lvl, friendly)
         if lvl < 0 then return EllesmereUI.GetLevelDifficultyColor(-1) end
         return EllesmereUI.GetLevelColor(unit, lvl,
-            unit == "player" or (p and p.levelDifficultyColorFriendly))
+            friendly or unit == "player" or (p and p.levelDifficultyColorFriendly))
     end
     -- The unit's level difficulty colour, r, g, b; nil while its level cannot be read.
     function ns.NP_UnitLevelColor(unit)
@@ -675,14 +715,17 @@ do
     -- Display string for the unit's EFFECTIVE level (so scaling/Chromie time read as the game
     -- ranks them). "??" for skull-ranked (-1) or unreadable (secret) levels, matching default UI.
     -- color "diff" wraps it in the difficulty colour (an unreadable level stays a plain
-    -- "??"); any other value returns it plain.
+    -- "??"); "diffAll" does too and ranks friendly units as well (the friendly player
+    -- plates' Color Level by Difficulty); any other value returns it plain.
     function ns.GetUnitLevelText(unit, color)
         local lvl = UnitEffectiveLevel(unit)
         if type(lvl) ~= "number" or (issecretvalue and issecretvalue(lvl)) then
             return "??"
         end
         local txt = lvl < 0 and "??" or tostring(lvl)
-        if color == "diff" then return EllesmereUI.ColorText(txt, LevelRGB(unit, lvl)) end
+        if color == "diff" or color == "diffAll" then
+            return EllesmereUI.ColorText(txt, LevelRGB(unit, lvl, color == "diffAll"))
+        end
         return txt
     end
     -- Write a name-family element's text into a FontString (shared by runtime update and
@@ -704,21 +747,22 @@ do
             fs:SetText(name)
         end
     end
-    -- WoW Forever: the name slot's Name Format (text-slot cog), the first or last word
-    -- of the name; unset shows it whole. Defined only on Forever, so retail's name
-    -- write pays one nil check. Keys prebuilt (no per-update string building); the
-    -- split, its secret pass-through and its bounded cache live in ForeverShortName.
-    if EllesmereUI.IS_FOREVER then
+    -- Name Format (text-slot cog): one word, initials or a Character Count;
+    -- unset shows the name whole. Keys are prebuilt; the split and its cache
+    -- live in EllesmereUI.ShortName. unit: whose name it is (on WoW Forever,
+    -- First / Last Name leave a non-player's name whole; nil = the preview).
+    do
         local NAME_FORMAT_KEYS = {
             textSlotTop  = "textSlotTopNameFormat",  textSlotRight  = "textSlotRightNameFormat",
             textSlotLeft = "textSlotLeftNameFormat", textSlotCenter = "textSlotCenterNameFormat",
             textSlotBottomLeft  = "textSlotBottomLeftNameFormat",
             textSlotBottomRight = "textSlotBottomRightNameFormat",
         }
-        local short = EllesmereUI.ForeverShortName
-        function ns.NP_FormatName(name, slotKey)
+        local short = EllesmereUI.ShortName
+        function ns.NP_FormatName(name, slotKey, unit)
             local key = slotKey and NAME_FORMAT_KEYS[slotKey]
             local mode = key and p and p[key]
+            if mode then mode = EllesmereUI.UnitNameFormat(mode, unit) end
             if mode then return short(name, mode) end
             return name
         end
@@ -744,6 +788,144 @@ local function EstimateHealthTextWidth(element)
     return (healthTextWidths[element] or 0) + HEALTH_TEXT_PADDING
 end
 ns.EstimateHealthTextWidth = EstimateHealthTextWidth
+
+-- Custom text (element "custom"): any slot may show one, each with its own template
+-- (<slot>CustomFormat) on its own font string (plate[ns.NP_CustomFSKey[slot]]), parsed by
+-- EllesmereUI.TextTags against this binding of the unit schema. Pieces take (unit, slotKey)
+-- and hand values only to format setters: health, absorb and names may be secret. A nil unit
+-- is the options preview (the schema samples). do/end + ns funcs: no new locals (cap).
+do
+    local TT, sf, IsZeroValue = EllesmereUI.TextTags, string.format, EllesmereUI.IsZeroValue
+    local FS_KEY, FORMAT_KEY = {}, {}
+    for i = 1, #textSlotKeys do
+        local s = textSlotKeys[i]
+        FS_KEY[s] = "custom" .. s:sub(9)  -- textSlotTop -> customTop
+        FORMAT_KEY[s] = s .. "CustomFormat"
+    end
+    ns.NP_CustomFSKey = FS_KEY
+    -- The unit's name as the name slot writes it (the slot's Name Format).
+    local function Name(u, slotKey)
+        local name = EllesmereUI.WithSurname(UnitName(u))
+        if type(name) == "nil" then return "" end
+        return ns.NP_FormatName(name, slotKey, u)
+    end
+    -- Tag modifiers shape the plain name. They do not also apply the slot's Name Format.
+    local function Shaped(mode)
+        return function(u)
+            local name = EllesmereUI.WithSurname(UnitName(u))
+            if type(name) == "nil" then return "" end
+            return EllesmereUI.ShortName(name, mode)
+        end
+    end
+    local function TargetShaped(mode)
+        local piece = Shaped(mode)
+        return function(u)
+            local tu = ns._npToTUnits[u]
+            if not tu then tu = u .. "target"; ns._npToTUnits[u] = tu end
+            if not UnitExists(tu) then return "" end
+            return piece(tu)
+        end
+    end
+    local P = {
+        ["hp"] = function(u)
+            if UnitIsDeadOrGhost(u) then return EllesmereUI.L("DEAD") end
+            return sf("%d", UnitHealth(u) or 0)
+        end,
+        ["hp:abr"] = function(u)
+            if UnitIsDeadOrGhost(u) then return EllesmereUI.L("DEAD") end
+            return ns.AbbreviateValue(UnitHealth(u) or 0, "health")
+        end,
+        ["hp:max"] = function(u) return sf("%d", UnitHealthMax(u) or 0) end,
+        ["hp:max:abr"] = function(u) return ns.AbbreviateValue(UnitHealthMax(u) or 0, "maxHealth") end,
+        ["hp:pct"] = function(u)
+            if UnitIsDeadOrGhost(u) then return "0" end
+            return sf("%d", UnitHealthPercent(u, true, CurveConstants.ScaleTo100) or 0)
+        end,
+        ["absorb"] = function(u) return C_StringUtil.TruncateWhenZero(UnitGetTotalAbsorbs(u) or 0) end,
+        ["absorb:abr"] = function(u)
+            local v = UnitGetTotalAbsorbs(u) or 0
+            if IsZeroValue(v) then return "" end
+            return ns.AbbreviateValue(v, "absorb")
+        end,
+        ["name"] = Name,
+        ["name:first"] = Shaped("first"), ["name:last"] = Shaped("last"), ["name:abbr"] = Shaped("abbr"),
+        ["target"] = function(u, slotKey)
+            local tu = ns._npToTUnits[u]
+            if not tu then tu = u .. "target"; ns._npToTUnits[u] = tu end
+            if not UnitExists(tu) then return "" end
+            return Name(tu, slotKey)
+        end,
+        ["target:first"] = TargetShaped("first"), ["target:last"] = TargetShaped("last"),
+        ["target:abbr"] = TargetShaped("abbr"),
+        ["level"] = function(u) return ns.GetUnitLevelText(u) end,
+    }
+    local CAT = TT.Bind(TT.UNIT, P)
+    ns.NP_TextTags = CAT
+    -- Weak both ways: each value points back at its key (c.parsed), which a weak-key
+    -- table alone would never let go of in Lua 5.1. Plates hold what they paint.
+    local compiled = setmetatable({}, { __mode = "kv" })
+    local args = {}
+    -- A slot's parsed template (nil while empty). db: a profile to read instead of the live one.
+    function ns.NP_CustomParse(slotKey, db)
+        db = db or p
+        return TT.Parse(CAT, db and db[FORMAT_KEY[slotKey]])
+    end
+    -- A slot's compiled template { fmt, n, reads, has, parsed, [i] = piece }, nil while
+    -- empty. Built once per parse result.
+    function ns.NP_CustomCompiled(slotKey, db)
+        local parsed = ns.NP_CustomParse(slotKey, db)
+        if not parsed then return nil end
+        local c = compiled[parsed]
+        if not c then
+            local keys = parsed.keys
+            c = { fmt = parsed.fmt, n = #keys, reads = parsed.reads, has = parsed.has, parsed = parsed }
+            for i = 1, c.n do c[i] = P[keys[i]] end
+            compiled[parsed] = c
+        end
+        return c
+    end
+    -- One SetFormattedText per paint; unit nil paints the schema samples.
+    function ns.NP_PaintCustom(fs, c, unit, slotKey)
+        if not unit then
+            fs:SetText(TT.Preview(CAT, c.parsed))
+            return
+        end
+        local n = c.n
+        for i = 1, n do args[i] = c[i](unit, slotKey) end
+        fs:SetFormattedText(c.fmt, unpack(args, 1, n))
+        -- An empty Top text (no target, no shield) keeps its line: the top aura row
+        -- and the range text anchor to it. GetText reads nil while empty.
+        if slotKey == "textSlotTop" and not fs:GetText() then fs:SetText(" ") end
+    end
+    -- Estimated width of a slot's custom text, 0 while empty. db: as NP_CustomParse.
+    function ns.NP_CustomWidth(slotKey, db)
+        local parsed = ns.NP_CustomParse(slotKey, db)
+        if not parsed then return 0 end
+        return TT.EstimateWidth(CAT, parsed) + HEALTH_TEXT_PADDING
+    end
+    -- The bar width left to a name-like text in a bar slot: the bar minus the estimated
+    -- widths of the other bar slots' texts (a name-family text at the schema's name width).
+    -- db: a profile to read instead of the live one.
+    function ns.NP_BarRestWidth(slotKey, db)
+        db = db or p
+        local w = ns.GetHealthBarWidth()
+        local bar = ns._npBarTextKeys
+        for i = 1, #bar do
+            local key = bar[i]
+            if key ~= slotKey then
+                local el = (db and db[key]) or defaults[key]
+                if el == "custom" then
+                    w = w - ns.NP_CustomWidth(key, db)
+                elseif ns.IsNameElement(el) then
+                    w = w - (TT.UNIT.keys.name.width + HEALTH_TEXT_PADDING)
+                elseif el ~= "none" then
+                    w = w - EstimateHealthTextWidth(el)
+                end
+            end
+        end
+        return w
+    end
+end
 
 local function GetHealthBarWidth()
     local extra = (p and p.healthBarWidth) or defaults.healthBarWidth
@@ -852,14 +1034,6 @@ do
             icon:SetTexCoord(z, 1 - z, z, 1 - z)
         end
     end
-    -- Size + crop a single aura slot and its icon together so they never drift
-    -- out of sync. Returns the applied width and height for spacing/positioning.
-    function ns.ApplyAuraSlotCrop(slot, cropped, sizeW)
-        local h = ns.GetAuraCropHeight(cropped, sizeW)
-        PP.Size(slot, sizeW, h)
-        ns.SetAuraIconCrop(slot.icon, cropped, sizeW, h)
-        return sizeW, h
-    end
 end
 local function GetTargetGlowStyle()
     if p and p.targetGlowStyle then return p.targetGlowStyle end
@@ -870,12 +1044,17 @@ ns.GetTargetGlowStyle = GetTargetGlowStyle
 -- migration: each toggle returns its own stored key when set, else derives from targetGlowStyle
 -- (stays in defaults so the fallback source is always present). Mapping: ellesmereui ->
 -- EllesmereUI; vibrant -> EllesmereUI + Border Color; none -> nothing. On ns (local budget).
+-- The WoW Forever style marks its target with Highlight alone: EUI Glow, Border
+-- Color and Border Size read off there whatever the profile holds (the saved
+-- choices stay for the other styles).
 function ns.GetTargetGlowEllesmereUI()
+    if ns.NP_Forever() then return false end
     if p and p.targetGlowEllesmereUI ~= nil then return p.targetGlowEllesmereUI end
     local style = (p and p.targetGlowStyle) or defaults.targetGlowStyle
     return style == "ellesmereui" or style == "vibrant"
 end
 function ns.GetTargetGlowBorderColor()
+    if ns.NP_Forever() then return false end
     if p and p.targetGlowBorderColor ~= nil then return p.targetGlowBorderColor end
     local style = (p and p.targetGlowStyle) or defaults.targetGlowStyle
     return style == "vibrant"
@@ -885,6 +1064,7 @@ function ns.GetTargetGlowHighlight()
     return false  -- no legacy equivalent
 end
 function ns.GetTargetGlowBorderSize()
+    if ns.NP_Forever() then return false end
     if p and p.targetGlowBorderSize ~= nil then return p.targetGlowBorderSize end
     return false  -- no legacy equivalent
 end
@@ -1232,9 +1412,9 @@ function ns.GetSlotRaiseStrata(posKey)
     return defaults[key] or false
 end
 
--- Apply each slot's Raise Strata setting to its element frame(s). Frames otherwise share MEDIUM
--- strata; HIGH lifts that element above the flattened text/aura/indicator tiers. Children
--- (cooldown, count carrier, border) inherit the frame's strata.
+-- Apply each slot's Raise Strata setting to its element frame. Frames otherwise share MEDIUM
+-- strata; HIGH lifts that element above the flattened text/aura/indicator tiers, and its
+-- children inherit it. The aura containers apply their own (AnchorNPContainer).
 function ns.ApplySlotStrata(plate)
     if not plate then return end
     local function StrataFor(slot)
@@ -1248,17 +1428,6 @@ function ns.ApplySlotStrata(plate)
     end
     if plate.factionFrame then
         plate.factionFrame:SetFrameStrata(StrataFor(ns.NP_GetFactionSlot()))
-    end
-    local ds, bs, cs = GetAuraSlots()
-    local dStr, bStr, cStr = StrataFor(ds), StrataFor(bs), StrataFor(cs)
-    if plate.debuffs then
-        for i = 1, #plate.debuffs do plate.debuffs[i]:SetFrameStrata(dStr) end
-    end
-    if plate.buffs then
-        for i = 1, #plate.buffs do plate.buffs[i]:SetFrameStrata(bStr) end
-    end
-    if plate.cc then
-        for i = 1, #plate.cc do plate.cc[i]:SetFrameStrata(cStr) end
     end
 end
 
@@ -1350,121 +1519,6 @@ end -- do (glow engine)
 
 -- Forward declaration (assigned in EUI_Nameplates_ClassPower.lua, see SetClassPowerTopPush)
 local GetClassPowerTopPush
--- Position aura frames into a slot (top/left/right/topleft/topright/bottom).
--- count: how many to show; sizeW/sizeH: icon dimensions; gap: gap between icons.
-local function PositionAuraSlot(frames, count, slot, plate, sizeW, sizeH, gap, xOff, yOff)
-    xOff = xOff or 0
-    yOff = yOff or 0
-    local spacing = gap + sizeW  -- horizontal center-to-center distance
-    -- Vertical center-to-center; cropped icons are shorter so stacked slots (topleft/topright
-    -- "up") pack tighter. sizeH falls back to sizeW when square (uncropped).
-    local spacingV = gap + (sizeH or sizeW)
-    -- Profile reads, anchor resolution and growth lookups are invariant across the icon loop:
-    -- resolve once per slot branch, loop only ClearAllPoints + PP.Point. GetClassPowerTopPush
-    -- reads target identity, so the left/right/bottom and top-with-text-element paths must never call it.
-    if slot == "top" then
-        local debuffY = GetDebuffYOffset()
-        -- Determine anchor: resolve to whichever FontString is in the top slot
-        local topElement = GetTextSlot("textSlotTop")
-        local anchor
-        if ns.IsNameElement(topElement) then
-            anchor = plate.name
-        elseif topElement == "healthNumber" then
-            anchor = plate.hpNumber
-        elseif topElement == "level" then
-            anchor = plate.levelText
-        elseif topElement == "targetOfTarget" then
-            anchor = plate.totText or plate.health
-        elseif topElement ~= "none" then
-            anchor = plate.hpText  -- healthPercent, healthPctNum, healthNumPct
-        else
-            anchor = plate.health
-        end
-        -- Only add cpPush when anchoring to health bar (topElement is "none");
-        -- text FontStrings already include cpPush in their own positioning.
-        local cpPush = (topElement == "none") and GetClassPowerTopPush(plate) or 0
-        local y = debuffY + cpPush + yOff
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            PP.Point(frames[i], "BOTTOM", anchor, "TOP",
-                (i - (count + 1) / 2) * spacing + xOff, y)
-        end
-    elseif slot == "left" then
-        -- Classic WoW UI: gap off the border art, not the bare bar edge.
-        local sideOff = GetSideAuraXOffset() + ns.NP_ClassicSide("left")
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            PP.Point(frames[i], "BOTTOMRIGHT", plate.health, "BOTTOMLEFT",
-                -sideOff - (i - 1) * spacing + xOff, yOff)
-        end
-    elseif slot == "right" then
-        local sideOff = GetSideAuraXOffset() + ns.NP_ClassicSide("right")
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            PP.Point(frames[i], "BOTTOMLEFT", plate.health, "BOTTOMRIGHT",
-                sideOff + (i - 1) * spacing + xOff, yOff)
-        end
-    elseif slot == "topleft" then
-        local debuffY = GetDebuffYOffset()
-        local cpPush = GetClassPowerTopPush(plate)
-        local growth = (p and p.topleftSlotGrowth) or defaults.topleftSlotGrowth
-        -- Icon 1 is always flush with the health bar's top-left corner; growth only moves icons
-        -- 2+. PP borders are inset, so the bar corner IS the nameplate's outer edge.
-        local baseX = xOff
-        local baseY = debuffY + cpPush + yOff
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            local idx = i - 1  -- 0 for icon 1, so it never moves
-            if growth == "up" then
-                PP.Point(frames[i], "BOTTOMLEFT", plate.health, "TOPLEFT",
-                    baseX, baseY + idx * spacingV)
-            elseif growth == "right" then
-                PP.Point(frames[i], "BOTTOMLEFT", plate.health, "TOPLEFT",
-                    baseX + idx * spacing, baseY)
-            else
-                -- Default: grow left
-                PP.Point(frames[i], "BOTTOMLEFT", plate.health, "TOPLEFT",
-                    baseX - idx * spacing, baseY)
-            end
-        end
-    elseif slot == "topright" then
-        local debuffY = GetDebuffYOffset()
-        local cpPush = GetClassPowerTopPush(plate)
-        local growth = (p and p.toprightSlotGrowth) or defaults.toprightSlotGrowth
-        -- Icon 1 is always flush with the health bar's top-right corner; growth only moves
-        -- icons 2+ (PP borders are inset, so offset 0 is true flush).
-        local baseX = xOff
-        local baseY = debuffY + cpPush + yOff
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            local idx = i - 1  -- 0 for icon 1, so it never moves
-            if growth == "up" then
-                PP.Point(frames[i], "BOTTOMRIGHT", plate.health, "TOPRIGHT",
-                    baseX, baseY + idx * spacingV)
-            elseif growth == "left" then
-                PP.Point(frames[i], "BOTTOMRIGHT", plate.health, "TOPRIGHT",
-                    baseX - idx * spacing, baseY)
-            else
-                -- Default: grow right
-                PP.Point(frames[i], "BOTTOMRIGHT", plate.health, "TOPRIGHT",
-                    baseX + idx * spacing, baseY)
-            end
-        end
-    elseif slot == "bottom" then
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-            -- Anchor below the cast bar, centered
-            PP.Point(frames[i], "TOP", plate.cast, "BOTTOM",
-                (i - (count + 1) / 2) * spacing + xOff, -2 + yOff)
-        end
-    else
-        -- Unknown slot: clear points, re-anchor nothing.
-        for i = 1, count do
-            frames[i]:ClearAllPoints()
-        end
-    end
-end
-ns.PositionAuraSlot = PositionAuraSlot
 
 -- XY offset for an aura slot key ("debuffSlot", "raidMarker", "classification").
 local auraSlotToDBKey = {
@@ -1517,8 +1571,8 @@ end
 -- slots share healthTextFrame. A non-default strata on a non-top slot gets
 -- a lazily-created host so the four slots layer independently; hosts carry
 -- only font strings (no child frames), so SetFrameStrata propagation is not
--- a concern -- except the name raid marker frame, whose caller re-asserts
--- its own strata after parenting.
+-- a concern -- except the name raid marker frame and debuff coloring's Color
+-- Name copies, whose callers re-assert their strata and levels after parenting.
 ns.SlotTextHost = function(self, slotKey, strata)
     if slotKey == "textSlotTop" then
         local f = self.topTextFrame
@@ -1557,126 +1611,133 @@ function ns.GetActiveCastLockout(plate)
     return lockout
 end
 
--- Position target arrows OUTSIDE the outermost side auras; call after all aura positioning is complete.
-local PositionArrowsOutsideAuras
-do
-    -- Hoisted out of PositionArrowsOutsideAuras so no closure is allocated per call on the
-    -- target plate: extents accumulate through params/returns (allocation-free, no shared state).
-    local function AddSideExtent(slot, frames, maxIdx, sz, slotKey, gap, sideOff, leftExtent, rightExtent)
-        local shown = 0
-        for i = 1, maxIdx do
-            if frames[i] and frames[i]:IsShown() then shown = shown + 1 end
-        end
-        if shown == 0 then return leftExtent, rightExtent end
-        local sp = gap + sz
-        local xOff = slotKey and (select(1, GetAuraSlotOffsets(slotKey))) or 0
-        -- Classic WoW UI: the rows themselves sit past the border art, so the
-        -- extent the arrow clears counts it too (same term the rows use).
-        if slot == "left" then
-            -- Left edge of leftmost icon: -(sideOff + (shown-1)*sp + sz) + xOff
-            local ext = sideOff + ns.NP_ClassicSide("left") + (shown - 1) * sp + sz - xOff
-            leftExtent = math.max(leftExtent, ext)
-        elseif slot == "right" then
-            local ext = sideOff + ns.NP_ClassicSide("right") + (shown - 1) * sp + sz + xOff
-            rightExtent = math.max(rightExtent, ext)
-        end
-        return leftExtent, rightExtent
-    end
+-- How far one side-slot icon pushes a target arrow out: 0 unless it meets the arrow's span (the
+-- icon centres on the bar plus y and is sz tall, the arrow ah tall), else its outer edge, past
+-- its own cast icon push (as its Update* placed it) and its slot's X offset.
+local function ArrowSideReach(plate, side, y, sz, xOff, ah)
+    if math.abs(y) >= (sz + ah) / 2 then return 0 end
+    local reach = GetSideAuraXOffset() + ns.NP_SideIconPush(plate, side, y, sz) + sz
+    if side == "left" then return reach - xOff end
+    return reach + xOff
+end
 
-PositionArrowsOutsideAuras = function(plate)
+-- Side guests: elements another module parks beside the bars (the Kick Tracker's icons). A
+-- guest provider answers (plate, side, a0, a1) with the outermost frame it has on that side of
+-- the plate whose vertical span meets a0..a1 (the arrows' span, above the bar's bottom) and
+-- that frame's centre height over the bar's centre in plate units, or nil. The arrows hug it
+-- as they hug a side aura row, and ahead of one: the two cannot be measured against each other.
+ns.NP_SideGuests = {}
+function ns.NP_AddSideGuest(fn)
+    local list = ns.NP_SideGuests
+    for i = 1, #list do
+        if list[i] == fn then return end
+    end
+    list[#list + 1] = fn
+end
+
+-- Restricted-tree rendering: inside the aspect-restricted nameplate subtree, SINGLE-POINT +
+-- SetSize regions render displaced from their anchor, while rects fully defined by anchors
+-- (fill, bg, hash line) render exactly. So an arrow pins TOP+BOTTOM to two corners (hash-line
+-- pattern): edges resolve engine-side, offsets stay small numbers, nothing here reads geometry
+-- ("Can't measure restricted regions"); the symmetric pair keeps the centring exact under
+-- pixel-mult rounding. A side guest the arrow meets is hugged at the middle of its outer edge,
+-- both points on it, half the arrow up and down (less the guest's own height over the bar's
+-- centre), so the arrow stays the bar's and exactly its own height. A side aura row the arrow
+-- meets is hugged at its engine-sized outer edge (aura counts are secret): rows are
+-- BOTTOM-anchored at the bar's bottom plus their slot's Y offset and grow outward, so the row's
+-- bottom outer corner is the one point whose two axes are both truthful, and the arrow centres
+-- on the bar from there. A row the full-size cast icon did not push out (it misses the icon)
+-- leaves the arrow to clear the icon too, one icon width further out. Otherwise the arrow's
+-- inner edge sits `extent` + 8 past the bar's edge.
+local function PlaceArrow(plate, arrow, side, extent, aw, ah)
+    local barH = GetHealthBarHeight()
+    local a0, a1 = (barH - ah) / 2, (barH + ah) / 2
+    local x = 8 + aw / 2
+    local guests = ns.NP_SideGuests
+    local guest, gy
+    for i = 1, #guests do
+        guest, gy = guests[i](plate, side, a0, a1)
+        if guest then break end
+    end
+    local row, ry, rh
+    if not guest and ns.NPC_SideRow then row, ry, rh = ns.NPC_SideRow(plate, side, a0, a1) end
+    arrow:ClearAllPoints()
+    if guest then
+        local edge = (side == "left") and "LEFT" or "RIGHT"
+        if side == "left" then x = -x end
+        gy = gy or 0
+        PP.Point(arrow, "TOP", guest, edge, x, ah / 2 - gy)
+        PP.Point(arrow, "BOTTOM", guest, edge, x, -ah / 2 - gy)
+    elseif row and ry < a1 and a0 < ry + rh then
+        local icon = ns.NP_FullIconPush(plate, side, a0, a1)
+        if icon > 0 and ns.NP_FullIconPush(plate, side, ry, ry + rh) == 0 then x = x + icon end
+        local cy = barH / 2 - ry
+        local corner = (side == "left") and "BOTTOMLEFT" or "BOTTOMRIGHT"
+        if side == "left" then x = -x end
+        PP.Point(arrow, "TOP", row, corner, x, cy + ah / 2)
+        PP.Point(arrow, "BOTTOM", row, corner, x, cy - ah / 2)
+    else
+        local dy = (ah - barH) / 2
+        x = x + extent
+        if side == "left" then
+            PP.Point(arrow, "TOP", plate.health, "TOPLEFT", -x, dy)
+            PP.Point(arrow, "BOTTOM", plate.health, "BOTTOMLEFT", -x, -dy)
+        else
+            PP.Point(arrow, "TOP", plate.health, "TOPRIGHT", x, dy)
+            PP.Point(arrow, "BOTTOM", plate.health, "BOTTOMRIGHT", x, -dy)
+        end
+    end
+    PP.Width(arrow, aw)
+end
+
+-- Position target arrows outside the side elements they meet: the cast icon, the side-slot
+-- icons (raid marker, classification, faction) and a side aura row. An element its slot's Y
+-- offset moved clear of the arrows (above or below them) is passed over.
+local function PositionArrowsOutsideAuras(plate)
     if not plate.leftArrow then return end
     if not plate.leftArrow:IsShown() then return end
-    local debuffSlot, buffSlot, ccSlot = GetAuraSlots()
-    local sideOff = GetSideAuraXOffset()
-    -- Track the furthest pixel extent on each side (accounts for per-slot X offsets)
-    local leftExtent, rightExtent = 0, 0
-    -- Cast spell icon: reserve on its side so the arrow + pushed side-slot core icons clear it.
-    -- Normal-size icons always reserve (steady across cast start/stop); passing plate gates the
-    -- full-size icon's large reserve on the cast bar being shown. Clean numbers, no secrets.
-    local iconRes, iconSide = ns.GetCastIconReserve(plate)
-    local leftPush = (iconRes > 0 and iconSide == "left") and iconRes or 0
-    local rightPush = (iconRes > 0 and iconSide == "right") and iconRes or 0
-    -- Classic WoW UI: the border art counts as part of the bar, so everything
-    -- beside the bar clears its reach (mostly the level plate on the right).
-    local classicL, classicR = ns.NP_ClassicBarReserve()
-    leftPush, rightPush = leftPush + classicL, rightPush + classicR
-    if leftPush > 0 then leftExtent = math.max(leftExtent, leftPush) end
-    if rightPush > 0 then rightExtent = math.max(rightExtent, rightPush) end
-    local debuffSz = GetDebuffIconSize()
-    local buffSz = GetBuffIconSize()
-    local ccSz = GetCCIconSize()
-    leftExtent, rightExtent = AddSideExtent(debuffSlot, plate.debuffs or {}, 6, debuffSz, "debuffSlot", GetAuraSpacing("debuffs"), sideOff, leftExtent, rightExtent)
-    leftExtent, rightExtent = AddSideExtent(buffSlot, plate.buffs or {}, 4, buffSz, "buffSlot", GetAuraSpacing("buffs"), sideOff, leftExtent, rightExtent)
-    leftExtent, rightExtent = AddSideExtent(ccSlot, plate.cc or {}, 2, ccSz, "ccSlot", GetAuraSpacing("ccs"), sideOff, leftExtent, rightExtent)
-    -- Account for raid marker in side slots
-    local rmPos = GetRaidMarkerPos()
-    if rmPos == "left" and plate.raidFrame and plate.raidFrame:IsShown() then
-        local rmSz = GetRaidMarkerSize()
-        local rxOff = select(1, GetAuraSlotOffsets("raidMarker"))
-        leftExtent = math.max(leftExtent, sideOff + leftPush + rmSz - rxOff)
-    elseif rmPos == "right" and plate.raidFrame and plate.raidFrame:IsShown() then
-        local rmSz = GetRaidMarkerSize()
-        local rxOff = select(1, GetAuraSlotOffsets("raidMarker"))
-        rightExtent = math.max(rightExtent, sideOff + rightPush + rmSz + rxOff)
-    end
-    -- Account for classification icon in side slots
-    local clSlot = GetClassificationSlot()
-    local clSz = GetRareEliteIconSize()
-    if clSlot == "left" and plate.classFrame and plate.classFrame:IsShown() then
-        local cxOff = select(1, GetAuraSlotOffsets("classification"))
-        leftExtent = math.max(leftExtent, sideOff + leftPush + clSz - cxOff)
-    elseif clSlot == "right" and plate.classFrame and plate.classFrame:IsShown() then
-        local cxOff = select(1, GetAuraSlotOffsets("classification"))
-        rightExtent = math.max(rightExtent, sideOff + rightPush + clSz + cxOff)
-    end
-    -- Account for the faction badge in side slots (its own, or Rare/Quest + Faction)
-    local fcSlot = ns.NP_GetFactionSlot()
-    if (fcSlot == "left" or fcSlot == "right") and plate.factionFrame and plate.factionFrame:IsShown() then
-        local fxOff = GetSlotOffsets(fcSlot)
-        local fcSz = ns.NP_GetFactionIconSize()
-        if fcSlot == "left" then
-            leftExtent = math.max(leftExtent, sideOff + leftPush + fcSz - fxOff)
-        else
-            rightExtent = math.max(rightExtent, sideOff + rightPush + fcSz + fxOff)
-        end
-    end
-    -- Restricted-tree rendering: inside the aspect-restricted nameplate subtree, SINGLE-POINT +
-    -- SetSize regions render displaced from their anchor, while rects fully defined by anchors
-    -- (fill, bg, hash line) render exactly. So both arrows pin TOP+BOTTOM to the health bar's
-    -- CORNERS (hash-line pattern): bar edges resolve engine-side, offsets stay small numbers,
-    -- nothing here reads geometry ("Can't measure restricted regions"). Result: inner edge
-    -- (extent + 8) from the bar edge, vertically centered, 16*scale tall; symmetric +/-dy pair
-    -- keeps centering exact under pixel-mult rounding.
     local st = ns.ResolveTargetArrowStyle(p)
     local sc = (p and p.targetArrowScale) or 1.0
     local aw = math.floor(((st and st.w) or 16) * sc + 0.5)
     local ah = math.floor(16 * sc + 0.5)
-    local dy = (ah - GetHealthBarHeight()) / 2
-    local lox = -(leftExtent + 8 + aw / 2)
-    local rox = (rightExtent + 8 + aw / 2)
-    -- Stashed for EUI_Nameplates_AuraContainers ReanchorArrows, which re-points arrows to
-    -- engine-sized aura container edges and needs these dimensions without re-deriving the style.
-    plate._arrowW, plate._arrowH = aw, ah
-    plate.leftArrow:ClearAllPoints()
-    plate.rightArrow:ClearAllPoints()
-    PP.Point(plate.leftArrow, "TOP", plate.health, "TOPLEFT", lox, dy)
-    PP.Point(plate.leftArrow, "BOTTOM", plate.health, "BOTTOMLEFT", lox, -dy)
-    PP.Width(plate.leftArrow, aw)
-    PP.Point(plate.rightArrow, "TOP", plate.health, "TOPRIGHT", rox, dy)
-    PP.Point(plate.rightArrow, "BOTTOM", plate.health, "BOTTOMRIGHT", rox, -dy)
-    PP.Width(plate.rightArrow, aw)
+    -- The cast icon (and Classic WoW UI's border), measured on the arrows' own span.
+    local leftExtent = ns.NP_SideIconPush(plate, "left", 0, ah)
+    local rightExtent = ns.NP_SideIconPush(plate, "right", 0, ah)
+    local rmPos = GetRaidMarkerPos()
+    if (rmPos == "left" or rmPos == "right") and plate.raidFrame and plate.raidFrame:IsShown() then
+        local rx, ry = GetAuraSlotOffsets("raidMarker")
+        local r = ArrowSideReach(plate, rmPos, ry, GetRaidMarkerSize(), rx, ah)
+        if rmPos == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
+    end
+    local clSlot = GetClassificationSlot()
+    if (clSlot == "left" or clSlot == "right") and plate.classFrame and plate.classFrame:IsShown() then
+        local cx, cy = GetAuraSlotOffsets("classification")
+        local r = ArrowSideReach(plate, clSlot, cy, GetRareEliteIconSize(), cx, ah)
+        if clSlot == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
+    end
+    -- The faction badge (its own, or Rare/Quest + Faction, stacked higher behind a showing
+    -- Rare/Quest icon as UpdateFaction places it).
+    local fcSlot = ns.NP_GetFactionSlot()
+    if (fcSlot == "left" or fcSlot == "right") and plate.factionFrame and plate.factionFrame:IsShown() then
+        local fx, fy = GetSlotOffsets(fcSlot)
+        if p and p.classificationIncludeFaction and plate.classFrame:IsShown() then
+            fy = fy + math.floor(GetRareEliteIconSize() * 0.6 + 0.5)
+        end
+        local r = ArrowSideReach(plate, fcSlot, fy, ns.NP_GetFactionIconSize(), fx, ah)
+        if fcSlot == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
+    end
+    PlaceArrow(plate, plate.leftArrow, "left", leftExtent, aw, ah)
+    PlaceArrow(plate, plate.rightArrow, "right", rightExtent, aw, ah)
 end
-end -- do (AddSideExtent scope)
 ns.PositionArrowsOutsideAuras = PositionArrowsOutsideAuras
 
 I.EstimateHealthTextWidth, I.GetAuraSlotOffsets = EstimateHealthTextWidth, GetAuraSlotOffsets
-I.GetAuraSlots, I.GetAuraSpacing = GetAuraSlots, GetAuraSpacing
-I.GetBorderColor, I.GetBuffIconSize = GetBorderColor, GetBuffIconSize
+I.GetBorderColor = GetBorderColor
 I.GetCastBarHeight, I.GetCastScale = GetCastBarHeight, GetCastScale
-I.GetCCIconSize, I.GetClassificationSlot = GetCCIconSize, GetClassificationSlot
+I.GetClassificationSlot = GetClassificationSlot
 I.GetClassPowerClassColors = GetClassPowerClassColors
-I.GetClassPowerCustomColor, I.GetDebuffIconSize = GetClassPowerCustomColor, GetDebuffIconSize
-I.GetDebuffTextColor, I.GetDebuffYOffset = GetDebuffTextColor, GetDebuffYOffset
+I.GetClassPowerCustomColor = GetClassPowerCustomColor
+I.GetDebuffYOffset = GetDebuffYOffset
 I.GetEnemyNameTextSize, I.GetFocusCastHeight = GetEnemyNameTextSize, GetFocusCastHeight
 I.GetHealthBarHeight, I.GetHealthBarWidth = GetHealthBarHeight, GetHealthBarWidth
 I.GetHideEnemyNameWhileCasting = GetHideEnemyNameWhileCasting
@@ -1691,7 +1752,7 @@ I.GetTextSlot, I.GetTextSlotColor = GetTextSlot, GetTextSlotColor
 I.GetTextSlotOffsets, I.GetTextSlotSize = GetTextSlotOffsets, GetTextSlotSize
 I.IsBorderEnabled, I.IsComboHealthText = IsBorderEnabled, IsComboHealthText
 I.PANDEMIC_GLOW_STYLES = PANDEMIC_GLOW_STYLES
-I.PositionArrowsOutsideAuras, I.PositionAuraSlot = PositionArrowsOutsideAuras, PositionAuraSlot
+I.PositionArrowsOutsideAuras = PositionArrowsOutsideAuras
 I.SetCombinedHealthText = SetCombinedHealthText
 I.SetClassPowerTopPush = function(f) GetClassPowerTopPush = f end
 I.broken = false

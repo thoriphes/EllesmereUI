@@ -480,6 +480,12 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             popup:SetScript("OnHide", function()
                 if popup._dimmer then popup._dimmer:Hide() end
             end)
+            -- It sits on UIParent, so it closes with the panel, which closes as
+            -- combat starts: a screen-wide dimmer and an armed key capture never
+            -- stay up into combat.
+            EllesmereUI:RegisterOnHide(function()
+                if dimmer:IsShown() then dimmer:Hide() end
+            end)
 
             EllesmereUI.PopupTakeKeys(popup, dimmer)
             popup:SetScript("OnKeyDown", function(self, kkey)
@@ -580,7 +586,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             EllesmereUIUnitFrames        = "Simple unit frames with a modern visual style.",
             EllesmereUICooldownManager   = "A CDM replacement focused on performance, customizations and alerts.",
             EllesmereUIResourceBars      = "Custom Resource Bars with thresholds, hash lines and more.",
-            EllesmereUIRaidFrames        = "Incredibly light performance, modern raid frames with endless flexibility.",
+            EllesmereUIRaidFrames        = "Incredibly light performance, modern raid and party frames with endless flexibility.",
             EllesmereUIAuraBuffReminders = "Simple raid buff, auras, consumables and talent reminders.",
             EllesmereUIQoL               = "Lightweight quality of life tools and enhancements.",
             EllesmereUIDragonRiding      = "Skyriding HUD with speed, vigor and second wind tracking.",
@@ -726,7 +732,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         local stringHasBlizzSkin = (payload and payload.data
             and type(payload.data.blizzSkinGlobals) == "table") or false
         local includeWindowSkinsImport = false
-        -- "Global Settings": the exporter's global appearance (fonts, custom colours, dark mode, accent) and UI scale. Presence = deliberate
+        -- "Global Settings": the exporter's global appearance (fonts, custom colours, dark mode, accent, number format) and UI scale. Presence = deliberate
         -- include; this toggle is the recipient's opt-out. ON when carried, inert when the string has none.
         local stringHasGlobals = false
         do
@@ -734,6 +740,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             if d then
                 stringHasGlobals = d.fonts ~= nil or d.customColors ~= nil
                     or d.darkMode ~= nil or d.euiAccent ~= nil or d.uiScale ~= nil
+                    or d.numberFormat ~= nil
             end
         end
         local includeGlobalsImport = stringHasGlobals
@@ -1256,13 +1263,14 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 -- Meta is transient -- never overlay/persist it into the profile.
                 filteredPayload.data.unlockLayoutMeta = nil
             end
-            -- Global appearance (fonts, customColors, darkMode, euiAccent) and scale ride the Include dropdown's "Global Settings" row (on
+            -- Global appearance (fonts, customColors, darkMode, euiAccent, numberFormat) and scale ride the Include dropdown's "Global Settings" row (on
             -- by default when carried): unchecked strips them all so the merge keeps the recipient's look. Module deselection alone never
             -- strips them -- the store merge takes each key only when present.
             if filteredPayload and filteredPayload.data and not includeGlobalsImport then
                 filteredPayload.data.fonts        = nil
                 filteredPayload.data.customColors = nil
                 filteredPayload.data.darkMode     = nil
+                filteredPayload.data.numberFormat = nil
                 filteredPayload.data.euiAccent    = nil
                 filteredPayload.data.uiScale      = nil
                 filteredPayload.data.applyUIScale = nil
@@ -1552,7 +1560,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                         pastePage:Hide()
                         EllesmereUI:ShowConfirmPopup({
                             title = EllesmereUI.L("Import Full Account Data"),
-                            message = EllesmereUI.L("This string is a FULL ACCOUNT export. It replaces your account-wide settings with the sender's, including Quality of Life, HoverCast bindings, Cooldown Manager spell setups, unlock anchors, UI scale, and profile keybinds -- not just a profile. Your other profiles are kept, but a profile with the same name is replaced.")
+                            message = EllesmereUI.L("This string is a FULL ACCOUNT export. It replaces your account-wide settings with the sender's, including Quality of Life, HoverCast bindings, Cooldown Manager spell setups, unlock anchors, UI scale, and spec assignments -- not just a profile. Your other profiles keep their own settings, but a profile with the same name is replaced.")
                                 .. ((EllesmereUI.PayloadFromOtherClient(payload) and type(payload.data) == "table"
                                     and payload.data.spellAssignments ~= nil)
                                     and ("\n\n" .. EllesmereUI.L("Its Cooldown Manager spells come from the other game client and will not be imported.")) or ""),
@@ -2016,7 +2024,8 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 confirmText = EllesmereUI.L("Save"),
                 cancelText  = EllesmereUI.L("Cancel"),
                 onConfirm   = function(name)
-                    if not name or name == "" then return end
+                    name = name and strtrim(name) or ""
+                    if name == "" then return end
                     local _, profiles = EllesmereUI.GetProfileList()
                     if profiles and profiles[name] then
                         EllesmereUI:ShowConfirmPopup({
@@ -2060,7 +2069,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             EllesmereUIUnitFrames        = "Simple unit frames with a modern visual style.",
             EllesmereUICooldownManager   = "A CDM replacement focused on performance, customizations and alerts.",
             EllesmereUIResourceBars      = "Custom Resource Bars with thresholds, hash lines and more.",
-            EllesmereUIRaidFrames        = "Incredibly light performance, modern raid frames with endless flexibility.",
+            EllesmereUIRaidFrames        = "Incredibly light performance, modern raid and party frames with endless flexibility.",
             EllesmereUIAuraBuffReminders = "Simple raid buff, auras, consumables and talent reminders.",
             EllesmereUIQoL               = "Lightweight quality of life tools and enhancements.",
             EllesmereUIDragonRiding      = "Skyriding HUD with speed, vigor and second wind tracking.",

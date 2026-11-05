@@ -35,6 +35,121 @@ I.iconAnchorSetters[#I.iconAnchorSetters + 1] = function(v) iconAnchor = v end
 local iconPool = {}     -- all created icon buttons
 local activeIcons = {}  -- currently visible icons
 
+-- Shape settings are shared with the split runtime and load-on-demand options.
+do
+    function ns.IconShapeValues()
+        if not ns._iconShapeValues then
+            ns._iconShapeValues = {
+                none = "None", cropped = "Cropped", square = "Square", circle = "Circle",
+                csquare = "Curved Square", diamond = "Diamond", hexagon = "Hexagon",
+                portrait = "Portrait", shield = "Shield",
+            }
+            ns._iconShapeOrder = { "none", "cropped", "---", "square", "circle", "csquare",
+                "diamond", "hexagon", "portrait", "shield" }
+        end
+        return ns._iconShapeValues, ns._iconShapeOrder
+    end
+
+    function ns.IconShapeMasked(p)
+        local shape = p and p.iconShape
+        return shape and shape ~= "none" and shape ~= "cropped"
+            and EllesmereUI.SHAPE_MASKS[shape] ~= nil
+    end
+
+    function ns.CropPercent(p)
+        local pct = tonumber(p and p.iconCropPercent) or 10
+        if pct < 5 then pct = 5 elseif pct > 25 then pct = 25 end
+        return pct
+    end
+
+    function ns.IconDimensions(size, p)
+        if p and p.iconShape == "cropped" then
+            return size, math.floor(size * (1 - 2 * ns.CropPercent(p) / 100) + 0.5)
+        end
+        if ns.IconShapeMasked(p) then return size + 8, size + 8 end
+        return size, size
+    end
+
+    -- Only addon-owned icons reach this helper. Secure owners are gated by the caller.
+    function ns.ApplyIconShape(f, p)
+        if not (f and f._icon) then return end
+        local shape = (p and p.iconShape) or "none"
+        local masked = ns.IconShapeMasked(p)
+        local zoom = (p and p.iconZoom) or 0.07
+        local crop = shape == "cropped" and ns.CropPercent(p) or 0
+        local inset = masked and ((p and p.borderSize) or 1) > 0 and 1 or 0
+        local state = f._eabrShape
+        if not state then
+            if shape == "none" and not (p and p.iconZoom) then return end
+            state = {}
+            f._eabrShape = state
+        end
+        if state.shape == shape and state.zoom == zoom and state.crop == crop
+            and state.inset == inset and state.highlight == f._hl then return end
+        local icon = f._icon
+        if masked then
+            if not state.mask then state.mask = f:CreateMaskTexture() end
+            state.mask:SetTexture(EllesmereUI.SHAPE_MASKS[shape], "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+            state.mask:ClearAllPoints()
+            if inset > 0 then
+                -- CDM keeps the icon inside the ring; the ring itself is unmasked.
+                EllesmereUI.PP.Point(state.mask, "TOPLEFT", f, "TOPLEFT", inset, -inset)
+                EllesmereUI.PP.Point(state.mask, "BOTTOMRIGHT", f, "BOTTOMRIGHT", -inset, inset)
+            else
+                state.mask:SetAllPoints(f)
+            end
+            state.mask:Show()
+            if not state.attached then
+                icon:AddMaskTexture(state.mask)
+                state.attached = true
+            end
+            if f._hl and (state.highlight ~= f._hl or not state.highlightAttached) then
+                f._hl:AddMaskTexture(state.mask)
+                state.highlightAttached = true
+            end
+            if not state.glowExtra then state.glowExtra = {} end
+            -- Outline glows extend beyond the inset icon mask, like CDM's proc glows.
+            state.glowExtra.shapeMask = state.mask
+            state.glowExtra.maskPath = EllesmereUI.SHAPE_MASKS[shape]
+            state.glowExtra.borderPath = EllesmereUI.SHAPE_BORDERS[shape]
+            local visible = (128 - 2 * (EllesmereUI.SHAPE_INSETS[shape] or 17)) / 128
+            local half = (0.5 - zoom) / visible
+            icon:SetTexCoord(0.5 - half, 0.5 + half, 0.5 - half, 0.5 + half)
+        else
+            if state.attached then
+                icon:RemoveMaskTexture(state.mask)
+                if state.highlight then state.highlight:RemoveMaskTexture(state.mask) end
+                state.attached = nil
+                state.highlightAttached = nil
+            end
+            if state.mask then state.mask:Hide() end
+            icon:SetTexCoord(zoom, 1 - zoom, zoom + crop / 100, 1 - zoom - crop / 100)
+        end
+        if icon.SetSnapToPixelGrid then
+            icon:SetSnapToPixelGrid(false)
+            icon:SetTexelSnappingBias(0)
+        end
+        state.shape, state.zoom, state.crop, state.highlight = shape, zoom, crop, f._hl
+        state.inset = inset
+    end
+
+    function ns.IconGlowExtra(f, panel)
+        local state = f._eabrShape
+        if state and state.attached then
+            state.glowExtra.panel = panel or nil
+            return state.glowExtra
+        end
+        return panel and EllesmereUI.Glows.PANEL_EXTRA or nil
+    end
+
+    -- Secure icons are skipped in combat (ApplyIconBorder); the combat-end
+    -- refresh lays them out again with the shape.
+    function ns.RefreshIconShapes()
+        I.EABR.ApplyAllIconBorders()
+        if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+    end
+end
+
 -- Talent icon state moved to EllesmereUIABR_TalentReminders.lua
 
 -------------------------------------------------------------------------------
@@ -43,6 +158,7 @@ local activeIcons = {}  -- currently visible icons
 local combatAnchor      -- created in OnEnable, follows iconAnchor position
 I.combatAnchorSetters[#I.combatAnchorSetters + 1] = function(v) combatAnchor = v end
 local combatIconPool = {}
+local receiverIconPool = {}  -- a groupmate's raid buff the player cannot cast
 local combatActiveIcons = {}
 
 -------------------------------------------------------------------------------
@@ -78,6 +194,10 @@ do
     local POOL = EllesmereUI._Pool
     function EABR.ApplyIconBorder(f, protectedOwner)
         if not f or (protectedOwner and InCombatLockdown()) then return end
+        local p = db and db.profile and db.profile.display
+        if (p and ((p.iconShape and p.iconShape ~= "none") or p.iconZoom)) or f._eabrShape then
+            ns.ApplyIconShape(f, p)
+        end
         local border = f._eabrBorderFrame
         if not border then
             -- The options preview icons are frames of the options page pool, so
@@ -89,7 +209,6 @@ do
             f._eabrBorderFrame = border
         end
 
-        local p = db and db.profile and db.profile.display
         local size = (p and p.borderSize) or 1
         local texture = (p and p.borderTexture) or "solid"
         local r, g, b, a = (p and p.borderR) or 0, (p and p.borderG) or 0,
@@ -102,6 +221,23 @@ do
         local level = behind and max(0, f:GetFrameLevel() - 1) or (f:GetFrameLevel() + 2)
         -- Exact size companion, memoized raw: it only counts while paired with size + texture.
         local pxRaw = p and p.borderSizePx
+
+        if p and p.iconShape and p.iconShape ~= "none" and ns.IconShapeMasked(p) then
+            -- Shape art has its own thickness units; never send it through the
+            -- rectangular border cache, which must repaint after switching back.
+            if border._eabrSize ~= nil then
+                EllesmereUI.ApplyBorderStyle(border, 0, r, g, b, a, "solid")
+                border._eabrSize = nil
+            end
+            border:SetFrameLevel(level)
+            -- Clearing rectangular art at size zero also hides its host.
+            if not border:IsShown() then border:Show() end
+            EllesmereUI.PP:ApplyMaskedShapeBorder(border, nil,
+                EllesmereUI.SHAPE_BORDERS[p.iconShape], size > 0 and 7 or 0, r, g, b, a)
+            return
+        elseif f._eabrShape then
+            EllesmereUI.PP:HideMaskedShapeBorder(border)
+        end
 
         -- Layout refreshes can be frequent in a raid. Restyle only when an actual
         -- setting or owner-level change occurred; size changes are handled by the
@@ -127,6 +263,7 @@ end
 function EABR.ApplyAllIconBorders()
     for _, f in pairs(iconPool) do EABR.ApplyIconBorder(f, true) end
     for _, f in pairs(combatIconPool) do EABR.ApplyIconBorder(f, false) end
+    for _, f in pairs(receiverIconPool) do EABR.ApplyIconBorder(f, false) end
     for _, f in pairs(cursorIconPool) do EABR.ApplyIconBorder(f, false) end
     if EABR._providerCastBtn then EABR.ApplyIconBorder(EABR._providerCastBtn, true) end
     if _B.icons then
@@ -143,9 +280,8 @@ function EABR.GetIconTextOverlay(f)
     return overlay
 end
 
-local function GetOrCreateCombatIcon(index)
-    if combatIconPool[index] then return combatIconPool[index] end
-    local f = CreateFrame("Frame", "EABR_CombatIcon"..index, combatAnchor)
+local function BuildCombatIcon(name)
+    local f = CreateFrame("Frame", name, combatAnchor)
     f:SetSize(ICON_SIZE, ICON_SIZE)
     f:SetFrameStrata(GetStrata())
     f:SetFrameLevel(120)
@@ -165,9 +301,50 @@ local function GetOrCreateCombatIcon(index)
     EABR.AttachIconHover(f)
     EABR.AttachIconTooltip(f)
     EABR.AttachCombatClickHint(f)
-    combatIconPool[index] = f
     return f
 end
+
+local function GetOrCreateCombatIcon(index)
+    local f = combatIconPool[index]
+    if not f then
+        f = BuildCombatIcon("EABR_CombatIcon"..index)
+        combatIconPool[index] = f
+    end
+    return f
+end
+
+-- A groupmate's raid buff the player cannot cast is shown to be read, never
+-- clicked: its icon lets the left and right click through to whatever is
+-- behind, keeps the middle-click dismiss and shows no hover highlight. Click
+-- routing (SetPassThroughButtons) is blocked in combat on every frame, ours
+-- included, so these icons have a pool of their own whose routing is set once,
+-- out of combat. One first built in combat lets every click through (no
+-- dismiss) until HideCombatIcons routes it once combat is over.
+local receiversUnrouted = false
+local function RouteReceiverIcon(f)
+    if InCombatLockdown() then
+        f:SetMouseClickEnabled(false)
+        receiversUnrouted = true
+        return
+    end
+    f:SetPassThroughButtons("LeftButton", "RightButton")
+    f:SetMouseClickEnabled(true)
+    f._routed = true
+end
+
+local function GetOrCreateReceiverIcon(index)
+    local f = receiverIconPool[index]
+    if not f then
+        f = BuildCombatIcon("EABR_ReceiverIcon"..index)
+        EABR.SetIconHighlight(f, false)
+        RouteReceiverIcon(f)
+        receiverIconPool[index] = f
+    end
+    return f
+end
+
+-- Icons of each pool shown by the current combat pass.
+local combatShown, receiversShown = 0, 0
 
 local function HideCombatIcons()
     for i = 1, #combatActiveIcons do
@@ -179,14 +356,28 @@ local function HideCombatIcons()
         end
     end
     wipe(combatActiveIcons)
+    combatShown, receiversShown = 0, 0
+    if receiversUnrouted and not InCombatLockdown() then
+        receiversUnrouted = false
+        for _, f in pairs(receiverIconPool) do
+            if not f._routed then RouteReceiverIcon(f) end
+        end
+    end
     if EABR.SetProviderCastCombatVisible then
         EABR.SetProviderCastCombatVisible(false)
     end
     if combatAnchor then EllesmereUI.SetElementVisibility(combatAnchor, false) end
 end
 
-local function ShowCombatIcon(iconIdx, m)
-    local f = GetOrCreateCombatIcon(iconIdx)
+local function ShowCombatIcon(m)
+    local f
+    if EABR.IsReceiverRaidBuff(m) then
+        receiversShown = receiversShown + 1
+        f = GetOrCreateReceiverIcon(receiversShown)
+    else
+        combatShown = combatShown + 1
+        f = GetOrCreateCombatIcon(combatShown)
+    end
     f._dismissKey = m.dismissKey or nil
     local spellID = m.spellID or (m.data and m.data.castSpell)
     f._icon:SetTexture(m.texture or (spellID and Tex(spellID)) or 134400)
@@ -235,13 +426,15 @@ local function LayoutCombatIcons()
     local spacing = p.iconSpacing or 8
     local baseScale = p.scale or 1.0
     local sz = floor(ICON_SIZE * baseScale + 0.5)
+    local iconH = sz
+    if p.iconShape and p.iconShape ~= "none" then sz, iconH = ns.IconDimensions(sz, p) end
     local xOff = reserveSlot and (sz + spacing) or 0
     local pt = "TOPLEFT"
     if p.growDirection == "LEFT" and not reserveSlot then
         pt, xOff = "TOPRIGHT", -(count - 1) * (sz + spacing)
     end
     for i, f in ipairs(combatActiveIcons) do
-        f:SetSize(sz, sz)
+        f:SetSize(sz, iconH)
         f:SetAlpha(p.opacity or 1.0)
         EABR.ApplyIconBorder(f, false)
         EABR.SizeIconQuality(f, sz)
@@ -280,6 +473,15 @@ local function GetOrCreateCursorIcon(index)
     return f
 end
 
+-- Hides the cursor anchor once nothing rides it: no cursor icon and no beacon
+-- placed on it (_B.onCursor). Hidden, it stops following the cursor (OnHide
+-- unsubscribes); every placement shows it again.
+local function ReleaseCursorAnchor()
+    if cursorAnchor and #cursorActiveIcons == 0 and not _B.onCursor then
+        cursorAnchor:Hide()
+    end
+end
+
 local function HideCursorIcons()
     for i = 1, #cursorActiveIcons do
         local f = cursorActiveIcons[i]
@@ -291,6 +493,7 @@ local function HideCursorIcons()
     end
     wipe(cursorActiveIcons)
     if cursorAnchor then EllesmereUI.SetElementVisibility(cursorAnchor, false) end
+    ReleaseCursorAnchor()
 end
 
 local function ShowCursorIcon(iconIdx, m)
@@ -336,10 +539,12 @@ local function LayoutCursorIcons()
     local spacing = p.iconSpacing or 8
     local baseScale = p.scale or 1.0
     local sz = floor(ICON_SIZE * baseScale + 0.5)
+    local iconH = sz
+    if p.iconShape and p.iconShape ~= "none" then sz, iconH = ns.IconDimensions(sz, p) end
     local totalW = (count * sz) + ((count-1) * spacing)
     local startX = -(totalW/2) + (sz/2)
     for i, f in ipairs(cursorActiveIcons) do
-        f:SetSize(sz, sz)
+        f:SetSize(sz, iconH)
         f:SetAlpha(p.opacity or 1.0)
         EABR.ApplyIconBorder(f, false)
         EABR.SizeIconQuality(f, sz)
@@ -363,7 +568,9 @@ function EABR.LayoutProviderCastHome()
     local p = db and db.profile and db.profile.display
     local baseScale = (p and p.scale) or 1.0
     local sz = floor(ICON_SIZE * baseScale + 0.5)
-    btn:SetSize(sz, sz)
+    local iconH = sz
+    if p and p.iconShape and p.iconShape ~= "none" then sz, iconH = ns.IconDimensions(sz, p) end
+    btn:SetSize(sz, iconH)
     EABR.ApplyIconBorder(btn, true)
     btn:ClearAllPoints()
     btn:SetPoint("TOPLEFT", iconAnchor, "TOPLEFT", 0, 0)
@@ -537,6 +744,8 @@ local function FadeOutSecureIcons()
         local btn = activeIcons[i]
         if btn then
             btn:SetAlpha(0)
+            -- A faded button still takes clicks: no buff request from it.
+            btn._requestKey = nil
             if btn._text then btn._text:SetAlpha(0) end
             if btn._eabrGlowWrapper then StopAllGlows(btn._eabrGlowWrapper); btn._eabrGlowWrapper:SetAlpha(0) end
         end
@@ -576,7 +785,13 @@ do
             btn._eabrGlowWrapper = w
         end
         local wrapper = btn._eabrGlowWrapper; local sz = overrideSz or btn:GetWidth() or ICON_SIZE
-        EllesmereUI.Glows.StartSpecGlow(wrapper, spec, sz, sz, "icon")
+        local h, extra = sz
+        if p.iconShape and p.iconShape ~= "none" then
+            if overrideSz then sz, h = ns.IconDimensions(sz, p)
+            else h = btn:GetHeight() end
+        end
+        if btn._eabrShape then extra = ns.IconGlowExtra(btn) end
+        EllesmereUI.Glows.StartSpecGlow(wrapper, spec, sz, h, "icon", extra)
         wrapper:SetAlpha(1)
         wrapper:Show()
     end
@@ -600,6 +815,7 @@ function EABR.AttachIconHover(f)
         hl:SetAllPoints(icon)
         hl:SetTexCoord(0.07, 0.93, 0.07, 0.93)
         hl:SetColorTexture(1, 1, 1, 0.2)
+        f._hl = hl
     else
         f:EnableMouse(true)
         local hl = f:CreateTexture(nil, "OVERLAY")
@@ -607,10 +823,26 @@ function EABR.AttachIconHover(f)
         hl:SetTexCoord(0.07, 0.93, 0.07, 0.93)
         hl:SetColorTexture(1, 1, 1, 0.2)
         hl:Hide()
-        f:HookScript("OnEnter", function() hl:Show() end)
+        f:HookScript("OnEnter", function(self) if not self._hlOff then hl:Show() end end)
         f:HookScript("OnLeave", function() hl:Hide() end)
     end
     f._eabrHoverAttached = true
+end
+
+-- A groupmate's raid buff the player cannot cast: shown to be read, never
+-- clicked (both clients' collectors mark it cat "raidbuff" in texture mode).
+function EABR.IsReceiverRaidBuff(m)
+    return m.cat == "raidbuff" and m.mode == "texture"
+end
+
+-- Per-use hover highlight: off on an icon that takes no left click, so it
+-- never reads as a button. A Button draws its highlight on the HIGHLIGHT
+-- layer (hidden as a texture); the plain pools gate their OnEnter on the flag.
+function EABR.SetIconHighlight(f, on)
+    local off = not on
+    if f._hlOff == off then return end
+    f._hlOff = off
+    if f._hl then f._hl:SetShown(on) end
 end
 
 function EABR.ApplyIconTooltipData(f, m)
@@ -678,6 +910,76 @@ function EABR.NotifyCombatClickDisabled()
     EABR._clickHintAt = now
     if UIErrorsFrame then
         UIErrorsFrame:AddMessage(EllesmereUI.L("Click-to-use is disabled in combat"), 1.0, 0.3, 0.3, 1.0)
+    end
+end
+
+-- Click to request: a left-click on a reminder of a buff a groupmate gives
+-- (receiver raid buff, Healthstone) asks the group for it in chat, at most
+-- once per buff every REQUEST_THROTTLE seconds. The Custom Request Text
+-- replaces the default line; REQUEST_TOKEN in it (any case) becomes the
+-- buff's name.
+do
+    local REQUEST_THROTTLE = 10
+    local REQUEST_TOKEN = "[spell]"
+    local TOKEN_PATTERN = "%[[Ss][Pp][Ee][Ll][Ll]%]"  -- any case
+    local sentAt = {}
+
+    -- Cuts s to at most n bytes without splitting a UTF-8 character.
+    local function CutBytes(s, n)
+        if #s <= n then return s end
+        return (s:sub(1, n):gsub("[\192-\255][\128-\191]*$", ""))
+    end
+
+    -- Custom text as saved: "|" and control characters dropped (the chat API
+    -- rejects stray escape codes), trimmed, capped; nil when empty.
+    local function CleanRequestText(text)
+        if type(text) ~= "string" then return nil end
+        text = CutBytes(strtrim((text:gsub("[%c|]", ""))), 200)
+        if text == "" then return nil end
+        return text
+    end
+    -- Custom text until the player saves their own (shows where the token goes).
+    local function RequestExample()
+        return EllesmereUI.Lf("Could I get %1$s, please?", REQUEST_TOKEN)
+    end
+    local function HasRequestToken(text)
+        return text:find(TOKEN_PATTERN) ~= nil
+    end
+    _G._EABR_REQUEST_TOKEN = REQUEST_TOKEN
+    _G._EABR_HasRequestToken = HasRequestToken
+    _G._EABR_CleanRequestText = CleanRequestText
+    _G._EABR_RequestExample = RequestExample
+
+    local function RequestChannel()
+        if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then return "INSTANCE_CHAT" end
+        if IsInRaid() then return "RAID" end
+        if IsInGroup() then return "PARTY" end
+    end
+
+    function EABR.SendBuffRequest(key, name)
+        if InCombatLockdown() then return end
+        local channel = RequestChannel()
+        if not channel then return end
+        if not name then return end
+        if C_ChatInfo.InChatMessagingLockdown() then
+            if UIErrorsFrame then
+                UIErrorsFrame:AddMessage(EllesmereUI.L("Buff requests cannot be sent right now"), 1.0, 0.3, 0.3, 1.0)
+            end
+            return
+        end
+        local now = GetTime()
+        if sentAt[key] and now - sentAt[key] < REQUEST_THROTTLE then return end
+        sentAt[key] = now
+        local rb = db.profile.raidBuffs
+        local custom = rb.requestCustom and CleanRequestText(rb.requestText or RequestExample())
+        local msg
+        -- Text without the token falls back to the default line.
+        if custom and HasRequestToken(custom) then
+            msg = custom:gsub(TOKEN_PATTERN, (name:gsub("%%", "%%%%")))
+        else
+            msg = EllesmereUI.Lf("%1$s, please!", name)
+        end
+        C_ChatInfo.SendChatMessage(CutBytes(msg, 255), channel)
     end
 end
 
@@ -921,10 +1223,12 @@ local function GetOrCreateIcon(index)
     -- casting (ShowIcon's pass-through toggle decides whether this reminder
     -- claims the click at all, vs letting it fall through like every other
     -- reminder does).
-    btn:HookScript("PostClick", function(self, button)
+    btn:HookScript("PostClick", function(self, button, down)
         if button == "MiddleButton" and self._dismissKey then
             _dismissedUntilLoad[self._dismissKey] = true
             if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+        elseif button == "LeftButton" and self._requestKey and not down then
+            EABR.SendBuffRequest(self._requestKey, self._requestName)
         elseif button == "RightButton" and self._petCycleTotal then
             EABR._petCycleIndex = ((EABR._petCycleIndex or 1) % self._petCycleTotal) + 1
             if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
@@ -1037,6 +1341,7 @@ do
         e.substitute = nil
         e.groupHave = nil
         e.groupTotal = nil
+        e.requestKey = nil; e.requestName = nil
         return e
     end
 
@@ -1069,10 +1374,11 @@ end
 I.AcquireEntry, I.activeIcons, I.ApplyGlow = AcquireEntry, activeIcons, ApplyGlow
 I.ApplySetup, I.combatActiveIcons = ApplySetup, combatActiveIcons
 I.combatIconPool, I.cursorActiveIcons = combatIconPool, cursorActiveIcons
+I.receiverIconPool = receiverIconPool
 I.FadeOutSecureIcons, I.GetOrCreateIcon = FadeOutSecureIcons, GetOrCreateIcon
 I.GetStrata, I.HideCombatIcons, I.HideCursorIcons = GetStrata, HideCombatIcons, HideCursorIcons
 I.ICON_SIZE, I.iconPool, I.IsImportantBuff = ICON_SIZE, iconPool, IsImportantBuff
 I.LayoutCombatIcons, I.LayoutCursorIcons = LayoutCombatIcons, LayoutCursorIcons
 I.RemoveGlow, I.ResetEntryPool, I.ShowCombatIcon = RemoveGlow, ResetEntryPool, ShowCombatIcon
-I.ShowCursorIcon = ShowCursorIcon
+I.ShowCursorIcon, I.ReleaseCursorAnchor = ShowCursorIcon, ReleaseCursorAnchor
 I.broken = false

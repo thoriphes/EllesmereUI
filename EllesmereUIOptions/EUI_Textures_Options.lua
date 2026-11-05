@@ -286,9 +286,19 @@ local function TileNameplates(parent, y, W, tile)
             end }
     end
 
-    local _, h = W:DualRow(parent, y,
+    local _, texRow, h
+    texRow, h = W:DualRow(parent, y,
         texCfg("Bar Texture", "healthBarTexture"),
         texCfg("Cast Bar Texture", "castBarTexture"));  y = y - h
+    -- Textured Background cogs.
+    local function Row(kind)
+        return function()
+            local env = ns._NPO_OptEnv
+            return env and env.TexBgRowCfg(kind, NPTexApply)
+        end
+    end
+    TexBgCog(texRow._leftRegion, Row("health"), "nameplates")
+    TexBgCog(texRow._rightRegion, Row("cast"), "nameplates")
     _, h = W:DualRow(parent, y,
         { type = "dropdown", text = "Absorb Style", values = absorbStyleValues, order = absorbStyleOrder,
           getValue = function()
@@ -318,7 +328,7 @@ local function TileUnitFrames(parent, y, W, tile)
     -- UF's own dropdown copy drops the separator.
     local hbtValues, hbtOrder = CopyBarDD(ns.healthBarTextureNames, ns.healthBarTextureOrder, ns.healthBarTextures, true)
 
-    -- The module's own lists (ns, EllesmereUIUnitFrames.lua), copied: the
+    -- The module's own lists (ns, EUI_UnitFrames_Absorb.lua), copied: the
     -- SharedMedia tail is appended into them.
     local absorbStyleValues = CopyTable(ns.ABSORB_STYLE_NAMES)
     local absorbStyleOrder = CopyTable(ns.ABSORB_STYLE_ORDER)
@@ -461,21 +471,22 @@ local function TileRaidFrames(parent, y, W, tile)
     local healAbsorbStyleOrder = { "none", "healBlizzModern", "striped", "stripedReversed", "stripedThick", "stripedThickR", "clean", "blizzard", "largeOutlinedStripes", "largeOutlinedStripesR", "largeStripes", "largeStripesR", "blizzardRaid", "pixelsShield" }
     local maxHealthStyleOrder = { "none", "maxHealthStripes", "striped", "stripedReversed", "stripedThick", "stripedThickR", "clean", "blizzard", "healBlizzModern", "largeOutlinedStripes", "largeOutlinedStripesR", "largeStripes", "largeStripesR", "blizzardRaid", "pixelsShield" }
     AppendSmTail(absorbStyleValues, { absorbStyleOrder, healAbsorbStyleOrder, maxHealthStyleOrder }, ns.healthBarTextureNames, ns.healthBarTextureOrder)
-    -- Default Blizz Frames' swatch draws its in-game compound (see the Raid Frames page).
+    -- Default Blizz Frames' swatch draws its in-game compound (see the Raid & Party Frames page).
     local modernSwatch = { base = { 0.776, 0.784, 1.0 }, tint = { 0.569, 0.588, 1.0 }, tile = true }
     absorbStyleValues._menuOpts = {
         itemHeight = 28,
         background = function(key)
             if not key or key == "---" or key == "none" then return nil end
             if key == "blizzardModern" then return ns.ResolveAbsorbStyleTex and ns.ResolveAbsorbStyleTex("striped"), modernSwatch end
-            if key == "maxHealthStripes" then return "Interface\\AddOns\\EllesmereUIRaidFrames\\Media\\striped-maxhp.png" end
+            if key == "maxHealthStripes" then return EllesmereUI.MAX_HEALTH_STRIPES_TEX end
             return ns.ResolveAbsorbStyleTex and ns.ResolveAbsorbStyleTex(key) or nil
         end,
     }
 
-    -- Mirrors write the RAID keys (same as the Frames tab); the Party tab's
+    -- Mirrors write the RAID keys (same as the Raid tab); the Party tab's
     -- unsynced party_ variants stay in the module and are linked below.
-    local _, h = W:DualRow(parent, y,
+    local _, texRow, h
+    texRow, h = W:DualRow(parent, y,
         { type = "dropdown", text = "Health Bar Texture", values = hbtValues, order = hbtOrder,
           getValue = function()
               local p = db()
@@ -494,7 +505,7 @@ local function TileRaidFrames(parent, y, W, tile)
           end,
           setValue = function(v)
               local p = db(); if not p then return end
-              -- Blizzard Glow Line follows the pick (see the Raid Frames page).
+              -- Blizzard Glow Line follows the pick (see the Raid & Party Frames page).
               if v == "blizzardModern" then
                   p.absorbGlowLine = true
               elseif p.absorbStyle == "blizzardModern" then
@@ -508,6 +519,23 @@ local function TileRaidFrames(parent, y, W, tile)
               end
               RFReload()
           end });  y = y - h
+    -- Textured Background cog: the Raid tab's row on the raid keys, as this card writes.
+    local function RaidRead(key, default)
+        local p = db()
+        local v = p and p[key]
+        if v == nil then return default end
+        return v
+    end
+    local function RaidWrite(key, v)
+        local p = db(); if not p then return end
+        p[key] = v
+        if ns._BumpAbsorbGen then ns._BumpAbsorbGen() end
+        RFReload()
+    end
+    TexBgCog(texRow._leftRegion, function()
+        local env = ns._RFO_OptEnv
+        return env and env.TexBgRowCfg(RaidRead, RaidWrite)
+    end)
     _, h = W:DualRow(parent, y,
         { type = "dropdown", text = "Heal Absorb Style", values = absorbStyleValues, order = healAbsorbStyleOrder,
           getValue = function()
@@ -769,7 +797,7 @@ local function TileMythicTimer(parent, y, W, tile)
     local ns = NS(tile.folder)
     if not ns then return DisabledTile(parent, y, W, tile) end
     local function db() return _G._EMT_AceDB and _G._EMT_AceDB.profile end
-    local function MTApply() if _G._EMT_Apply then _G._EMT_Apply() end end
+    local function MTApply() if _G._EMT_ApplyTimer then _G._EMT_ApplyTimer() end end
     -- MT's registered tables live in module/options locals; own memoized
     -- core-set catalogue (registered once), separator dropped like MT's own.
     local cat = OwnBarCatalogue("mt", nil)
@@ -802,6 +830,7 @@ local function TileMythicTimer(parent, y, W, tile)
     local function tsb() local p = db(); return p and p.tsb end
     local function tfbT() local p = db(); return p and p.tfb and p.tfb.target end
     local function tfbF() local p = db(); return p and p.tfb and p.tfb.focus end
+    local function kt() local p = db(); return p and p.kickTracker end
     local _, h = W:DualRow(parent, y,
         texCfg("Timer Bar Texture", "barTexture"),
         texCfg("Timer Background Texture", "barBgTexture"));  y = y - h
@@ -809,10 +838,11 @@ local function TileMythicTimer(parent, y, W, tile)
         texCfg("Forces Bar Texture", "enemyBarTexture"),
         texCfg("Forces Background Texture", "enemyBarBgTexture"));  y = y - h
     _, h = W:DualRow(parent, y,
-        subTexCfg("Targeted Bars Texture", tsb, "TSB_Refresh"),
+        subTexCfg("Cast Bars Texture", tsb, "TSB_Refresh"),
         subTexCfg("Target Cast Bar Texture", tfbT, "TFB_Refresh"));  y = y - h
     _, h = W:DualRow(parent, y,
-        subTexCfg("Focus Cast Bar Texture", tfbF, "TFB_Refresh"), BLANK());  y = y - h
+        subTexCfg("Focus Cast Bar Texture", tfbF, "TFB_Refresh"),
+        subTexCfg("Kick Tracker Bar Texture", kt, "KT_Refresh"));  y = y - h
     return y
 end
 
@@ -984,6 +1014,10 @@ end
 do
     local origNav = EllesmereUI.NavigateToElementSettings
     function EllesmereUI:NavigateToElementSettings(moduleName, pageName, sectionName, preSelectFn, highlightText)
+        -- The original refuses in combat: no page state changes then.
+        if InCombatLockdown() then
+            return origNav(self, moduleName, pageName, sectionName, preSelectFn, highlightText)
+        end
         if moduleName == GLOBAL_KEY and pageName == PAGE_TEXTURES and (sectionName or highlightText) then
             local changed = false
             for _, tile in ipairs(BuildTileList()) do

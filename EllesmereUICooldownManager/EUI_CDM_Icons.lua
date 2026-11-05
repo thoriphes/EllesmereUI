@@ -880,11 +880,18 @@ local function RefreshCDMIconAppearance(barKey)
         -- zero-charge / Hide Charge Text alpha channel (CdmHooks); non-buff
         -- bars never write (csAlpha nil), so that channel keeps single
         -- ownership of its counters.
-        local csAlpha
+        local csAlpha, appsAlpha
         if barData.barType == "buffs" or barData.barType == "custom_buff" then
             local showCS = barData.showChargeStackText ~= false
             if ssb and ssb.showChargeStackText ~= nil then showCS = ssb.showChargeStackText end
             csAlpha = showCS and 1 or 0
+            appsAlpha = csAlpha
+        else
+            -- A buff hosted on a cd/utility bar: only its stack counter, which that
+            -- bar's charge-text channel never writes, follows the per-spell toggle.
+            if fd and fd._isBuffViewerFrame then
+                appsAlpha = (ssb and ssb.showChargeStackText == false) and 0 or 1
+            end
         end
         -- Text must render above borders. Levels are relative to the icon's own frame level (CdmHooks: border +13, text +23).
         local textLvl = icon:GetFrameLevel() + 23
@@ -896,7 +903,7 @@ local function RefreshCDMIconAppearance(barKey)
                 SetBlizzCDMFont(appsFS, scFont, scSize, scR, scG, scB)
                 appsFS:ClearAllPoints()
                 appsFS:SetPoint(scPoint, icon, scPoint, scX, scY)
-                if csAlpha then appsFS:SetAlpha(csAlpha) end
+                if appsAlpha then appsFS:SetAlpha(appsAlpha) end
             end
         end
         -- ChargeCount (spell charges like Sigil/Roll) -- not an item count. Blizzard manages show/hide based on charge state.
@@ -1050,6 +1057,13 @@ local function RefreshCDMIconAppearance(barKey)
             local m = cse and ns.CD_STATE_HIDE[cse]
             local cseShift, cseUsable, cseForm
             if m then cse, cseShift, cseUsable, cseForm = m.base, m.shift, m.usable, m.form end
+            -- Stance Bar (EllesmereUICdmStanceBar.lua): one more hide reason. Alone,
+            -- it runs as Hidden (On CD) with the cooldown never read.
+            local stance = ns.CdmStanceBarOf(csSs, icon)
+            local stanceOnly = false
+            if stance and cse ~= "hiddenOnCD" and cse ~= "hiddenReady" and cse ~= "lowerAlphaOnCD" then
+                cse, stanceOnly = "hiddenOnCD", true
+            end
             if cse or csGlow then
                 local csLive = csSid
                 if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
@@ -1058,7 +1072,9 @@ local function RefreshCDMIconAppearance(barKey)
                 -- realCD is the plain cooldown read the glow runs on; onCD is
                 -- what the hide runs on (the form alone, or unusable counting too).
                 local realCD, onCD
-                if cseForm then
+                if stanceOnly then
+                    onCD = false
+                elseif cseForm then
                     -- Only the form decides; form changes re-arm through the form watch.
                     onCD = ns.CdmSpellOutsideForm(csLive)
                     ns.WatchCdUsable(icon, true)
@@ -1071,7 +1087,19 @@ local function RefreshCDMIconAppearance(barKey)
                     -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
                     ns.WatchCdUsable(icon)
                 end
-                if cse == "hiddenOnCD" or cse == "hiddenReady" then
+                local sHide, sShift = false, false
+                if stance then
+                    sHide, sShift = ns.CdmStanceBarHidden(stance)
+                    -- Page changes re-arm through the stance bar watch.
+                    ns.WatchCdUsable(icon, cseForm, true, cseUsable)
+                end
+                if sHide then
+                    icon:SetAlpha(0)
+                    if fc then
+                        fc._cdStateHidden = true
+                        if ns.SetCdStateShiftHidden then ns.SetCdStateShiftHidden(fc, sShift) end
+                    end
+                elseif cse == "hiddenOnCD" or cse == "hiddenReady" then
                     local hide
                     if cse == "hiddenOnCD" then
                         hide = onCD and true or false
