@@ -1345,6 +1345,16 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
           end });  y = y - h
 
+    -- Force Nameplate on Current Target takes the free slot of the Out of Combat
+    -- Opacity row below, or a row of its own when the class option holds that slot.
+    local forceTargetCfg = { type="toggle", text="Force Nameplate on Current Target",
+          tooltip="Force the nameplate on your current target regardless of visibility rules: always show your current target's nameplate, even when its kind of nameplate is hidden: enemies out of combat, friendly NPCs, enemy pets, minor enemies, or anything switched off in Blizzard's Nameplate settings.\n\nWhile such a unit is targeted its nameplate kind is switched on for the target alone; every other nameplate of that kind stays hidden, and the setting is handed back when the target changes.\n\nFriendly nameplates cannot be forced inside dungeons, raids or battlegrounds (the game locks them there).",
+          getValue=function() return DBVal("forceTargetPlate") == true end,
+          setValue=function(v)
+            DB().forceTargetPlate = v
+            if ns.TF_Refresh then ns.TF_Refresh() end
+          end }
+
     -- Row 6: Out of Combat Opacity | the class option, if any. Hide Copies of Blood
     -- Plague (Blood Death Knight only) and Show Sunder Armor (WoW Forever warriors
     -- only) are not built at all for anyone else -- each only affects that class's
@@ -1382,7 +1392,10 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
             EllesmereUI:RefreshPage()  -- the Keep Focus cog's disabled state
           end },
-        classCfg or EllesmereUI.BlankRowCfg());  y = y - h
+        classCfg or forceTargetCfg);  y = y - h
+    if classCfg then
+        _, h = W:DualRow(parent, y, forceTargetCfg, EllesmereUI.BlankRowCfg());  y = y - h
+    end
 
     return math.abs(y)
 end
