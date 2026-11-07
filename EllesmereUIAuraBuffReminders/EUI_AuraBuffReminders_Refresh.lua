@@ -286,12 +286,13 @@ end
 -- and Find Treasure trackers, a Mage's armors (EABR.CollectMageArmor), the
 -- user's spell groups (EABR.CollectForeverGroups) and custom spell IDs,
 -- absence only (no expiry thresholds). A custom ID counts as up while any
--- spell of its rank family is (EABR.ForeverFamily). Entries are display-only
--- textures carrying the spell for the tooltip, except the two trackers and the
--- mage armors, whose click casts the spell; presence goes through
--- PlayerHasAuraByID. The section shows nothing in combat (its Where to Show
--- offers no In Combat entry: always unchecked), and Camp Benefits, Well Fed,
--- the mage armors and the trackers nothing in PvP either. The one-slot id
+-- spell of its rank family is (EABR.ForeverFamily). A custom spell shows only
+-- while the player knows it, as a click-to-cast button (cast on the player);
+-- so do the two trackers and the mage armors. The other entries are
+-- display-only textures carrying the spell for the tooltip. Presence goes
+-- through PlayerHasAuraByID. The section shows nothing in combat (its Where to
+-- Show offers no In Combat entry: always unchecked), and Camp Benefits, Well
+-- Fed, the mage armors and the trackers nothing in PvP either. The one-slot id
 -- table, the cached families, the kept minimap answer and the dismiss-key
 -- memo keep the pass allocation-free.
 function EABR.CollectForever(missing, inInstance, inPvP)
@@ -372,11 +373,11 @@ function EABR.CollectForever(missing, inInstance, inPvP)
     for i = 1, #custom do
         local id = custom[i]
         local fam = EABR.ForeverFamily(id)
-        if not PlayerHasAuraByID(fam) and not (auraLock and fam and not EABR.FvRanksReadable(fam)) then
+        if Known(id) and not PlayerHasAuraByID(fam) and not (auraLock and fam and not EABR.FvRanksReadable(fam)) then
             local dk = keys[id]
             if not dk then dk = "forever:" .. id; keys[id] = dk end
             local e = AcquireEntry()
-            e.mode = "texture"; e.spellID = id
+            e.mode = "spell"; e.spellID = id
             e.texture = Tex(id)
             e.label = ShortLabel(SpellName(id) or tostring(id))
             e.cat = "forever"; e.dismissKey = dk
