@@ -194,7 +194,7 @@ local function ShowAddSpellPopup(onAdded)
         sidBox:SetTextInsets(6, 6, 0, 0)
         local sidBg = sidBox:CreateTexture(nil, "BACKGROUND")
         sidBg:SetAllPoints(); sidBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(sidBox, 1, 1, 1, 0.12, PP)
+        EllesmereUI.MakeRoundedBorder(sidBox, 1, 1, 1, 0.12, sidBg)
         popup._sidBox = sidBox
 
         local status = popup:CreateFontString(nil, "OVERLAY")
@@ -298,7 +298,7 @@ local function ShowCustomTextPopup(titleText, initial, onSave)
         box:SetTextInsets(6, 6, 0, 0)
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
         boxBg:SetAllPoints(); boxBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, PP)
+        EllesmereUI.MakeRoundedBorder(box, 1, 1, 1, 0.12, boxBg)
         popup._box = box
 
         local ar, ag, ab = EllesmereUI.GetAccentColor()
@@ -430,11 +430,14 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
         local leftRgn = enableRow._leftRegion
         local classItems = {}
         for _, cf in ipairs(CLASS_ORDER) do
-            local color = RAID_CLASS_COLORS and RAID_CLASS_COLORS[cf]
-            local name = (LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[cf])
-                or (cf:sub(1, 1):upper() .. cf:sub(2):lower())
-            local hex = color and color.colorStr or "ffffffff"
-            classItems[#classItems + 1] = { key = cf, label = "|c" .. hex .. name .. "|r" }
+            -- WoW Forever lists only the classes it has.
+            if not EllesmereUI.IS_FOREVER or EllesmereUI.FOREVER_CLASS_SPEC[cf] then
+                local color = RAID_CLASS_COLORS and RAID_CLASS_COLORS[cf]
+                local name = (LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[cf])
+                    or (cf:sub(1, 1):upper() .. cf:sub(2):lower())
+                local hex = color and color.colorStr or "ffffffff"
+                classItems[#classItems + 1] = { key = cf, label = "|c" .. hex .. name .. "|r" }
+            end
         end
         local cbDD, cbDDRefresh
         cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
@@ -571,13 +574,44 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
 
     -- Inline controls on the Display Mode slot, mirroring the Unit Frames
     -- Health Bar Left/Right Text rows: dropdown at the right, then the
-    -- Custom + Class color swatch pair, then the resize cog. The swatches
+    -- resize cog, then the Custom + Class color swatch pair. The swatches
     -- (the Use Class Color replacement) only apply to Text and Bar modes.
     if not EllesmereUI._prebuilding then
         local leftRgn = dmRow._leftRegion
+
+        -- Resize cog (nearest the control): Text Size / Icon Size, each gated to its mode.
+        EllesmereUI.BuildInlineCog(leftRgn, {
+            title = "Display Size",
+            rows = {
+                -- Never disabled: sizes the free text, the bar's number, and
+                -- the icon's countdown numbers alike. Re-seeded on text <->
+                -- bar/icon display mode switches (24 / 12).
+                { type="slider", label="Text Size", min=8, max=72, step=1,
+                  get=function() return ma.textSize or 24 end,
+                  set=function(v) ma.textSize = v; Refresh() end },
+                { type="slider", label="Icon Size", min=16, max=128, step=1,
+                  disabled=function() return ma.displayMode ~= "icon" end,
+                  disabledTooltip="Requires the Icon display mode", rawTooltip=true,
+                  get=function() return ma.iconSize or 40 end,
+                  set=function(v) ma.iconSize = v; Refresh() end },
+                -- View over the old numeric precision key: on = 1 decimal,
+                -- off = whole seconds.
+                { type="toggle", label="Show Decimal",
+                  disabled=function() return ma.displayMode == "icon" end,
+                  disabledTooltip="Not used in Icon display mode", rawTooltip=true,
+                  -- tonumber guard: an older numeric-input build could store
+                  -- precision as a string ("1"), and `"1" > 0` is a hard error
+                  -- in Lua 5.1 -- it would throw here before set could run, so
+                  -- the toggle silently did nothing until a value was written.
+                  get=function() return (tonumber(ma.precision) or 1) > 0 end,
+                  set=function(v) ma.precision = v and 1 or 0; Refresh() end },
+            },
+            gap = 9, disabled = maOff, disabledTooltip = "Select an Enabled Class",
+        })
+
         local dmAnchor = leftRgn._lastInline or leftRgn._control
 
-        -- Class Colored swatch (nearest the control)
+        -- Class Colored swatch (nearest the cog)
         local dmClassSwatch, dmUpdateClassSwatch = EllesmereUI.BuildColorSwatch(
             leftRgn, leftRgn:GetFrameLevel() + 5,
             function()
@@ -622,36 +656,6 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
         end
         EllesmereUI.RegisterWidgetRefresh(function() dmUpdateSwatch(); dmUpdateClassSwatch(); UpdateDmSwatches() end)
         UpdateDmSwatches()
-
-        -- Resize cog (leftmost): Text Size / Icon Size, each gated to its mode.
-        EllesmereUI.BuildInlineCog(leftRgn, {
-            title = "Display Size",
-            rows = {
-                -- Never disabled: sizes the free text, the bar's number, and
-                -- the icon's countdown numbers alike. Re-seeded on text <->
-                -- bar/icon display mode switches (24 / 12).
-                { type="slider", label="Text Size", min=8, max=72, step=1,
-                  get=function() return ma.textSize or 24 end,
-                  set=function(v) ma.textSize = v; Refresh() end },
-                { type="slider", label="Icon Size", min=16, max=128, step=1,
-                  disabled=function() return ma.displayMode ~= "icon" end,
-                  disabledTooltip="Requires the Icon display mode", rawTooltip=true,
-                  get=function() return ma.iconSize or 40 end,
-                  set=function(v) ma.iconSize = v; Refresh() end },
-                -- View over the old numeric precision key: on = 1 decimal,
-                -- off = whole seconds.
-                { type="toggle", label="Show Decimal",
-                  disabled=function() return ma.displayMode == "icon" end,
-                  disabledTooltip="Not used in Icon display mode", rawTooltip=true,
-                  -- tonumber guard: an older numeric-input build could store
-                  -- precision as a string ("1"), and `"1" > 0` is a hard error
-                  -- in Lua 5.1 -- it would throw here before set could run, so
-                  -- the toggle silently did nothing until a value was written.
-                  get=function() return (tonumber(ma.precision) or 1) > 0 end,
-                  set=function(v) ma.precision = v and 1 or 0; Refresh() end },
-            },
-            icon = EllesmereUI.RESIZE_ICON, gap = 9, disabled = maOff, disabledTooltip = "Select an Enabled Class",
-        })
     end
 
     -- TTS Voice doubles as the TTS enable ("None" = off, the default) -- a
@@ -732,8 +736,11 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
             local info = C_Spell and C_Spell.GetSpellInfo(primary)
             -- WoW Forever: 781 is vanilla's threat drop, not a movement spell, and
             -- the tracker skips it there; it stays a preset id so a saved override
-            -- is never shown as a custom cell.
-            if info and info.name and not (EllesmereUI.IS_FOREVER and primary == 781) then
+            -- is never shown as a custom cell. Classes Forever does not have list
+            -- no presets there.
+            local fvSkip = EllesmereUI.IS_FOREVER
+                and (primary == 781 or not EllesmereUI.FOREVER_CLASS_SPEC[preset.class])
+            if info and info.name and not fvSkip then
                 local dupKey = preset.class .. ":" .. info.name
                 local existing = byClassName[dupKey]
                 if existing then

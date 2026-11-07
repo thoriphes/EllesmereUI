@@ -61,7 +61,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --       preview strip re-solves from the block measurements that pass settled.
 
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool and EllesmereUI.RequestTimePlayed and EllesmereUI.FormatDuration and EllesmereUI.SetFontFamily) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Time Played block asks /played through RequestTimePlayed and formats through FormatDuration; the tooltip rows take font families through SetFontFamily)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -243,6 +243,7 @@ ns.BLOCK_TYPES = {
     { key = "greatvault", label = "Great Vault" },
     { key = "mplussummary", label = "M+ Summary",
       available = function() return EllesmereUI._MythicRuns ~= nil end },
+    { key = "timeplayed", label = "Time Played" },
     { key = "audio",      label = "Audio" },
     { key = "ldb",        label = "Broker Plugin" },
     { key = "spacer",     label = "Spacer" },
@@ -289,6 +290,7 @@ ns.BLOCK_DEFAULTS = {
     ilvl       = { prefix = "short", value = "equipped", precision = 0 },
     greatvault = {},
     mplussummary = { hideWhenEmpty = false },
+    timeplayed = { alwaysTotal = false },
     audio      = { channel = "master" },
     -- Broker plugin: one block type for every LibDataBroker data source, picked
     -- by name (source). stripColors defaults ON -- broker text arrives full of
@@ -354,19 +356,26 @@ end
 -------------------------------------------------------------------------------
 --  Fonts
 -------------------------------------------------------------------------------
-function ns.SetFont(fs, size, barCfg)
+-- family: the text can show other players' writing (the tooltip rows that list
+-- friends and guild members with their names and notes). It takes a font family
+-- (EllesmereUI.SetFontFamily): Cyrillic, Korean and Chinese letters draw in the
+-- client's own faces. Every font write to such a string passes family.
+function ns.SetFont(fs, size, barCfg, family)
     if not (fs and fs.SetFont) then return end
     local path  = EllesmereUI.GetFontPath("dataBars")
     local flags = EllesmereUI.GetFontOutlineFlag()
     local scale = 100
     if barCfg and barCfg.fontScale then scale = barCfg.fontScale end
     local sz = max(6, floor((size or 11) * scale / 100 + 0.5))
+    local useShadow = flags == "" and EllesmereUI.GetFontUseShadow()
+    if family then
+        -- The family carries the drop shadow.
+        EllesmereUI.SetFontFamily(fs, path, sz, flags, useShadow and true or false)
+        return
+    end
     -- SetShadowOffset does not render on 12.x; shadows must ride a FontObject.
     -- Prime BEFORE SetFont -- the inherited shadow survives the typeface call.
-    if EllesmereUI.PrimeFontShadow then
-        local useShadow = flags == "" and EllesmereUI.GetFontUseShadow()
-        EllesmereUI.PrimeFontShadow(fs, useShadow and true or false)
-    end
+    EllesmereUI.PrimeFontShadow(fs, useShadow and true or false)
     fs:SetFont(path, sz, flags)
 end
 
@@ -439,7 +448,9 @@ end
 -- in columns (tooltip) or separate lines (vertical bar) -- a single formatted
 -- string can't, since the proportional font makes "9g" and "1 234g" different
 -- widths and everything after the first drifts. Buffer is reused;
--- Tip_AddColumns copies it, so one buffer serves all rows.
+-- Tip_AddColumns copies it, so one buffer serves all rows. Silver and copper
+-- follow showSmall, and always come while there is no gold, as in FormatMoney
+-- (an amount under 1 gold never reads a bare 0g).
 local _moneyTokens = {}
 
 function ns.MoneyTokens(amount, showSmall, coinIcons, coloured, abbreviate, forceEnglish)
@@ -447,7 +458,7 @@ function ns.MoneyTokens(amount, showSmall, coinIcons, coloured, abbreviate, forc
     wipe(_moneyTokens)
     local gold = floor(amount / DENOMINATIONS[1].divisor)
     _moneyTokens[1] = GoldDisplay(gold, abbreviate, forceEnglish) .. CoinMarker(1, coinIcons, coloured)
-    if showSmall ~= false then
+    if showSmall ~= false or gold == 0 then
         local silver = floor((amount % DENOMINATIONS[1].divisor) / DENOMINATIONS[2].divisor)
         _moneyTokens[2] = silver .. CoinMarker(2, coinIcons, coloured)
         _moneyTokens[3] = (amount % DENOMINATIONS[2].divisor) .. CoinMarker(3, coinIcons, coloured)
@@ -1230,11 +1241,13 @@ do
         for i = 1, dataCount do
             local d = data[i]
             local row = EnsureRow(i)
-            ns.SetFont(row.left, FONT_SIZE)
+            -- Both columns can list players (friends, guild members, their
+            -- notes, the account's characters): font families.
+            ns.SetFont(row.left, FONT_SIZE, nil, true)
             -- The right FS needs a font even on left-only rows: SetText("") on a
             -- never-fonted FontString hard-errors, and a pooled row's first use
             -- can be a plain line.
-            ns.SetFont(row.right, FONT_SIZE)
+            ns.SetFont(row.right, FONT_SIZE, nil, true)
             -- Rows are pooled: reset wrap state every pass so a wrapped row
             -- reused as plain measures naturally. Wrapped rows measure
             -- UNWRAPPED here so GetStringWidth reports the natural one-line
@@ -2335,6 +2348,8 @@ function ns.ApplyBar(id)
     end
 
     ApplyBarPosition(id)
+    -- Back onto its unlock anchor (nil until the unlock core is built).
+    if EllesmereUI.ReapplyUnlockAnchor then EllesmereUI.ReapplyUnlockAnchor("EDB_" .. id) end
     ApplyThemeToHost(rec.bar, cfg.theme, cfg.barTexture, not cfg.hideBorder)
 
     -- Reconcile block instances against cfg.blocks
@@ -2405,6 +2420,12 @@ function ns.ApplyBar(id)
 
     ns.RequestLayout(id)
     if AfterBarStateChange then AfterBarStateChange() end
+    -- Enabled after registration: getFrame was nil, so install the unlock hooks
+    -- and bring held followers to the bar.
+    if wasDisabled and ns._edbUnlockRegistered then
+        ns.RegisterAllUnlockElements()
+        if EllesmereUI.PropagateAnchorChain then EllesmereUI.PropagateAnchorChain("EDB_" .. id) end
+    end
 end
 
 -- Theme-only fast path (live slider / swatch feedback).
@@ -2703,13 +2724,17 @@ local dispRuntime = {}
 do
     local dispFrame
 
-    local function AnyFullBar()
+    -- Full-length and edge-snapped bars are placed from UIParent's size.
+    local function FollowsScreen(cfg)
+        return cfg.lengthMode == "full" or (cfg.snapEdge and cfg.snapEdge ~= "none")
+    end
+
+    local function AnyScreenBar()
         local profile = ns.GetProfile()
         if not profile then return false end
         local bars = profile.bars
         for i = 1, #bars do
-            if not ns.VisIsNever(bars[i])
-               and bars[i].lengthMode == "full" then
+            if not ns.VisIsNever(bars[i]) and FollowsScreen(bars[i]) then
                 return true
             end
         end
@@ -2722,22 +2747,38 @@ do
         ns.WipeFitCache()
         local bars = profile.bars
         for i = 1, #bars do
-            if bars[i].lengthMode == "full" then
+            if FollowsScreen(bars[i]) then
                 ns.ApplyBar(bars[i].id)
             end
         end
     end
 
+    -- UIParent:SetScale (login, scale slider) fires no event: follow its size too.
+    -- The two events and the size change all land in one pass on the next frame.
+    local sizeQueued
+    local function FlushSized()
+        sizeQueued = false
+        OnDispEvent()
+    end
+    local function OnUIParentSized()
+        if sizeQueued then return end
+        sizeQueued = true
+        C_Timer.After(0, FlushSized)
+    end
+
     function dispRuntime.UpdateEventRegistration()
-        if AnyFullBar() then
+        if AnyScreenBar() then
             if not dispFrame then
-                dispFrame = CreateFrame("Frame")
-                dispFrame:SetScript("OnEvent", OnDispEvent)
+                dispFrame = CreateFrame("Frame", nil, UIParent)
+                dispFrame:SetAllPoints(UIParent)
+                dispFrame:SetScript("OnEvent", OnUIParentSized)
             end
             dispFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
             dispFrame:RegisterEvent("UI_SCALE_CHANGED")
+            dispFrame:SetScript("OnSizeChanged", OnUIParentSized)
         elseif dispFrame then
             dispFrame:UnregisterAllEvents()
+            dispFrame:SetScript("OnSizeChanged", nil)
         end
     end
 end
@@ -2762,6 +2803,15 @@ local function MakeBarElement(barId, orderIdx)
     local cfgNow = cfgOf()
     local label = "DataBar " .. barId
     if cfgNow and cfgNow.name then label = cfgNow.name end
+    -- Unlock resize: ApplyBar moved the bar to its stored spot, so return it to
+    -- the mover. Snapped and anchored bars keep their edge or link.
+    local function holdAtMover(cfg)
+        if cfg.snapEdge and cfg.snapEdge ~= "none" then return end
+        local key = "EDB_" .. barId
+        if EllesmereUI._unlockActive and not EllesmereUI.IsUnlockAnchored(key) then
+            EllesmereUI.RepositionBarToMover(key)
+        end
+    end
     return EllesmereUI.MakeUnlockElement({
         key      = "EDB_" .. barId,
         label    = label,
@@ -2789,11 +2839,14 @@ local function MakeBarElement(barId, orderIdx)
         savePos  = function(_, pt, rpt, x, y)
             local cfg = cfgOf()
             if not cfg then return end
+            local sp = cfg.savedPos
+            local moved = not (sp and sp.point == pt and (sp.relPoint or sp.point) == rpt
+                and sp.x == x and sp.y == y)
             cfg.savedPos = { point = pt, relPoint = rpt, x = x, y = y }
-            -- Any manual move un-snaps the bar: it is no longer flush to
-            -- the edge, so the setting reverting to None reflects reality
-            -- (and applyPos would otherwise fight the drag).
-            if cfg.snapEdge and cfg.snapEdge ~= "none" then
+            -- A real move un-snaps the bar: it is no longer flush to the edge,
+            -- so the setting reverting to None reflects reality (and applyPos
+            -- would otherwise fight the drag). A Cancel restores the same spot.
+            if moved and cfg.snapEdge and cfg.snapEdge ~= "none" then
                 cfg.snapEdge = "none"
             end
         end,
@@ -2827,6 +2880,7 @@ local function MakeBarElement(barId, orderIdx)
                 cfg.length = w
             end
             ns.ApplyBar(barId)
+            holdAtMover(cfg)
         end,
         setHeight = function(_, h)
             local cfg = cfgOf()
@@ -2840,6 +2894,7 @@ local function MakeBarElement(barId, orderIdx)
                 cfg.thickness = h
             end
             ns.ApplyBar(barId)
+            holdAtMover(cfg)
         end,
         isHidden = function()
             return cfgOf() == nil
@@ -2863,6 +2918,7 @@ function ns.RegisterAllUnlockElements()
     if #elements > 0 then
         EllesmereUI:RegisterUnlockElements(elements, "EllesmereUIDataBars")
     end
+    ns._edbUnlockRegistered = true
 end
 
 -------------------------------------------------------------------------------

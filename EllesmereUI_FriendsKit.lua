@@ -827,7 +827,9 @@ local FFD, GetFFD = EllesmereUI.NewFrameData()
 -- below-default text size genuinely scales the row under 70.
 --
 -- So nothing here writes the row height. Do not re-attempt; both shapes are
--- already disproven.
+-- already disproven. Another tile height is the custom friends list's
+-- (EllesmereUI_FriendsList.lua): rows of our own drawn over Blizzard's list,
+-- never a change to Blizzard's cards.
 --
 -- The tile's icon square: the name starts past it.
 local TILE_TARGET_H     = 46
@@ -1030,9 +1032,10 @@ local function SkinStructure(card)
 
     d.classIcon = card:CreateTexture(nil, "ARTWORK", nil, 2)
 
+    -- The three lines show friends' names and notes: font families (a family
+    -- draws the scripts the chosen font lacks), never a plain SetFont.
     d.name = card:CreateFontString(nil, "OVERLAY")
-    EllesmereUI.PrimeFontShadow(d.name, true)
-    d.name:SetFont(FontPath(), TILE_NAME_SIZE, "")
+    EllesmereUI.SetFontFamily(d.name, FontPath(), TILE_NAME_SIZE, "", true)
     d.name:SetJustifyH("LEFT")
     d.name:SetWordWrap(false)
     -- Horizontal inset is re-resolved per paint in PaintCard (it follows the
@@ -1041,15 +1044,13 @@ local function SkinStructure(card)
 
     -- Character name + level, its own line under the Battle.net name.
     d.charLine = card:CreateFontString(nil, "OVERLAY")
-    EllesmereUI.PrimeFontShadow(d.charLine, true)
-    d.charLine:SetFont(FontPath(), TILE_CHAR_SIZE, "")
+    EllesmereUI.SetFontFamily(d.charLine, FontPath(), TILE_CHAR_SIZE, "", true)
     d.charLine:SetJustifyH("LEFT")
     d.charLine:SetWordWrap(false)
     d.charLine:SetPoint("TOPLEFT", d.name, "BOTTOMLEFT", 0, TILE_LINE_GAP)
 
     d.info = card:CreateFontString(nil, "OVERLAY")
-    EllesmereUI.PrimeFontShadow(d.info, true)
-    d.info:SetFont(FontPath(), TILE_INFO_SIZE, "")
+    EllesmereUI.SetFontFamily(d.info, FontPath(), TILE_INFO_SIZE, "", true)
     d.info:SetJustifyH("LEFT")
     d.info:SetWordWrap(false)
     -- Anchored per paint: it follows charLine when there is one, otherwise the
@@ -1363,6 +1364,10 @@ end
 local function PaintCard(card)
     if not TILE_PAINT then return end
     if not Enabled() then return end
+    -- The custom friends list (EllesmereUI_FriendsList.lua) covers Blizzard's
+    -- cards while it shows: they stay unpainted, on file for the catch-up
+    -- when it stands down (Kit.RedecorateTiles).
+    if Kit._listShown then GetFFD(card); return end
 
     local ed = card.elementData
     local accountInfo = ed and ed.accountInfo
@@ -1420,6 +1425,28 @@ local function PaintCard(card)
     d.selBar:SetShown(sel)
     d.selFill:SetShown(sel)
 end
+
+-- The tile pieces the custom friends list (EllesmereUI_FriendsList.lua) draws
+-- its own rows with, so the two never drift apart. Skin builds the tile art,
+-- the three text lines and the status orb on any frame (a row of ours
+-- included); its state is the kit's frame data for that frame. LevelColor is
+-- the colour the character line's level takes.
+Kit._tile = {
+    Host         = function() return host end,
+    FontPath     = FontPath,
+    Skin         = SkinStructure,
+    Name         = BuildName,
+    CharLine     = BuildCharLine,
+    LevelColor   = LocationColor,
+    Info         = BuildInfo,
+    State        = TileState,
+    ClassFile    = GetClassFile,
+    ClassIconTex = SetClassIconTex,
+    Faction      = UpdateFaction,
+    Orb          = UpdateOrb,
+    Region       = UpdateRegion,
+    OFFLINE_ICON = OFFLINE_ICON,
+}
 
 -------------------------------------------------------------------------------
 --  Stock styles (Blizzard Style / Classic WoW UI): Blizzard's own card, laid

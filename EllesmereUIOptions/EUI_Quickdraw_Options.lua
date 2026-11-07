@@ -644,6 +644,7 @@ initFrame:SetScript("OnEvent", function(self)
                     or (slot.kind == "randomhearth"
                         and "random hearthstone, rolled again on each open")
                     or (slot.kind == "panel" and "interface panel")
+                    or (slot.kind == "equipmentset" and "equipment set")
                     or (slot.kind == "spec" and "specialization")
                     -- Same icon and same name as a fixed spec entry on the
                     -- character that made it, so the caption is the only place
@@ -782,8 +783,11 @@ initFrame:SetScript("OnEvent", function(self)
                 for i = li.itemIndexOffset + 1, li.itemIndexOffset + li.numSpellBookItems do
                     local info = C_SpellBook.GetSpellBookItemInfo(i, bank)
                     -- FutureSpell (a rank not learned yet) falls out here too:
-                    -- only Spell and Flyout are handled.
-                    if info and not info.isPassive and not info.isOffSpec then
+                    -- only Spell and Flyout are handled. On WoW Forever the book
+                    -- holds every learned rank, and an entry casts the highest
+                    -- known one, so a lower rank would only repeat its spell's row.
+                    if info and not info.isPassive and not info.isOffSpec
+                       and not (EllesmereUI.IS_FOREVER and C_SpellBook.IsSpellBookItemLowRank(i, bank)) then
                         if info.itemType == Enum.SpellBookItemType.Spell then
                             -- actionID, not spellID: for a spell actionID is the
                             -- BASE id while spellID is whatever override is up
@@ -1178,6 +1182,15 @@ initFrame:SetScript("OnEvent", function(self)
         return out
     end
 
+    local function EquipmentSetEntries()
+        local out = {}
+        for _, slot in ipairs(ns.EquipmentSetSlots()) do
+            local icon, name = ns.SlotDisplay(slot)
+            out[#out + 1] = { icon = icon, name = name, slot = slot }
+        end
+        return out
+    end
+
     -- Every palette this one may open. Not a list of things the game owns, so
     -- it is rebuilt on each use rather than cached: adding a palette or filling
     -- one in has to show up here without reopening the picker.
@@ -1226,6 +1239,8 @@ initFrame:SetScript("OnEvent", function(self)
         { key = "battlepet", label = "Battle Pets",  build = PetEntries },
         { key = "outfit",    label = "Outfits",      build = OutfitEntries,
           keepOrder = true },
+        { key = "equipmentset", label = "Equipment Sets",
+          build = EquipmentSetEntries },
         -- keepOrder on both: the markers run star to skull, the order every
         -- marker menu in the game shows. noSearch on both too -- a fixed
         -- handful of rows has nothing worth filtering, and the nav strip
@@ -1328,7 +1343,7 @@ initFrame:SetScript("OnEvent", function(self)
         local mbg = menu:CreateTexture(nil, "BACKGROUND")
         mbg:SetAllPoints()
         mbg:SetColorTexture(bgR, bgG, bgB, bgA)
-        EllesmereUI.MakeBorder(menu, 1, 1, 1, brdA, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, brdA, mbg, nil, true)
 
         menu.title = EllesmereUI.MakeFont(menu, 12, nil, 1, 1, 1, 0.9)
         menu.title:SetPoint("TOP", menu, "TOP", 0, -7)
@@ -1385,7 +1400,7 @@ initFrame:SetScript("OnEvent", function(self)
         local sBg = menu.search:CreateTexture(nil, "BACKGROUND")
         sBg:SetAllPoints()
         sBg:SetColorTexture(0, 0, 0, 0.4)
-        EllesmereUI.MakeBorder(menu.search, 1, 1, 1, 0.10, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(menu.search, 1, 1, 1, 0.10, sBg)
         menu.searchPH = menu.search:CreateFontString(nil, "OVERLAY")
         menu.searchPH:SetFont(FONT, 11, "")
         menu.searchPH:SetTextColor(0.5, 0.5, 0.5, 0.6)
@@ -1518,7 +1533,7 @@ initFrame:SetScript("OnEvent", function(self)
             local bg = box:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints()
             bg:SetColorTexture(0, 0, 0, 0.4)
-            EllesmereUI.MakeBorder(box, 1, 1, 1, 0.10, EllesmereUI.PP)
+            EllesmereUI.MakeRoundedBorder(box, 1, 1, 1, 0.10, bg)
             return box
         end
 
@@ -1936,6 +1951,13 @@ initFrame:SetScript("OnEvent", function(self)
         return out, dropped
     end
 
+    local function EquipmentSetSlots()
+        local out = ns.EquipmentSetSlots()
+        local dropped = math.max(0, #out - MAX_SLOTS)
+        for i = #out, MAX_SLOTS + 1, -1 do out[i] = nil end
+        return out, dropped
+    end
+
     -- Self-teleports only, keyed by class. Mage portals are deliberately not
     -- here: a palette entry fires for its owner, and the teleport is the spell
     -- an owner wants.
@@ -2146,6 +2168,7 @@ initFrame:SetScript("OnEvent", function(self)
         { label = "Pings",          build = PingSlots },
         { label = "Hearthstones",   build = HearthstoneSlots },
         { label = "Outfits",        build = OutfitSlots },
+        { label = "Equipment Sets", build = EquipmentSetSlots },
         { label = "Teleports",      build = TeleportSlots },
         { label = "Potions",        build = PotionSlots },
         { label = "Druid Forms",    build = FormSlots },
@@ -2606,7 +2629,7 @@ initFrame:SetScript("OnEvent", function(self)
         local bg = btn:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-        local brd = EllesmereUI.MakeBorder(btn, 1, 1, 1, EllesmereUI.DD_BRD_A, PPQ)
+        local brd = EllesmereUI.MakeRoundedBorder(btn, 1, 1, 1, EllesmereUI.DD_BRD_A, bg)
         -- The resting alpha is the text colour's, the channel the hover
         -- colours below write, so a hover and leave land back on it.
         local lbl = EllesmereUI.MakeFont(btn, 13, nil, 1, 1, 1, EllesmereUI.DD_TXT_A)
