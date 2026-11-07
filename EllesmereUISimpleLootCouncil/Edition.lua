@@ -1,123 +1,90 @@
 if EUI_CLIENT_BLOCKED then return end 
 
 
-
 local ADDON_NAME, ns = ...
 
-local STANDALONE = "SimpleLootCouncil"
 
 
-if EUI_CLIENT_BLOCKED then
+local heldBack = EllesmereUI.HELD_BACK_ADDONS
+if heldBack and heldBack[ADDON_NAME] then
     ns.slcInert = true
     return
 end
+
+local STANDALONE = "SimpleLootCouncil"
+local FIRST_STAND_DOWN = { 0, 43, 80 }
 
 
 
 local function CharacterKey()
-    local forever = (select(4, GetBuildInfo()) or 0) < 20000
-    local full = forever and GetUnitName and GetUnitName("player", false)
-    return full or UnitName("player")
+    local name, second = UnitName("player")
+    if EllesmereUI.IS_FOREVER and type(name) == "string" and type(second) == "string"
+        and second ~= "" and not name:find(" ", 1, true) and not second:find(" ", 1, true) then
+        return name .. " " .. second
+    end
+    return name
 end
 
-
-
-local function StandaloneRuns()
+local function OlderStandaloneRuns()
     local api = C_AddOns
-    if not (api and api.GetAddOnEnableState) then return false end
+    if not (api and api.GetAddOnEnableState and api.GetAddOnMetadata) then return false end
+    if api.DoesAddOnExist then
+        local ok, exists = pcall(api.DoesAddOnExist, STANDALONE)
+        if ok and not exists then return false end
+    end
     local character = CharacterKey()
     local ok, state = pcall(api.GetAddOnEnableState, STANDALONE, character)
-    if not ok or (state or 0) == 0 then return false end
+    if not ok or type(state) ~= "number" or state <= 0 then return false end
     if api.IsAddOnLoadable then
         local called, loadable = pcall(api.IsAddOnLoadable, STANDALONE, character)
         if called and loadable == false then return false end
     end
-    return true
+    local read, version = pcall(api.GetAddOnMetadata, STANDALONE, "Version")
+    if not read or type(version) ~= "string" then return false end
+    local major, minor, patch = version:match("(%d+)%.(%d+)%.(%d+)")
+    if not major then return false end
+    local parts = { tonumber(major), tonumber(minor), tonumber(patch) }
+    for i = 1, 3 do
+        if parts[i] ~= FIRST_STAND_DOWN[i] then return parts[i] < FIRST_STAND_DOWN[i] end
+    end
+    return false
 end
 
-if StandaloneRuns() then
+if OlderStandaloneRuns() then
     ns.slcInert = true
-else
 
-    SimpleLootCouncil = SimpleLootCouncil or {}
-    SimpleLootCouncil.EDITION = "eui"
-end
+    function ns.DisableStandalone()
+        if C_AddOns and C_AddOns.DisableAddOn then
+            pcall(C_AddOns.DisableAddOn, STANDALONE, CharacterKey())
+        end
+    end
 
-
-
-if EllesmereUI and EllesmereUI._ModuleNS then
     EllesmereUI._ModuleNS[ADDON_NAME] = ns
-end
 
-if not ns.slcInert then
-
-    local done = CreateFrame("Frame")
-    done:RegisterEvent("PLAYER_LOGIN")
-    done:SetScript("OnEvent", function(self)
+    local notice = CreateFrame("Frame")
+    notice:RegisterEvent("PLAYER_LOGIN")
+    notice:SetScript("OnEvent", function(self)
         self:UnregisterAllEvents()
-        local db = _G.SimpleLootCouncilDB
-        if type(db) == "table" then db.euiSwitchPending = nil end
+        EllesmereUI:ShowConfirmPopup({
+            title = EllesmereUI.L("Simple Loot Council"),
+            message = EllesmereUI.L("An older SimpleLootCouncil addon is enabled, so the Simple Loot Council module is off until that addon is disabled or updated."),
+            confirmText = EllesmereUI.L("Disable and Reload"),
+            cancelText = EllesmereUI.L("Not Now"),
+            reload = true,
+            onConfirm = ns.DisableStandalone,
+        })
     end)
     return
 end
 
+SimpleLootCouncil = SimpleLootCouncil or {}
+SimpleLootCouncil.EDITION = "eui"
+SimpleLootCouncil.SAVED_VARIABLES = "EllesmereUISimpleLootCouncilDB"
+
+SimpleLootCouncil.RequestReload = function() EllesmereUI.RequestReload() end
+
+local function ChatSink(line) EllesmereUI.Print(line) end
+SimpleLootCouncil.ChatSinkOverride = { Print = ChatSink, Error = ChatSink }
 
 
-
-
-
-
-local function Declined()
-    local db = _G.SimpleLootCouncilDB
-    return type(db) == "table" and db.euiSwitchDeclined == true
-end
-
-local function Remember(declined)
-    local db = _G.SimpleLootCouncilDB
-    if type(db) == "table" then db.euiSwitchDeclined = declined or nil end
-end
-
-local function Disable()
-    pcall(C_AddOns.DisableAddOn, STANDALONE, CharacterKey())
-    local db = _G.SimpleLootCouncilDB
-    if type(db) == "table" then db.euiSwitchPending = true end
-end
-
-
-
-function ns.AskSwitch()
-    if not (EllesmereUI and EllesmereUI.ShowConfirmPopup) then return end
-    Remember(false)
-    EllesmereUI:ShowConfirmPopup({
-        title = EllesmereUI.L("Simple Loot Council"),
-        message = EllesmereUI.L("Simple Loot Council is installed twice, and the standalone copy is the one running. Switch to the EllesmereUI module? Your council, history and settings carry over."),
-        disclaimer = EllesmereUI.L("Keeping the standalone leaves this copy idle. You can switch later from the Simple Loot Council page."),
-        confirmText = EllesmereUI.L("Switch & Reload"),
-        cancelText = EllesmereUI.L("Keep Standalone"),
-        reload = true,
-        onConfirm = Disable,
-        onCancel = function() Remember(true) end,
-    })
-end
-
-local watcher = CreateFrame("Frame")
-watcher:RegisterEvent("PLAYER_LOGIN")
-watcher:SetScript("OnEvent", function(self)
-    self:UnregisterAllEvents()
-    local db = _G.SimpleLootCouncilDB
-    if C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded(STANDALONE) == false then
-
-        if type(db) == "table" then db.euiSwitchPending = nil end
-        print(EllesmereUI.L("Simple Loot Council did not start: the EllesmereUI module expected the standalone copy to load, and it did not. Please report this; turning SimpleLootCouncil on in the AddOns list works around it."))
-        return
-    end
-    if type(db) == "table" and db.euiSwitchPending then
-
-        db.euiSwitchPending = nil
-        print(EllesmereUI.L("Simple Loot Council: the standalone copy could not be turned off for you. Turn off SimpleLootCouncil in the AddOns list, then reload."))
-        return
-    end
-    if Declined() then return end
-
-    C_Timer.After(3, ns.AskSwitch)
-end)
+EllesmereUI._ModuleNS[ADDON_NAME] = ns

@@ -8,6 +8,18 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUINameplates"]
 if not ns then return end  -- module disabled: no options page
 
+-- The options page frame pool (EllesmereUI_FramePool.lua): frames made under a
+-- pooled page part are handed back to the page's next build.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
+-- A row half's slider label, for a "(Percent)" suffix beside it: the half's own
+-- label (a page built again keeps its earlier dresses' font strings, idle,
+-- among the half's regions).
+local function SliderLabel(rgn, text)
+    local label = rgn._label
+    if label and label.GetText and EllesmereUI.EnKey(label:GetText()) == text then return label end
+end
+
 ---------------------------------------------------------------------------
 --  General page (Friendly settings, Spacing, Show All Debuffs); two-column DualRow layout where possible
 ---------------------------------------------------------------------------
@@ -298,46 +310,53 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           rawTooltip=function() return not friendlyPlayersOff() end,
           swatches = MakeGuildColorSwatches() });  y = y - h
 
-    -- Subtitle Text inline cog (guild bracket toggle). WoW Forever retitles it
-    -- Name Text Settings and heads it with the friendly Name Format (a friendly
-    -- player's first or last name, in both modes), so there the cog opens
+    -- Subtitle Text inline cog: Name Text Settings, headed by the friendly Name
+    -- Format (a friendly player's name, in both modes), so the cog opens
     -- whenever friendly players show and the guild row carries the guild
     -- requirement itself.
     if not EllesmereUI._prebuilding then
-        local guildRow = { type = "toggle", label = "Show <> Around Guild",
-            get = function() return DBVal("friendlyBelowNameGuildBrackets") ~= false end,
-            set = function(v)
-              DB().friendlyBelowNameGuildBrackets = v and true or false
-              if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
-            end }
-        local cog = {
+        EllesmereUI.BuildInlineCog(subtitleRow._leftRegion, {
             chain = false,
-            disabled = subtitleGuildOff,
-            -- Same requirement as the Guild Text Color swatch beside it; the
-            -- guild sentence is already whole, so it goes raw.
-            disabledTooltip = function()
-                if friendlyPlayersOff() then return "Show EUI Friendly Player Nameplates" end
-                return EllesmereUI.L("This option requires Subtitle Text to include the Guild Name")
-            end,
-            rawTooltip = function() return not friendlyPlayersOff() end,
-            title = "Subtitle Text Settings",
-            rows = { guildRow },
-        }
-        if EllesmereUI.IS_FOREVER then
-            cog.title = "Name Text Settings"
-            cog.disabled, cog.disabledTooltip, cog.rawTooltip =
-                friendlyPlayersOff, "Show EUI Friendly Player Nameplates", nil
-            guildRow.disabled = subtitleGuildOff
-            guildRow.disabledTooltip = "This option requires Subtitle Text to include the Guild Name"
-            guildRow.rawTooltip = true
-            table.insert(cog.rows, 1, EllesmereUI.NameFormatCogRow(
-                function() return DBVal("friendlyNameFormat") end,
-                function(v)
-                    DB().friendlyNameFormat = v
-                    ns.NP_SyncFriendlyNameFormat()
-                end))
-        end
-        EllesmereUI.BuildInlineCog(subtitleRow._leftRegion, cog)
+            disabled = friendlyPlayersOff,
+            disabledTooltip = "Show EUI Friendly Player Nameplates",
+            title = "Name Text Settings",
+            rows = {
+                -- WoW Forever names it for players, as Forever Essentials' Name
+                -- Format section does (it only ever shaped players' names).
+                EllesmereUI.NameFormatCogRow(
+                    function() return DBVal("friendlyNameFormat") end,
+                    function(v)
+                        DB().friendlyNameFormat = v
+                        ns.NP_SyncFriendlyNameFormat()
+                    end,
+                    EllesmereUI.IS_FOREVER == true and { label = "Player Name Format",
+                        tooltip = "Friendly player names on nameplates, in both modes." } or nil),
+                { type = "toggle", label = "Show Level",
+                  get = function() return DBVal("friendlyShowLevel") == true end,
+                  set = function(v)
+                    DB().friendlyShowLevel = v and true or false
+                    if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
+                  end },
+                { type = "toggle", label = "Color Level by Difficulty",
+                  disabled = function() return DBVal("friendlyShowLevel") ~= true end,
+                  disabledTooltip = "This option requires Show Level",
+                  rawTooltip = true,
+                  get = function() return DBVal("friendlyLevelDiffColor") == true end,
+                  set = function(v)
+                    DB().friendlyLevelDiffColor = v and true or false
+                    if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
+                  end },
+                { type = "toggle", label = "Show <> Around Guild",
+                  disabled = subtitleGuildOff,
+                  disabledTooltip = "This option requires Subtitle Text to include the Guild Name",
+                  rawTooltip = true,
+                  get = function() return DBVal("friendlyBelowNameGuildBrackets") ~= false end,
+                  set = function(v)
+                    DB().friendlyBelowNameGuildBrackets = v and true or false
+                    if ns.RefreshFriendlyBelowName then ns.RefreshFriendlyBelowName() end
+                  end },
+            },
+        })
     end
 
     local npcRow
@@ -380,6 +399,12 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             rawTooltip = true,
             title = "Friendly NPC Settings",
             rows = {
+                EllesmereUI.NameFormatCogRow(
+                    function() return DBVal("friendlyNPCNameFormat") end,
+                    function(v)
+                        DB().friendlyNPCNameFormat = v
+                        if ns.RefreshAllNPCOverlays then ns.RefreshAllNPCOverlays() end
+                    end),
                 { type = "toggle", label = "Show NPC Titles",
                   get = function() return DBVal("showNPCTitles") ~= false end,
                   set = function(v)
@@ -477,7 +502,6 @@ local function BuildGeneralPage(pageName, parent, yOffset)
     -- Inline DIRECTIONS cog on Friendly Name Size: name-only vertical distance
     if not EllesmereUI._prebuilding then
         EllesmereUI.BuildInlineCog(npcRow._rightRegion, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
             disabled = nameOnlyOff,
             title = "Name Distance",
             rows = {
@@ -573,7 +597,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
         eyeBtn:SetSize(26, 26)
         eyeBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
         eyeBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-        eyeBtn:SetAlpha(0.4)
+        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         leftRgn._lastInline = eyeBtn
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
         eyeTex:SetAllPoints()
@@ -586,11 +610,11 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             RefreshEyeIcon()
         end)
         eyeBtn:SetScript("OnEnter", function(self)
-            self:SetAlpha(0.7)
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
             EllesmereUI.ShowWidgetTooltip(self, "Show/Hide Hitbox Overlay", { width = 175 })
         end)
         eyeBtn:SetScript("OnLeave", function(self)
-            self:SetAlpha(0.4)
+            EllesmereUI.SetGlyphAlpha(self, 0.4)
             EllesmereUI.HideWidgetTooltip()
         end)
         -- Auto-hide the overlay when the options panel closes (hook once).
@@ -605,11 +629,13 @@ local function BuildGeneralPage(pageName, parent, yOffset)
     end
 
     -- Stacking Speed | Top Screen Inset: CVars Blizzard restored in 12.1.5,
-    -- so each slider exists only on a client that has its CVar. Pure CVar
-    -- passthrough like Line of Sight Opacity: nothing stored, nothing written
-    -- until a slider moves. Speed reads as a percent of the client's own
-    -- default; the inset as a percent of the screen's height (raw values if
-    -- the client's default is not a fraction).
+    -- so each slider exists only on a client that has its CVar. The client
+    -- does not save either one across a game restart, so a slider keeps its
+    -- value account-wide and the module writes it again at login
+    -- (ns.KeepNameplateCVar); nothing is written until a slider moves. Speed
+    -- reads as a percent of the client's own default; the inset as a percent
+    -- of the screen's height (raw values if the client's default is not a
+    -- fraction).
     do
         local function CVarDefault(name) return tonumber(C_CVar.GetCVarDefault(name)) end
         local cvarRows = {}
@@ -625,7 +651,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                     if InCombatLockdown() then return end
                     local def = CVarDefault("nameplateMotionSpeed")
                     if not (def and def > 0) then return end
-                    EllesmereUI.SetCVar("nameplateMotionSpeed", def * v / 100, "EllesmereUINameplates")
+                    ns.KeepNameplateCVar("nameplateMotionSpeed", def * v / 100)
                 end,
                 tooltip="How fast stacked nameplates slide into place. 100% is Blizzard's default." }
         end
@@ -641,7 +667,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                 end,
                 setValue=function(v)
                     if InCombatLockdown() then return end
-                    EllesmereUI.SetCVar("nameplateTopInset", frac and v / 100 or v, "EllesmereUINameplates")
+                    ns.KeepNameplateCVar("nameplateTopInset", frac and v / 100 or v)
                 end,
                 tooltip="How far from the top of the screen nameplates stop. 0 lets them reach the edge." }
         end
@@ -822,15 +848,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             local suffixFS = rightFrame:CreateFontString(nil, "OVERLAY")
             suffixFS:SetFont(EllesmereUI.EXPRESSWAY, 11, GetNPOptOutline())
             suffixFS:SetTextColor(1, 1, 1, 0.35)
-            local sliderLabel
-            local regions = { rightFrame:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Hash Line Location" then
-                    sliderLabel = reg
-                    break
-                end
-            end
+            local sliderLabel = SliderLabel(rightFrame, "Hash Line Location")
             if sliderLabel then
                 suffixFS:SetPoint("LEFT", sliderLabel, "RIGHT", 5, -1)
             else
@@ -900,15 +918,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             local suffixFS = leftFrame:CreateFontString(nil, "OVERLAY")
             suffixFS:SetFont(EllesmereUI.EXPRESSWAY, 11, GetNPOptOutline())
             suffixFS:SetTextColor(1, 1, 1, 0.35)
-            local sliderLabel
-            local regions = { leftFrame:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Scale Target Nameplate" then
-                    sliderLabel = reg
-                    break
-                end
-            end
+            local sliderLabel = SliderLabel(leftFrame, "Scale Target Nameplate")
             if sliderLabel then
                 suffixFS:SetPoint("LEFT", sliderLabel, "RIGHT", 5, -1)
             else
@@ -917,20 +927,59 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             suffixFS:SetText(EllesmereUI.L("(Percent)"))
         end
     end
-    -- Inline cog on Non-Target Opacity: focus exclusion toggle.
+    -- Inline cog on Scale Target Nameplate: the enemy type scales.
     if not EllesmereUI._prebuilding then
-        local function ntOff() return (DBVal("nonTargetAlpha") or 100) >= 100 end
+        local function TypeScaleRow(label, key, tip)
+            return { type="slider", label=label, tooltip=tip, min=25, max=125, step=5,
+                get=function() return DBVal(key) or defaults[key] end,
+                set=function(v)
+                    DB()[key] = v
+                    if ns.NP_RefreshTypeScaleSetting then ns.NP_RefreshTypeScaleSetting() end
+                end }
+        end
+        EllesmereUI.BuildInlineCog(tfScaleRow._leftRegion, {
+            title = "Scale Target Nameplate",
+            rows = {
+                TypeScaleRow("Minor Enemy Scale (Percent)", "minorEnemyScale",
+                    "Scales the nameplates of minor and trivial enemies; 100% = no change."),
+                TypeScaleRow("Non-Elite Enemy Scale (Percent)", "nonEliteEnemyScale",
+                    "Scales the nameplates of non-elite enemies in dungeons only; 100% = no change."),
+            },
+        })
+    end
+    -- Inline cog on Non-Target Opacity: the focus exemption, which Out of Combat
+    -- Opacity (Extras) reads too, and the casting one.
+    if not EllesmereUI._prebuilding then
+        local function ntOff()
+            return (DBVal("nonTargetAlpha") or 100) >= 100 and (DBVal("outOfCombatAlpha") or 100) >= 100
+        end
         local rgn = tfScaleRow._rightRegion
         EllesmereUI.BuildInlineCog(rgn, {
             disabled = ntOff,
-            disabledTooltip = "This option requires Non-Target Opacity to be below 100",
+            disabledTooltip = "This option requires Non-Target Opacity or Out of Combat Opacity to be below 100",
             title = "Non-Target Opacity",
             rows = {
                 { type="toggle", label="Keep Focus Full Opacity",
-                  tooltip="Your focus target's nameplate never fades with the non-target opacity.",
+                  tooltip="Your focus target's nameplate never fades with Non-Target Opacity or Out of Combat Opacity.",
                   get=function() return DBVal("nonTargetKeepFocus") ~= false end,
                   set=function(v)
                     DB().nonTargetKeepFocus = v
+                    if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+                  end },
+                -- One dropdown over nonTargetCastFull + nonTargetCastImportantOnly.
+                { type="dropdown", label="Full Opacity While Casting",
+                  values={ off = "Off", all = "All Casts", important = "Important Casts" },
+                  order={ "off", "all", "important" },
+                  tooltip="A casting enemy's nameplate skips Non-Target Opacity while the cast lasts.",
+                  disabled=function() return (DBVal("nonTargetAlpha") or 100) >= 100 end,
+                  disabledTooltip="Non-Target Opacity below 100",
+                  get=function()
+                    if DBVal("nonTargetCastFull") ~= true then return "off" end
+                    return DBVal("nonTargetCastImportantOnly") == true and "important" or "all"
+                  end,
+                  set=function(v)
+                    DB().nonTargetCastFull = v ~= "off"
+                    DB().nonTargetCastImportantOnly = v == "important"
                     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
                   end },
             },
@@ -967,15 +1016,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             local suffixFS = leftFrame:CreateFontString(nil, "OVERLAY")
             suffixFS:SetFont(EllesmereUI.EXPRESSWAY, 11, GetNPOptOutline())
             suffixFS:SetTextColor(1, 1, 1, 0.35)
-            local sliderLabel
-            local regions = { leftFrame:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Focus Cast Height" then
-                    sliderLabel = reg
-                    break
-                end
-            end
+            local sliderLabel = SliderLabel(leftFrame, "Focus Cast Height")
             if sliderLabel then
                 suffixFS:SetPoint("LEFT", sliderLabel, "RIGHT", 5, -1)
             else
@@ -988,7 +1029,6 @@ local function BuildGeneralPage(pageName, parent, yOffset)
     if not EllesmereUI._prebuilding then
         local rgn = tfFocusRow._rightRegion
         EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             disabled = focusLetterOff,
             disabledTooltip = "Focus Letter",
             title = "Focus Letter",
@@ -1037,34 +1077,10 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           end },
         { type="label", text="" }
     );  y = y - h
-    -- Inline color swatch (default light orange), beside the toggle
-    if not EllesmereUI._prebuilding then
-        local rgn = tfRangeRow._leftRegion
-        local rangeColorGet = function()
-            local c = (DB() and DB().rangeTextColor) or defaults.rangeTextColor
-            return c.r, c.g, c.b
-        end
-        local rangeColorSet = function(r, g, b)
-            DB().rangeTextColor = { r = r, g = g, b = b }
-            if ns.RangeText_Refresh then ns.RangeText_Refresh() end
-        end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, rangeColorGet, rangeColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = tfRangeOff()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end)
-        swatch:SetAlpha(tfRangeOff() and 0.15 or 1)
-        swatch:EnableMouse(not tfRangeOff())
-    end
-    -- RESIZE cog: text size + X/Y offsets (mirrors the raid-marker cog), left of the swatch
+    -- RESIZE cog: text size + X/Y offsets (mirrors the raid-marker cog), beside the toggle
     if not EllesmereUI._prebuilding then
         local rgn = tfRangeRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             disabled = tfRangeOff,
             disabledTooltip = "Distance to Target Text (Range)",
             title = "Distance Text",
@@ -1089,6 +1105,29 @@ local function BuildGeneralPage(pageName, parent, yOffset)
                   end },
             },
         })
+    end
+    -- Inline color swatch (default light orange), left of the cog
+    if not EllesmereUI._prebuilding then
+        local rgn = tfRangeRow._leftRegion
+        local rangeColorGet = function()
+            local c = (DB() and DB().rangeTextColor) or defaults.rangeTextColor
+            return c.r, c.g, c.b
+        end
+        local rangeColorSet = function(r, g, b)
+            DB().rangeTextColor = { r = r, g = g, b = b }
+            if ns.RangeText_Refresh then ns.RangeText_Refresh() end
+        end
+        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, rangeColorGet, rangeColorSet, nil, 20)
+        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        EllesmereUI.RegisterWidgetRefresh(function()
+            local off = tfRangeOff()
+            swatch:SetAlpha(off and 0.15 or 1)
+            swatch:EnableMouse(not off)
+            updateSwatch()
+        end)
+        swatch:SetAlpha(tfRangeOff() and 0.15 or 1)
+        swatch:EnableMouse(not tfRangeOff())
     end
 
     _, h = W:Spacer(parent, y, 20);  y = y - h
@@ -1124,15 +1163,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             local suffixFS = leftFrame:CreateFontString(nil, "OVERLAY")
             suffixFS:SetFont(EllesmereUI.EXPRESSWAY, 11, GetNPOptOutline())
             suffixFS:SetTextColor(1, 1, 1, 0.35)
-            local sliderLabel
-            local regions = { leftFrame:GetRegions() }
-            for i = 1, #regions do
-                local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Scale Nameplate On Cast" then
-                    sliderLabel = reg
-                    break
-                end
-            end
+            local sliderLabel = SliderLabel(leftFrame, "Scale Nameplate On Cast")
             if sliderLabel then
                 suffixFS:SetPoint("LEFT", sliderLabel, "RIGHT", 5, -1)
             else
@@ -1166,7 +1197,6 @@ local function BuildGeneralPage(pageName, parent, yOffset)
         local function nameRaidMarkerOff() return DBVal("nameRaidMarkerEnabled") ~= true end
         local rgn = nameRaidMarkerRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             disabled = nameRaidMarkerOff,
             disabledTooltip = "Name Raid Marker",
             title = "Name Raid Marker",
@@ -1208,7 +1238,6 @@ local function BuildGeneralPage(pageName, parent, yOffset)
         local function questObjOff() return DBVal("replaceQuestIconWithObjective") ~= true end
         local rgn = questObjRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             disabled = questObjOff,
             disabledTooltip = "Replace Quest Icon with Objective",
             title = "Quest Objective",
@@ -1310,38 +1339,44 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
           end });  y = y - h
 
-    -- Row 6 (Blood Death Knight only): Hide Copies of Blood Plague. The row
-    -- is not built at all for anyone else -- the setting only affects a
-    -- debuff Blood spec applies.
+    -- Row 6: Out of Combat Opacity | the class option, if any. Hide Copies of Blood
+    -- Plague (Blood Death Knight only) and Show Sunder Armor (WoW Forever warriors
+    -- only) are not built at all for anyone else -- each only affects that class's
+    -- debuff.
+    local classCfg
     do
         local _, classFile = UnitClass("player")
         local specIdx = C_SpecializationInfo.GetSpecialization()
         local specID = specIdx and C_SpecializationInfo.GetSpecializationInfo(specIdx)
         if classFile == "DEATHKNIGHT" and specID == 250 then
-            _, h = W:DualRow(parent, y,
-                { type="toggle", text="Hide Copies of Blood Plague",
+            classCfg = { type="toggle", text="Hide Copies of Blood Plague",
                   tooltip="Shows a single Blood Plague debuff on enemy nameplates instead of one per copy (Blood Boil from weapon copies).",
                   getValue=function() return DBVal("hideBloodPlagueCopies") ~= false end,
                   setValue=function(v)
                     DB().hideBloodPlagueCopies = v
                     if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
-                  end },
-                EllesmereUI.BlankRowCfg());  y = y - h
+                  end }
+        elseif EllesmereUI.IS_FOREVER and classFile == "WARRIOR" then
+            classCfg = { type="toggle", text="Show Sunder Armor",
+                  tooltip="Shows Sunder Armor and its stacks on enemy nameplates, including stacks applied by other warriors.",
+                  getValue=function() return DBVal("showSunderArmor") == true end,
+                  setValue=function(v)
+                    DB().showSunderArmor = v
+                    if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
+                  end }
         end
     end
-
-    -- Row 7 (WoW Forever warriors only): Show Sunder Armor.
-    if EllesmereUI.IS_FOREVER and select(2, UnitClass("player")) == "WARRIOR" then
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Sunder Armor",
-              tooltip="Shows Sunder Armor and its stacks on enemy nameplates, including stacks applied by other warriors.",
-              getValue=function() return DBVal("showSunderArmor") == true end,
-              setValue=function(v)
-                DB().showSunderArmor = v
-                if ns.NPC_ReloadAll then ns.NPC_ReloadAll() end
-              end },
-            EllesmereUI.BlankRowCfg());  y = y - h
-    end
+    _, h = W:DualRow(parent, y,
+        { type="slider", text="Out of Combat Opacity",
+          tooltip="Fades the nameplates of enemies that are not in combat with anyone, such as packs you have not pulled. Your target, and your focus while Keep Focus Full Opacity is on, are never faded by this. Multiplies with Non-Target Opacity. 100 = no fading.",
+          min=0, max=100, step=1,
+          getValue=function() return DBVal("outOfCombatAlpha") or 100 end,
+          setValue=function(v)
+            DB().outOfCombatAlpha = v
+            if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+            EllesmereUI:RefreshPage()  -- the Keep Focus cog's disabled state
+          end },
+        classCfg or EllesmereUI.BlankRowCfg());  y = y - h
 
     return math.abs(y)
 end

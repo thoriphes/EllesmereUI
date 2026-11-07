@@ -10,7 +10,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -- Blizzard_ObjectiveTracker has loaded.
 -------------------------------------------------------------------------------
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.PadTaintStandDown) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -70,15 +70,20 @@ local QT_DEFAULTS = {
             -- QoL
             autoAccept           = false,
             autoAcceptPreventMulti = true,
+            autoAcceptShiftEnable = false,
             autoAcceptShiftSkip  = true,
             autoAcceptIgnoreTrivial = false,
             autoAcceptIgnoreOldExpansion = false,
             autoTurnIn           = false,
+            autoTurnInShiftEnable = false,
             autoTurnInShiftSkip  = true,
             questItemHotkey      = nil,
         },
     },
 }
+-- WoW Forever's quest tools add their keys to this table at load
+-- (EllesmereUIQuestTracker_Forever.lua), before the DB is made.
+ns.QT_DEFAULTS = QT_DEFAULTS
 
 local _qtDB
 local function EnsureDB()
@@ -113,18 +118,63 @@ function EQT.Set(k, v) EQT.DB()[k] = v end
 -- switch prompts for a reload instead). Creates the DB itself: its first
 -- caller is the parent's PLAYER_LOGIN font pass, which runs before TryInit.
 -- Never reads EQT.DB(), whose stand-in table would latch "eui" too early.
+-- The style a profile's saved flags ask for.
+local function StyleOf(qt)
+    return (qt.useClassicStyle and "classic") or (qt.useBlizzardStyle and "blizzard") or "eui"
+end
+
 function ns.QT_Style()
     local v = ns._qtStyle
     if v == nil then
         local d = EnsureDB()
         local qt = d and d.profile and d.profile.questTracker
         if not qt then return "eui" end
-        v = (qt.useClassicStyle and "classic") or (qt.useBlizzardStyle and "blizzard") or "eui"
+        v = StyleOf(qt)
         ns._qtStyle = v
     end
     return v
 end
+
+-- WoW Forever: whether a profile asks for our own tracker in place of
+-- Blizzard's. Its own pick decides (customTrackerPick, saved only where it
+-- differs from the style's answer); with no pick the tracker is on under the
+-- EllesmereUI style alone, so a stock style keeps Blizzard's tracker. A false
+-- in the older customTracker key is a pick as well: that key read on for
+-- everyone who had not turned it off, so a true in it never was one and is
+-- not read.
+function ns.CustomTrackerWanted(qt)
+    if EllesmereUI.IS_FOREVER ~= true then return false end
+    local pick = qt.customTrackerPick
+    if pick == nil and qt.customTracker == false then pick = false end
+    if pick ~= nil then return pick end
+    return StyleOf(qt) == "eui"
+end
+
+-- The options toggle's pick (the tracker in use is latched until a reload).
+function ns.SetCustomTrackerWanted(qt, on)
+    on = on and true or false
+    qt.customTracker = nil
+    if on == (StyleOf(qt) == "eui") then
+        qt.customTrackerPick = nil
+    else
+        qt.customTrackerPick = on
+    end
+end
+
 -- Stock mode: true for both stock styles (Blizzard's own tracker art and text).
+-- WoW Forever: our own tracker replaces Blizzard's. Latched like the style.
+function ns.UseCustomTracker()
+    local v = ns._customTracker
+    if v == nil then
+        local d = EnsureDB()
+        local qt = d and d.profile and d.profile.questTracker
+        if not qt then return false end
+        v = ns.CustomTrackerWanted(qt)
+        ns._customTracker = v
+    end
+    return v
+end
+
 function EQT.Blizz() return ns.QT_Style() ~= "eui" end
 function EQT.Classic() return ns.QT_Style() == "classic" end
 
@@ -162,9 +212,15 @@ end
 local function TryInit()
     if not (_sawSelf and _sawOT and _loggedIn) then return end
     EnsureDB()
-    if EQT.InitSkin       then EQT.InitSkin()       end
-    if EQT.InitVisibility then EQT.InitVisibility() end
+    if ns.UseCustomTracker() then
+        EQT.InitCustom()
+    else
+        if EQT.InitSkin       then EQT.InitSkin()       end
+        if EQT.InitVisibility then EQT.InitVisibility() end
+    end
     if EQT.InitQoL        then EQT.InitQoL()        end
+    -- The custom tracker has its own mover; this one drives Blizzard's frame.
+    if EQT.InitPosition and not ns.UseCustomTracker() then EQT.InitPosition() end
     loader:UnregisterAllEvents()
 end
 
@@ -189,11 +245,17 @@ _G._EQT_RefreshAll = function()
     if EQT.ApplyMasterHeaderVisibility then EQT.ApplyMasterHeaderVisibility() end
     if EQT.ApplyBackground then EQT.ApplyBackground() end
     if EQT.ApplyForceOnScreen then EQT.ApplyForceOnScreen() end
+    if EQT.SyncPosition then EQT.SyncPosition() end
     -- The hotkey is a per-profile setting backed by an override binding, so a
     -- profile or spec swap has to re-point it. Without this the outgoing
     -- profile's key stays overridden -- taken from whatever the player really
     -- has bound there -- and the incoming profile's key is never laid down.
     if EQT.ApplyQuestItemHotkey then EQT.ApplyQuestItemHotkey() end
+    if EQT.SyncAutoQuests then EQT.SyncAutoQuests() end
+    -- WoW Forever's quest tools (nil on retail).
+    if EQT.ApplyQuestWatches then EQT.ApplyQuestWatches() end
+    if EQT.ApplyQuestProgress then EQT.ApplyQuestProgress() end
+    if EQT.ApplyQuestLinks then EQT.ApplyQuestLinks() end
 end
 
 -------------------------------------------------------------------------------

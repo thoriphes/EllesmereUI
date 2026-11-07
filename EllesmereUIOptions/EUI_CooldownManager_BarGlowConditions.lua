@@ -19,6 +19,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUICooldownManager"]
 if not ns then return end
 
+-- The options page pool (EllesmereUI_FramePool.lua): a frame the page's rows
+-- make under a pool host (a reused page) is handed out again reset to fresh;
+-- anywhere else (the buff menu, built once on UIParent) the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local function Cond(entry)
     if type(entry.conditions) ~= "table" then entry.conditions = {} end
     if type(entry.conditions[1]) ~= "table" then entry.conditions[1] = {} end
@@ -100,11 +105,11 @@ local function BuildMenu()
     local bg = menu:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA)
-    EllesmereUI.MakeBorder(menu, 1, 1, 1, EllesmereUI.DD_BRD_A, EllesmereUI.PP)
+    EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, EllesmereUI.DD_BRD_A, bg, nil, true)
 
     scroll = CreateFrame("ScrollFrame", nil, menu)
-    scroll:SetPoint("TOPLEFT")
-    scroll:SetPoint("BOTTOMRIGHT")
+    scroll:SetPoint("TOPLEFT", 0, -1)
+    scroll:SetPoint("BOTTOMRIGHT", 0, 1)
     scroll:SetFrameLevel(menu:GetFrameLevel() + 1)
     scroll:EnableMouseWheel(true)
     scroll:SetScript("OnMouseWheel", function(self, delta)

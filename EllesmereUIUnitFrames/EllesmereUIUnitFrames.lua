@@ -1,7 +1,7 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 local GetSpecialization = (C_SpecializationInfo and C_SpecializationInfo.GetSpecialization) or GetSpecialization
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.HideFrame) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard frame suppression hides through the parent's HideFrame)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.HideFrame and EllesmereUI._Pool and EllesmereUI.AbsorbGlow and EllesmereUI.SetCraftBatch and EllesmereUI.FitCastName and EllesmereUI.AbbreviateValue and EllesmereUI.IsZeroValue and EllesmereUI.UnitNameFormat and EllesmereUI.PadGamepadUI and EllesmereUI.SetEditModeChildInert) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard frame suppression hides through the parent's HideFrame, the player absorb glow line is the parent's AbsorbGlow, the player cast bar's Full Craft Time is the parent's SetCraftBatch, Show Full Spell Name is the parent's FitCastName, and the health texts format through the parent's AbbreviateValue, the [absorb:abr] tags blank at zero through its IsZeroValue, and the Name Format asks its UnitNameFormat, and the WoW Forever gamepad target menu keeps Blizzard's TargetFrame live through its PadGamepadUI and SetEditModeChildInert)
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
 
 local math_floor, math_ceil, math_max, math_min, math_abs =
@@ -31,6 +31,7 @@ do
     local hiddenParent = CreateFrame("Frame", nil, UIParent)
     hiddenParent:Hide()
     local pendingParent, looseFrames, hookedFrames = {}, {}, {}
+    local homeParent = {}   -- frame -> the parent it is kept in, when not hiddenParent
     local bossHandled = false
 
     -- Combat fallback: protected frames can't reparent in lockdown; park here, sweep at regen (mirrors stock lib).
@@ -40,13 +41,14 @@ do
             ns.CombatQueue.Defer("HiddenParentSweep", SweepLooseFrames)
             return
         end
-        for f in pairs(looseFrames) do f:SetParent(hiddenParent) end
+        for f in pairs(looseFrames) do f:SetParent(homeParent[f] or hiddenParent) end
         wipe(looseFrames)
     end
 
     local function ApplyHiddenParent(frame)
         pendingParent[frame] = nil
-        if frame:GetParent() == hiddenParent then return end
+        local home = homeParent[frame] or hiddenParent
+        if frame:GetParent() == home then return end
         if EditModeManagerFrame and EditModeManagerFrame:IsShown() then
             pendingParent[frame] = true
             C_Timer.After(0.25, function() ApplyHiddenParent(frame) end)
@@ -54,7 +56,7 @@ do
             looseFrames[frame] = true
             ns.CombatQueue.Defer("HiddenParentSweep", SweepLooseFrames)
         else
-            frame:SetParent(hiddenParent)
+            frame:SetParent(home)
         end
     end
 
@@ -62,23 +64,25 @@ do
         if child then child:UnregisterAllEvents() end
     end
 
-    local function HandleFrame(frame, doNotReparent)
+    -- keepShown: the frame stays shown in its home parent (homeParent[frame]).
+    local function HandleFrame(frame, doNotReparent, keepShown)
         if type(frame) == "string" then frame = _G[frame] end
         if not frame then return end
         frame:UnregisterAllEvents()
-        EllesmereUI.HideFrame(frame)
+        if not keepShown then EllesmereUI.HideFrame(frame) end
         if not doNotReparent then
-            frame:SetParent(hiddenParent)
+            frame:SetParent(homeParent[frame] or hiddenParent)
             if not hookedFrames[frame] then
                 hookedFrames[frame] = true
                 hooksecurefunc(frame, "SetParent", function(self, parent)
-                    if parent ~= hiddenParent and not pendingParent[self] then
+                    if parent ~= (homeParent[self] or hiddenParent) and not pendingParent[self] then
                         pendingParent[self] = true
                         C_Timer.After(0, function() ApplyHiddenParent(self) end)
                     end
                 end)
             end
         end
+        if keepShown then frame:Show() end
         Unreg(frame.healthBar or frame.healthbar or frame.HealthBar
             or (frame.HealthBarsContainer and frame.HealthBarsContainer.healthBar))
         Unreg(frame.manabar or frame.ManaBar)
@@ -114,6 +118,32 @@ do
     -- ComboFrame, see InitializeFrames).
     ns.UF_HideBlizzardFrame = HandleFrame
 
+    -- WoW Forever's Gamepad interface style: the gamepad bar's inspect button
+    -- (Y / Triangle) opens the target menu with Blizzard's TargetFrame as its
+    -- owner, and a menu closes the first frame its owner is not visible. Under
+    -- that style (decided as the target frame is hidden, at login) TargetFrame
+    -- is kept shown in an alpha 0 holder instead of the hidden parent, its
+    -- events still off and nothing of it taking the mouse; the menu opens at
+    -- Blizzard's TargetFrame spot. Owner sign-off 2026-11-05 for the children
+    -- (off only, never turned back on): the health and mana bars' hover, and
+    -- the aura container, which re-parses while shown. InitializeFrames also
+    -- suppresses its target-of-target child (ns.UF_TargetMenuOwner).
+    local function KeepTargetMenuOwner(tf)
+        local holder = CreateFrame("Frame", nil, UIParent)
+        holder:SetAlpha(0)
+        homeParent[tf] = holder
+        HandleFrame(tf, false, true)
+        tf:EnableMouse(false)
+        local main = tf.TargetFrameContent and tf.TargetFrameContent.TargetFrameContentMain
+        local bars = main and main.HealthBarsContainer
+        if bars and bars.HealthBar then bars.HealthBar:EnableMouseMotion(false) end
+        if main and main.ManaBar then main.ManaBar:EnableMouseMotion(false) end
+        local auras = tf.GetAuraContainer and tf:GetAuraContainer()
+        if auras then auras:Hide() end
+        EllesmereUI.SetEditModeChildInert(tf.Selection, true)
+        ns.UF_TargetMenuOwner = true
+    end
+
     function ns.UF_HideBlizzard(unit)
         if not unit then return end
         if unit == "player" then
@@ -122,7 +152,14 @@ do
         elseif unit == "pet" then
             HandleFrame(PetFrame)
         elseif unit == "target" then
-            HandleFrame(TargetFrame)
+            -- Once kept for the gamepad menu, a repeat call has nothing to do.
+            if not ns.UF_TargetMenuOwner then
+                if EllesmereUI.PadGamepadUI() and TargetFrame then
+                    KeepTargetMenuOwner(TargetFrame)
+                else
+                    HandleFrame(TargetFrame)
+                end
+            end
         elseif unit == "focus" then
             HandleFrame(FocusFrame)
         elseif unit:match("boss%d?$") then
@@ -190,8 +227,8 @@ local defaults = {
             maxDebuffs = 16,
         },
         -- No playerAuras/externalDefensives defaults: those keys are one-time migration
-        -- SOURCES read from a saved profile (EllesmereUIUnitFrames_PlayerAuraBars.lua
-        -- MigratePlayerAuraStyle/MigrateExternalDefensives), independent of this table --
+        -- SOURCES read from a saved profile (EUI_PlayerAuraBars_Config.lua: MigratePlayerAuraStyle
+        -- and the External Defensives seed), independent of this table --
         -- a new profile has nothing to migrate and starts at PAB's fallbacks.
         castbarOpacity = 1.0,
         castbarColor = { r = 0.114, g = 0.655, b = 0.514 },
@@ -227,6 +264,10 @@ local defaults = {
         -- Custom enemy reaction colors (empty = use Blizzard FACTION_BAR_COLORS).
         -- Keys: hostile (reactions 1-3), neutral (4), friendly (5-8), tapped.
         enemyColors = {},
+        -- Targeting Sound Effects: Blizzard's target / lost-target sounds,
+        -- which its parked TargetFrame no longer plays (Lifecycle). On by
+        -- default on WoW Forever only.
+        targetSounds = (EllesmereUI.IS_FOREVER == true) and true or false,
         player = {
             frameWidth = 181,
             healthHeight = 46,
@@ -242,6 +283,7 @@ local defaults = {
             powerPercentX = 0,
             powerPercentY = 0,
             powerPercentPowerColor = true,
+            powerClassColored = false,
             powerBgPowerColored = false,
             powerPercentTextPowerColor = false,
             manaRegenSpark = false,  -- WoW Forever: mana regen spark while the bar shows mana; manaRegenSparkMode "ticks" = Regen Ticks, nil = 5-Second Rule
@@ -389,6 +431,7 @@ local defaults = {
             castSpellNameColor = { r = 1, g = 1, b = 1 },
             castDurationSize = 10,
             castDurationColor = { r = 1, g = 1, b = 1 },
+            castFullCraftTime = false,  -- Duration counts down the whole repeat-craft batch
             castSpellNameX = 0,
             castSpellNameY = 0,
             castSpellTargetSize = 11,
@@ -511,6 +554,7 @@ local defaults = {
             powerPercentX = 0,
             powerPercentY = 0,
             powerPercentPowerColor = true,
+            powerClassColored = false,
             powerBgPowerColored = false,
             powerPercentTextPowerColor = false,
             healthClassColored = true,
@@ -942,6 +986,7 @@ local defaults = {
             powerPercentX = 0,
             powerPercentY = 0,
             powerPercentPowerColor = true,
+            powerClassColored = false,
             powerBgPowerColored = false,
             powerPercentTextPowerColor = false,
             healthClassColored = true,
@@ -1317,13 +1362,14 @@ local defaults = {
         bossSpacing = 80,
 
         -- Player dispel overlay (player frame only; keys mirror Raid Frames)
-        dispelOverlay        = "none",   -- "none", "fill", "full", "gradient", "gradient_sharp"
+        dispelOverlay        = "none",   -- "none", "fill", "full", "gradient", "gradient_sharp", "gradient_reverse"
         dispelOverlayOpacity = 100,
         dispelOverlayByMe    = false,    -- only debuffs the player can dispel (engine filter token)
         dispelCustomBorder   = false,    -- Color Custom Borders: the frame border copied in the dispel type color
         showDispelIcons      = false,    -- Type Icon Position: the type's icon on a health bar corner
         dispelIconPosition   = "right",
         dispelIconSize       = 16,
+        dispelIconGrowth     = "none",   -- "none" stacks the type icons; up/down/left/right flows them
         dispelIconOffsetX    = 0,
         dispelIconOffsetY    = 0,
         dispelColorMagic   = { r = 0.349, g = 0.475, b = 1.0 },
@@ -1473,6 +1519,8 @@ local function ApplyHealthBarTexture(health, unitKey, texKeyOverride)
         local pFill = power:GetStatusBarTexture()
         if pFill then UnsnapTex(pFill) end
     end
+    -- Textured Background (does nothing for a frame that never turned it on).
+    ns.UF_TexBgApply(health, unitKey, texKey, power)
     -- Blizzard Style: the swaps above replaced the fill objects, so the stock
     -- masks are seated again on the new fills. The textures themselves stay
     -- the user's choice, so every colour renders exactly as picked.
@@ -1493,11 +1541,177 @@ ns.ResolveHealthBarTextureKey = function(ownSettings, donorSettings)
     return db.profile.healthBarTexture or "none"
 end
 
+-------------------------------------------------------------------------------
+--  Textured Background (per-frame textureBg, profile castTextureBg; unset = off).
+--  While on, our own background textures swap SetColorTexture (and on health
+--  SetAlpha) for versions that draw the bar texture tinted by the colour each
+--  paint passes, so these backgrounds are painted ONLY through those two methods
+--  (SetTexture / SetAtlas would go around it). Health's bg hugs the fill edge,
+--  where a texture would stretch, so a fixed full-size layer over it carries the
+--  texture, shown only while the fill is opaque. Colours are forwarded, never
+--  read: the class background can be secret.
+-------------------------------------------------------------------------------
+do
+    local TexM  -- the stock methods, captured from the first background swapped
+    local MINI = { targettarget = true, focustarget = true, pet = true, boss = true }
+
+    -- A mini frame follows its donor while its Bar Texture is Inherit.
+    function ns.UF_TexBgOn(unitKey)
+        local s = unitKey and db.profile[unitKey]
+        if not s then return false end
+        local own = s.healthBarTexture
+        if MINI[unitKey] and (own == nil or own == "inherit") then
+            local d = ns.GetMiniDonorSettings(unitKey)
+            return (d and d.textureBg) == true
+        end
+        return s.textureBg == true
+    end
+
+    -- Unset per-frame choices keep the profile's existing Dark Mode setting.
+    function ns.UF_DarkThemeOn(s)
+        if s and s.darkTheme ~= nil then return s.darkTheme end
+        return (db and db.profile and db.profile.darkTheme) or false
+    end
+
+    -- The health fill is opaque: Dark Mode Fill in Dark Mode, else Fill Opacity.
+    function ns.UF_HealthOpaque(s)
+        if ns.UF_DarkThemeOn(s) then
+            local _, _, _, fa = EllesmereUI.GetDarkModeFill()
+            return fa >= 1
+        end
+        return ((s and s.healthBarOpacity) or 90) >= 100
+    end
+
+    -- The health and power backgrounds' texture paths (nil = flat), shared with the
+    -- options preview: health while its fill is opaque, power while its fill is 100.
+    function ns.UF_TexBgPaths(unitKey, s, texKey)
+        local path = s and ns.UF_TexBgOn(unitKey)
+            and EllesmereUI.ResolveTexturePath(healthBarTextures, texKey or "none", nil)
+        if not path then return nil, nil end
+        return ns.UF_HealthOpaque(s) and path or nil, ((s.powerBarOpacity or 100) >= 100) and path or nil
+    end
+
+    -- The cast bar background's path (nil = flat): never over Blizzard's cast art.
+    function ns.UF_TexBgCastPath(s, texKey, blizz)
+        local p = db.profile
+        if blizz or not (s and p.castTextureBg) then return nil end
+        local own = p.castBarTexture
+        if own and own ~= "inherit" then texKey = own end
+        if texKey == "blizzard" or (s.castFillOpacity or 100) < 100 then return nil end
+        return EllesmereUI.ResolveTexturePath(healthBarTextures, texKey or "none", nil)
+    end
+
+    local function PaintTinted(self, r, g, b, a) self:SetVertexColor(r, g, b, a) end
+    local function PaintHealth(self, r, g, b, a)
+        TexM.SetColorTexture(self, r, g, b, a)
+        self._euiBgTex:SetVertexColor(r, g, b, a)
+    end
+    local function AlphaHealth(self, a)
+        TexM.SetAlpha(self, a)
+        self._euiBgTex:SetAlpha(a)
+    end
+
+    -- Swap a background to the texture at path, tinted by its paints; nil puts the
+    -- flat colour back at the next paint. Also the Forever form bar's.
+    function ns.UF_TexBgTint(bg, path)
+        if path then
+            TexM = TexM or { SetColorTexture = bg.SetColorTexture, SetAlpha = bg.SetAlpha }
+            if bg._euiTexPath ~= path then
+                bg:SetTexture(path)
+                bg._euiTexPath = path
+            end
+            bg.SetColorTexture = PaintTinted
+        elseif bg._euiTexPath then
+            bg._euiTexPath = nil
+            bg.SetColorTexture = nil
+            bg:SetVertexColor(1, 1, 1, 1)
+        end
+    end
+
+    -- One paint of a background that is never swapped (the options preview).
+    function ns.UF_TexBgPaint(tex, path, r, g, b, a)
+        if path then
+            tex:SetTexture(path)
+            tex:SetVertexColor(r, g, b, a)
+            tex._euiTexPath = path
+        else
+            if tex._euiTexPath then
+                tex._euiTexPath = nil
+                tex:SetVertexColor(1, 1, 1, 1)
+            end
+            tex:SetColorTexture(r, g, b, a)
+        end
+    end
+
+    -- The full-size health layer (built once), turned with a vertical fill as the
+    -- fill is (ns.ApplyFillRotation); also the options preview's.
+    function ns.UF_TexBgLayer(health, path, vertical)
+        local layer = health._euiBgTex
+        if not layer then
+            layer = health:CreateTexture(nil, "BACKGROUND", nil, 2)
+            layer:SetAllPoints(health)
+            health._euiBgTex = layer
+        end
+        if layer._euiPath ~= path then
+            layer:SetTexture(path)
+            layer._euiPath = path
+        end
+        if vertical then layer:SetTexCoord(1, 0, 0, 0, 1, 1, 0, 1) else layer:SetTexCoord(0, 1, 0, 1) end
+        layer:Show()
+        return layer
+    end
+
+    local function SetHealthLayer(health, s, path)
+        local bg = health.bg
+        if not bg then return end
+        if path then
+            TexM = TexM or { SetColorTexture = bg.SetColorTexture, SetAlpha = bg.SetAlpha }
+            local fill = health:GetStatusBarTexture()
+            local tiled = fill and (fill:GetHorizTile() or fill:GetVertTile())
+            local layer = ns.UF_TexBgLayer(health, path, s.healthVerticalFill and not ns.UF_Blizz() and not tiled)
+            bg._euiBgTex = layer
+            bg.SetColorTexture, bg.SetAlpha = PaintHealth, AlphaHealth
+            layer:SetAlpha(bg:GetAlpha())
+        elseif bg.SetAlpha == AlphaHealth then
+            bg.SetColorTexture, bg.SetAlpha = nil, nil
+            health._euiBgTex:Hide()
+        end
+    end
+
+    -- From ApplyHealthBarTexture (health and power share the frame's texture) and
+    -- the Dark Mode refresher below (Dark Mode Fill decides the health rule there).
+    function ns.UF_TexBgApply(health, unitKey, texKey, power)
+        if not ns.UF_TexBgOn(unitKey) and not health._euiTexBgSeen then return end
+        health._euiTexBgSeen, health._euiTexBgUnit, health._euiTexBgKey = true, unitKey, texKey
+        local s = db.profile[unitKey]
+        local hPath, pPath = ns.UF_TexBgPaths(unitKey, s, texKey)
+        SetHealthLayer(health, s, hPath)
+        if power and power.bg then ns.UF_TexBgTint(power.bg, pPath) end
+    end
+
+    -- From ns.ApplyCastBarTexture, before it applies the fill.
+    function ns.UF_TexBgCast(castbar, texKey)
+        local host = castbar:GetParent()
+        local bg = host and host._bgTex
+        if not bg or (not db.profile.castTextureBg and not bg._euiTexPath) then return end
+        local owner = castbar.__owner
+        local key = owner and UnitToSettingsKey(owner._euiUnit)
+        local s = key and db.profile[key]
+        ns.UF_TexBgTint(bg, ns.UF_TexBgCastPath(s, texKey, castbar._blizzCast))
+        -- Repaint now: the reload paints this bg before the textures are applied.
+        if s and not castbar._blizzCast then
+            local c = s.castBgColor
+            bg:SetColorTexture(c and c.r or 0, c and c.g or 0, c and c.b or 0, s.castBgAlpha or 0.5)
+        end
+    end
+end
+
 -- Cast bars reuse the unit's health bar texture. The cast bar stacks three textures
 -- over the fill bounds (base fill + cast tint + shielded tint, all WHITE8X8 by
 -- default), so apply to each. On ns to avoid the Lua 200-local cap.
 ns.ApplyCastBarTexture = function(castbar, texKey)
     if not castbar then return end
+    ns.UF_TexBgCast(castbar, texKey)
     -- Blizzard Style: the stock cast fill art stays (set by the post-pass).
     if castbar._blizzCast then
         ns.UF_SetBlizzCastFill(castbar, castbar.channeling and "channel" or "cast")
@@ -1533,8 +1747,9 @@ ns.ApplyCastBarTexture = function(castbar, texKey)
     -- statusbar art BLANK on plain overlay textures (negative synthetic
     -- fileID, healthy alpha/rect/shown readbacks -- measured in-game
     -- 2026-08-12, the invisible-interrupt-shield report), so re-pointing it
-    -- at the art killed the shield entirely. A flat wash tints the textured
-    -- fill below it; SetAlphaFromBoolean keeps driving it secret-safe.
+    -- at the art killed the shield entirely. Only Blizzard Style still shows
+    -- that wash; elsewhere ApplyUnitFrameCastColor folds the uninterruptible
+    -- colour into the textured tint layer and base fill instead.
 end
 
 -- Cast bar Fill Opacity (player/target/focus). Below 100 the active-cast tint layer
@@ -1546,9 +1761,10 @@ end
 -- (relational anchors + plain alphas only), so secret cast states render identically.
 -- castbar._castTintOn mirrors "the last alpha we wrote to castTintLayer was
 -- above zero". It exists because castTintLayer:GetAlpha() cannot be trusted to
--- return a plain number: this castbar also drives _shieldedTint's alpha from
--- the SECRET notInterruptible flag (SetAlphaFromBoolean), and once secrecy is
--- in a castbar's render state an alpha read comes back secret. Comparing that
+-- return a plain number: this castbar's tint layer and base fill take colours
+-- folded from the SECRET notInterruptible flag (and Blizzard Style drives the
+-- shield's alpha from it), and once secrecy is in a castbar's render state an
+-- alpha read comes back secret. Comparing that
 -- inside our own (tainted) execution throws "attempt to compare a secret number
 -- value", which aborts the whole styling pass mid-way and leaves the cast bar
 -- unanchored at screen centre. We write every one of these alphas ourselves, so
@@ -2001,7 +2217,7 @@ local function ApplyDarkTheme(health, unit)
     -- TEMPORARY (see UF_SecretSafeHealthColor). Idempotent: this function
     -- re-runs on settings changes and re-assigning is harmless.
         health.UpdateColor = UF_SecretSafeHealthColor
-    local isDark = db and db.profile and db.profile.darkTheme
+    local isDark = ns.UF_DarkThemeOn(health._euiUnitKey and db.profile[health._euiUnitKey])
     if isDark then
         health.colorClass = false
         health.colorClassPet = false
@@ -2199,7 +2415,13 @@ ns.ApplyDarkTheme = ApplyDarkTheme
 if EllesmereUI.RegisterDarkModeRefresh then
     EllesmereUI.RegisterDarkModeRefresh(function()
         for _, obj in pairs(frames) do
-            if type(obj) == "table" and obj.Health then ApplyDarkTheme(obj.Health, obj._euiUnit) end
+            local h = type(obj) == "table" and obj.Health
+            if h then
+                -- Textured Background: Dark Mode Fill decides the health layer; the
+                -- dark repaint after it tints the layer.
+                if h._euiTexBgSeen then ns.UF_TexBgApply(h, h._euiTexBgUnit, h._euiTexBgKey, obj.Power) end
+                ApplyDarkTheme(h, obj._euiUnit)
+            end
         end
         -- Boss "Activate Preview" fake frames need their red class-color
         -- substitute re-applied after the dark repaint above.
@@ -2378,8 +2600,8 @@ end
 -- Main-chunk locals the other EUI_UnitFrames_*.lua files re-import by name.
 -- dbSetters: a file that reads db keeps its own local and adds a setter here,
 -- this file first; EllesmereUF:OnInitialize (EUI_UnitFrames_Lifecycle.lua)
--- assigns its own db, then runs the list.
-ns._internals = {
+-- assigns its own db, then calls SetDB.
+EllesmereUI.NewInternals(ns, "_internals", {
     frames = frames, GetSettingsForUnit = GetSettingsForUnit, UnsnapTex = UnsnapTex,
     unitSettingsKey = unitSettingsKey, UnitToSettingsKey = UnitToSettingsKey,
     ResolveFontPath = ResolveFontPath, ApplyDarkTheme = ApplyDarkTheme,
@@ -2391,10 +2613,6 @@ ns._internals = {
     ApplyBarGradient = ApplyBarGradient, ApplyHealthBarTexture = ApplyHealthBarTexture,
     ApplyHealthBarAlpha = ApplyHealthBarAlpha, ApplyPowerBarAlpha = ApplyPowerBarAlpha,
     SpecHasClassPower = SpecHasClassPower, UF_SecretSafeHealthColor = UF_SecretSafeHealthColor,
+    ClassColorSourceUnit = ClassColorSourceUnit,
     dbSetters = { function(v) db = v end },
-}
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._internals, { __index = function(_, k)
-    error("ns._internals has no entry " .. tostring(k), 2)
-end })
+}, { SetDB = "dbSetters" })

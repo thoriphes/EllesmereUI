@@ -7,6 +7,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUIActionBars"]
 if not ns then return end  -- module disabled: no options page
+-- Options page pool (EllesmereUI_FramePool.lua, first in this addon): a frame
+-- made here on a pool host (a kept page and every frame it hands out) is reset
+-- and dressed again by the next build instead of made anew; on any other
+-- parent this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
 
 local function BuildBarVisibilityLayout(parent, y, ctx)
     local env = ns._ABO_OptEnv
@@ -23,7 +28,7 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
     local function RefreshPageCycle()
         ns.RefreshPagingCycleMacros()
     end
-    local _, h
+    local _, h, hdr
     local row
     -- Declared out here, not in the `do` block that builds it: the Toggle Action Bar
     -- keybind lives past that block's end and anchors into this row's right slot.
@@ -54,15 +59,19 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
     -----------------------------------------------------------------------
     --  VISIBILITY
     -----------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, SECTION_VISIBILITY, y);  y = y - h
+    hdr, h = W:SectionHeader(parent, SECTION_VISIBILITY, y);  y = y - h
+    -- The Move in Unlock Mode button on the selected bar's first section: the
+    -- key is read at the click, so it highlights the bar the selector shows.
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = SelectedKey })
+
+    -- A data bar under Blizzard's own data bars: the rows EUI cannot apply to it grey out.
+    local _visBlizzDis
+    local _VIS_BLIZZ_TIP = "This option does not work with Blizzard Bars. Please use Blizzard Edit Mode."
+    if IsDataBar() then
+        _visBlizzDis = function() return EAB.db.profile.useBlizzardDataBars end
+    end
 
     do
-        local _visBlizzDis
-        local _VIS_BLIZZ_TIP = "This option does not work with Blizzard Bars. Please use Blizzard Edit Mode."
-        if IsDataBar() then
-            _visBlizzDis = function() return EAB.db.profile.useBlizzardDataBars end
-        end
-
         -- Pet Bar cannot express group modes: lock them with an explanation instead of offering silent no-ops.
         -- noOverrideMouseover: see the caps on the bar row above.
         local visCaps = { partyIncludesRaid = false, noOverrideMouseover = true }
@@ -169,11 +178,12 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                 -- Available in EVERY visibility mode (unlike Show During
                 -- Drag, whose behavior IS the default outside Never). It
                 -- greys out while WoW Forever's Gamepad interface style is
-                -- on, and while the runtime has stood it down for the
-                -- session (EAB._sbOff).
+                -- on where its navigation can still be tainted
+                -- (EllesmereUI.PadTaintStandDown), and while the runtime has
+                -- stood it down for the session (EAB._sbOff).
                 return { type="toggle", label="Show When Spellbook Is Open",
                   tooltip="While the spellbook or macro panel is open, this bar appears so you can drag abilities onto it.",
-                  disabled=function() return EAB._sbOff == true or EllesmereUI.PadGamepadUI() end,
+                  disabled=function() return EAB._sbOff == true or EllesmereUI.PadTaintStandDown() end,
                   disabledTooltip="This option does not work with the Gamepad interface style (after switching away from it, reload to use it).",
                   rawTooltip=true,
                   get=function() return SB().spellbookShow == true end,
@@ -207,8 +217,8 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
     -- Show All Bars on Mouseover: one setting for every bar (the profile's). It links
     -- every bar set to Mouseover, action bars, the micro menu, the bag bar and
     -- the data bars alike (the runtime's mouseoverEnabled), so it is offered
-    -- while any of them is. It opens the section's third row, beside Click
-    -- Through (a visibility-only bar has none).
+    -- while any of them is. It sits beside Click Through on the section's
+    -- fourth row (alone there on a bar that has no Click Through).
     local function AnyMouseoverBar()
         for _, s in pairs(EAB.db.profile.bars) do
             if type(s) == "table" and s.mouseoverEnabled then return true end
@@ -239,6 +249,10 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
               local bs = SB()
               if bs.mouseoverEnabled then
                   bs._savedBarAlpha = v / 100
+                  -- The Advanced Fade layer rests on this value.
+                  if EAB.AdvancedFadeOn(bs) then
+                      EAB:RefreshCustomFadeForBar(SelectedKey(), false)
+                  end
               else
                   SSet("mouseoverAlpha", v / 100, function(k) EAB:ApplyBarOpacity(k) end)
               end
@@ -299,20 +313,176 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
         })
     end
 
-    if visOnly then
-        _, h = W:DualRow(parent, y, ShowAllCfg(), EllesmereUI.BlankRowCfg());  y = y - h
-    else
+    -----------------------------------------------------------------------
+    --  ADVANCED FADE: the conditions are the setting (none checked is off),
+    --  Advanced Fade Opacity sits beside them, the two fade times in the
+    --  conditions' cog, and one Apply link copies all of it.
+    -----------------------------------------------------------------------
+    local fadeItems, ApplyAdvancedFadeTo, AdvancedFadeSynced
+    -- The opacity and the fade times wait for a condition (and stand down with
+    -- a data bar under Blizzard's own bars, as the conditions do).
+    local function AdvancedFadeOff()
+        return not EAB.AdvancedFadeOn(SB()) or (_visBlizzDis ~= nil and _visBlizzDis())
+    end
+    local function AdvancedFadeOffTip()
+        if _visBlizzDis ~= nil and _visBlizzDis() then return _VIS_BLIZZ_TIP end
+        return "This option requires an Advanced Fade condition to be checked"
+    end
+    do
+        local FADE_ORDER = { "combat", "party", "raid", "instance", "mounted", "flying", "target", "enemy_target", "mouseover" }
+        local FADE_LABELS = {
+            combat = "In Combat",
+            party = "In Party",
+            raid = "In Raid",
+            instance = "In Instance",
+            mounted = "Mounted",
+            flying = "Skyriding (Airborne)",
+            target = "Target",
+            enemy_target = "Enemy Target",
+            mouseover = "Mouseover",
+        }
+
+        local function CopyAdvancedFade(dst, src)
+            local out, sc = {}, src.advancedFadeConditions
+            if type(sc) == "table" then
+                for i = 1, #FADE_ORDER do
+                    local k = FADE_ORDER[i]
+                    if sc[k] then out[k] = true end
+                end
+            end
+            dst.advancedFadeConditions = out
+            dst.fadeMaxAlpha = src.fadeMaxAlpha ~= nil and src.fadeMaxAlpha or 1
+            dst.fadeInSpeed = src.fadeInSpeed or 0.15
+            dst.fadeOutSpeed = src.fadeOutSpeed or 0.15
+        end
+
+        local function AdvancedFadeEqual(a, b)
+            local ac, bc = a.advancedFadeConditions, b.advancedFadeConditions
+            for i = 1, #FADE_ORDER do
+                local k = FADE_ORDER[i]
+                if (type(ac) == "table" and ac[k] and true or false) ~= (type(bc) == "table" and bc[k] and true or false) then
+                    return false
+                end
+            end
+            if (a.fadeMaxAlpha ~= nil and a.fadeMaxAlpha or 1) ~= (b.fadeMaxAlpha ~= nil and b.fadeMaxAlpha or 1) then return false end
+            if (a.fadeInSpeed or 0.15) ~= (b.fadeInSpeed or 0.15) then return false end
+            return (a.fadeOutSpeed or 0.15) == (b.fadeOutSpeed or 0.15)
+        end
+
+        -- A bar the copy leaves with no condition hands its alpha back at
+        -- once; the others repaint with the copied values.
+        ApplyAdvancedFadeTo = function(keys)
+            local src = SB()
+            for _, key in ipairs(keys) do
+                local dst = EAB.db.profile.bars[key]
+                if dst and dst ~= src then CopyAdvancedFade(dst, src) end
+            end
+            EAB:RefreshAdvancedFadeEnabled(keys)
+            EAB:RefreshAllCustomFade(true, true)
+            EllesmereUI:RefreshPage()
+        end
+
+        AdvancedFadeSynced = function()
+            local src = SB()
+            for _, key in ipairs(GROUP_BAR_ORDER) do
+                local dst = EAB.db.profile.bars[key]
+                if dst and not AdvancedFadeEqual(src, dst) then return false end
+            end
+            return true
+        end
+
+        -- No skyriding on WoW Forever.
+        fadeItems = {}
+        for i = 1, #FADE_ORDER do
+            local k = FADE_ORDER[i]
+            if k ~= "flying" or not EllesmereUI.IS_FOREVER then
+                fadeItems[#fadeItems + 1] = { key = k, label = FADE_LABELS[k] }
+            end
+        end
+    end
+
+    -- Advanced Fade's own dropdown is a stand-in: the conditions' checkbox
+    -- dropdown below takes its place as the half's control.
+    local afRow
+    afRow, h = W:DualRow(parent, y,
+        { type="dropdown", text="Advanced Fade",
+          tooltip="Fades this bar to Advanced Fade Opacity while one of the conditions you check holds (in combat, with a target, mounted and more). With none checked, Bar Opacity and Visibility alone decide.",
+          values={ ["_placeholder"]="..." }, order={ "_placeholder" },
+          getValue=function() return "_placeholder" end,
+          setValue=function() end },
+        { type="slider", text="Advanced Fade Opacity", min=0, max=100, step=1,
+          tooltip="The opacity the bar fades to while one of its Advanced Fade conditions holds, above or below Bar Opacity. Visibility still decides whether the bar shows at all.",
+          disabled=AdvancedFadeOff, disabledTooltip=AdvancedFadeOffTip, rawTooltip=true,
+          getValue=function() return floor(((SB().fadeMaxAlpha ~= nil and SB().fadeMaxAlpha or 1) * 100) + 0.5) end,
+          setValue=function(v) SSet("fadeMaxAlpha", v / 100, function(k) EAB:RefreshCustomFadeForBar(k, true) end) end });  y = y - h
+    if not EllesmereUI._prebuilding then
+        local rgn = afRow._leftRegion
+        if rgn._control then rgn._control:Hide() end
+        local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+            rgn, 170, rgn:GetFrameLevel() + 2, fadeItems,
+            function(k)
+                local c = SB().advancedFadeConditions
+                return type(c) == "table" and c[k] == true
+            end,
+            function(k, v)
+                local bs = SB()
+                if type(bs.advancedFadeConditions) ~= "table" then bs.advancedFadeConditions = {} end
+                bs.advancedFadeConditions[k] = v and true or nil
+                -- The first condition arms the layer's hooks; the last one
+                -- unchecked hands the bar's alpha back.
+                local key = SelectedKey()
+                EAB:RefreshAdvancedFadeEnabled(key)
+                EAB:RefreshCustomFadeForBar(key, true)
+                EllesmereUI:RefreshPage()
+            end, nil, nil, nil, nil, nil,
+            { disabled = _visBlizzDis, disabledTooltip = _visBlizzDis and _VIS_BLIZZ_TIP or nil, rawTooltip = true })
+        PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+        rgn._control = cbDD
+        rgn._lastInline = nil
+        EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Advanced Fade",
+            disabled = AdvancedFadeOff,
+            disabledTooltip = AdvancedFadeOffTip, rawTooltip = true,
+            rows = {
+                { type="slider", label="Fade In Time", min=0.01, max=2, step=0.01,
+                  tooltip="Seconds the fade to Advanced Fade Opacity takes.",
+                  get=function() return SB().fadeInSpeed or 0.15 end,
+                  set=function(v) SSet("fadeInSpeed", v) end },
+                { type="slider", label="Fade Out Time", min=0.01, max=2, step=0.01,
+                  tooltip="Seconds the fade back to Bar Opacity takes.",
+                  get=function() return SB().fadeOutSpeed or 0.15 end,
+                  set=function(v) SSet("fadeOutSpeed", v) end },
+            },
+        })
+        EllesmereUI.BuildSyncIcon({
+            region  = rgn,
+            tooltip = "Apply Advanced Fade to all Bars",
+            onClick = function() ApplyAdvancedFadeTo(GROUP_BAR_ORDER) end,
+            isSynced = AdvancedFadeSynced,
+            flashTargets = function() return { rgn } end,
+            multiApply = {
+                elementKeys   = GROUP_BAR_ORDER,
+                elementLabels = SHORT_LABELS,
+                getCurrentKey = function() return SelectedKey() end,
+                onApply       = ApplyAdvancedFadeTo,
+            },
+        })
+    end
+
+    if not visOnly then
         local ctRow
-        ctRow, h = W:DualRow(parent, y, ShowAllCfg(),
+        ctRow, h = W:DualRow(parent, y,
             { type="toggle", text="Click Through",
               getValue=function() return SGet("clickThrough") end,
               setValue=function(v)
                   SSet("clickThrough", v, function(k) EAB:ApplyClickThroughForBar(k) end)
                   -- Its Apply link compares this toggle.
                   EllesmereUI:RefreshPage()
-              end });  y = y - h
+              end },
+            ShowAllCfg());  y = y - h
         do
-            local rgn = ctRow._rightRegion
+            local rgn = ctRow._leftRegion
             local function CopyTo(key, v)
                 EAB.db.profile.bars[key].clickThrough = v
                 EAB:ApplyClickThroughForBar(key)
@@ -345,6 +515,9 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                 },
             })
         end
+    else
+        -- No Click Through on this bar: Show All Bars on Mouseover sits alone.
+        _, h = W:DualRow(parent, y, ShowAllCfg(), EllesmereUI.BlankRowCfg());  y = y - h
     end
 
     if not visOnly then
@@ -357,9 +530,12 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                 w = 126, h = 29, level = 4,
                 get = function() return SB().toggleVisKey end,
                 set = function(v)
+                    -- Spec Overrides: the slot is read before the write, as
+                    -- a rebuild may dress this row again for another setting.
+                    local snap = EllesmereUI._SOAttribution(rgn)
                     SB().toggleVisKey = v
                     EAB:RebuildVisToggleBindings()
-                    EllesmereUI._NotifySettingWrite(rgn)
+                    EllesmereUI._NotifySettingWrite(rgn, snap)
                 end,
                 disabled = function()
                     local v = SB().barVisibility or "always"
@@ -817,8 +993,26 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                     SSetColor("bgColor", r, g, b, a, function(k) EAB:ApplyBackgroundForBar(k) end)
                     SUpdatePreview()
                 end
+                EllesmereUI.BuildInlineCog(bgRgn, {
+                    title = "Bar Background Settings",
+                    disabled = BgDisabled, disabledTooltip = "Bar Background",
+                    rows = {
+                        { type="slider", label="Width", min=0, max=40, step=1,
+                          get=function() return SVal("bgPadX", 0) end,
+                          set=function(v)
+                              SSet("bgPadX", v, function(k) EAB:ApplyBackgroundForBar(k) end)
+                              SUpdatePreview()
+                          end },
+                        { type="slider", label="Height", min=0, max=40, step=1,
+                          get=function() return SVal("bgPadY", 0) end,
+                          set=function(v)
+                              SSet("bgPadY", v, function(k) EAB:ApplyBackgroundForBar(k) end)
+                              SUpdatePreview()
+                          end },
+                    },
+                })
                 local bgSwatch, bgUpdateSwatch = EllesmereUI.BuildColorSwatch(bgRgn, bgRgn:GetFrameLevel() + 5, bgColorGet, bgColorSet, true, 20)
-                PP.Point(bgSwatch, "RIGHT", bgRgn._control, "LEFT", -12, 0)
+                PP.Point(bgSwatch, "RIGHT", bgRgn._lastInline or bgRgn._control, "LEFT", -8, 0)
                 bgRgn._lastInline = bgSwatch
                 EllesmereUI.RegisterWidgetRefresh(function()
                     local off = BgDisabled()
@@ -837,26 +1031,6 @@ local function BuildBarVisibilityLayout(parent, y, ctx)
                     end
                 end)
                 bgSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-                EllesmereUI.BuildInlineCog(bgRgn, {
-                    title = "Bar Background Settings",
-                    icon = EllesmereUI.RESIZE_ICON, gap = 9,
-                    disabled = BgDisabled, disabledTooltip = "Bar Background",
-                    rows = {
-                        { type="slider", label="Width", min=0, max=40, step=1,
-                          get=function() return SVal("bgPadX", 0) end,
-                          set=function(v)
-                              SSet("bgPadX", v, function(k) EAB:ApplyBackgroundForBar(k) end)
-                              SUpdatePreview()
-                          end },
-                        { type="slider", label="Height", min=0, max=40, step=1,
-                          get=function() return SVal("bgPadY", 0) end,
-                          set=function(v)
-                              SSet("bgPadY", v, function(k) EAB:ApplyBackgroundForBar(k) end)
-                              SUpdatePreview()
-                          end },
-                    },
-                })
             end
             end
         end

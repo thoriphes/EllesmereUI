@@ -455,7 +455,7 @@ local function BuildColorPickerPopup()
     hexBox:SetJustifyH("CENTER")
     local hbg = hexBox:CreateTexture(nil, "BACKGROUND")
     hbg:SetAllPoints(); hbg:SetColorTexture(0.213, 0.204, 0.196, 0.5)
-    MakeBorder(hexBox, 1, 1, 1, 0.04, PP)
+    EllesmereUI.MakeRoundedBorder(hexBox, 1, 1, 1, 0.04, hbg)
 
     local lastValidHex = "FFFFFF"
     local lastHexR, lastHexG, lastHexB = -1, -1, -1
@@ -510,7 +510,7 @@ local function BuildColorPickerPopup()
     opacityBox:SetNumeric(true); opacityBox:SetJustifyH("CENTER")
     local obg = opacityBox:CreateTexture(nil, "BACKGROUND")
     obg:SetAllPoints(); obg:SetColorTexture(0.213, 0.204, 0.196, 0.5)
-    MakeBorder(opacityBox, 1, 1, 1, 0.04, PP)
+    EllesmereUI.MakeRoundedBorder(opacityBox, 1, 1, 1, 0.04, obg)
 
     local lastOpacityPct = -1
     UpdateOpacityInput = function(a)
@@ -789,7 +789,7 @@ local function BuildColorSwatch(parentFrame, baseLevel, getValue, setValue, hasA
     local function BuildBorder()
         if borderBuilt then return end
         borderBuilt = true
-        local T = CS.BRD_THICK
+        local T = PP.Scale(CS.BRD_THICK)
 
         local wt = swatch:CreateTexture(nil, "BORDER")
         wt:SetColorTexture(1, 1, 1, 1)
@@ -831,19 +831,20 @@ local function BuildColorSwatch(parentFrame, baseLevel, getValue, setValue, hasA
         -- leave it idle; what shows then is that rebuild's own paint.
         local openGen = PoolGen(swatch)
         local function SameDress() return PoolGen(swatch) == openGen and not PoolIsIdle(swatch) end
-        -- Writes the setting the picker was opened for and returns true while
-        -- the swatch is still that dress (the caller then paints it). Once it
-        -- is not, the write names no frame to Spec Overrides (it keeps the
-        -- slot the picker's earlier writes named) and nothing is painted.
+        -- The slot the picker writes for, taken as it opens (Spec Overrides):
+        -- every write names it, whatever a rebuild has made of the swatch
+        -- since (dressed again for another slot, or left on a parked row).
+        local openSlot = EllesmereUI._SOAttribution(parentFrame, {})
+        -- Writes the setting the picker was opened for, naming that slot, and
+        -- returns true while the swatch is still that dress (the caller then
+        -- paints it); once it is not, nothing is painted and the frame is not
+        -- named (it may hold another slot now).
         local function Write(cr, cg, cb, ca)
-            if not SameDress() then
-                userSet(cr, cg, cb, ca)
-                EllesmereUI._NotifySettingWrite(nil)
-                EllesmereUI._settingsChanged = true
-                return false
-            end
-            setValue(cr, cg, cb, ca)
-            return SameDress()
+            local same = SameDress()
+            userSet(cr, cg, cb, ca)
+            EllesmereUI._NotifySettingWrite(same and parentFrame or nil, openSlot)
+            EllesmereUI._settingsChanged = true
+            return same and SameDress()
         end
         local function OnColorChanged()
             local popup = EllesmereUI._colorPickerPopup

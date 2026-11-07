@@ -11,6 +11,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 
 if not EllesmereUI._ModuleNS["EllesmereUIQoL"] then return end  -- module disabled: no options page
 
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local function DB()
     local fn = _G._EUI_MovementAlert_DB
     return fn and fn() or nil
@@ -189,7 +194,7 @@ local function ShowAddSpellPopup(onAdded)
         sidBox:SetTextInsets(6, 6, 0, 0)
         local sidBg = sidBox:CreateTexture(nil, "BACKGROUND")
         sidBg:SetAllPoints(); sidBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(sidBox, 1, 1, 1, 0.12, PP)
+        EllesmereUI.MakeRoundedBorder(sidBox, 1, 1, 1, 0.12, sidBg)
         popup._sidBox = sidBox
 
         local status = popup:CreateFontString(nil, "OVERLAY")
@@ -293,7 +298,7 @@ local function ShowCustomTextPopup(titleText, initial, onSave)
         box:SetTextInsets(6, 6, 0, 0)
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
         boxBg:SetAllPoints(); boxBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, PP)
+        EllesmereUI.MakeRoundedBorder(box, 1, 1, 1, 0.12, boxBg)
         popup._box = box
 
         local ar, ag, ab = EllesmereUI.GetAccentColor()
@@ -343,7 +348,7 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
     local ma = MA()
     if not ma then return 0 end
     local y = yOffset
-    local _, h
+    local _, h, hdr
 
     parent._showRowDivider = true
 
@@ -366,12 +371,18 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
         if previewBtnLbl then previewBtnLbl:SetText(PreviewLabel()) end
     end);  y = y - h
     if not EllesmereUI._prebuilding then
-        local btn = select(1, previewBtnFrame:GetChildren())
+        -- The button the row was built with and its label, the SHOWN ones: a
+        -- pooled row also holds the hidden children and regions an earlier
+        -- dress left there, so the first child is not necessarily the button.
+        local btn
+        for _, c in ipairs({ previewBtnFrame:GetChildren() }) do
+            if c:IsShown() and c:IsObjectType("Button") then btn = c; break end
+        end
         if btn then
-            local regions = { btn:GetRegions() }
-            for i = 1, #regions do
-                local rgn = regions[i]
-                if rgn and rgn.GetText and rgn:GetText() then previewBtnLbl = rgn; break end
+            for _, rgn in ipairs({ btn:GetRegions() }) do
+                if rgn:IsShown() and rgn:IsObjectType("FontString") and rgn:GetText() then
+                    previewBtnLbl = rgn; break
+                end
             end
         end
         -- Keep the label truthful if the preview self-terminated meanwhile.
@@ -394,12 +405,13 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
     -------------------------------------------------------------------------
     --  MOVEMENT COOLDOWN ALERT
     -------------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "MOVEMENT COOLDOWN ALERT", y);  y = y - h
+    hdr, h = W:SectionHeader(parent, "MOVEMENT COOLDOWN ALERT", y);  y = y - h
 
     -- Off = no class checked at all (enabledClasses nil), the Totem Bar
     -- convention -- the page stays configurable while ANY class is checked;
     -- the backend additionally gates runtime on the player's own class.
     local function maOff() return not ma.enabledClasses end
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = "EUI_MovementAlert", disabled = maOff, disabledTooltip = "Select a class above", rawTooltip = true })
 
     local enableRow
     enableRow, h = W:DualRow(parent, y,
@@ -559,13 +571,44 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
 
     -- Inline controls on the Display Mode slot, mirroring the Unit Frames
     -- Health Bar Left/Right Text rows: dropdown at the right, then the
-    -- Custom + Class color swatch pair, then the resize cog. The swatches
+    -- resize cog, then the Custom + Class color swatch pair. The swatches
     -- (the Use Class Color replacement) only apply to Text and Bar modes.
     if not EllesmereUI._prebuilding then
         local leftRgn = dmRow._leftRegion
+
+        -- Resize cog (nearest the control): Text Size / Icon Size, each gated to its mode.
+        EllesmereUI.BuildInlineCog(leftRgn, {
+            title = "Display Size",
+            rows = {
+                -- Never disabled: sizes the free text, the bar's number, and
+                -- the icon's countdown numbers alike. Re-seeded on text <->
+                -- bar/icon display mode switches (24 / 12).
+                { type="slider", label="Text Size", min=8, max=72, step=1,
+                  get=function() return ma.textSize or 24 end,
+                  set=function(v) ma.textSize = v; Refresh() end },
+                { type="slider", label="Icon Size", min=16, max=128, step=1,
+                  disabled=function() return ma.displayMode ~= "icon" end,
+                  disabledTooltip="Requires the Icon display mode", rawTooltip=true,
+                  get=function() return ma.iconSize or 40 end,
+                  set=function(v) ma.iconSize = v; Refresh() end },
+                -- View over the old numeric precision key: on = 1 decimal,
+                -- off = whole seconds.
+                { type="toggle", label="Show Decimal",
+                  disabled=function() return ma.displayMode == "icon" end,
+                  disabledTooltip="Not used in Icon display mode", rawTooltip=true,
+                  -- tonumber guard: an older numeric-input build could store
+                  -- precision as a string ("1"), and `"1" > 0` is a hard error
+                  -- in Lua 5.1 -- it would throw here before set could run, so
+                  -- the toggle silently did nothing until a value was written.
+                  get=function() return (tonumber(ma.precision) or 1) > 0 end,
+                  set=function(v) ma.precision = v and 1 or 0; Refresh() end },
+            },
+            gap = 9, disabled = maOff, disabledTooltip = "Select an Enabled Class",
+        })
+
         local dmAnchor = leftRgn._lastInline or leftRgn._control
 
-        -- Class Colored swatch (nearest the control)
+        -- Class Colored swatch (nearest the cog)
         local dmClassSwatch, dmUpdateClassSwatch = EllesmereUI.BuildColorSwatch(
             leftRgn, leftRgn:GetFrameLevel() + 5,
             function()
@@ -610,36 +653,6 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
         end
         EllesmereUI.RegisterWidgetRefresh(function() dmUpdateSwatch(); dmUpdateClassSwatch(); UpdateDmSwatches() end)
         UpdateDmSwatches()
-
-        -- Resize cog (leftmost): Text Size / Icon Size, each gated to its mode.
-        EllesmereUI.BuildInlineCog(leftRgn, {
-            title = "Display Size",
-            rows = {
-                -- Never disabled: sizes the free text, the bar's number, and
-                -- the icon's countdown numbers alike. Re-seeded on text <->
-                -- bar/icon display mode switches (24 / 12).
-                { type="slider", label="Text Size", min=8, max=72, step=1,
-                  get=function() return ma.textSize or 24 end,
-                  set=function(v) ma.textSize = v; Refresh() end },
-                { type="slider", label="Icon Size", min=16, max=128, step=1,
-                  disabled=function() return ma.displayMode ~= "icon" end,
-                  disabledTooltip="Requires the Icon display mode", rawTooltip=true,
-                  get=function() return ma.iconSize or 40 end,
-                  set=function(v) ma.iconSize = v; Refresh() end },
-                -- View over the old numeric precision key: on = 1 decimal,
-                -- off = whole seconds.
-                { type="toggle", label="Show Decimal",
-                  disabled=function() return ma.displayMode == "icon" end,
-                  disabledTooltip="Not used in Icon display mode", rawTooltip=true,
-                  -- tonumber guard: an older numeric-input build could store
-                  -- precision as a string ("1"), and `"1" > 0` is a hard error
-                  -- in Lua 5.1 -- it would throw here before set could run, so
-                  -- the toggle silently did nothing until a value was written.
-                  get=function() return (tonumber(ma.precision) or 1) > 0 end,
-                  set=function(v) ma.precision = v and 1 or 0; Refresh() end },
-            },
-            icon = EllesmereUI.RESIZE_ICON, gap = 9, disabled = maOff, disabledTooltip = "Select an Enabled Class",
-        })
     end
 
     -- TTS Voice doubles as the TTS enable ("None" = off, the default) -- a
@@ -973,11 +986,14 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
     -------------------------------------------------------------------------
     --  EXTRA TRACKING
     -------------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "EXTRA TRACKING", y);  y = y - h
+    hdr, h = W:SectionHeader(parent, "EXTRA TRACKING", y);  y = y - h
 
     -- The two sibling trackers' master toggles, each carrying its full settings cog.
     local function tsOff() return not ma.tsEnabled end
     local function gwOff() return not ma.gwEnabled end
+    -- Time Spiral is the section's first mover, so the header's button takes
+    -- it; the Gateway Shard mover stays reachable through its cog's footer.
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = "EUI_TimeSpiralAlert", disabled = tsOff, disabledTooltip = "Enable Time Spiral Tracker" })
 
     local extraRow
     extraRow, h = W:DualRow(parent, y,

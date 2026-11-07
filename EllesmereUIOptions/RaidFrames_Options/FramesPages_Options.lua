@@ -1,12 +1,21 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
 --  RaidFrames_Options\FramesPages_Options.lua
---  Raid Frames options: the raid Frames page (BuildMainPage), the Party page
+--  Raid & Party Frames options: the Frames page (Raid tab, BuildMainPage), the Party page
 --  (BuildPartyPage) and the Sort By control both use. Definitions only; the
 --  shared helpers come from ns._RFO_OptEnv (filled by EUI_RaidFrames_Options.lua).
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUIRaidFrames"]
 if not ns then return end  -- module disabled: no options page
+
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host (a kept page wrapper or menu and every frame it hands out) are reset
+-- and dressed again by the next build instead of made anew; elsewhere this is
+-- CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+local PoolKept = EllesmereUI._Pool.Kept
+-- Deferred work on a pooled frame stops once the frame was dressed again.
+local PoolGen = EllesmereUI._Pool.Gen
 
 ---------------------------------------------------------------------------
 --  Shared "Sort By" control: Group/Role radio + drag-to-reorder role rows, installed into a DualRow half-region
@@ -29,7 +38,7 @@ local function BuildSortByControl(rgn, opts)
     local sBg = sortBtn:CreateTexture(nil, "BACKGROUND")
     sBg:SetAllPoints()
     sBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-    local sBrd = EllesmereUI.MakeBorder(sortBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+    local sBrd = EllesmereUI.MakeRoundedBorder(sortBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, sBg)
 
     local sLabel = EllesmereUI.MakeFont(sortBtn, 13, nil, 1, 1, 1)
     sLabel:SetAlpha(EllesmereUI.DD_TXT_A)
@@ -65,7 +74,9 @@ local function BuildSortByControl(rgn, opts)
     local DH = 16       -- divider height
     local EG = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
 
-    local menuFrame = CreateFrame("Frame", nil, UIParent)
+    -- Kept per Sort By button (the options page pool): a page build that
+    -- dresses the same button again dresses the same menu again.
+    local menuFrame = PoolKept(sortBtn, "rfSortMenu", "Frame", UIParent)
     menuFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     menuFrame:SetFrameLevel(200)
     menuFrame:SetClampedToScreen(true)
@@ -75,7 +86,7 @@ local function BuildSortByControl(rgn, opts)
     local mBg = menuFrame:CreateTexture(nil, "BACKGROUND")
     mBg:SetAllPoints()
     mBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, 0.98)
-    EllesmereUI.MakeBorder(menuFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+    EllesmereUI.MakeRoundedBorder(menuFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, mBg, nil, true)
 
     -- Declared before OnShow: its OnUpdate suppresses click-away dismiss while a row is dragged.
     local dragRow, dsY, isDragging = nil, nil, false
@@ -386,7 +397,6 @@ local function BuildBorderRows(parent, y, W, soloSlot)
     if not EllesmereUI._prebuilding then
         local rgn = borderStyleRow._leftRegion
         local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
             title = "Border Options",
             rows = {
                 { type="slider", label="Shift X", min=-10, max=10, step=1,
@@ -418,6 +428,18 @@ local function BuildBorderRows(parent, y, W, soloSlot)
     if not EllesmereUI._prebuilding then
         local rgn = borderStyleRow._rightRegion
         local lvl = borderStyleRow:GetFrameLevel() + 3
+        -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog beside
+        -- the control, the Border swatch left of it.
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Corner Radius", tip = "Corner Radius",
+            disabled = function() return not EllesmereUI.RoundedStyleOK(SGet("borderTexture")) end,
+            disabledTooltip = "This option requires the Solid, Glow or Shadow border style.",
+            rows = EllesmereUI.RoundedCornerRows({
+                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+                  get = function() return SVal("cornerRadius", 0) end,
+                  set = function(v) SSet("cornerRadius", v) end },
+            }, function() return SGet("cornerMask") end, function(v) SSet("cornerMask", v) end),
+        })
         local borderSwatch, updBorder = EllesmereUI.BuildColorSwatch(
             rgn, lvl,
             function()
@@ -432,18 +454,6 @@ local function BuildBorderRows(parent, y, W, soloSlot)
         borderSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(borderSwatch, "Border") end)
         borderSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         EllesmereUI.RegisterWidgetRefresh(function() updBorder() end)
-        -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog left
-        -- of the Border swatch.
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Corner Radius", tip = "Corner Radius",
-            disabled = function() return not EllesmereUI.RoundedStyleOK(SGet("borderTexture")) end,
-            disabledTooltip = "This option requires the Solid, Glow or Shadow border style.",
-            rows = EllesmereUI.RoundedCornerRows({
-                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
-                  get = function() return SVal("cornerRadius", 0) end,
-                  set = function(v) SSet("cornerRadius", v) end },
-            }, function() return SGet("cornerMask") end, function(v) SSet("cornerMask", v) end),
-        })
     end
 
     -- Width Offset | Height Offset: the textured edge's outward offsets as their
@@ -519,39 +529,6 @@ local function BuildBorderRows(parent, y, W, soloSlot)
         hbRgn._control = cbDD
         hbRgn._lastInline = nil
 
-        -- Hover sits nearest the dropdown, Target to its left.
-        local lvl = hoverBordersRow:GetFrameLevel() + 3
-        local hoverSwatch, updHover = EllesmereUI.BuildColorSwatch(
-            hbRgn, lvl,
-            function()
-                local c = SGet("hoverBorderColor") or { r = 1, g = 1, b = 1 }
-                return c.r, c.g, c.b, SVal("hoverBorderAlpha", 1)
-            end,
-            function(r, g, b, a)
-                SWrite("hoverBorderColor", { r=r, g=g, b=b }); SWrite("hoverBorderAlpha", a); ReloadAndUpdate()
-            end, true, 20)
-        hoverSwatch:SetPoint("RIGHT", hbRgn._lastInline or hbRgn._control, "LEFT", -8, 0)
-        hbRgn._lastInline = hoverSwatch
-        hoverSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(hoverSwatch, "Hover") end)
-        hoverSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-        local targetSwatch, updTarget = EllesmereUI.BuildColorSwatch(
-            hbRgn, lvl,
-            function()
-                local c = SGet("targetBorderColor") or { r = 1, g = 1, b = 1 }
-                return c.r, c.g, c.b, SVal("targetBorderAlpha", 1)
-            end,
-            function(r, g, b, a)
-                SWrite("targetBorderColor", { r=r, g=g, b=b }); SWrite("targetBorderAlpha", a); ReloadAndUpdate()
-            end, true, 20)
-        targetSwatch:SetPoint("RIGHT", hbRgn._lastInline, "LEFT", -8, 0)
-        hbRgn._lastInline = targetSwatch
-        targetSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(targetSwatch, "Target") end)
-        targetSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        -- Stock styles: the stock selection ring carries its own colour.
-        local targetBlocked = EllesmereUI.BlizzStyle
-            and EllesmereUI.BlizzStyle.BlockInline("raidframes", targetSwatch) or false
-
         -- Highlight thickness when borderless or compact; a drawn individual border is recolored.
         -- Exact pixel sizes (hover/targetBorderSizePx beside the steps) in the frame's
         -- border style; under a stock style the hover border draws solid, so the
@@ -576,7 +553,6 @@ local function BuildBorderRows(parent, y, W, soloSlot)
             setPx=function(v) SWrite("targetBorderSizePx", v) end,
             apply=ReloadAndUpdate })
         local hlCog = EllesmereUI.BuildInlineCog(hbRgn, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
             title = "Highlight Border",
             rows = {
                 { type="slider", label="Hover Border Size", min=1, max=hoverPx.max, step=1,
@@ -590,6 +566,41 @@ local function BuildBorderRows(parent, y, W, soloSlot)
                   get=targetPx.getValue, set=targetPx.setValue },
             },
         })
+        -- Hover sits nearest the cog (the dropdown while the cog is hidden),
+        -- Target to its left.
+        local lvl = hoverBordersRow:GetFrameLevel() + 3
+        local hoverSwatch, updHover = EllesmereUI.BuildColorSwatch(
+            hbRgn, lvl,
+            function()
+                local c = SGet("hoverBorderColor") or { r = 1, g = 1, b = 1 }
+                return c.r, c.g, c.b, SVal("hoverBorderAlpha", 1)
+            end,
+            function(r, g, b, a)
+                SWrite("hoverBorderColor", { r=r, g=g, b=b }); SWrite("hoverBorderAlpha", a); ReloadAndUpdate()
+            end, true, 20)
+        hoverSwatch:SetPoint("RIGHT", hbRgn._lastInline or hbRgn._control, "LEFT", -8, 0)
+        local hoverAnchor = hbRgn._lastInline or hbRgn._control  -- memo: what Hover hangs from
+        hbRgn._lastInline = hoverSwatch
+        hoverSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(hoverSwatch, "Hover") end)
+        hoverSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+        local targetSwatch, updTarget = EllesmereUI.BuildColorSwatch(
+            hbRgn, lvl,
+            function()
+                local c = SGet("targetBorderColor") or { r = 1, g = 1, b = 1 }
+                return c.r, c.g, c.b, SVal("targetBorderAlpha", 1)
+            end,
+            function(r, g, b, a)
+                SWrite("targetBorderColor", { r=r, g=g, b=b }); SWrite("targetBorderAlpha", a); ReloadAndUpdate()
+            end, true, 20)
+        targetSwatch:SetPoint("RIGHT", hbRgn._lastInline, "LEFT", -8, 0)
+        hbRgn._lastInline = targetSwatch
+        targetSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(targetSwatch, "Target") end)
+        targetSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        -- Stock styles: the stock selection ring carries its own colour.
+        local targetBlocked = EllesmereUI.BlizzStyle
+            and EllesmereUI.BlizzStyle.BlockInline("raidframes", targetSwatch) or false
+
         local function UpdateHLCogVis()
             -- Under a stock style the EllesmereUI border is stood down, so
             -- the hover border draws on its own at this size.
@@ -597,6 +608,13 @@ local function BuildBorderRows(parent, y, W, soloSlot)
             if bs > 0 and not ns.RF_CompactOnTab(optState._partyCtx) then
                 hlCog:Hide()
             else hlCog:Show() end
+            -- The swatches close up on the dropdown while the cog is hidden.
+            local anchor = hlCog:IsShown() and hlCog or cbDD
+            if anchor ~= hoverAnchor then
+                hoverAnchor = anchor
+                hoverSwatch:ClearAllPoints()
+                hoverSwatch:SetPoint("RIGHT", anchor, "LEFT", -8, 0)
+            end
         end
         EllesmereUI.RegisterWidgetRefresh(UpdateHLCogVis)
         UpdateHLCogVis()
@@ -623,7 +641,7 @@ local function BuildMainPage(pageName, parent, yOffset)
     local SGet, SGetPx, SSet, SVal = env.SGet, env.SGetPx, env.SSet, env.SVal
     local SWrite, optState = env.SWrite, env.optState
     local W = EllesmereUI.Widgets
-    local _, h
+    local _, h, hdr
     local row
 
     -- Both Group Growth menus grey out the grid flow while groups are merged,
@@ -634,6 +652,21 @@ local function BuildMainPage(pageName, parent, yOffset)
         end
     end
 
+    -- Center Groups (base and per-tier): the grid flow never centers
+    -- (ns._RFGroupCentered), read through the runtime's own self-heal, which
+    -- renders it as Right in merged mode. Locked in combat: the layout pass
+    -- bails there and would not pick the change up afterwards.
+    local CENTER_TIP = "Keeps the shown groups centered on the raid frame area along the group growth direction, so fewer groups sit in the middle instead of starting at one edge."
+    local CENTER_OFF_TIP = "This option is not available with the Down and then Right group growth."
+    local function CenterBlocked(gg)
+        if InCombatLockdown() then return true end
+        local _, eg = ns._RFEffectiveGrowth("DOWN", gg, SVal("mergeGroups", false))
+        return eg == "DOWNRIGHT"
+    end
+    local function CenterBlockedTip()
+        return InCombatLockdown() and "Unavailable in combat" or CENTER_OFF_TIP
+    end
+
     parent._showRowDivider = true
     local y = yOffset
 
@@ -642,7 +675,8 @@ local function BuildMainPage(pageName, parent, yOffset)
     -------------------------------------------------------------------
     --  FRAME SIZES
     -------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "FRAME SIZES", y); y = y - h
+    hdr, h = W:SectionHeader(parent, "FRAME SIZES", y); y = y - h
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = "RF_RaidFrames" })
 
     _, h = W:DualRow(parent, y,
         { type="slider", text="20 Man Frame Width", min=40, max=300, step=1,
@@ -728,16 +762,21 @@ local function BuildMainPage(pageName, parent, yOffset)
                     local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
                     eyeTex:SetAllPoints()
 
+                    -- Kept on ns until this tier's next build, which may never come
+                    -- (the tier was removed): once a rebuild dresses this eye again,
+                    -- maybe as another row's, this refresher leaves it alone.
+                    local eyeGen = PoolGen(eyeBtn)
                     local function RefreshSizeEye()
+                        if PoolGen(eyeBtn) ~= eyeGen then return end
                         local active = ns._sizePreviewTier == tier
                         eyeTex:SetTexture(active and EYE_INVISIBLE or EYE_VISIBLE)
-                        eyeBtn:SetAlpha(active and 0.6 or 0.4)
+                        EllesmereUI.SetGlyphAlpha(eyeBtn, active and 0.6 or 0.4)
                     end
                     RefreshSizeEye()
                     ns["_refreshSizeEye" .. tier] = RefreshSizeEye
 
                     eyeBtn:SetScript("OnEnter", function(self)
-                        self:SetAlpha(0.7)
+                        EllesmereUI.SetGlyphAlpha(self, 0.7)
                         local active = ns._sizePreviewTier == tier
                         EllesmereUI.ShowWidgetTooltip(self, active and "Hide " .. tierLabel .. " preview" or "Preview " .. tierLabel .. " frame size")
                     end)
@@ -845,7 +884,6 @@ local function BuildMainPage(pageName, parent, yOffset)
                     }
                     local tb = TIER_BOUNDS[tier]
                     EllesmereUI.BuildInlineCog(rgn, {
-                        icon = EllesmereUI.DIRECTIONS_ICON,
                         title = EllesmereUI.Lf("%1$s Options", EllesmereUI.L(tierLabel)),
                         rows = {
                             { type="slider", label=tb.label, min=tb.min, max=tb.max, step=1,
@@ -882,6 +920,24 @@ local function BuildMainPage(pageName, parent, yOffset)
                                   end
                                   TierGrowthChanged()
                               end },
+                            { type="toggle", label="Center Groups", tooltip=CENTER_TIP,
+                              get=function()
+                                  local ovs = db.profile.raidSizeOverrides
+                                  local o = ovs and ovs[tier]
+                                  if o and o.groupGrowthCentered ~= nil then return o.groupGrowthCentered end
+                                  return db.profile.groupGrowthCentered == true
+                              end,
+                              set=function(v)
+                                  if InCombatLockdown() then return end
+                                  EnsureTierOv().groupGrowthCentered = v
+                                  TierGrowthChanged()
+                              end,
+                              disabled=function()
+                                  local ovs = db.profile.raidSizeOverrides
+                                  return CenterBlocked(ovs and ovs[tier] and ovs[tier].groupGrowth
+                                      or db.profile.groupGrowth or "RIGHT")
+                              end,
+                              disabledTooltip=CenterBlockedTip, rawTooltip=true },
                             { type="dropdown", label="Unit Growth",
                               values=growthValues, order=allGrowthOrder,
                               get=function()
@@ -1097,7 +1153,8 @@ local function BuildMainPage(pageName, parent, yOffset)
         end
     end
 
-    _, h = W:DualRow(parent, y,
+    local growthRow
+    growthRow, h = W:DualRow(parent, y,
         { type="dropdown", text="Group Growth", values=groupGrowthValues, order=groupGrowthOrder,
           disabledValues=GridFlowOff,
           getValue=function() return ReadGroupGrowth(SVal("groupGrowth", "RIGHT")) end,
@@ -1127,6 +1184,18 @@ local function BuildMainPage(pageName, parent, yOffset)
               if ns._BumpAbsorbGen then ns._BumpAbsorbGen() end
               ReloadAndUpdate()
           end });  y = y - h
+    EllesmereUI.BuildInlineCog(growthRow._leftRegion, { title = "Group Growth",
+        captureRegion = growthRow._leftRegion, rows = {
+        { type="toggle", label="Center Groups", tooltip=CENTER_TIP,
+          get=function() return db.profile.groupGrowthCentered == true end,
+          set=function(v)
+              if InCombatLockdown() then return end
+              db.profile.groupGrowthCentered = v
+              ReloadAndUpdate()
+          end,
+          disabled=function() return CenterBlocked(SVal("groupGrowth", "RIGHT")) end,
+          disabledTooltip=CenterBlockedTip, rawTooltip=true },
+    } })
 
     -- Row 4: Sort By (custom dropdown with drag-to-reorder roles) | Self Position
     local sortRow
@@ -1386,8 +1455,12 @@ local function BuildPartyPage(pageName, parent, yOffset)
     local BuildPreviewModeRow, BuildVisualSections, db, optState = env.BuildPreviewModeRow, env.BuildVisualSections, env.db, env.optState
     local PP, SVal = env.PP, env.SVal
     local W = EllesmereUI.Widgets
-    local _, h
+    local _, h, hdr
     local row
+    -- The Party Frames' Move in Unlock Mode button goes on the page's first
+    -- section: FRAME STYLE where the stock-style block builds, else RAID
+    -- SYNC AND SOLO.
+    local jumped
 
     parent._showRowDivider = true
     local y = yOffset
@@ -1401,7 +1474,9 @@ local function BuildPartyPage(pageName, parent, yOffset)
     -------------------------------------------------------------------
     local p0 = db.profile
     if ns.RF_Stock and ns.RF_Stock() and (p0.useBlizzardStyle or p0.useClassicStyle) then
-        _, h = W:SectionHeader(parent, "FRAME STYLE", y); y = y - h
+        hdr, h = W:SectionHeader(parent, "FRAME STYLE", y); y = y - h
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "RF_PartyFrames" })
+        jumped = true
         local kitOn = ns.RF_PartyKit and ns.RF_PartyKit()
         -- Frame Scale default (nil = this, 120%).
         local scaleDef = math.floor((ns.RF_KIT_SCALE or 1.2) * 100 + 0.5)
@@ -1492,7 +1567,10 @@ local function BuildPartyPage(pageName, parent, yOffset)
     -------------------------------------------------------------------
     --  RAID SYNC AND SOLO
     -------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "RAID SYNC AND SOLO", y); y = y - h
+    hdr, h = W:SectionHeader(parent, "RAID SYNC AND SOLO", y); y = y - h
+    if not jumped then
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "RF_PartyFrames" })
+    end
 
     -- Row 1: Use Raid Settings For (checkbox dropdown) | Show When Solo
     local SECTION_ORDER = ns._PARTY_SECTION_ORDER or {}

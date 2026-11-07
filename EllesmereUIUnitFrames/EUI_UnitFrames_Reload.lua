@@ -31,6 +31,16 @@ local GetCastbarColor, ApplyUnitFrameCastColor, IsKickCastbarUnit, UpdateUnitFra
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
+-- Detached portrait click overlays on the settled geometry; true while any
+-- frame wants one.
+local function SyncPortraitClicks()
+    local any = false
+    for _, frame in pairs(frames) do
+        if type(frame) == "table" and frame.Portrait and ns.UF_SyncPortraitClick(frame) then any = true end
+    end
+    return any
+end
+
 -- Blizzard Style: the per-unit geometry re-applies inside a reload each run
 -- the stock pass from UpdateBordersForScale's tail, only for the re-anchors
 -- that follow to undo it; the sweep at the end of the reload is the pass that
@@ -51,8 +61,6 @@ ReloadFramesBody = function()
     if InCombatLockdown() then
         return
     end
-
-    ApplyEnemyColors()
 
     -- Normalize opacity values: old profiles stored 0-1 floats, new format is 0-100 integers
     do
@@ -110,7 +118,7 @@ ReloadFramesBody = function()
             -- can end up behind the frame's own border, however "Detached Power Bar" strata is configured.
             if frame.Power then
                 local us2 = GetSettingsForUnit(unitKey)
-                local ppPos = us2 and us2.powerPosition or "below"
+                local ppPos = ns.UF_PowerPos(us2)
                 if ppPos == "detached_top" or ppPos == "detached_bottom" then
                     if profile.enableCustomBarStratas then
                         frame.Power:SetFrameStrata(profile.detachedPowerStrata or "HIGH")
@@ -348,7 +356,7 @@ ReloadFramesBody = function()
             end
 
             if unit == "player" or unit == "target" then
-                local ppPos = settings.powerPosition or "below"
+                local ppPos = ns.UF_PowerPos(settings)
                 local ppIsAtt = (ppPos == "below" or ppPos == "above")
                 local ppExtra = ppIsAtt and settings.powerHeight or 0
                 local playerTargetHeight = settings.healthHeight + ppExtra
@@ -702,7 +710,7 @@ ReloadFramesBody = function()
                     end
 
                     UpdateBordersForScale(frame, unit)
-                    ReparentBarsToClip(frame, settings.powerPosition, settings)
+                    ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
                 elseif unit == "target" then
                     local pSide = settings.portraitSide or "right"
@@ -984,13 +992,13 @@ ReloadFramesBody = function()
                     end
 
                     UpdateBordersForScale(frame, unit)
-                    ReparentBarsToClip(frame, settings.powerPosition, settings)
+                    ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
                 end
 
                 -- (health tag re-tagging now handled by _applyTextTags above)
 
             elseif unit == "focus" then
-                local fPpPos = settings.powerPosition or "below"
+                local fPpPos = ns.UF_PowerPos(settings)
                 local fPpIsAtt = (fPpPos == "below" or fPpPos == "above")
                 local powerHeight = fPpIsAtt and (settings.powerHeight or 6) or 0
                 local focusBarHeight = settings.healthHeight + powerHeight
@@ -1265,7 +1273,7 @@ ReloadFramesBody = function()
                 end
 
                 UpdateBordersForScale(frame, unit)
-                ReparentBarsToClip(frame, settings.powerPosition, settings)
+                ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
             elseif unit == "pet" or unit == "targettarget" or unit == "focustarget" then
                 -- Pet, ToT and FoT all share the same simple-frame layout:
@@ -1338,7 +1346,7 @@ ReloadFramesBody = function()
                 end
 
                 UpdateBordersForScale(frame, unit)
-                ReparentBarsToClip(frame, settings.powerPosition, settings)
+                ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
             elseif unit:match("^boss%d$") then
                 local bPpPos = settings.powerPosition or "below"
@@ -1544,7 +1552,7 @@ ReloadFramesBody = function()
                 end
 
                 UpdateBordersForScale(frame, unit)
-                ReparentBarsToClip(frame, settings.powerPosition, settings)
+                ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
             end
 
             -- Determine if this is a mini frame that inherits border/texture/font
@@ -1576,6 +1584,7 @@ ReloadFramesBody = function()
             ApplyDarkTheme(frame.Health, unit)  -- re-anchors health.bg for the new axis
             UpdateAbsorbBarReverseFill(frame, settings.healthReverseFill and true or false, settings)
             ns.UF_HealPredApply(frame, unit, settings)
+            ns.UF_MaxHpApply(frame, unit)
             ns.UF_AbsorbGlowApply(frame, unit)
             -- Smooth bar interpolation (live toggle without /reload)
             if settings.smoothBars then
@@ -1610,16 +1619,26 @@ ReloadFramesBody = function()
                     if not s2 then return end
                     local useP = s2.powerPercentPowerColor ~= false
                     local bR, bG, bB
+                    -- PLAIN stand-ins for bR
+                    local haveBase, baseSecret = false, false
                     if not useP then
                         local cf = s2.customPowerFillColor
                         if cf then bR, bG, bB = cf.r, cf.g, cf.b else bR, bG, bB = 0, 0, 1 end
+                        haveBase = true
                     else
-                        -- Secret-safe per-unit power color (player via token,
-                        -- non-player via the clean integer type), so custom power
-                        -- colors apply on EVERY unit independent of oUF's sync.
-                        bR, bG, bB = EllesmereUI.ResolveUnitPowerColor(unit)
+                        if s2.powerClassColored then
+                            haveBase, bR, bG, bB = ns.UF_PowerClassColor(unit)
+                            baseSecret = haveBase and issecretvalue(bR)
+                        end
+                        if not haveBase then
+                            -- Secret-safe per-unit power color (player via token,
+                            -- non-player via the clean integer type), so custom power
+                            -- colors apply on EVERY unit independent of oUF's sync.
+                            bR, bG, bB = EllesmereUI.ResolveUnitPowerColor(unit)
+                            haveBase = bR ~= nil
+                        end
                     end
-                    if s2.powerGradientEnabled and bR then
+                    if s2.powerGradientEnabled and haveBase and not baseSecret then
                         local gc = s2.powerGradientColor
                         local ga = s2.powerBarOpacity or 100
                         if ga > 1.0 then ga = ga / 100 end
@@ -1629,8 +1648,8 @@ ReloadFramesBody = function()
                     elseif not useP then
                         local cf = s2.customPowerFillColor
                         if cf then self:SetStatusBarColor(cf.r, cf.g, cf.b) else self:SetStatusBarColor(0, 0, 1) end
-                    elseif bR then
-                        -- Power-color mode (no gradient): explicitly paint the bar so it
+                    elseif haveBase then
+                        -- Power/class-color mode (no gradient): explicitly paint the bar so it
                         -- doesn't depend on oUF's colors.power being synced.
                         self:SetStatusBarColor(bR, bG, bB)
                     end
@@ -1900,6 +1919,10 @@ ReloadFramesBody = function()
     -- on the geometry the sweep just settled (returns at once everywhere else).
     ns.UF_ApplyForeverComboArc()
 
+    -- Detached portrait click overlays, and once more next frame (anchors still
+    -- resolving) only while a frame uses one.
+    if SyncPortraitClicks() then C_Timer.After(0, SyncPortraitClicks) end
+
     -- Rounded corners (EllesmereUI_RoundedCorners.lua), on the settled
     -- geometry. The radius rides with the border source, like the border; a
     -- detached power bar rounds on its own with the same radius. An attached
@@ -1915,7 +1938,7 @@ ReloadFramesBody = function()
             local radius = (not frame._blizzArtFrame and src and src.cornerRadius) or 0
             local corners = src and src.cornerMask
             local power = frame.Power
-            local pp = us and us.powerPosition or "below"
+            local pp = ns.UF_PowerPos(us)
             local det = pp == "detached_top" or pp == "detached_bottom"
             -- Join Power Bar: a detached bar right above or below the frame
             -- shares its outline (the frame keeps the far corners).
@@ -1966,12 +1989,16 @@ ReloadFramesBody = function()
     -- Reload-all also SWEEPS stale bar ids (a previous profile's bars must
     -- park on swap -- field report).
     if ns.PAB_ReloadAllCustomBars then ns.PAB_ReloadAllCustomBars() end
+    ns.UF_PlayerPortraitChanged()
     -- Size matching: the unified borders were just applied, so report each
     -- frame's border pad; only a pad that really changed re-pushes its matches.
     if EllesmereUI.MatchPadChanged then
         local padKeys = ns.UF_PAD_KEYS
         for i = 1, #padKeys do EllesmereUI.MatchPadChanged(padKeys[i]) end
     end
+    -- Last: its ForceAll repaint must follow the per-frame ApplyDarkTheme, or turning
+    -- Dark Mode off left the class-colored fill dark until the next health event.
+    ApplyEnemyColors()
 end
 
 -- The unit frames whose unified border can reach outside the frame (the

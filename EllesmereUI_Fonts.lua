@@ -148,6 +148,12 @@ EllesmereUI._FONT_KEY_GLOBAL = "\1global"
 -- Dropdown sentinel for "Blizzard Default": resolves to the client's own
 -- standard UI font (STANDARD_TEXT_FONT, locale-aware) in ResolveFontName.
 EllesmereUI.BLIZZARD_FONT_KEY = "__blizzard"
+-- The client's standard UI font, read when used (another addon may set the global
+-- after this file loads). "Apply to All Game Text" overwrites STANDARD_TEXT_FONT,
+-- so the value it replaced is kept (_clientFontPath, ApplyGlobalFontToGameText) and wins.
+function EllesmereUI.GetBlizzardFontPath()
+    return EllesmereUI._clientFontPath or _G.STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+end
 
 function EllesmereUI.InvalidateFontCache()
     EllesmereUI._fontCacheDirty = true
@@ -188,7 +194,7 @@ local function ResolveFontName(fontName)
     -- glyph-restriction branch because STANDARD_TEXT_FONT is already
     -- locale-aware (the engine picks the right face per client language).
     if fontName == EllesmereUI.BLIZZARD_FONT_KEY then
-        return _G.STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+        return EllesmereUI.GetBlizzardFontPath()
     end
     -- Explicit Expressway override: bypasses the glyph-restriction mapping below.
     if fontName == EllesmereUI.EXPRESSWAY_FORCED_KEY then
@@ -250,6 +256,25 @@ local function ResolveFontName(fontName)
 end
 EllesmereUI.ResolveFontName = ResolveFontName
 
+-- Floating combat text is in the client's language, not EUI's display language. On a
+-- glyph-restricted client, a Combat Text Font key counts only if it can draw that script:
+-- a SharedMedia font or a Blizzard file LSM registers (LSM keeps just the ones flagged
+-- for the client), or a FONT_CYRILLIC face on ruRU.
+function EllesmereUI.CombatTextFontCoversLocale(key)
+    local locale = GetLocale()
+    if not EllesmereUI.LocaleGlyphFont(locale) or key:match("^smf:") then return true end
+    if locale == "ruRU" then
+        for name, file in pairs(EllesmereUI.FONT_FILES) do
+            if EllesmereUI.FONT_CYRILLIC[name] and key == MEDIA_PATH .. "fonts\\" .. file then return true end
+        end
+    end
+    local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
+    for _, path in pairs(LSM and LSM:HashTable("font") or {}) do
+        if path == key then return true end
+    end
+    return false
+end
+
 -- Per-module font overrides: all state stored on the EllesmereUI table
 -- to stay under the 200-local / 60-upvalue Lua 5.1 caps.
 EllesmereUI._addonKeyToFolder = {
@@ -272,6 +297,7 @@ EllesmereUI._addonKeyToFolder = {
     raidFrames   = "EllesmereUIRaidFrames",
     bags         = "EllesmereUIBags",
     quickdraw    = "EllesmereUIQuickdraw",
+    lootCouncil  = "EllesmereUISimpleLootCouncil",
 }
 EllesmereUI._moduleFontCache = {}
 EllesmereUI._moduleFontCacheVer = 0
@@ -469,6 +495,8 @@ function EllesmereUI.ApplyGlobalFontToGameText()
     if not swap and scale == 1 then return end
 
     if swap then
+        -- The client's own font, before the first swap replaces it (Blizzard Default).
+        EllesmereUI._clientFontPath = EllesmereUI._clientFontPath or _G.STANDARD_TEXT_FONT
         -- Universal fallback consumed by newly-created Blizzard/addon text.
         _G.STANDARD_TEXT_FONT = path
     end
@@ -606,7 +634,7 @@ function EllesmereUI.BuildFontDropdownData()
     -- Default" entry already IS the client's own font.
     local values = { ["__global"] = { text = "EUI Global Font" },
                      [EllesmereUI.BLIZZARD_FONT_KEY] = { text = "Blizzard Default",
-                         font = _G.STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF" } }
+                         font = EllesmereUI.GetBlizzardFontPath() } }
     local order  = { "__global", EllesmereUI.BLIZZARD_FONT_KEY, "---" }
     local FONT_DIR = EllesmereUI.MEDIA_PATH .. "fonts\\"
     for _, name in ipairs(EllesmereUI.FONT_ORDER) do

@@ -52,6 +52,13 @@ initFrame:SetScript("OnEvent", function(self)
 
     if not EllesmereUI or not EllesmereUI.RegisterModule then return end
     local PP = EllesmereUI.PanelPP
+    -- The options page pool (EllesmereUI_FramePool.lua): a frame made here under
+    -- a pool host (a reused page or header, a kept menu) is handed out again reset
+    -- to fresh; anywhere else this is the plain CreateFrame. A menu made per open
+    -- is one kept frame for the session (PoolKept), dressed again on each open.
+    local Pool = EllesmereUI._Pool
+    local CreateFrame = Pool.CreateFrame
+    local PoolKept, PoolGen = Pool.Kept, Pool.Gen
 
     local db
     C_Timer.After(0, function() db = _G._ECME_AceDB end)
@@ -275,10 +282,14 @@ initFrame:SetScript("OnEvent", function(self)
         -- configured = Blizzard Default, not None: the built-in bars never seed the
         -- key (the templates that do ship true + -1) and Blizzard's PandemicIcon
         -- still draws for them, so only an explicit false reads as None.
+        -- WoW Forever: the anti-clip glow (EUI_CDM_ForeverAntiClip.lua) has no
+        -- Blizzard look, so there Blizzard Default is not offered and an unset or
+        -- Blizzard Default bar reads as None, as the bar draws it.
         local function PandemicDesc(getBd, onChange)
+            local antiClip = ns.CDM_ANTI_CLIP
             return {
                 view = ns.GLOW_VIEW, host = "icon", excludes = { [4] = true },
-                extras = { { value = -1, label = "Blizzard Default" } },
+                extras = not antiClip and { { value = -1, label = "Blizzard Default" } } or nil,
                 caps = { mode = true, params = true, bg = true },
                 defaultColor = { r = 1, g = 1, b = 0 },
                 onChange = onChange or Rebuild,
@@ -286,8 +297,10 @@ initFrame:SetScript("OnEvent", function(self)
                     local bd = getBd(); if not bd then return nil end
                     if f == "style" then
                         if bd.pandemicGlow == false then return 0 end
-                        if bd.pandemicGlow == nil then return -1 end
-                        return bd.pandemicGlowStyle or 1
+                        if bd.pandemicGlow == nil then return antiClip and 0 or -1 end
+                        local style = bd.pandemicGlowStyle or 1
+                        if antiClip and style == -1 then return 0 end
+                        return style
                     end
                     return PandemicGet(bd, f)
                 end,
@@ -568,13 +581,15 @@ initFrame:SetScript("OnEvent", function(self)
                 list = function()
                     local out = {}
                     local c = CdmBars()
+                    -- WoW Forever: the bars' Pandemic Glow rows read Anti-Clip Glow.
+                    local panLabel = ns.CDM_ANTI_CLIP and "Anti-Clip Glow" or "Pandemic Glow"
                     for _, bd in ipairs((c and c.bars) or {}) do
                         -- Ghost and custom buff bars stay out, like the pandemic sync.
                         if not bd.isGhostBar and bd.barType ~= "custom_buff" then
                             local name = EllesmereUI.L(bd.name or bd.key or "?")
                             if ns.CDM_BarHasExtras(bd) then
-                                out[#out + 1] = { label = "Pandemic Glow", sub = name, desc = PandemicDesc(function() return bd end),
-                                    nav = BarNav(bd.key, "EXTRAS", "Pandemic Glow") }
+                                out[#out + 1] = { label = panLabel, sub = name, desc = PandemicDesc(function() return bd end),
+                                    nav = BarNav(bd.key, "EXTRAS", panLabel) }
                             end
                             if ns.IsBarBuffFamily and ns.IsBarBuffFamily(bd) then
                                 out[#out + 1] = { label = "Buff Glow", sub = name, desc = BuffGlowDesc(function() return bd end),
@@ -586,11 +601,12 @@ initFrame:SetScript("OnEvent", function(self)
                         end
                     end
                     local tbb = ns.GetTrackedBuffBars and ns.GetTrackedBuffBars()
-                    local tbbSub = EllesmereUI.L("Tracking Bars") .. " - " .. EllesmereUI.L("Pandemic Glow")
+                    local tbbSub = EllesmereUI.L("Tracking Bars") .. " - " .. (ns.CDM_ANTI_CLIP
+                        and EllesmereUI.L("Anti-Clip Glow") or EllesmereUI.L("Pandemic Glow"))
                     for i, bd in ipairs((tbb and tbb.bars) or {}) do
                         out[#out + 1] = { label = bd.name or "?", sub = tbbSub,
                             desc = TbbDesc(function() return bd end, RebuildTBB),
-                            nav = { page = PAGE_BUFF_BARS, section = "EXTRAS", highlight = "Pandemic Glow",
+                            nav = { page = PAGE_BUFF_BARS, section = "EXTRAS", highlight = panLabel,
                                 preSelect = function() if ns._TBBSelectBar then ns._TBBSelectBar(i) end end } }
                     end
                     return out
@@ -721,6 +737,38 @@ initFrame:SetScript("OnEvent", function(self)
     local _glowSelectedButton = nil  -- UI-only selection state (not saved)
     local _glowBtnFrames = {}  -- button frames from last header build, indexed by button number
 
+    -- Live preview on action-bar paging (stance, mount, vehicle), which changes
+    -- the icons the preview copies. One event frame for the session, registered
+    -- only while the page shows (its page frame's OnShow and OnHide), so nothing
+    -- listens while the page is hidden; a burst of events draws once, 0.15 s
+    -- after the first. The preview alone is drawn again, unless a button is
+    -- selected (the rows below belong to its current ability, which paging
+    -- changes) or a preview glow was lit on a preview button: then the whole
+    -- page is built again.
+    local glowLive = { events = { "ACTIONBAR_PAGE_CHANGED", "UPDATE_BONUS_ACTIONBAR", "PLAYER_MOUNT_DISPLAY_CHANGED" } }
+    function glowLive.Flush()
+        glowLive.pending = false
+        if not (EllesmereUI:IsShown() and EllesmereUI:GetActiveModule() == ADDON_NAME
+                and EllesmereUI:GetActivePage() == PAGE_BAR_GLOWS) then return end
+        if _glowSelectedButton or next(_bgPreviewGlowOverlays) then
+            EllesmereUI:RefreshPage(true)
+        else
+            EllesmereUI:SetContentHeader(_glowHeaderBuilder)
+        end
+    end
+    function glowLive.OnEvent()
+        if glowLive.pending then return end
+        glowLive.pending = true
+        C_Timer.After(0.15, glowLive.Flush)
+    end
+    function glowLive.Arm()
+        local f = glowLive.frame
+        for i = 1, #glowLive.events do f:RegisterEvent(glowLive.events[i]) end
+    end
+    function glowLive.Disarm()
+        glowLive.frame:UnregisterAllEvents()
+    end
+
     local function BuildBarGlowsPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
@@ -798,7 +846,7 @@ initFrame:SetScript("OnEvent", function(self)
             ddBtn:SetFrameLevel(headerFrame:GetFrameLevel() + 5)
             local ddBg  = ddBtn:CreateTexture(nil, "BACKGROUND")
             ddBg:SetAllPoints(); ddBg:SetColorTexture(mBgR, mBgG, mBgB, mBgA)
-            local ddBrd = EllesmereUI.MakeBorder(ddBtn, 1, 1, 1, mBrdA, EllesmereUI.PanelPP)
+            local ddBrd = EllesmereUI.MakeRoundedBorder(ddBtn, 1, 1, 1, mBrdA, ddBg)
             local ddLbl = ddBtn:CreateFontString(nil, "OVERLAY")
             ddLbl:SetFont(FONT_PATH, 13, GetCDMOptOutline())
             ddLbl:SetAlpha(mTxtA); ddLbl:SetJustifyH("LEFT")
@@ -811,7 +859,9 @@ initFrame:SetScript("OnEvent", function(self)
             local ddMenu
             local function BuildDDMenu()
                 if ddMenu then ddMenu:Hide(); ddMenu = nil end
-                local menu = CreateFrame("Frame", nil, UIParent)
+                -- One menu frame for the session, dressed again on every open
+                -- (its rows are pooled under it).
+                local menu = PoolKept(ns, "cdmGlowTargetMenu", "Frame", UIParent)
                 menu:SetFrameStrata("FULLSCREEN_DIALOG")
                 menu:SetFrameLevel(300)
                 menu:SetClampedToScreen(true)
@@ -819,7 +869,7 @@ initFrame:SetScript("OnEvent", function(self)
                 menu:SetPoint("TOPRIGHT", ddBtn, "BOTTOMRIGHT", 0, -2)
                 local bg2 = menu:CreateTexture(nil, "BACKGROUND")
                 bg2:SetAllPoints(); bg2:SetColorTexture(mBgR, mBgG, mBgB, mBgHA)
-                EllesmereUI.MakeBorder(menu, 1, 1, 1, mBrdA, EllesmereUI.PP)
+                EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, mBrdA, bg2, nil, true)
                 local mH = 4
                 local targets = BuildBGTargetList()
                 for _, t in ipairs(targets) do
@@ -1269,27 +1319,17 @@ initFrame:SetScript("OnEvent", function(self)
 
         EllesmereUI:SetContentHeader(_glowHeaderBuilder)
 
-        -- Live-updates preview icons on action-bar paging (stance/mount/vehicle). Skipped
-        -- during a hidden search pre-build: cleanup relies on parent's OnHide, which may
-        -- never fire under an already-hidden pre-build wrapper -- the listener (and its
-        -- RefreshPage(true)) would leak for the session, and there's nothing to preview during indexing anyway.
+        -- Live-updates the preview on action-bar paging (glowLive above): listening from
+        -- now on, again whenever this page shows, never while it is hidden. Skipped
+        -- during a hidden search pre-build: nothing to preview while indexing.
         if not EllesmereUI._prebuilding then
-            local pageListener = CreateFrame("Frame")
-            local pagePending = false
-            pageListener:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
-            pageListener:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
-            pageListener:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")
-            pageListener:SetScript("OnEvent", function()
-                if pagePending then return end
-                pagePending = true
-                C_Timer.After(0.15, function()
-                    pagePending = false
-                    EllesmereUI:RefreshPage(true)
-                end)
-            end)
-            parent:HookScript("OnHide", function()
-                pageListener:UnregisterAllEvents()
-            end)
+            if not glowLive.frame then
+                glowLive.frame = CreateFrame("Frame")
+                glowLive.frame:SetScript("OnEvent", glowLive.OnEvent)
+            end
+            if parent:IsVisible() then glowLive.Arm() end
+            parent:HookScript("OnShow", glowLive.Arm)
+            parent:HookScript("OnHide", glowLive.Disarm)
         end
 
         -------------------------------------------------------------------
@@ -1458,7 +1498,7 @@ initFrame:SetScript("OnEvent", function(self)
                                 eyeBtn:SetSize(26, 26)
                                 eyeBtn:SetPoint("RIGHT", leftRgn._control, "LEFT", -8, 0)
                                 eyeBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-                                eyeBtn:SetAlpha(0.4)
+                                EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
                                 local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
                                 eyeTex:SetAllPoints()
                                 local function RefreshEye()
@@ -1498,8 +1538,8 @@ initFrame:SetScript("OnEvent", function(self)
                                     end
                                     RefreshEye()
                                 end)
-                                eyeBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-                                eyeBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
+                                eyeBtn:SetScript("OnEnter", function(self) EllesmereUI.SetGlyphAlpha(self, 0.7) end)
+                                eyeBtn:SetScript("OnLeave", function(self) EllesmereUI.SetGlyphAlpha(self, 0.4) end)
 
                                 -- Blackout fill opacity, in a cog chained left of the eye. Locked
                                 -- unless the entry renders Blackout (custom-shaped bars always
@@ -1651,9 +1691,11 @@ initFrame:SetScript("OnEvent", function(self)
     -- preview frame, optState._cdmHeaderBuilder the content header builder
     optState._cdmHeaderFixedH = 0
 
+    -- EllesmereUI._cdmHeaderPreview: this module's own header preview slot (the
+    -- Action Bars preview, kept alive by its own header, never answers here).
     local function UpdateCDMPreview()
-        if not optState._cdmPreview and EllesmereUI._contentHeaderPreview then
-            optState._cdmPreview = EllesmereUI._contentHeaderPreview
+        if not optState._cdmPreview and EllesmereUI._cdmHeaderPreview then
+            optState._cdmPreview = EllesmereUI._cdmHeaderPreview
         end
         if optState._cdmPreview and optState._cdmPreview.Update then
             optState._cdmPreview:Update()
@@ -1670,7 +1712,19 @@ initFrame:SetScript("OnEvent", function(self)
         end
     end
 
-    EllesmereUI:RegisterOnShow(UpdateCDMPreview)
+    -- Panel shown, or unfolded from its mini window (the panel stayed shown
+    -- while folded, so no show callback runs then): the CDM Bars preview
+    -- catches up on what it skipped while hidden, only while it shows (a page
+    -- left behind keeps its preview, hidden, and brings it up to date as it
+    -- shows again: onPageCacheRestore).
+    local function CatchUpCDMPreview()
+        local pv = optState._cdmPreview or EllesmereUI._cdmHeaderPreview
+        if pv and pv:IsVisible() then UpdateCDMPreview() end
+    end
+    EllesmereUI:RegisterOnShow(CatchUpCDMPreview)
+    EllesmereUI:RegisterOnCollapse(function(on)
+        if not on then CatchUpCDMPreview() end
+    end)
 
     -- Refresh our preview when user closes Blizzard's CDM settings panel
     -- (they may have added/removed spells from the viewer)
@@ -1741,9 +1795,12 @@ initFrame:SetScript("OnEvent", function(self)
             slot._previewCD = cd
         end
 
+        -- The timers below stand down once the preview slot was dressed again
+        -- for a rebuilt preview (page reuse): its state belongs to that build.
+        local slotGen = PoolGen(slot)
         -- Always refresh font (smaller than the bar's cooldown font size, shadow style)
         C_Timer.After(0, function()
-            if not slot._previewCD then return end
+            if PoolGen(slot) ~= slotGen or not slot._previewCD then return end
             local fSize = (bd.cooldownFontSize or 12) - 2
             if fSize < 6 then fSize = 6 end
             local fontPath = (EllesmereUI.GetFontPath("cdm")) or STANDARD_TEXT_FONT
@@ -1806,7 +1863,7 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Auto-stop glow after preview duration ends
         C_Timer.After(PREVIEW_DURATION, function()
-            if myToken ~= _cdmActivePreviewToken then return end
+            if myToken ~= _cdmActivePreviewToken or PoolGen(slot) ~= slotGen then return end
             if _cdmActivePreviewOverlay then
                 ns.StopNativeGlow(_cdmActivePreviewOverlay)
             end
@@ -1862,17 +1919,7 @@ initFrame:SetScript("OnEvent", function(self)
                 if BD().showKeybind ~= true then return "Show Keybind" end
             end
 
-            local kbSwatch, updateKbSwatch = EllesmereUI.BuildColorSwatch(
-                rgn, kbRow:GetFrameLevel() + 3,
-                function() return BD().keybindR or 1, BD().keybindG or 1, BD().keybindB or 1, BD().keybindA or 0.9 end,
-                function(r, g, b, a)
-                    BD().keybindR = r; BD().keybindG = g; BD().keybindB = b; BD().keybindA = a
-                    RefreshKeybindStyle()
-                end,
-                true, 20)
-            PP.Point(kbSwatch, "RIGHT", rgn._control, "LEFT", -8, 0)
-
-            EllesmereUI.BuildInlineCog(rgn, { anchorTo = kbSwatch, icon = EllesmereUI.RESIZE_ICON,
+            EllesmereUI.BuildInlineCog(rgn, {
                 title = "Keybind Text Settings",
                 disabled = function() return OffTip() ~= nil end,
                 disabledTooltip = OffTip,
@@ -1943,6 +1990,17 @@ initFrame:SetScript("OnEvent", function(self)
                 },
             })
 
+            local kbSwatch, updateKbSwatch = EllesmereUI.BuildColorSwatch(
+                rgn, kbRow:GetFrameLevel() + 3,
+                function() return BD().keybindR or 1, BD().keybindG or 1, BD().keybindB or 1, BD().keybindA or 0.9 end,
+                function(r, g, b, a)
+                    BD().keybindR = r; BD().keybindG = g; BD().keybindB = b; BD().keybindA = a
+                    RefreshKeybindStyle()
+                end,
+                true, 20)
+            PP.Point(kbSwatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+            rgn._lastInline = kbSwatch
+
             local swatchBlock = CreateFrame("Frame", nil, kbSwatch)
             swatchBlock:SetAllPoints()
             swatchBlock:SetFrameLevel(kbSwatch:GetFrameLevel() + 10)
@@ -1984,7 +2042,7 @@ initFrame:SetScript("OnEvent", function(self)
     local function BuildRotationAssistIconPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local _, h
+        local _, h, hdr
         parent._showRowDivider = true
         local function Settings() return DB().rotationAssistIcon end
         local function Apply()
@@ -2012,7 +2070,8 @@ initFrame:SetScript("OnEvent", function(self)
             ns.RefreshRotationAssistIcon()
         end
 
-        _, h = W:SectionHeader(parent, "ROTATION ASSIST ICON", y);  y = y - h
+        hdr, h = W:SectionHeader(parent, "ROTATION ASSIST ICON", y);  y = y - h
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "ECME_RotationAssistIcon", disabled = IconOff, disabledTooltip = IconLockTip })
         _, h = W:DualRow(parent, y,
             { type="toggle", text="Show Rotation Assist Icon",
               tooltip="Show Blizzard's current recommendation in a separate icon. Requires Assisted Highlight to be enabled in Blizzard's options. Press the spell's normal keybind; this display never casts spells. Blizzard supplies one recommendation, not a queue of future casts.",
@@ -2086,10 +2145,8 @@ initFrame:SetScript("OnEvent", function(self)
     local _cdmButtonTip
     local function ShowCDMButtonTip()
         if EllesmereUIDB and EllesmereUIDB.cdmButtonTipSeen then return end
-        -- The CDM header's own preview first: the shared header preview slot
-        -- still holds the Action Bars preview when a cached Bars page returns
-        -- after that page was built.
-        local preview = optState._cdmPreview or EllesmereUI._contentHeaderPreview
+        -- The CDM header's own preview (this module's header preview slot).
+        local preview = optState._cdmPreview or EllesmereUI._cdmHeaderPreview
         if not preview then return end
 
         if not _cdmButtonTip then
@@ -2280,8 +2337,8 @@ initFrame:SetScript("OnEvent", function(self)
                 -- The undismissed tip returns with the Bars page
                 QueueCDMButtonTip()
                 -- Re-sync _cdmPreview after cache restore and refresh the preview
-                if not optState._cdmPreview and EllesmereUI._contentHeaderPreview then
-                    optState._cdmPreview = EllesmereUI._contentHeaderPreview
+                if not optState._cdmPreview and EllesmereUI._cdmHeaderPreview then
+                    optState._cdmPreview = EllesmereUI._cdmHeaderPreview
                 end
                 if optState._cdmPreview and optState._cdmPreview.Update then
                     optState._cdmPreview:Update()

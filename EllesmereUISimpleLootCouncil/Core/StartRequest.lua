@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
+
 
 
 
@@ -24,6 +25,8 @@ local DECLINE_TEXT = addon.Locale.Texts{
     no_council  = T["Start request declined: the council is not present."],
     expired     = T["Start request declined: the approval request expired. Please request again."],
     cleared     = T["Start request declined: the queue was cleared."],
+    raid        = T["Start request declined: loot sessions run in raids only."],
+    blocked     = T["Start request declined: addon messages are blocked right now."],
 }
 
 
@@ -40,7 +43,8 @@ end
 
 
 
-local function StartRefusal()
+local function StartRefusal(why)
+    if why == "raid" or why == "blocked" then return why end
     if addon.Session:IsRunning() then return "running" end
     if not addon.PlayerIsMasterLooter() then return "lm_changed" end
     if #addon.Session:GetItems() == 0 then return "empty" end
@@ -49,10 +53,21 @@ local function StartRefusal()
 end
 
 
+
+local PROPOSAL_MAX = 32
+local MAX_LINK_LENGTH = 512
+
+
 local function Sanitise(proposed, who)
     local items = {}
-    for _, entry in ipairs(type(proposed) == "table" and proposed or {}) do
-        if type(entry) == "table" and type(entry.l) == "string" then
+    if type(proposed) ~= "table" then return items end
+    if #proposed > PROPOSAL_MAX then
+        addon.Log:D("StartRequest", "proposal from", tostring(who), "cut from", #proposed, "to", PROPOSAL_MAX)
+    end
+    for index, entry in ipairs(proposed) do
+        if index > PROPOSAL_MAX then break end
+        if type(entry) == "table" and type(entry.l) == "string"
+            and #entry.l <= MAX_LINK_LENGTH and entry.l:find("|Hitem:", 1, true) then
             items[#items + 1] = {
                 link = entry.l,
                 owner = type(entry.o) == "string" and entry.o or who,
@@ -82,6 +97,13 @@ local function Merge(items)
     return added
 end
 
+
+local function MergeAndStart(items)
+    Merge(items)
+    local started, why = addon.Session:Start()
+    return started, not started and StartRefusal(why) or nil
+end
+
 function Request:GetPending()
     return pending
 end
@@ -100,7 +122,7 @@ function Request:Refresh()
     if not pending then return end
     if not addon.PlayerIsMasterLooter() then Close(false, "lm_changed") return end
     if addon.Session:IsRunning() then Close(true) return end
-    if not addon.Config:StartRequestsAllowed() or not addon.Council:Contains(pending.who) then
+    if addon.Config:CouncilQueueMode() == "off" or not addon.Council:Contains(pending.who) then
         Close(false, "permission")
         return
     end
@@ -117,18 +139,16 @@ function Request:Resolve(expected, accept)
         return true
     end
 
-    Merge(expected.items)
-    local started = addon.Session:Start()
-    if pending == expected then
-        Close(started, not started and StartRefusal() or nil)
-    end
+    local started, why = MergeAndStart(expected.items)
+    if pending == expected then Close(started, why) end
     return started
 end
 
 function Request:Request(sender, proposed)
     if not addon.PlayerIsMasterLooter() then return end
     local who = addon.Player:Get(sender).fullName or sender
-    if not addon.Config:StartRequestsAllowed() then
+    local mode = addon.Config:CouncilQueueMode()
+    if mode == "off" then
         Reply(who, false, "disabled")
         return
     end
@@ -148,10 +168,9 @@ function Request:Request(sender, proposed)
         return
     end
 
-    if addon.Config:CouncilMayStartRuns() then
-        Merge(items)
-        local started = addon.Session:Start()
-        Reply(who, started, not started and StartRefusal() or nil)
+    if mode == "start" then
+        local started, why = MergeAndStart(items)
+        Reply(who, started, why)
         return
     end
 
@@ -170,6 +189,8 @@ Request.Sanitise = Sanitise
 function Request:Init()
     addon.Callbacks:Register("SessionChanged", function() Request:Refresh() end)
     addon.Callbacks:Register("CouncilChanged", function() Request:Refresh() end)
+
+    addon.Callbacks:Register("SharedConfigChanged", function() Request:Refresh() end)
     addon.Callbacks:Register("RunStarted", function() Request:Refresh() end)
     addon.Callbacks:Register("RunEnded", function() Close(false, "cleared") end)
 end

@@ -121,6 +121,22 @@ end
 --  5. Alpha 0 for unclaimed, alpha 1 for claimed
 -------------------------------------------------------------------------------
 
+-- A shown buff icon's alpha (Phase 2's rule; also the Also Show Below flip's):
+-- Hide Icon renders an Always-Show placeholder fully invisible while it keeps
+-- its slot, and a vis-hidden bar paints nothing.
+local function BuffIconAlpha(frame, barData, container)
+    if ns.IsPlaceholderRenderHidden(frame, barData) then
+        frame:SetAlpha(0)
+    else
+        frame:SetAlpha((container and container._visHidden) and 0 or ns.EffectiveBarAlpha(barData))
+    end
+end
+
+-- Bars whose Show When Missing icon flipped this pass without their icon list
+-- changing: Phase 2 lays them out in the same pass (the end of the pass
+-- queues any it did not reach).
+ns._missingFlipBars = {}
+
 local function CollectAndReanchor()
     local p = ECME.db and ECME.db.profile
     if not p or not p.cdmBars or not p.cdmBars.enabled then return end
@@ -222,6 +238,11 @@ local function CollectAndReanchor()
                                         cf[#cf + 1] = frame
                                         local fc = FC(frame)
                                         fc.barKey = targetBar
+                                        -- Hosted here, a buff is never Show When Missing hidden:
+                                        -- drop a flag (and any Also Show Below timer) it brought
+                                        -- from a buff bar.
+                                        if fc._missingActiveHidden then fc._missingActiveHidden = nil end
+                                        if fc._missingN then ns.MissingShowBelow(frame, fc, nil) end
                                         if repSID then
                                             -- Replacement: takes the COOLDOWN's identity, so Phase 3
                                             -- ranks it in that slot and the claim set covers the
@@ -256,22 +277,49 @@ local function CollectAndReanchor()
                                         -- every refresh. Skipped under Keep Buffs in Same Place
                                         -- (every slot reserved; the options row is disabled
                                         -- there too).
-                                        local missingMode = false
+                                        local missingMode, belowSec = false, nil
                                         if tbd and not tbd.hidePlaceholderIcon then
                                             local sdMV = ns.GetBarSpellData(targetBar)
                                             local ssMV = ns.ResolveSpellSettings(frame, displaySID, sdMV, targetBar)
                                             missingMode = (ssMV and ssMV.alwaysShow == "missing") and true or false
+                                            belowSec = missingMode and tonumber(ssMV.missingShowBelow) or nil
                                         end
                                         local fcMV = FC(frame)
-                                        if missingMode then
+                                        -- Also Show Below N Seconds: the buff comes back for its last
+                                        -- seconds (ns.MissingShowBelow arms the timer that re-checks it).
+                                        local showLow = false
+                                        if belowSec or fcMV._missingN then
+                                            showLow = ns.MissingShowBelow(frame, fcMV, belowSec)
+                                        end
+                                        local wasHidden = fcMV._missingActiveHidden and true or false
+                                        if missingMode and not showLow then
                                             fcMV._missingActiveHidden = true
                                             frame:SetAlpha(0)
                                         elseif fcMV._missingActiveHidden then
                                             fcMV._missingActiveHidden = nil
                                         end
+                                        -- The icon list is unchanged when only this flag flips, so
+                                        -- Phase 2 would not lay the bar out: it does so in this same
+                                        -- pass, and Glow When Visible follows.
+                                        if wasHidden ~= (fcMV._missingActiveHidden and true or false) then
+                                            ns._missingFlipBars[targetBar] = true
+                                            ns._btDirty = true
+                                            if ns.ArmBuffTicker then ns.ArmBuffTicker() end
+                                        end
                                     end
                                     barSeen[dedupKey] = true
                                 else
+                                    -- Buff gone: drop any Also Show Below timer. Gone while it
+                                    -- showed for its last seconds: hidden again, so its next
+                                    -- application comes up invisible, as without the option.
+                                    local fcOff = ns._cdmAnyMissingBelow and _ecmeFC[frame]
+                                    if fcOff and fcOff._missingN then
+                                        if fcOff._missingLow then
+                                            fcOff._missingActiveHidden = true
+                                            frame:SetAlpha(0)
+                                        end
+                                        ns.MissingShowBelow(frame, fcOff, nil)
+                                    end
                                     -- This buff is DISPLAYED in the viewer but currently OFF
                                     -- (Blizzard pools the frame but hides it). Use the frame's
                                     -- LIVE resolved spell (GetSpellID) for icon/identity:
@@ -483,14 +531,43 @@ local function CollectAndReanchor()
                                 local eqInfo = cdID and C_CooldownViewer
                                     and C_CooldownViewer.GetCooldownViewerCooldownInfo
                                     and C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
-                                -- Consumable categories pin inert too (field-probed
-                                -- 2026-08-14: potions/healthstones = 4/30), EXCEPT
-                                -- 1711 = the racial category, the one category-row
-                                -- class that must stay managed (settings/Remove/
-                                -- routing). Unknown future categories fail safe:
-                                -- inert render, unmanaged.
-                                if eqInfo and (eqInfo.equipSlot
-                                    or (eqInfo.spellCategoryID and eqInfo.spellCategoryID ~= 1711)) then
+                                -- Blizzard's own potion / healthstone row (Combat
+                                -- Potion, Health Potion, Healthstone, Demonic
+                                -- Healthstone: spell categories 4 / 30 / 1711 / 2566,
+                                -- Blizzard's own table): claimed under the EUI item
+                                -- preset's key, so it takes the preset's slot and
+                                -- settings, and the preset's own frame stands down
+                                -- while it is live (Phase 3). The key is the row's
+                                -- one stable identity: its raw info has no spell,
+                                -- and its live frame reports the LAST USED item's
+                                -- spell only after a use. The old inert pin left the
+                                -- potion rows without a slot or settings, and 1711,
+                                -- taken for the racial category, let the healthstone
+                                -- row flip between inert and the stone's spell at
+                                -- its first use.
+                                local nativeKey, racialRow = ns.NativeItemKeyFor(eqInfo, frame)
+                                if nativeKey then
+                                    if not cdFrames[barKey] then cdFrames[barKey] = {} end
+                                    local frames = cdFrames[barKey]
+                                    frames[#frames + 1] = frame
+                                    local fc = FC(frame)
+                                    fc.barKey = barKey
+                                    fc.spellID = nativeKey
+                                    fc.isHostedBuff = nil
+                                    ns._ClaimNativeHealthstone(frame, cdID)
+                                    -- A pooled frame may carry the spell identity of
+                                    -- its last occupant: none of it describes an item
+                                    -- row (the claim set and the settings identity
+                                    -- set read these).
+                                    fc.baseSpellID, fc.resolvedSid, fc.overrideSid = nil, nil, nil
+                                    fc.linkedSpellIDs, fc.cachedCdID = nil, nil
+                                -- Equipment rows and every other category row pin
+                                -- inert, except a category row whose live frame
+                                -- resolves a racial: that one stays managed below
+                                -- (settings/Remove/routing). Unknown future
+                                -- categories fail safe: inert render, unmanaged.
+                                elseif eqInfo and (eqInfo.equipSlot
+                                    or (eqInfo.spellCategoryID and not racialRow)) then
                                     if not cdFrames[barKey] then cdFrames[barKey] = {} end
                                     local frames = cdFrames[barKey]
                                     frames[#frames + 1] = frame
@@ -911,7 +988,6 @@ local function CollectAndReanchor()
                             and not ns.IsPlaceholderRenderHidden(frame, barData)) and true or false)
                     end
                     if frame:IsShown() and not isFocusKickBar then
-                        local barHidden = container and container._visHidden
                         local fcH = _ecmeFC[frame]
                         if not (fcH and (fcH._cdStateHidden or fcH._missingActiveHidden)) then
                             -- Hide Icon: an Always-Show placeholder still reserves its
@@ -920,11 +996,7 @@ local function CollectAndReanchor()
                             -- via frame alpha 0. The same check is mirrored in the two
                             -- other per-icon opacity passes (_CDMApplyVisibility and
                             -- ApplyBarOpacity) so none of them paint over it.
-                            if ns.IsPlaceholderRenderHidden(frame, barData) then
-                                frame:SetAlpha(0)
-                            else
-                                frame:SetAlpha(barHidden and 0 or ns.EffectiveBarAlpha(barData))
-                            end
+                            BuffIconAlpha(frame, barData, container)
                         end
                     end
                     -- Ensure stack/charge text stays above our border overlay. Blizzard
@@ -996,6 +1068,11 @@ local function CollectAndReanchor()
                         end
                     end
                 else
+                    iconsChanged = true
+                end
+                -- A Show When Missing icon that only flipped (Also Show Below).
+                if ns._missingFlipBars[barKey] then
+                    ns._missingFlipBars[barKey] = nil
                     iconsChanged = true
                 end
                 if iconsChanged then
@@ -1246,6 +1323,37 @@ local function CollectAndReanchor()
                             -- <= -100, so -sid would otherwise be taken as an itemID and
                             -- fed to GetItemCooldown, which errors outside int32 range
                             -- (cd-claim markers are -(CD_CLAIM_MARKER_BASE + cooldownID)).
+                            -- One exception: a custom buff spell ID (the Add Buff menu's
+                            -- Custom Spell ID) for which no hosted Blizzard frame or
+                            -- placeholder reached this bar has nothing to divert, so an
+                            -- aura icon of ours draws it (EUI_CDM_AuraIcons.lua). Only
+                            -- hosted-buff frames count: the same spell's COOLDOWN frame
+                            -- here is the other form, so the global claim set (cooldowns
+                            -- and linked ids included) cannot decide it.
+                            local hSid = ns.HostedBuffMarkerToSpell and ns.HostedBuffMarkerToSpell(sid)
+                            if hSid and sd and sd.customSpellIDs and sd.customSpellIDs[hSid]
+                               and ns.CDM_AuraIconForBuff then
+                                local ovr = _FindOverride and _FindOverride(hSid)
+                                local base = C_Spell and C_Spell.GetBaseSpell and C_Spell.GetBaseSpell(hSid)
+                                local claimed = false
+                                for fi = 1, #frames do
+                                    local hfc = _ecmeFC[frames[fi]]
+                                    local hs = hfc and hfc.isHostedBuff and hfc.spellID
+                                    if hs and (hs == hSid or hs == ovr or hs == base) then
+                                        claimed = true
+                                        break
+                                    end
+                                end
+                                local af = not claimed and ns.CDM_AuraIconForBuff(barKey, hSid)
+                                if af then
+                                    frames[#frames + 1] = af
+                                    local fc = FC(af)
+                                    fc.barKey = barKey; fc.spellID = hSid
+                                    -- Ranked by its marker slot and resolved as the
+                                    -- hosted buff it is.
+                                    fc.isHostedBuff = true
+                                end
+                            end
                         elseif sid and ns.SlotIDFromKey(sid) and _globalClaimSet[sid] then
                             -- Native-first, injection-fallback (the racial rule
                             -- below, applied to equipment): Blizzard's own cooldown
@@ -1300,8 +1408,16 @@ local function CollectAndReanchor()
                             local itemID = -sid
                             -- Skip when a slot entry on this bar already shows this
                             -- exact item (see slotEquippedItems above); the orphan
-                            -- sweep hides any frame from a previous pass.
-                            local f = not (slotEquippedItems and slotEquippedItems[itemID])
+                            -- sweep hides any frame from a previous pass. Skip too
+                            -- while Blizzard's own row for the item renders in this
+                            -- slot (claimed under this key in Phase 1, so in the
+                            -- claim set): one icon per item, Blizzard's. An entry the
+                            -- reseed listed for such a row (sd.nativeItems) is that
+                            -- row's slot alone: with the row gone it shows nothing,
+                            -- never the preset's own icon.
+                            local nativeOnly = sd and sd.nativeItems and sd.nativeItems[sid]
+                            local f = not _globalClaimSet[sid] and not nativeOnly
+                                and not (slotEquippedItems and slotEquippedItems[itemID])
                                 and not ns._HealthstoneHiddenByPact(itemID)
                                 and GetOrCreateItemPresetFrame(barKey, itemID)
                             if f then
@@ -1369,7 +1485,15 @@ local function CollectAndReanchor()
                                 local base = C_Spell.GetBaseSpell(sid)
                                 if base and base > 0 and _globalClaimSet[base] then hasClaim = true end
                             end
-                            if not hasClaim then
+                            -- An entry an aura icon of ours draws (EUI_CDM_AuraIcons.lua:
+                            -- the WoW Forever Seals stand-in), native-first like a racial.
+                            local auraF = not hasClaim and ns.CDM_AuraIconFor
+                                and ns.CDM_AuraIconFor(barKey, sid)
+                            if auraF then
+                                frames[#frames + 1] = auraF
+                                local fc = FC(auraF)
+                                fc.barKey = barKey; fc.spellID = sid
+                            elseif not hasClaim then
                                 local isRacial = ns._myRacialsSet and ns._myRacialsSet[sid]
                                 local isCustomSpell = sd and sd.customSpellIDs and sd.customSpellIDs[sid]
                                 -- Keep saved placement, but do not inject an unlearned talent.
@@ -2154,6 +2278,9 @@ local function CollectAndReanchor()
             pf:Hide()
         end
     end
+    -- Our aura icons level their slots on the frames this pass placed
+    -- (EUI_CDM_AuraIcons.lua).
+    if ns.CDM_AuraIconsPlaced then ns.CDM_AuraIconsPlaced() end
 
     if not ns._initialReanchorDone then ns._initialReanchorDone = true end
 
@@ -2190,7 +2317,11 @@ local function CollectAndReanchor()
         -- and on Blizzard settings-panel close (in-place layout edits). Keyed
         -- by spec + active Blizzard layout id: a spell tracked only on a
         -- layout switched to later in the session must still get its pass.
-        if ns.ReseedAssignedSpellsFromLiveIcons and prof
+        -- Never before Blizzard has loaded its saved layouts (ns._cdmDataLoaded):
+        -- until then its viewers show the class defaults, and a default spell or
+        -- racial written into a bar here keeps that bar over the player's own
+        -- layout. The data-loaded wake queues the reanchor that runs it.
+        if ns.ReseedAssignedSpellsFromLiveIcons and prof and ns._cdmDataLoaded
            and prof._barFilterModelV6 and not prof._importGhostMode then
             ns._reseededSpecsSession = ns._reseededSpecsSession or {}
             local layoutID = ns.GetActiveCDMLayoutID and ns.GetActiveCDMLayoutID()
@@ -2266,6 +2397,10 @@ local function CollectAndReanchor()
             if EllesmereUI.ScheduleSettleReapply then
                 EllesmereUI.ScheduleSettleReapply()
             end
+            -- A repopulate queued through EllesmereUI.RequestCDMRepopulate: this
+            -- is the settled point for the live spec, and outside the reanchor,
+            -- which the repopulate's own rebuild runs again.
+            if ns.RunQueuedRepopulate then ns.RunQueuedRepopulate() end
         end)
     else
         -- Routine reanchor (icon churn, mob death, etc.) -- still clear
@@ -2275,10 +2410,12 @@ local function CollectAndReanchor()
 
     -- Refresh the options-panel preview (if open) so the content header reflects the
     -- icons we just populated. Without this, the preview shows empty on login/spec swap
-    -- because it builds before the first queued CollectAndReanchor fires.
+    -- because it builds before the first queued CollectAndReanchor fires. The CDM Bars
+    -- preview (its own slot) only while it shows: a page left behind keeps its preview,
+    -- hidden, and brings it up to date as it shows again (onPageCacheRestore).
     if EllesmereUI and EllesmereUI._mainFrame and EllesmereUI._mainFrame:IsShown() then
-        local pv = EllesmereUI._contentHeaderPreview
-        if pv and pv.Update then pv:Update() end
+        local pv = EllesmereUI._cdmHeaderPreview
+        if pv and pv.Update and pv:IsVisible() then pv:Update() end
     end
     -- Frames we could not identify this pass were skipped by the Phase 4 sweep
     -- and are still sitting wherever Blizzard left them. Re-collect shortly so
@@ -2307,6 +2444,31 @@ local function CollectAndReanchor()
     -- rebuilds it against the fresh claim set.
     if ns._cdmClaimGen then ns._cdmClaimGen = ns._cdmClaimGen + 1 end
     if ns.RefreshStaleCDMKeybinds then ns.RefreshStaleCDMKeybinds() end
+    -- A flipped Show When Missing icon whose bar Phase 2 did not reach.
+    if next(ns._missingFlipBars) then
+        for bk in pairs(ns._missingFlipBars) do ns.QueueShiftLayout(bk) end
+        wipe(ns._missingFlipBars)
+    end
+end
+
+-- Also Show Below (EllesmereUICdmHooks.lua): a deadline or the buff ticker
+-- flips one Show When Missing icon without a reanchor pass: its flag, its
+-- alpha (Phase 2's rule), its bar's layout, its mouse state and Glow When
+-- Visible.
+function ns.MissingFlip(frame, fc, hide)
+    local bk = fc.barKey
+    if hide then
+        fc._missingActiveHidden = true
+        frame:SetAlpha(0)
+    else
+        fc._missingActiveHidden = nil
+        local bd = barDataByKey[bk]
+        if bd then BuffIconAlpha(frame, bd, cdmBarFrames[bk]) end
+    end
+    ns.QueueShiftLayout(bk)
+    ns.ApplyCDMTooltipState(bk)
+    ns._btDirty = true
+    if ns.ArmBuffTicker then ns.ArmBuffTicker() end
 end
 ns.CollectAndReanchor = CollectAndReanchor
 

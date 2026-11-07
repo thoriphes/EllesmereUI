@@ -15,12 +15,7 @@ if not (EllesmereUI and EllesmereUI.IS_FOREVER) then return end
 local WSkin = ns.WSkin
 if not (WSkin and WSkin.RegisterWindow and WSkin.Shell) then return end
 
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 do
 -- Chrome atlases covering the house shell: the metal frame and textured backdrops.
@@ -59,7 +54,8 @@ local function FadeLFGArt(fr, depth)
     local regions = { fr:GetRegions() }
     for i = 1, #regions do
         local r = regions[i]
-        local a = r.GetAtlas and r:GetAtlas()
+        -- Result rows' class and role icons carry secret atlases in instances.
+        local a = r.GetAtlas and EllesmereUI.PlainString(r:GetAtlas())
         if a then
             local la = a:lower()
             for _, w in ipairs(LFG_FADE) do

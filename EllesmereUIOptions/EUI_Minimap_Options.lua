@@ -18,6 +18,13 @@ local PAGE_DMG_METERS    = "Damage Meters"
 local SECTION_CHAT    = "CHAT"
 local SECTION_MINIMAP = "DISPLAY"
 
+-- Page reuse: the frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua, the options addon's first file), which hands a
+-- kept page its previous build's frames back reset to new; on any other
+-- parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+local PoolIsIdle = EllesmereUI._Pool.IsIdle
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
 initFrame:SetScript("OnEvent", function(self)
@@ -130,7 +137,9 @@ initFrame:SetScript("OnEvent", function(self)
         parent._showRowDivider = true
         EllesmereUI:ClearContentHeader()
 
-        _, h = W:SectionHeader(parent, SECTION_MINIMAP, y);  y = y - h
+        local hdr
+        hdr, h = W:SectionHeader(parent, SECTION_MINIMAP, y);  y = y - h
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "EBS_Minimap" })
         y = EllesmereUI.BlizzStyle.Note(parent, y, "minimap")
 
         -- A square frame on the Forever client (the WoW Forever look's Forever
@@ -150,11 +159,12 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Row 1: Visibility | Shape. On the WoW Forever look its Border Style
         -- takes the slot, as the shape is part of it: Forever Circle ("circle"),
-        -- the variant's round map in Blizzard's Forever ring, or Forever Square
+        -- the variant's round map in Blizzard's Forever ring, Forever Square
         -- (the default there),
         -- the EllesmereUI look's square map in the bronze frame of Forever's
-        -- own windows. Blizzard Style on the Forever client has its own (below).
-        -- The two render different layouts and latch with the look, so a change
+        -- own windows, or Slim Square ("slim"), that map in the slim bronze
+        -- line. Blizzard Style on the Forever client has its own (below).
+        -- Each choice renders its own layout and latches with the look, so a change
         -- asks for a reload. A changed pick also moves the clock to that border's
         -- spot (BorderClock), the one the Style page's seed gives a first visit.
         -- Square: inside the map at its bottom, no offset (the title bar holds
@@ -169,19 +179,26 @@ initFrame:SetScript("OnEvent", function(self)
         local shapeCfg
         if EllesmereUI.BlizzStyle.Forever("minimap") then
             shapeCfg = { type="dropdown", text="Border Style",
-              tooltip="Forever Circle: the round map in WoW Forever's ring. Forever Square: the EllesmereUI square map in the bronze frame of WoW Forever's windows, with the zone name in its title bar. Applies after a UI reload.",
-              values = { circle = "Forever Circle", square = "Forever Square" },
-              order  = { "circle", "square" },
+              tooltip="Forever Circle: the round map in WoW Forever's ring. Forever Square: the EllesmereUI square map in the bronze frame of WoW Forever's windows, with the zone name in its title bar. Slim Square: the same square map in a thin bronze frame. Applies after a UI reload.",
+              values = { circle = "Forever Circle", square = "Forever Square", slim = "Slim Square" },
+              order  = { "circle", "square", "slim" },
               disabled = function() return not EllesmereUI.ForeverHeavyOK() end,
               disabledTooltip = "This client is missing WoW Forever's window frame art.", rawTooltip = true,
-              getValue=function() local m = MinimapDB(); return (m and m.foreverBorder == "circle") and "circle" or "square" end,
+              getValue=function()
+                  local m = MinimapDB()
+                  local fb = m and m.foreverBorder
+                  return (fb == "circle" or fb == "slim") and fb or "square"
+              end,
               setValue=function(v)
                 local m = MinimapDB(); if not m then return end
-                -- Forever Square is the default: the round map saves "circle".
-                local square = v == "square"
+                -- Forever Square is the default: the round map saves "circle",
+                -- the slim square "slim".
+                local square = v ~= "circle"
                 if square ~= (m.foreverBorder ~= "circle") then BorderClock(m, square) end
-                m.foreverBorder = square and "square" or "circle"
-                if square == ns.MinimapFvSquare() then return end
+                m.foreverBorder = v
+                -- A reload only when the frame that renders changes (square
+                -- or not, heavy or slim): the module latches it.
+                if not ns.MinimapFvBorderChanged(m) then return end
                 EllesmereUI:ShowConfirmPopup({
                     title       = "Reload Required",
                     message     = "Border Style changed. A UI reload is needed to apply it.",
@@ -415,7 +432,6 @@ initFrame:SetScript("OnEvent", function(self)
                 local m = MinimapDB(); return (m and m.borderSize) or 1
             end
             local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON,
                 title = "Border Options",
                 rows = {
                     { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -599,10 +615,12 @@ initFrame:SetScript("OnEvent", function(self)
             suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
             suffix:SetTextColor(1, 1, 1, 0.35)
             local rzLabel
+            -- An idle pooled region keeps its last build's text: skip it.
             local regions = { rgn:GetRegions() }
             for i = 1, #regions do
                 local reg = regions[i]
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Reset Zoom" then
+                if reg and reg.GetText and not PoolIsIdle(reg)
+                    and EllesmereUI.EnKey(reg:GetText()) == "Reset Zoom" then
                     rzLabel = reg
                     break
                 end
@@ -931,7 +949,6 @@ initFrame:SetScript("OnEvent", function(self)
         if not EllesmereUI._prebuilding then
             local rgn = btnRowRow._leftRegion
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Button Row Settings",
                 rows = {
                     { type = "slider", pixel = true, label = "Icon Spacing", min = -20, max = 40, step = 1,
@@ -1222,7 +1239,6 @@ initFrame:SetScript("OnEvent", function(self)
                 return not m or m.hideMail or (m.mailPosition or "button") == "button"
             end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON,
                 disabled = mailOff,
                 disabledTooltip = function()
                     local m = MinimapDB()
@@ -1254,7 +1270,6 @@ initFrame:SetScript("OnEvent", function(self)
                 return not ShapeUsesRectLayout()
             end
             local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON,
                 disabled = elOff,
                 disabledTooltip = "Square or Rectangular Shape",
                 title = "Element Row Spacing",
@@ -1333,7 +1348,7 @@ initFrame:SetScript("OnEvent", function(self)
                 return ClockMode() == "none"
             end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = clockOff,
                 disabledTooltip = "Clock Style",
                 title = "Clock Size and Position",
@@ -1381,6 +1396,8 @@ initFrame:SetScript("OnEvent", function(self)
         local zoneRow
         zoneRow, h = W:DualRow(parent, y,
             { type="dropdown", text="Zone Text Style",
+              tooltip = EllesmereUI.BlizzStyle.Active("minimap") ~= "eui"
+                  and "On this look, Inside Map and Edge Box both show the zone name in the map's top bar." or nil,
               values = { none = "None", inside = "Inside Map", edge = "Edge Box" },
               order  = { "none", "inside", "edge" },
               getValue=LocationMode,
@@ -1436,7 +1453,7 @@ initFrame:SetScript("OnEvent", function(self)
                 return LocationMode() == "none"
             end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = locOff,
                 disabledTooltip = "Zone Text Style",
                 title = "Zone Text Size and Position",
@@ -1526,7 +1543,7 @@ initFrame:SetScript("OnEvent", function(self)
             local rgn = coordsRow._rightRegion
             local function coordsOff() return CoordsMode() == "never" end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = coordsOff,
                 disabledTooltip = "Show Coordinates",
                 title = "Coordinates Size and Position",
@@ -1634,7 +1651,7 @@ initFrame:SetScript("OnEvent", function(self)
         if not EllesmereUI._prebuilding then
             local rgn = fpsRow._rightRegion
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = FpsOff,
                 disabledTooltip = "Show FPS/MS",
                 title = "FPS/MS Size and Position",
@@ -1736,7 +1753,7 @@ initFrame:SetScript("OnEvent", function(self)
                 return not DiffTextOn()
             end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = diffOff,
                 disabledTooltip = "Show Instance Difficulty as Text",
                 title = "Difficulty Text Size and Position",

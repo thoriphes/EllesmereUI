@@ -35,6 +35,11 @@ initFrame:SetScript("OnEvent", function(self)
     local Lf     = EllesmereUI.Lf
     local format = string.format
     local floor  = math.floor
+    -- Page reuse (EllesmereUI_FramePool.lua): a frame made under a page pool
+    -- host comes from the pool and is dressed again by every later build; under
+    -- any other parent it is a plain new frame.
+    local Pool        = EllesmereUI._Pool
+    local CreateFrame = Pool.CreateFrame
 
     ---------------------------------------------------------------------------
     --  Module upvalues (survive page rebuilds; closures re-target each build)
@@ -63,6 +68,9 @@ initFrame:SetScript("OnEvent", function(self)
     -- The header's menus (bar selector, segment, add block): each built on its
     -- first open and kept across header builds.
     local _edbMenus = {}
+    -- Owner of the header's kept frames (Pool.Kept): the vertical preview's
+    -- strip and add tile in the docked popout, and the drag ghost.
+    local _edbKeep = {}
     local _cardsExpanded = false -- template card strip open/closed
     local _dividerDragging = false
 
@@ -93,7 +101,7 @@ initFrame:SetScript("OnEvent", function(self)
         profession = 120, travel = 40, micromenu = 340, currency = 90, spacer = 40,
         durability = 70, combat = 105, profession2 = 120, greatvault = 100,
         location = 140, coords = 70, crests = 160, ilvl = 70, supplies = 70,
-        bags = 50,
+        bags = 50, mplussummary = 150, timeplayed = 60,
     }
 
     ---------------------------------------------------------------------------
@@ -126,22 +134,17 @@ initFrame:SetScript("OnEvent", function(self)
         return 400
     end
 
-    -- Structural change: rebuild the content header AND the page body.
-    -- Zero bars = NO content header at all: the page falls back to the
-    -- full-body starting screen (template cards), same as first open.
+    -- Structural change: rebuild the content header AND the page body. The
+    -- page build sets the header itself (zero bars = NO content header at
+    -- all: the page falls back to the full-body starting screen, template
+    -- cards, same as first open), so one forced refresh builds both.
     local function HardRefresh()
-        EllesmereUI:InvalidateContentHeaderCache()
-        if SelectedBar() then
-            EllesmereUI:SetContentHeader(_edbHeaderBuilder)
-        else
-            EllesmereUI:ClearContentHeader()
-        end
         EllesmereUI:RefreshPage(true)
     end
 
-    -- Header-only change (template card strip open/close).
+    -- Header-only change (template card strip open/close): the header is
+    -- built again in place (under page reuse, on its kept root).
     local function HeaderOnly()
-        EllesmereUI:InvalidateContentHeaderCache()
         if SelectedBar() then
             EllesmereUI:SetContentHeader(_edbHeaderBuilder)
         else
@@ -387,7 +390,7 @@ initFrame:SetScript("OnEvent", function(self)
         local ddBg = ddBtn:CreateTexture(nil, "BACKGROUND")
         ddBg:SetAllPoints()
         ddBg:SetColorTexture(DDS.BG_R, DDS.BG_G, DDS.BG_B, DDS.BG_A)
-        local ddBrd = EllesmereUI.MakeBorder(ddBtn, 1, 1, 1, DDS.BRD_A, EllesmereUI.PanelPP)
+        local ddBrd = EllesmereUI.MakeRoundedBorder(ddBtn, 1, 1, 1, DDS.BRD_A, ddBg)
         local ddLbl = EllesmereUI.MakeFont(ddBtn, 13, nil, 1, 1, 1, DDS.TXT_A)
         ddLbl:SetJustifyH("LEFT")
         ddLbl:SetWordWrap(false)
@@ -423,7 +426,7 @@ initFrame:SetScript("OnEvent", function(self)
                 local bg = menu:CreateTexture(nil, "BACKGROUND")
                 bg:SetAllPoints()
                 bg:SetColorTexture(DDS.BG_R, DDS.BG_G, DDS.BG_B, DDS.BG_HA)
-                EllesmereUI.MakeBorder(menu, 1, 1, 1, DDS.BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, DDS.BRD_A, bg, nil, true)
                 menu._rows = {}
 
                 -- One bar row; its bar and selected state are set per open
@@ -704,15 +707,12 @@ initFrame:SetScript("OnEvent", function(self)
         local stripLen, stripThick
         local stripParent = hdr
         if vertical then
-            -- Vertical: the strip lives in the docked overlay popout. Drop the previous
-            -- build's strip first (the popout persists across header rebuilds; header
-            -- children are framework-managed but this one is ours).
+            -- Vertical: the strip lives in the docked overlay popout, which persists
+            -- across header rebuilds. The strip and its add tile (parented to the
+            -- popout too, not to the strip) are kept frames there (Pool.Kept, below):
+            -- every header build dresses the same two again, so a rebuild never
+            -- strands an old one beside the new.
             local oc = GetPreviewPopout()
-            if oc._strip then oc._strip:Hide(); oc._strip:SetParent(nil); oc._strip = nil end
-            -- The add tile is parented to the popout too (not to the strip), so it
-            -- needs the same drop or every rebuild strands another one anchored to a
-            -- dead strip (the "two + buttons, one outside the window" report).
-            if oc._addBtn then oc._addBtn:Hide(); oc._addBtn:SetParent(nil); oc._addBtn = nil end
             stripParent = oc
             stripThick = STRIP_V_THICK
             stripLen = STRIP_V_LEN
@@ -725,7 +725,12 @@ initFrame:SetScript("OnEvent", function(self)
             stripThick = STRIP_H_THICK
         end
 
-        local strip = CreateFrame("Frame", nil, stripParent)
+        local strip
+        if vertical then
+            strip = Pool.Kept(_edbKeep, "popStrip", "Frame", stripParent)
+        else
+            strip = CreateFrame("Frame", nil, stripParent)
+        end
         if vertical then
             PP.Size(strip, stripThick, stripLen)
         else
@@ -1114,7 +1119,15 @@ initFrame:SetScript("OnEvent", function(self)
         local animTicker
         local function EnsureAnimTicker()
             if animTicker then return end
+            -- A strip of the page pool that a newer header build dressed again
+            -- holds that build's segments: the ticker ends with this build.
+            local gen = Pool.Gen(strip)
             animTicker = C_Timer.NewTicker(0.016, function()
+                if Pool.Gen(strip) ~= gen or Pool.IsIdle(strip) then
+                    animTicker:Cancel()
+                    animTicker = nil
+                    return
+                end
                 local moving = false
                 for k = 1, #segBtns do
                     local sb = segBtns[k]
@@ -1228,7 +1241,9 @@ initFrame:SetScript("OnEvent", function(self)
         local dragGhost
         local function EnsureDragGhost()
             if dragGhost then return dragGhost end
-            dragGhost = CreateFrame("Frame", nil, UIParent)
+            -- One kept ghost for the session (Pool.Kept on UIParent): the first
+            -- drag of each header build dresses it again.
+            dragGhost = Pool.Kept(_edbKeep, "dragGhost", "Frame", UIParent)
             dragGhost:SetFrameStrata("TOOLTIP")
             dragGhost:SetFrameLevel(500)
             local gBg = dragGhost:CreateTexture(nil, "BACKGROUND")
@@ -1311,7 +1326,7 @@ initFrame:SetScript("OnEvent", function(self)
                 local bg = menu:CreateTexture(nil, "BACKGROUND")
                 bg:SetAllPoints()
                 bg:SetColorTexture(DDS.BG_R, DDS.BG_G, DDS.BG_B, DDS.BG_HA)
-                EllesmereUI.MakeBorder(menu, 1, 1, 1, DDS.BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, DDS.BRD_A, bg, nil, true)
                 local rowY = -3
                 local function AddRow(text, onClick)
                     local row = CreateFrame("Button", nil, menu)
@@ -1409,13 +1424,16 @@ initFrame:SetScript("OnEvent", function(self)
         -- "+" add-block tile (CDM preview add-button look): bar-height
         -- square, 4px off the strip, dark fill, colored "+" glyph that
         -- lights up with an accent border on hover.
-        local addBtn = CreateFrame("Button", nil, stripParent)
+        local addBtn
+        if vertical then
+            -- Kept in the popout with the strip (see the vertical branch above).
+            addBtn = Pool.Kept(_edbKeep, "popAddBtn", "Button", stripParent)
+        else
+            addBtn = CreateFrame("Button", nil, stripParent)
+        end
         PP.Size(addBtn, stripThick, stripThick)
         if vertical then
             PP.Point(addBtn, "TOP", strip, "BOTTOM", 0, -4)
-            -- Tracked on the popout so the next rebuild drops it with the
-            -- strip (see the vertical branch above).
-            stripParent._addBtn = addBtn
         else
             PP.Point(addBtn, "LEFT", strip, "RIGHT", 4, 0)
         end
@@ -1455,10 +1473,10 @@ initFrame:SetScript("OnEvent", function(self)
                 local bg = menu:CreateTexture(nil, "BACKGROUND")
                 bg:SetAllPoints()
                 bg:SetColorTexture(DDS.BG_R, DDS.BG_G, DDS.BG_B, DDS.BG_HA)
-                EllesmereUI.MakeBorder(menu, 1, 1, 1, DDS.BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, DDS.BRD_A, bg, nil, true)
                 menu._rows = {}
                 local mH = 4
-                for _, t in ipairs(ns.BLOCK_TYPES) do
+                for _, t in ipairs(ns.OfferedBlockTypes()) do
                     local item = CreateFrame("Button", nil, menu)
                     item:SetHeight(ITEM_H)
                     item:SetPoint("TOPLEFT", menu, "TOPLEFT", 1, -mH)
@@ -1583,7 +1601,7 @@ initFrame:SetScript("OnEvent", function(self)
     local function BuildDataBarsPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local _, h
+        local _, h, hdr
         local row
 
         parent._showRowDivider = true
@@ -1616,7 +1634,13 @@ initFrame:SetScript("OnEvent", function(self)
             EllesmereUI.SmoothScrollTo(math.max(0, math.abs(headerY) - 40))
             local glowTarget = GlowTargetOf(m)
             if m.holdWhile then _edbHeldGlowKey, _edbHeldGlowY = key, headerY end
-            C_Timer.After(0.15, function() PlaySettingGlow(glowTarget, m.holdWhile) end)
+            -- A target of the page pool that is dressed again for another row by
+            -- then belongs to a newer build (which re-arms its own glow).
+            local gen = Pool.Gen(glowTarget)
+            C_Timer.After(0.15, function()
+                if Pool.Gen(glowTarget) ~= gen or Pool.IsIdle(glowTarget) then return end
+                PlaySettingGlow(glowTarget, m.holdWhile)
+            end)
         end
 
         -- A held glow belongs to the SETTING, not to the navigation that first
@@ -1726,7 +1750,17 @@ initFrame:SetScript("OnEvent", function(self)
         do
             local EG = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
             local BTN_W, BTN_H = 150, 26
-            local wrap = CreateFrame("Frame", nil, parent)
+            -- On a kept page wrapper the toggle is the page's own frame
+            -- (Pool.Owned: the same one every build, hidden by a build with no
+            -- bar), never a frame an earlier build used for something else:
+            -- one of those keeps its old children in their old order, which
+            -- would put the border over the two buttons instead of under them.
+            local wrap
+            if Pool.Gen(parent) then
+                wrap = Pool.Owned(parent, "edbSizingToggle", "Frame", parent)
+            else
+                wrap = CreateFrame("Frame", nil, parent)
+            end
             wrap:SetSize(BTN_W * 2, BTN_H)
             wrap:SetPoint("TOP", parent, "TOP", 0, y)
             PP.CreateBorder(wrap, 1, 1, 1, 0.10, 1)
@@ -1770,7 +1804,13 @@ initFrame:SetScript("OnEvent", function(self)
         -------------------------------------------------------------------
         --  BAR SETTINGS
         -------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, "BAR SETTINGS", y);  y = y - h
+        hdr, h = W:SectionHeader(parent, "BAR SETTINGS", y);  y = y - h
+        -- The Move in Unlock Mode button on the selected bar's first section:
+        -- the key is read at the click, so it highlights the bar the selector shows.
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = function()
+            local c = SelectedBar()
+            return c and ("EDB_" .. c.id) or nil
+        end })
 
         -- Visibility | Visibility Options (renaming lives in the selector's
         -- inline edit; "Never" visibility fully disables the bar's work).
@@ -1802,7 +1842,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- is a set-once setting that should not cost a row.
         do
             local leftRgn = visRow._leftRegion
-            EllesmereUI.BuildInlineCog(leftRgn, { icon = EllesmereUI.COGS_ICON,
+            EllesmereUI.BuildInlineCog(leftRgn, {
                 title = "Bar Layer",
                 rows = {
                     { type = "dropdown", label = "Bar Strata",
@@ -1979,7 +2019,7 @@ initFrame:SetScript("OnEvent", function(self)
                   RefreshPreviewTheme()
               end },
             barTexCfg);  y = y - h
-        do
+        if not EllesmereUI._prebuilding then
             -- Inline Modern-background swatch: always present, disabled
             -- (house pattern) while the EllesmereUI style is active. Style
             -- changes HardRefresh, so the state re-evaluates on switch.
@@ -2266,7 +2306,7 @@ initFrame:SetScript("OnEvent", function(self)
                 do
                     -- Text Position cog: offsets the TEXT only (factories
                     -- inject these into every text anchor; icons stay put).
-                    EllesmereUI.BuildInlineCog(alignRow._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+                    EllesmereUI.BuildInlineCog(alignRow._leftRegion, {
                         title = "Text Position",
                         rows = {
                             { type = "slider", label = "X Offset", min = -50, max = 50, step = 1,
@@ -2294,7 +2334,7 @@ initFrame:SetScript("OnEvent", function(self)
 
                     -- Content Position cog (next to Content Scale): offsets
                     -- the WHOLE block content group, text included.
-                    EllesmereUI.BuildInlineCog(alignRow._rightRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+                    EllesmereUI.BuildInlineCog(alignRow._rightRegion, {
                         title = "Content Position",
                         rows = {
                             { type = "slider", label = "X Offset", min = -50, max = 50, step = 1,
@@ -2520,7 +2560,7 @@ initFrame:SetScript("OnEvent", function(self)
                       EllesmereUI:RefreshPage()
                   end },
                 bgRightCfg);  y = y - h
-            do
+            if not EllesmereUI._prebuilding then
                 local rgn = bgRow._leftRegion
                 local ctrl = rgn._control
                 local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
@@ -2810,6 +2850,8 @@ initFrame:SetScript("OnEvent", function(self)
             end
 
             local typeRows = {}
+            -- Travel: its three click dropdowns, set by the row loop below.
+            local travelClickDD
             if b.type == "audio" then
                 typeRows = {
                     { type = "dropdown", text = "Audio Channel",
@@ -3034,66 +3076,118 @@ initFrame:SetScript("OnEvent", function(self)
                     MkToggle("Uppercase Text", "useUppercase", "Renders the spec text in uppercase."),
                 }
             elseif b.type == "travel" then
-                -- Hearthstone dropdown: "random" or a specific owned entry
-                -- from the shared pool (ns.TravelHearthstoneIDs). hsChoice
-                -- nil derives from the legacy randomizeHs boolean, which is
-                -- kept mirrored on write for old readers/exports.
-                local hsValues = { random = "Random Hearthstone" }
-                local hsOrder = { "random" }
-                do
-                    local pool = ns.TravelHearthstoneIDs
-                    local usable = ns.TravelIsUsable
-                    local owned = {}
-                    if pool and usable then
-                        for _, id in ipairs(pool) do
-                            if usable(id) then owned[#owned + 1] = id end
+                local function ChoiceOf(btn) return ns.TravelClickChoice(s, btn) end
+                -- Houses arrive asynchronously: the page refresh lists them (the refill below).
+                ns.TravelRequestHouseList(function()
+                    if EllesmereUI:GetActiveModule() == "EllesmereUIDataBars" then EllesmereUI:RefreshPage() end
+                end)
+                -- Fills values / order in place: a built dropdown keeps reading these tables.
+                local function BuildClickValues(btn, values, order)
+                    wipe(values); wipe(order)
+                    if btn == 3 then values.none = "None"; order[1] = "none" end
+                    values.random = "Random Hearthstone"; order[#order + 1] = "random"
+                    local cur = ChoiceOf(btn)
+                    -- A saved house missing from the list (not loaded yet, or sold) stays listed as "Home".
+                    local houses = ns.TravelHouseChoices()
+                    local curIsHouse = type(cur) == "string" and cur:find("house:", 1, true) == 1
+                    if #houses > 0 or curIsHouse then
+                        order[#order + 1] = "---house"
+                        for _, house in ipairs(houses) do
+                            values[house.key] = house.name
+                            order[#order + 1] = house.key
+                        end
+                        if curIsHouse and not values[cur] then
+                            values[cur] = "Home"
+                            order[#order + 1] = cur
                         end
                     end
-                    -- Keep the current pick listed even if it went unowned,
-                    -- so the dropdown shows its label instead of a blank.
-                    local cur = s.hsChoice
-                    if cur == nil then cur = s.randomizeHs and "random" or 6948 end
-                    if type(cur) == "number" then
-                        local seen = false
-                        for _, id in ipairs(owned) do
-                            if id == cur then seen = true; break end
+                    local curPlaced = type(cur) ~= "number"
+                    local groups = {
+                        { key = "---travel", ids = ns.TravelExtraIDs, usable = ns.TravelExtraUsable },
+                        { key = "---hearth", ids = ns.TravelHearthstoneIDs, usable = ns.TravelIsUsable },
+                    }
+                    for gi, g in ipairs(groups) do
+                        local list, curInGroup = {}, false
+                        if g.ids and g.usable then
+                            for _, id in ipairs(g.ids) do
+                                if id == cur then curInGroup = true end
+                                if g.usable(id) and id ~= cur then list[#list + 1] = id end
+                            end
                         end
-                        if not seen then owned[#owned + 1] = cur end
-                    end
-                    local names = {}
-                    for _, id in ipairs(owned) do
-                        local n
-                        if C_ToyBox and C_ToyBox.GetToyInfo then
-                            local _, tn = C_ToyBox.GetToyInfo(id)
-                            n = tn
+                        -- Keep the current pick listed even if it went unowned,
+                        -- so the dropdown shows its label instead of a blank.
+                        if not curPlaced and (curInGroup or gi == #groups) then
+                            list[#list + 1] = cur
+                            curPlaced = true
                         end
-                        if not n and C_Item and C_Item.GetItemInfo then
-                            n = C_Item.GetItemInfo(id)
+                        if #list > 0 then
+                            local names = {}
+                            for _, id in ipairs(list) do
+                                names[id] = ns.TravelEntryName(id) or ("Item " .. id)
+                            end
+                            table.sort(list, function(a, z) return names[a] < names[z] end)
+                            order[#order + 1] = g.key
+                            for _, id in ipairs(list) do
+                                values[id] = names[id]
+                                order[#order + 1] = id
+                            end
                         end
-                        names[id] = n or ("Item " .. id)
                     end
-                    table.sort(owned, function(x, y) return names[x] < names[y] end)
-                    for _, id in ipairs(owned) do
-                        hsValues[id] = names[id]
-                        hsOrder[#hsOrder + 1] = id
-                    end
+                    return values, order
                 end
-                typeRows = {
-                    { type = "dropdown", text = "Left Click",
-                      tooltip = "Which hearthstone the left click uses. Random Hearthstone picks a random owned variant each cast. Right click always rolls a random one.",
-                      values = hsValues, order = hsOrder,
-                      getValue = function()
-                          local c = s.hsChoice
-                          if c == nil then c = s.randomizeHs and "random" or 6948 end
-                          return c
-                      end,
-                      setValue = function(v)
-                          s.hsChoice = v
-                          s.randomizeHs = (v == "random")
-                          Apply()
-                      end },
+                local CLICK_LABELS = { "Left Click", "Right Click", "Middle Click" }
+                local CLICK_KEYS = { "hsChoice", "hsChoiceRight", "hsChoiceMiddle" }
+                local CLICK_TIPS = {
+                    "Where left-clicking the block takes you.",
+                    "Where right-clicking the block takes you.",
+                    "Where middle-clicking the block takes you.",
                 }
-                if travelIconCfg then table.insert(typeRows, 1, travelIconCfg) end
+                local TEXT_LABELS = { "Left Click Text", "Right Click Text", "Middle Click Text" }
+                local TEXT_KEYS = { "textLeft", "textRight", "textMiddle" }
+                local TEXT_VALUES = { location = "Destination", smart = "Cooldown Else Destination",
+                                      both = "Destination and Cooldown", cooldown = "Cooldown Only", none = "None" }
+                local TEXT_ORDER = { "location", "smart", "both", "cooldown", "none" }
+                typeRows = {}
+                local clickVals, clickOrd = {}, {}
+                for btn = 1, 3 do
+                    local vals, ord = BuildClickValues(btn, {}, {})
+                    clickVals[btn], clickOrd[btn] = vals, ord
+                    typeRows[#typeRows + 1] = { type = "dropdown", text = CLICK_LABELS[btn],
+                      tooltip = CLICK_TIPS[btn],
+                      values = vals, order = ord,
+                      getValue = function() return ChoiceOf(btn) end,
+                      setValue = function(v)
+                          s[CLICK_KEYS[btn]] = v
+                          -- Mirrored for old readers/exports of the legacy boolean.
+                          if btn == 1 then s.randomizeHs = (v == "random") end
+                          Apply(); EllesmereUI:RefreshPage()
+                      end }
+                    typeRows[#typeRows + 1] = { type = "dropdown", text = TEXT_LABELS[btn],
+                      tooltip = "What the bar shows for this click.",
+                      values = TEXT_VALUES, order = TEXT_ORDER,
+                      getValue = function() return ns.TravelClickTextMode(s, btn) end,
+                      setValue = function(v) s[TEXT_KEYS[btn]] = v; Apply() end,
+                      disabled = function() return ChoiceOf(btn) == "none" end,
+                      disabledTooltip = "Set this click to something other than None.",
+                      rawTooltip = true }
+                end
+                -- Last, so each click keeps its choice and text on one row.
+                if travelIconCfg then typeRows[#typeRows + 1] = travelIconCfg end
+                -- A house list that arrived after the build: refill the three menus in place.
+                if not EllesmereUI._prebuilding then
+                    travelClickDD = {}
+                    local clickDD, listGen = travelClickDD, ns.TravelHouseListGen()
+                    EllesmereUI.RegisterWidgetRefresh(function()
+                        local gen = ns.TravelHouseListGen()
+                        if gen == listGen then return end
+                        listGen = gen
+                        for btn = 1, 3 do
+                            BuildClickValues(btn, clickVals[btn], clickOrd[btn])
+                            local dd = clickDD[btn]
+                            if dd and dd._invalidateMenu then dd._invalidateMenu() end
+                        end
+                    end)
+                end
             elseif b.type == "micromenu" then
                 -- Align Content returns here as a type row (its shared-row
                 -- slot hosts the Enable Text toggle instead): anchors the
@@ -3227,6 +3321,16 @@ initFrame:SetScript("OnEvent", function(self)
                           if wasOn ~= (v > 0) then EllesmereUI:RefreshPage() end
                       end },
                 }
+            elseif b.type == "mplussummary" then
+                typeRows = {
+                    MkToggle("Hide When Empty", "hideWhenEmpty",
+                        "Removes the block from the bar until a Mythic+ run has been recorded."),
+                }
+            elseif b.type == "timeplayed" then
+                typeRows = {
+                    MkToggle("Always Show Total", "alwaysTotal",
+                        "Shows this character's total time played instead of the time played at the current level."),
+                }
             elseif b.type == "ilvl" then
                 -- Prefix rides the Icon Color row's right slot above.
                 typeRows = {
@@ -3329,6 +3433,8 @@ initFrame:SetScript("OnEvent", function(self)
                 local rightCfg = typeRows[k + 1]
                 if not rightCfg then rightCfg = { type = "label", text = "" } end
                 row, h = W:DualRow(parent, y, typeRows[k], rightCfg);  y = y - h
+                -- Travel: the first three rows hold the click dropdowns on their left.
+                if travelClickDD and k <= 5 then travelClickDD[(k + 1) / 2] = row._leftRegion._control end
                 if b.type == "supplies" and k == 1 and not EllesmereUI._prebuilding then
                     local region = row._leftRegion
                     if region._control then region._control:Hide() end
@@ -3394,7 +3500,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- Stores on the shared per-block icon keys that IconColorOf already
             -- reads, so nothing stored = Custom white, matching the block's
             -- untinted default -- no migration and no new default key.
-            if msIconRow then
+            if msIconRow and not EllesmereUI._prebuilding then
                 local rgn = msIconRow._rightRegion
                 local anchor = rgn._control
                 local function IconOn() return s.showIcon == true end
@@ -3497,7 +3603,7 @@ initFrame:SetScript("OnEvent", function(self)
 
             -- Bags low space color: inline on the threshold slider, disabled
             -- (house pattern) while the threshold is zero.
-            if bagsLowRow then
+            if bagsLowRow and not EllesmereUI._prebuilding then
                 local rgn = bagsLowRow._leftRegion
                 local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
                     rgn, bagsLowRow:GetFrameLevel() + 3,
@@ -3670,6 +3776,53 @@ initFrame:SetScript("OnEvent", function(self)
                     leftRgn._lastInline = nil
                     if cbDDRefresh then EllesmereUI.RegisterWidgetRefresh(cbDDRefresh) end
                 end
+
+                local notesRow
+                notesRow, h = W:DualRow(parent, y,
+                    { type = "toggle", text = "Show Guild Notes",
+                      tooltip = "Shows each online member's public note after their name in the Guild tooltip.",
+                      getValue = function() return s.showGuildNotes == true end,
+                      setValue = function(v)
+                          s.showGuildNotes = v and true or false
+                          Apply(); EllesmereUI:RefreshPage()
+                      end },
+                    EllesmereUI.BlankRowCfg());  y = y - h
+                if not EllesmereUI._prebuilding then
+                    local rgn = notesRow._leftRegion
+                    local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
+                        rgn, notesRow:GetFrameLevel() + 3,
+                        function()
+                            local c = s.guildNoteColor
+                            if not c then return 0.925, 0.839, 0.447 end
+                            return c.r or 0.925, c.g or 0.839, c.b or 0.447
+                        end,
+                        function(r, g, b2)
+                            s.guildNoteColor = { r = r, g = g, b = b2 }
+                            Apply()
+                        end,
+                        false, 20)
+                    PP.Point(swatch, "RIGHT", rgn._control, "LEFT", -8, 0)
+                    rgn._lastInline = swatch
+                    local block = CreateFrame("Frame", nil, swatch)
+                    block:SetAllPoints()
+                    block:SetFrameLevel(swatch:GetFrameLevel() + 10)
+                    block:EnableMouse(true)
+                    block:SetScript("OnEnter", function()
+                        EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Show Guild Notes"))
+                    end)
+                    block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                    local function UpdateState()
+                        if s.showGuildNotes == true then
+                            swatch:SetAlpha(1)
+                            block:Hide()
+                        else
+                            swatch:SetAlpha(0.3)
+                            block:Show()
+                        end
+                    end
+                    EllesmereUI.RegisterWidgetRefresh(function() updateSwatch(); UpdateState() end)
+                    UpdateState()
+                end
             end
 
             -- Reordering = drag the segment in the preview strip; removal =
@@ -3680,7 +3833,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- (just that control, not the whole section), wash that block 8 percent white
         -- on BOTH the preview segment and the live bar slot. Poll watcher is parented
         -- to the page wrapper, so it stops (and clears) when the page hides.
-        if #blockHoverRegions > 0 then
+        if #blockHoverRegions > 0 and not EllesmereUI._prebuilding then
             local watcher = CreateFrame("Frame", nil, parent)
             watcher:SetSize(1, 1)
             local acc = 0
@@ -3736,7 +3889,13 @@ initFrame:SetScript("OnEvent", function(self)
         -- navigation paths use, and the same pre-build guard: a hidden search pre-build
         -- would steal the shared glow frame for rows nobody can see.
         if not EllesmereUI._prebuilding then
-            C_Timer.After(0.05, RearmHeldGlow)
+            -- A kept page wrapper dressed again by a newer build by then holds
+            -- that build's rows, and that build re-arms on its own.
+            local gen = Pool.Gen(parent)
+            C_Timer.After(0.05, function()
+                if Pool.Gen(parent) ~= gen then return end
+                RearmHeldGlow()
+            end)
         end
 
         return math.abs(y)
@@ -3749,6 +3908,11 @@ initFrame:SetScript("OnEvent", function(self)
     --  preview strip navigates through _edbNavigateFn directly.
     ---------------------------------------------------------------------------
     function ns.OpenBlockSettings(barId, blockId, settingKey)
+        -- The options never open in combat; nor does the scroll below run then.
+        if InCombatLockdown() then
+            EllesmereUI.PrintError("Cannot open options during combat.")
+            return
+        end
         local key = "block:" .. blockId .. ":" .. settingKey
         EllesmereUI:NavigateToElementSettings("EllesmereUIDataBars", PAGE_DATABARS, nil,
             function()

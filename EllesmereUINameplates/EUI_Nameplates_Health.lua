@@ -29,6 +29,18 @@ I.profileSetters[#I.profileSetters + 1] = function(v) p = v end
 -- WoW Forever: no health number under 10,000 abbreviates (EllesmereUI_NumberFormat.lua).
 -- On ns, not a local: this chunk is near its 200-local cap.
 ns.AbbreviateNumbers = (EllesmereUI.IS_FOREVER and EllesmereUI.ForeverAbbreviateNumbers) or AbbreviateNumbers
+-- Health, max health and absorb text: the global Number Format for valueType
+-- (the threat gap text keeps the default above).
+ns.AbbreviateValue = EllesmereUI.AbbreviateValue
+-- A format change repaints every plate's health texts, value memo dropped.
+EllesmereUI.RegisterNumberFormatCallback(function()
+    for _, plate in pairs(ns.plates) do
+        if plate.unit then
+            plate._hpTxtPct, plate._hpTxtCur, plate._hpTxtMax = nil, nil, nil
+            plate:UpdateHealthValues()
+        end
+    end
+end)
 function NameplateFrame:UpdateHealthValues()
     local unit = self.unit
     if not unit then return end
@@ -49,13 +61,18 @@ function NameplateFrame:UpdateHealthValues()
                 self.isCasting = false
                 self:HideKickTick()
                 self:ClearImportantCastGlow()
+                self:ClearCastTargetGlow()
                 if not self._interrupted then self.cast:Hide() end
                 self.castTimer:SetText("")
                 self._castTex = nil
             end
             self.unit = actualUnit
             unit = actualUnit
-            if ns._npToTSlot or self._totEv then self:SyncToT(actualUnit) end
+            -- Color Casting Enemies remembers the mob, not the plate.
+            if self._castSeen ~= nil then ns.NP_ResetCastKind(self) end
+            -- Opacity for the new occupant (the cast end above applied it to the old token).
+            if ns._ntAlpha < 1 or ns._oocAlpha < 1 then ns.NT_Apply(self) end
+            if ns._npTgtTexts or self._totEv then self:SyncToT(actualUnit) end
             -- New occupant: its absorb state is unknown. Nil the lean-gate flag
             -- so this pass takes the full absorb path and re-seeds it; the
             -- cached max belongs to the old unit, drop it too.
@@ -78,6 +95,8 @@ function NameplateFrame:UpdateHealthValues()
             -- restores. ClearHoverExtras restores hover size then re-runs
             -- ApplyTarget; the direct call covers its no-hover-fx early-out
             -- and re-evaluates target state for the new unit.
+            -- The new occupant's type scale (its unit events stay on the old token).
+            if ns._typeScaleOn then self:UpdateTypeScale() end
             ns.ClearHoverExtras(self)
             self:ApplyTarget()
         end
@@ -215,7 +234,7 @@ function NameplateFrame:UpdateHealthValues()
         local anyNum = ca._anyNum
         if anyNum == nil then
             anyNum = false
-            local anyNoSign, anyMax = false, false
+            local anyNoSign, anyMax, anyCombo = false, false, false
             for si = 1, ca._count do
                 local entry = ca[si]
                 local el = entry.element
@@ -224,12 +243,14 @@ function NameplateFrame:UpdateHealthValues()
                 -- classification call per slot per paint.
                 entry.combo = IsComboHealthText(el) or false
                 if el == "healthNumber" or entry.combo then anyNum = true end
+                if entry.combo then anyCombo = true end
                 if el == "healthPercentNoSign" then anyNoSign = true end
                 if el == "healthNumMax" then anyMax = true end
             end
             ca._anyNum = anyNum
             ca._anyNoSign = anyNoSign
             ca._anyMax = anyMax
+            ca._anyCombo = anyCombo
         end
         local hpKey
         if not anyNum then
@@ -252,53 +273,66 @@ function NameplateFrame:UpdateHealthValues()
         self._hpTxtPct = pctKey
         self._hpTxtCur = hpKey
         self._hpTxtMax = maxKey
-        local pctText, pctNoSignText, numText, maxText
-        local pctTextDec, pctNoSignTextDec
-        local anyDec = ca._anyDecimal
-        if dead then
-            pctText = "0%"
-            pctNoSignText = "0"
-            numText = "0"
-            maxText = "0"
-            if anyDec then pctTextDec = "0.0%"; pctNoSignTextDec = "0.0" end
-        elseif pctVal ~= nil then
-            pctText = string.format("%d%%", pctVal)
-            -- No-sign variant only when a slot actually renders it.
-            if ca._anyNoSign then pctNoSignText = string.format("%d", pctVal) end
-            -- Number text only when a number/combo slot renders it (percent-only
-            -- layouts were paying the abbreviation call + string every tick).
-            if anyNum then
-                numText = ns.AbbreviateNumbers(curHealth)
-                if ca._anyMax then maxText = ns.AbbreviateNumbers(maxHealth) end
+        if dead or pctVal == nil then
+            -- Constant text: a corpse reads 0, an unreadable percent blank.
+            local pctText, pctNoSignText, numText, pctTextDec, pctNoSignTextDec
+            if dead then
+                pctText, pctNoSignText, numText = "0%", "0", "0"
+                pctTextDec, pctNoSignTextDec = "0.0%", "0.0"
+            else
+                pctText, pctNoSignText, numText = "", "", ""
+                pctTextDec, pctNoSignTextDec = "", ""
             end
-            -- Decimal variants computed only when at least one slot opts in.
-            if anyDec then
-                pctTextDec = string.format("%.1f%%", pctVal)
-                if ca._anyNoSign then pctNoSignTextDec = string.format("%.1f", pctVal) end
+            for si = 1, ca._count do
+                local entry = ca[si]
+                local el = entry.element
+                local fs = entry.fs
+                if el == "healthPercent" then
+                    fs:SetText(entry.pctDecimal and pctTextDec or pctText)
+                elseif el == "healthPercentNoSign" then
+                    fs:SetText(entry.pctDecimal and pctNoSignTextDec or pctNoSignText)
+                elseif el == "healthNumber" then
+                    fs:SetText(numText)
+                elseif entry.combo then
+                    SetCombinedHealthText(fs, el, entry.pctDecimal and pctTextDec or pctText, numText, numText)
+                end
             end
         else
-            pctText = ""
-            pctNoSignText = ""
-            numText = ""
-            maxText = ""
-            if anyDec then pctTextDec = ""; pctNoSignTextDec = "" end
-        end
-        for si = 1, ca._count do
-            local entry = ca[si]
-            local el = entry.element
-            local fs = entry.fs
-            if el == "healthPercent" then
-                fs:SetText(entry.pctDecimal and pctTextDec or pctText)
-            elseif el == "healthPercentNoSign" then
-                fs:SetText(entry.pctDecimal and pctNoSignTextDec or pctNoSignText)
-            elseif el == "healthNumber" then
-                fs:SetText(numText)
-            elseif entry.combo then
-                SetCombinedHealthText(fs, el, entry.pctDecimal and pctTextDec or pctText, numText, maxText)
+            -- Percent slots format engine-side (SetFormattedText takes the percent
+            -- secret or plain); Lua strings are built only for the number and
+            -- combo slots that take them. Number text only when a number/combo
+            -- slot renders it.
+            local numText, maxText, pctText, pctTextDec
+            if anyNum then
+                numText = ns.AbbreviateValue(curHealth, "health")
+                if ca._anyMax then maxText = ns.AbbreviateValue(maxHealth, "maxHealth") end
+            end
+            if ca._anyCombo then
+                pctText = string.format("%d%%", pctVal)
+                if anyDec then pctTextDec = string.format("%.1f%%", pctVal) end
+            end
+            for si = 1, ca._count do
+                local entry = ca[si]
+                local el = entry.element
+                local fs = entry.fs
+                if el == "healthPercent" then
+                    fs:SetFormattedText(entry.pctDecimal and "%.1f%%" or "%d%%", pctVal)
+                elseif el == "healthPercentNoSign" then
+                    fs:SetFormattedText(entry.pctDecimal and "%.1f" or "%d", pctVal)
+                elseif el == "healthNumber" then
+                    fs:SetText(numText)
+                elseif entry.combo then
+                    SetCombinedHealthText(fs, el, entry.pctDecimal and pctTextDec or pctText, numText, maxText)
+                end
             end
         end
         end -- skipText
     end
+    -- Custom texts reading health or absorbs: outside the value memo, since an
+    -- absorb moves without the health. Off until a slot shows one.
+    if ca and ca._cuTick then self:PaintCustomTexts("tick") end
+    -- Target texts ride the health tick too, throttled in RefreshTargetTexts.
+    if ns._npTgtTexts then self:RefreshTargetTexts(false, "tgtOnly") end
 
     -- Execute Pulse Glow gate: evaluate the execute-window curve C-side and feed the color
     -- straight into the glow textures (alpha 1 below threshold, 0 above -- never branched on in
@@ -338,7 +372,7 @@ function NameplateFrame:UpdateHealthColor()
     -- Skip-if-unchanged: GetReactionColor returns plain profile-sourced numbers (every return
     -- path verified non-secret). Threat events fire constantly with an unchanged result, so
     -- compare against the last applied values and skip the setter. Cache nil'd in ClearUnit.
-    local hr, hg, hb = GetReactionColor(unit)
+    local hr, hg, hb = GetReactionColor(unit, self._castSeen)
     -- Enemy player whose class token was redacted (instanced PvP): the token still keys
     -- C_ClassColor, Blizzard's palette as step 6 paints a readable token. The colour may be
     -- secret, so it skips the skip-if-unchanged compare, goes straight to the setter and is
@@ -352,10 +386,10 @@ function NameplateFrame:UpdateHealthColor()
     -- Off-tank fold: same shape as mirror -- the folded components can be
     -- SECRET, so they bypass the value compare, never enter the caches, and
     -- reach setters only. hr/hg/hb stay the plain tankNoAggro fallback.
-    local folded, fr, fg, fb = false
+    local folded, fr, fg, fb, fa = false
     if not mirrored and ns._reactionOffTankFold and ns.ComputeOffTankFold then
         local otc = _C("offTankAggro")
-        folded, fr, fg, fb = ns.ComputeOffTankFold(unit, hr, hg, hb, otc.r, otc.g, otc.b)
+        folded, fr, fg, fb, fa = ns.ComputeOffTankFold(unit, hr, hg, hb, otc.r, otc.g, otc.b)
     end
     if mirrored then
         -- Cache invalidated, never written with a secret: the next plain colour must reapply.
@@ -368,6 +402,8 @@ function NameplateFrame:UpdateHealthColor()
         self._lastHCr, self._lastHCg, self._lastHCb = hr, hg, hb
         self.health:SetStatusBarColor(hr, hg, hb)
     end
+    -- Color Casting Enemies: tints over the bar for the tier GetReactionColor marked.
+    if self._castSeen then ns.NP_ApplyCastTints(self, ns._reactionCastTier, ns._reactionCastLit, folded) end
     -- Threat Colors "Border" / "Text" channels -- the SECOND signal. Both off by default,
     -- so the shipped path costs two field reads. ns.ResolveThreatColor answers "what does
     -- threat say about this unit" without any of the health bar's priority competition,
@@ -443,6 +479,21 @@ function NameplateFrame:UpdateHealthColor()
             local nr, ng, nb = GetTextSlotColor(nameSlotKey)
             self.name:SetTextColor(nr, ng, nb, 1)
         end
+    end
+    -- Debuff coloring gives way to bad threat (set while it shows on the plates): per
+    -- channel 1 while nothing is wrong, 0 on bad threat, or, where only another tank's
+    -- hold decides, the off-tank fold's secret answer (setters only, never tested).
+    if ns.DebuffColors_Threat then
+        local healthA, borderA, nameA = 1, 1, 1
+        if ns._reactionBadThreat then
+            if folded then healthA = fa else healthA = 0 end
+        end
+        if tcBorder or tcName then
+            local okA = ns._threatOkA
+            if tcBorder then borderA = okA end
+            if tcName then nameA = okA end
+        end
+        ns.DebuffColors_Threat(self, healthA, borderA, nameA)
     end
     -- Near-aggro glow (Non-Tank Threat cog): ns._reactionNearAggro was written
     -- by the GetReactionColor call ABOVE (same decision that picked the color).

@@ -2260,6 +2260,41 @@ EllesmereUI.RegisterMigration({
     end,
 })
 
+-- Action Bars Advanced Fade lost its on/off switch (advancedFadeEnabled): a bar
+-- is on while one of its conditions is checked, and the conditions moved to a
+-- key of their own (advancedFadeConditions) so this pass can tell old data from
+-- new. A bar whose switch was on keeps its conditions; a bar whose switch was
+-- off (its conditions left over from before) starts with none, off as before.
+-- Both old keys go, so a second pass, or a profile born after the change (a
+-- fresh install's first profile reaches this pass unstamped), finds nothing.
+EllesmereUI.RegisterMigration({
+    id          = "ab_advanced_fade_conditions_v1",
+    scope       = "profile",
+    description = "Advanced Fade is on while a condition is checked: carry the conditions of bars whose switch was on to advancedFadeConditions and drop the switch and the old conditions key.",
+    body = function(ctx)
+        local ab = ctx.profile.addons and ctx.profile.addons.EllesmereUIActionBars
+        local abBars = ab and ab.bars
+        if type(abBars) ~= "table" then return end
+        for _, cfg in pairs(abBars) do
+            if type(cfg) == "table" and (cfg.advancedFadeEnabled ~= nil or cfg.fadeConditions ~= nil) then
+                local old = cfg.fadeConditions
+                if cfg.advancedFadeEnabled == true and type(old) == "table" then
+                    local out
+                    for k, v in pairs(old) do
+                        if v then
+                            out = out or {}
+                            out[k] = true
+                        end
+                    end
+                    if out then cfg.advancedFadeConditions = out end
+                end
+                cfg.advancedFadeEnabled = nil
+                cfg.fadeConditions = nil
+            end
+        end
+    end,
+})
+
 
 EllesmereUI.RegisterMigration({
     id          = "enhance_five_bar_off_existing_v1",
@@ -2364,6 +2399,26 @@ EllesmereUI.RegisterMigration({
         if bags.bagDefaultBagType ~= nil then return end  -- already migrated (idempotent)
         bags.bagDefaultBagType = (bags.bagDefaultOneBag == true) and "onebag" or "all"
         bags.bagDefaultOneBag = nil                       -- drop the legacy key
+    end,
+})
+
+-- Close Bags on Mail Close became the Mailbox row of Auto Close Bags.
+EllesmereUI.RegisterMigration({
+    id          = "bags_mail_close_to_auto_close_v1",
+    scope       = "global",
+    description = "Move the retired Close Bags on Mail Close off state into every profile's Auto Close Bags.",
+    body = function(ctx)
+        local db = ctx.db
+        if db.mailCloseBags == false and db.profiles then
+            for _, profData in pairs(db.profiles) do
+                if not profData.addons then profData.addons = {} end
+                local bags = profData.addons.EllesmereUIBags
+                if not bags then bags = {}; profData.addons.EllesmereUIBags = bags end
+                if not bags.bagAutoCloseWindows then bags.bagAutoCloseWindows = {} end
+                bags.bagAutoCloseWindows.mail = false
+            end
+        end
+        db.mailCloseBags = nil
     end,
 })
 
@@ -4072,7 +4127,7 @@ EllesmereUI.RegisterMigration({
 -- Same split for the Health/Power "hide bar/text per form" popups: Moonkin
 -- used to share the "mana"/Caster bucket, so disabling Caster there also hid
 -- Moonkin. Seed moonkin=true wherever mana=true so that choice survives.
--- Class Resource is skipped: it exempts Moonkin from this system entirely.
+-- Class Resource is skipped: its Caster choice never applied in Moonkin Form.
 EllesmereUI.RegisterMigration({
     id          = "erb_moonkin_form_bucket_v1",
     scope       = "profile",
@@ -4327,6 +4382,72 @@ EllesmereUI.RegisterMigration({
     end,
 })
 
+-- The Swing Timer's indicator toggles became two settings: Attack State (Off /
+-- Queued Only / Full) replaces Highlight Queued Attacks, Highlight Active Attack
+-- and Show Shot Pending; Movement Guide (Off / Segments / Wind-Up Bar) replaces
+-- Latency Overlay and Smooth Swing Timing. Only explicit values
+-- move (defaults are stripped at logout); the colour keys keep their names, and
+-- the latency zone keeps its old red where no colour was stored (GO's default
+-- is white). Per profile: no current setting writes the old keys, so a profile
+-- imported later from an older string migrates on its next load.
+EllesmereUI.RegisterMigration({
+    id          = "swing_timer_indicators_v1",
+    scope       = "profile",
+    description = "Move the Swing Timer's indicator toggles into Attack State and Movement Guide.",
+    body        = function(ctx)
+        local profData = ctx.profile
+        local erb = type(profData.addons) == "table" and profData.addons.EllesmereUIResourceBars
+        local st = type(erb) == "table" and erb.swingTimer
+        if type(st) ~= "table" then return end
+        if st.activeHighlight or st.pendingEnabled then
+            st.attackState = "full"
+        elseif st.queueHighlight == false then
+            st.attackState = "off"
+        end
+        if st.latencyEnabled then
+            st.moveGuide = "segments"
+            if st.latencyR == nil then
+                st.latencyR, st.latencyG, st.latencyB, st.latencyA = 0.835, 0.290, 0.290, 1
+            end
+        end
+        st.queueHighlight, st.activeHighlight, st.pendingEnabled = nil, nil, nil
+        st.latencyEnabled, st.smoothTiming = nil, nil
+    end,
+})
+
+-- WoW Forever: the Swing Timer follows the Resource Bars row of Global
+-- Settings > Style, and its texture rides that row's style slots. Slots saved
+-- before then take the texture it has now, so switching styles later brings a
+-- custom texture back (also after the Classic seed's Plating, which a profile
+-- already on Classic gets at its first load with this build); a slot without
+-- it restores the default. Existing accounts only: a fresh install stamps it
+-- without running.
+if EllesmereUI.IS_FOREVER == true then
+EllesmereUI.RegisterMigration({
+    id          = "swing_timer_style_slots_v1",
+    scope       = "global",
+    description = "Save the Swing Timer's texture into the Resource Bars style slots saved before it joined them.",
+    body        = function(ctx)
+        local profiles = ctx.db and ctx.db.profiles
+        if type(profiles) ~= "table" then return end
+        for _, profData in pairs(profiles) do
+            local erb = type(profData) == "table" and type(profData.addons) == "table"
+                and profData.addons.EllesmereUIResourceBars
+            local st = type(erb) == "table" and erb.swingTimer
+            local tex = type(st) == "table" and st.texture or nil
+            local slots = tex ~= nil and erb._styleSlots
+            if type(slots) == "table" then
+                for _, slot in pairs(slots) do
+                    if type(slot) == "table" and slot["swingTimer.texture"] == nil then
+                        slot["swingTimer.texture"] = tex
+                    end
+                end
+            end
+        end
+    end,
+})
+end
+
 -- Spell ID on Tooltip became on by default (an unset showSpellID reads as on,
 -- EllesmereUI.SpellIDOn). An account from before keeps it off: its unset value
 -- is written off. Existing users ONLY: a fresh install or Reset ALL has no
@@ -4360,6 +4481,26 @@ EllesmereUI.RegisterMigration({
         end
     end,
 })
+
+-- WoW Forever Junk Items: Include White Items became Maximum Quality and Skip
+-- Confirmation for White Items became Delete Without Confirming. An account
+-- with either on keeps it as Common; both old keys go. Registered on the
+-- Forever client only, where Junk Items exists.
+if EllesmereUI.IS_FOREVER == true then
+EllesmereUI.RegisterMigration({
+    id          = "junk_items_quality_settings_v1",
+    scope       = "global",
+    description = "Move the Junk Items white-item toggles into Maximum Quality and Delete Without Confirming.",
+    body = function(ctx)
+        local c = ctx.db.junkList
+        if type(c) ~= "table" then return end
+        local COMMON = Enum.ItemQuality.Common
+        if c.includeWhite and c.maxQuality == nil then c.maxQuality = COMMON end
+        if c.skipWhiteConfirm and c.oneClickQuality == nil then c.oneClickQuality = COMMON end
+        c.includeWhite, c.skipWhiteConfirm = nil, nil
+    end,
+})
+end
 
 -- Player Aura Bars icons with a custom Icon Shape used to zoom the spell art far
 -- past their Icon Zoom (the shaped icon grew past its button and still took the

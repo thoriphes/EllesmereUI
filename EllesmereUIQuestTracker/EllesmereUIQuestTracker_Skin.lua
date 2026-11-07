@@ -437,6 +437,13 @@ local function SkinHeader(header, knownCollapsed)
                 if rg:GetObjectType() == "Texture" then tint(rg) end
             end
         end
+        -- WoW Forever's filter toggle beside it (nil on retail).
+        local toggle = EQT.FilterToggle
+        if toggle and toggle:GetParent() == header then
+            tint(toggle:GetNormalTexture())
+            tint(toggle:GetPushedTexture())
+            tint(toggle:GetHighlightTexture())
+        end
     end
 
     if not STOCK then
@@ -500,6 +507,8 @@ local function SkinHeader(header, knownCollapsed)
         end
     end
 end
+-- The Forever filter toggle re-skins its header once built.
+EQT.SkinHeader = SkinHeader
 
 -------------------------------------------------------------------------------
 -- Block skin: color quest title gold, objectives gray, completed green.
@@ -779,6 +788,18 @@ local function SetupTitleLayout(block)
     if fs.SetWidth then fs:SetWidth(220) end
 end
 
+-- WoW Forever wraps tracker titles in a difficulty color code while the
+-- showQuestDifficultyColor CVar is on, and an inline code beats SetTextColor.
+-- Only the focused title drops it; Blizzard sets every title again on the
+-- next update, so the color comes back once the focus moves on.
+local IS_FOREVER = EllesmereUI.IS_FOREVER
+local function StripTitleColorCodes(fs)
+    local text = fs:GetText()
+    if not text or issecretvalue(text) then return end
+    local plain = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cn[^:]*:", ""):gsub("|r", "")
+    if plain ~= text then fs:SetText(plain) end
+end
+
 -- Lightweight color-only refresh. Called on hover (OnEnter/OnLeave) and
 -- from the stamped fast-path in SkinBlock.
 local function ApplyFocusHighlight(block)
@@ -792,6 +813,7 @@ local function ApplyFocusHighlight(block)
     local r, g, b
     if isFocus then
         r, g, b = GetFocusRGB()
+        if IS_FOREVER then StripTitleColorCodes(fs) end
     elseif isDone then
         r, g, b = GetCompletedRGB()
     else
@@ -799,6 +821,11 @@ local function ApplyFocusHighlight(block)
     end
     fs:SetTextColor(r, g, b)
 end
+
+-- Shared with the custom tracker (Custom.lua).
+EQT.GetFont = GetFont
+EQT.GetTitleRGB, EQT.GetCompletedRGB, EQT.GetFocusRGB = GetTitleRGB, GetCompletedRGB, GetFocusRGB
+EQT.GetHeaderRGB, EQT.GetLineRGB = GetHeaderRGB, GetLineRGB
 
 -- Skip all skinning work when the tracker is force-hidden (M+, raid, arena).
 -- Uses the cached suppression flag only (set by ApplySuppression /
@@ -818,6 +845,10 @@ local function HookBlockLineMethods(block)
     -- gold/focus color we chose is what the player sees.
     local function reassertTitle()
         ApplyFocusHighlight(block)
+        -- Hover highlight swaps line colors too (WoW Forever's objective
+        -- colors; nil on retail).
+        local paint = EQT.ColorObjectiveLines
+        if paint then paint(block) end
     end
     if block.HookScript then
         block:HookScript("OnEnter", reassertTitle)
@@ -938,24 +969,69 @@ local function QueuePOIRepair(pb)
     end)
 end
 
+-- The fanfare fades the button in when a quest is put on the tracker
+-- (accepted, or returned by the quest filter) and keeps the final alpha, so the
+-- icon showed until the repair above. Its Alpha animation is given a target of
+-- 0 instead: the fanfare still plays, invisibly, and ends hidden. A method
+-- call on the animation, no hook and no script; once per button (weak table),
+-- and back to 1 where the native icons are put back.
+local _poiAnimMuted = setmetatable({}, { __mode = "k" })
+local function SetPOIFanfareAlpha(anim, toAlpha)
+    local anims = { anim:GetAnimations() }
+    for i = 1, #anims do
+        local a = anims[i]
+        if a:GetObjectType() == "Alpha" then a:SetToAlpha(toAlpha) end
+    end
+end
+
+-- A quest put on the tracker gets its POI button in the block's OnLayout,
+-- after AddBlock, and that same pass draws the button and plays its fanfare,
+-- so the AddBlock hook and the deferred sweep came too late for it (the
+-- icon flashed). The block's GetPOIButton is the moment it takes the button:
+-- suppressed there too, before either. Post-hook, once per block.
+local _poiBlockHooked = setmetatable({}, { __mode = "k" })
+local OnBlockGetPOIButton
+
 local function SuppressPOI(block)
-    local pb = block and block.poiButton
-    if not pb then return end
+    if not block then return end
 
     if NativeIcons() then
         -- Restore buttons we suppressed earlier in this session so flipping the
         -- setting on takes effect without waiting for the reload prompt.
-        if _suppressedPOIs[pb] then
+        local pb = block.poiButton
+        if pb and _suppressedPOIs[pb] then
             _suppressedPOIs[pb] = nil
             pb:SetAlpha(1)
             pb:EnableMouse(true)
+            local anim = pb.AddAnim
+            if anim and _poiAnimMuted[anim] then
+                _poiAnimMuted[anim] = nil
+                SetPOIFanfareAlpha(anim, 1)
+            end
         end
         return
     end
 
+    if not _poiBlockHooked[block] and block.GetPOIButton then
+        _poiBlockHooked[block] = true
+        hooksecurefunc(block, "GetPOIButton", OnBlockGetPOIButton)
+    end
+    local pb = block.poiButton
+    if not pb then return end
+
     _suppressedPOIs[pb] = true
     ApplyPOISuppression(pb)
+    local anim = pb.AddAnim
+    if anim and not _poiAnimMuted[anim] then
+        _poiAnimMuted[anim] = true
+        SetPOIFanfareAlpha(anim, 0)
+    end
     QueuePOIRepair(pb)
+end
+
+OnBlockGetPOIButton = function(block)
+    if STOCK or ShouldSkipSkin() then return end
+    SuppressPOI(block)
 end
 
 -------------------------------------------------------------------------------
@@ -989,6 +1065,8 @@ local function MouseOff(f)
     _mouseOffSet[f] = mode
     f:EnableMouse(false)
 end
+-- For frames built while the tracker is hidden (the Forever filter toggle).
+EQT.MouseOff = MouseOff
 
 -- One block's click sinks: the block frame itself (bonus blocks), the header
 -- button (the quest log click), the item, group-finder and POI buttons, the
@@ -1186,13 +1264,15 @@ local function SkinExistingBlocks(tracker)
             SkinBlock(block)
         end
 
-        -- Style objective lines.
+        -- Style objective lines (and WoW Forever's objective colors).
+        local paint = EQT.ColorObjectiveLines
         for _, block in ipairs(ordered) do
             if block.lines then
                 for _, line in pairs(block.lines) do
                     StyleObjectiveLine(line)
                 end
             end
+            if paint then paint(block) end
         end
     end
 end
@@ -1349,6 +1429,9 @@ local function HookTracker(tracker)
                 _updateDirty = false
                 local skip = STOCK or ShouldSkipSkin()
                 local mouseOff = EQT._trackerMouseOff
+                -- WoW Forever's objective colors (nil on retail).
+                local paint = EQT.ColorObjectiveLines
+                local colorLines = paint and EQT.ObjColorsWanted()
                 if skip and not mouseOff then return end
                 if not skip then
                     if tracker.Header then EnsureAccentDivider(tracker.Header) end
@@ -1359,7 +1442,10 @@ local function HookTracker(tracker)
                         if type(byTemplate) == "table" then
                             for _, block in pairs(byTemplate) do
                                 if type(block) == "table" then
-                                    if not skip then SuppressPOI(block) end
+                                    if not skip then
+                                        SuppressPOI(block)
+                                        if colorLines then paint(block) end
+                                    end
                                     -- Blizzard's own Update re-enables bonus
                                     -- blocks; this lands after it.
                                     if mouseOff then ApplyBlockMouse(block) end
@@ -1496,6 +1582,40 @@ EQT.ApplyTrackerMouse = function(on)
     if master then
         MouseOff(master.MinimizeButton)
         MouseOff(master.FilterButton)
+    end
+    -- WoW Forever's filter toggle (nil on retail).
+    MouseOff(EQT.FilterToggle)
+end
+
+-- Custom tracker (WoW Forever): Blizzard's tracker stays shown but alpha 0 and
+-- click-through, never skinned. No Hide(): its OnHide relayouts the right
+-- managed frame container from our execution. Blocks are laid out before
+-- AddBlock, so the hook catches their lines and right-edge buttons too.
+function EQT.MuteBlizzardTracker()
+    local otf = _G.ObjectiveTrackerFrame
+    if not otf then return end
+    otf:SetAlpha(0)
+    -- Blizzard (Edit Mode, managed frames) and unlock mode set alpha back.
+    hooksecurefunc(otf, "SetAlpha", function(self, a)
+        if a ~= 0 then self:SetAlpha(0) end
+    end)
+    EQT.ApplyTrackerMouse(false)
+    local function hook(tracker)
+        if _hookedTrackers[tracker] or SharesWidgetPool(tracker) or not tracker.AddBlock then return end
+        _hookedTrackers[tracker] = true
+        hooksecurefunc(tracker, "AddBlock", function(_, block)
+            if block then ApplyBlockMouse(block) end
+        end)
+    end
+    EachTracker(hook)
+    if otf.AddModule then
+        hooksecurefunc(otf, "AddModule", function(_, module)
+            if not module then return end
+            C_Timer.After(0, function()
+                hook(module)
+                TrackerMouseOff(module)
+            end)
+        end)
     end
 end
 

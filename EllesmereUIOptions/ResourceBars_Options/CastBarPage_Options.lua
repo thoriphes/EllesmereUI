@@ -6,12 +6,17 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUIResourceBars"]
 if not ns then return end  -- module disabled: no options page
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host are reset and dressed again by the next build instead of made anew;
+-- elsewhere this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
 
 -- Cast Bar page
 function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
     local env = ns._ERB_OptEnv
     local DB, PP, CLASS_COLORS, _clickMappings = env.DB, env.PP, env.CLASS_COLORS, env._clickMappings
     local ShuffleCastBarIcons, UpdateCastBarPreview, _castBarPreviewBuilder = env.ShuffleCastBarIcons, env.UpdateCastBarPreview, env._castBarPreviewBuilder
+    local TexBgRowCfg = env.TexBgRowCfg
     local W = EllesmereUI.Widgets
     local y = yOffset
     local _, h
@@ -22,9 +27,11 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
     ShuffleCastBarIcons()
     EllesmereUI:SetContentHeader(_castBarPreviewBuilder)
 
-    -- Wipe click mappings (shared with display page; never from a hidden pre-build -- see the matching guard in BuildBarDisplayPage)
+    -- Clear this page's own click mappings (the table is shared with the display page, whose
+    -- cached preview keeps its own; never from a hidden pre-build -- see the matching guard in
+    -- BuildBarDisplayPage)
     if not EllesmereUI._prebuilding then
-        wipe(_clickMappings)
+        _clickMappings.castBar, _clickMappings.castIcon, _clickMappings.castSpellText, _clickMappings.castTimer = nil, nil, nil, nil
     end
 
     -- Re-append SharedMedia textures for cast bar (catches lazy-registered SM packs)
@@ -67,6 +74,7 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
 
     local castSection
     castSection, h = W:SectionHeader(parent, "LAYOUT", y);  y = y - h
+    EllesmereUI.BuildSectionUnlockJump(castSection, { key = "ERB_CastBar", disabled = castOff, disabledTooltip = "Player Cast Bar" })
 
     -- Strata dropdown values for the Cast Bar Frame Strata control.
     local cbStrataValues = EllesmereUI.FRAME_STRATA_LABELS
@@ -146,10 +154,24 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
         local rgn = iconRow._leftRegion
         local FREE_TIP = "This option requires the icon at bar size with no offset."
         local function IconFree() local p = DB(); return p and ns.ERB_CastIconFree(p.castBar) end
+        local function IconOnPortrait() local p = DB(); return p and ns.ERB_CastIconPortrait(p.castBar) ~= nil end
+        -- Embed in Player Portrait: nil while a player portrait can take the icon, else why
+        -- not ("uf": the Unit Frames player cast bar already shows its icon there).
+        local function PortraitBlock()
+            local uf = EllesmereUI._ModuleNS["EllesmereUIUnitFrames"]
+            if not (uf and uf.UF_GetPlayerCastPortrait) then return "portrait" end
+            local bd, _, why = uf.UF_GetPlayerCastPortrait()
+            if bd then return nil end
+            return why or "portrait"
+        end
+        local function PlayerPortraitOff() return PortraitBlock() ~= nil end
         local function IconSlider(key, label, lo, hi, tooltip)
             return { type = "slider", label = label, min = lo, max = hi, step = 1, tooltip = tooltip,
-                disabled = function() return EllesmereUI.BlizzStyle.Get("castbar") end,
-                disabledTooltip = function() return EllesmereUI.BlizzStyle.Label("castbar") end,
+                disabled = function() return IconOnPortrait() or EllesmereUI.BlizzStyle.Get("castbar") end,
+                disabledTooltip = function()
+                    if IconOnPortrait() then return "Embed in Player Portrait" end
+                    return EllesmereUI.BlizzStyle.Label("castbar")
+                end,
                 requireState = "disabled",
                 get = function() local p = DB(); return p and p.castBar[key] or 0 end,
                 set = function(v)
@@ -166,8 +188,24 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
             end,
             title = "Spell Icon Settings",
             rows = {
+                { type = "toggle", label = "Embed in Player Portrait",
+                  tooltip = "Show the spell icon over the player portrait while casting.",
+                  disabled = PlayerPortraitOff,
+                  disabledTooltip = function()
+                      if PortraitBlock() == "uf" then
+                          return "This option can't be used while the Unit Frames player cast bar shows its icon on the portrait."
+                      end
+                      return "This option requires an enabled player portrait in Unit Frames."
+                  end,
+                  rawTooltip = true,
+                  get = function() local p = DB(); return p and p.castBar.iconOnPortrait == true end,
+                  set = function(v)
+                      local p = DB(); if not p or (v and PlayerPortraitOff()) then return end
+                      p.castBar.iconOnPortrait = v; RefreshCast()
+                  end },
                 { type = "toggle", label = "Icon on Right",
                   tooltip = "Attach the spell icon to the right of the cast bar instead of the left.",
+                  disabled = IconOnPortrait, disabledTooltip = "Embed in Player Portrait", requireState = "disabled",
                   get = function() local p = DB(); return p and p.castBar.iconOnRight end,
                   set = function(v)
                       local p = DB(); if not p then return end
@@ -175,7 +213,12 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
                   end },
                 { type = "toggle", label = "Show Icon Divider",
                   tooltip = "Draw a 1px divider between the spell icon and the cast bar, matching the border color.",
-                  disabled = IconFree, disabledTooltip = FREE_TIP, rawTooltip = true,
+                  disabled = function() return IconOnPortrait() or IconFree() end,
+                  disabledTooltip = function()
+                      if IconOnPortrait() then return EllesmereUI.DisabledTooltip("Embed in Player Portrait", "disabled") end
+                      return FREE_TIP
+                  end,
+                  rawTooltip = true,
                   get = function() local p = DB(); return p and p.castBar.showIconDivider end,
                   set = function(v)
                       local p = DB(); if not p then return end
@@ -188,10 +231,11 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
                   disabled = function()
                       local p = DB(); if not p then return true end
                       local cb = p.castBar
-                      return (not cb.showIconDivider) or EllesmereUI.BlizzStyle.Get("castbar")
+                      return IconOnPortrait() or (not cb.showIconDivider) or EllesmereUI.BlizzStyle.Get("castbar")
                           or not EllesmereUI.GetBorderCompanion(cb.borderTexture, "sepV")
                   end,
                   disabledTooltip = function()
+                      if IconOnPortrait() then return "Embed in Player Portrait" end
                       if EllesmereUI.BlizzStyle.Get("castbar") then
                           return EllesmereUI.DisabledTooltip(EllesmereUI.BlizzStyle.Label("castbar"), "disabled")
                       end
@@ -273,7 +317,7 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
                 function(v)
                     local p = DB(); if not p then return end
                     p.castBar.stockBorderScale = v; RefreshCast()
-                    if EllesmereUI.ReapplyMatchPads then EllesmereUI.ReapplyMatchPads("ERB_CastBar") end
+                    EllesmereUI.ReapplyMatchPads("ERB_CastBar")
                 end,
                 { disabled = castOff, disabledTooltip = "Player Cast Bar" }) or
             EllesmereUI.BlizzStyle.Gate("castbar", EllesmereUI.BorderPxSliderCfg({ text = "Border Size",
@@ -354,7 +398,7 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
         if not EllesmereUI._prebuilding then
             local rgn = cbBsRow._leftRegion
             local sepValues, sepOrder = ns.ERB_SeparatorArtValues(true)
-            local cogBtn = EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+            local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
                 title = "Border Options",
                 rows = {
                     { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -387,7 +431,7 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
                           local p = DB(); if not p then return end
                           p.castBar.borderBehind = v == false and nil or v; RefreshCast(); EllesmereUI:RefreshPage()
                       end },
-                    -- Extend Top / Extend Bottom: the whole border host (bar + icon). This cog
+                    -- Border extensions: the whole border host (bar + icon). This cog
                     -- has no bar-off block, so the rows carry their own.
                     { type = "slider", label = "Extend Top", min = 0, max = 50, step = 1,
                       tooltip = "Grows the border past the bar's top edge on screen without resizing the bar.",
@@ -404,6 +448,22 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
                       set = function(v)
                           local p = DB(); if not p then return end
                           p.castBar.borderExtendBottom = v; RefreshCast(); EllesmereUI:RefreshPage()
+                      end },
+                    { type = "slider", label = "Extend Left", min = 0, max = 300, step = 1,
+                      tooltip = "Grows the border past the bar's left edge on screen without resizing the bar.",
+                      disabled = castOff, disabledTooltip = "Player Cast Bar",
+                      get = function() local p = DB(); return p and p.castBar.borderExtendLeft or 0 end,
+                      set = function(v)
+                          local p = DB(); if not p then return end
+                          p.castBar.borderExtendLeft = v; RefreshCast(); EllesmereUI:RefreshPage()
+                      end },
+                    { type = "slider", label = "Extend Right", min = 0, max = 300, step = 1,
+                      tooltip = "Grows the border past the bar's right edge on screen without resizing the bar.",
+                      disabled = castOff, disabledTooltip = "Player Cast Bar",
+                      get = function() local p = DB(); return p and p.castBar.borderExtendRight or 0 end,
+                      set = function(v)
+                          local p = DB(); if not p then return end
+                          p.castBar.borderExtendRight = v; RefreshCast(); EllesmereUI:RefreshPage()
                       end },
                     -- Bottom Separator: None = off (edgeSep false); an art entry turns it
                     -- on with that art. Across the whole bar, icon included.
@@ -439,7 +499,7 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
         end
     end
 
-    -- Row 2: Fill Color (opacity slider + inline swatches + cog: gradient) | Background
+    -- Row 2: Fill Color (opacity slider + cog: gradient + inline swatches) | Background
     local castColorRow
     castColorRow, h = W:DualRow(parent, y,
         { type = "slider", text = "Fill Color", min = 0, max = 100, step = 1, trackWidth = 120,
@@ -462,10 +522,92 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
               p.castBar.bgA = v / 100; RefreshCast()
           end })
     );  y = y - h
+    local castFillBlizz = EllesmereUI.BlizzStyle.Active("castbar") == "blizzard"
+    -- Inline cog on Fill Color: the gradient and the channel / uninterruptible
+    -- color overrides (not under Blizzard Style, whose fill art is stock) and Out
+    -- of Range Gray (every style).
+    if not EllesmereUI._prebuilding then
+        local rgn = castColorRow._leftRegion
+        local function gradientOff() return castFillBlizz end
+        EllesmereUI.BuildInlineCog(rgn, {
+            disabled = function() local p = DB(); return p and not p.castBar.enabled end,
+            disabledTooltip = "Player Cast Bar",
+            title = "Fill Settings",
+            rows = {
+                { type = "toggle", label = "Enable Gradient",
+                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
+                  get = function() local p = DB(); return p and p.castBar.gradientEnabled end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.castBar.gradientEnabled = v; RefreshCast()
+                      EllesmereUI:RefreshPage()
+                  end },
+                { type = "dropdown", label = "Gradient Direction",
+                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
+                  values = { HORIZONTAL = "Horizontal", VERTICAL = "Vertical" },
+                  order = { "HORIZONTAL", "VERTICAL" },
+                  get = function() local p = DB(); return p and p.castBar.gradientDir or "HORIZONTAL" end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.castBar.gradientDir = v; RefreshCast()
+                  end },
+                { type = "toggle", label = "Gray When Out of Range",
+                  tooltip = "Grays the fill while your target is out of range of the spell being cast.",
+                  get = function() local p = DB(); return p and p.castBar.outOfRangeGray == true end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.castBar.outOfRangeGray = v; RefreshCast()
+                  end },
+                -- Each override's color row shows only while that override is on.
+                { type = "toggle", label = "Channel Color Override",
+                  tooltip = "Channeled spells fill in their own color.",
+                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
+                  get = function() local p = DB(); return p and p.castBar.channelOverride == true end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.castBar.channelOverride = v; RefreshCast()
+                  end },
+                { type = "colorpicker", label = "Channel Color",
+                  hidden = function() local p = DB(); return not (p and p.castBar.channelOverride) end,
+                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
+                  get = function()
+                      local p = DB(); local c = p and p.castBar
+                      return c and c.channelR or 0.3, c and c.channelG or 0.8, c and c.channelB or 0.3
+                  end,
+                  set = function(r, g, b)
+                      local p = DB(); if not p then return end
+                      local c = p.castBar
+                      c.channelR, c.channelG, c.channelB = r, g, b
+                      RefreshCast()
+                  end },
+                { type = "toggle", label = "Uninterruptible Color Override",
+                  tooltip = "Casts that cannot be interrupted fill in their own color.",
+                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
+                  get = function() local p = DB(); return p and p.castBar.uninterruptibleOverride == true end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.castBar.uninterruptibleOverride = v; RefreshCast()
+                  end },
+                { type = "colorpicker", label = "Uninterruptible Color",
+                  hidden = function() local p = DB(); return not (p and p.castBar.uninterruptibleOverride) end,
+                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
+                  get = function()
+                      local p = DB(); local c = p and p.castBar
+                      return c and c.uninterruptibleR or 0.5, c and c.uninterruptibleG or 0.5,
+                          c and c.uninterruptibleB or 0.5
+                  end,
+                  set = function(r, g, b)
+                      local p = DB(); if not p then return end
+                      local c = p.castBar
+                      c.uninterruptibleR, c.uninterruptibleG, c.uninterruptibleB = r, g, b
+                      RefreshCast()
+                  end },
+            },
+        })
+    end
     -- Fill Color inline swatches: gradient end / custom / class. Blizzard Style
     -- keeps the stock fill art, so the colour swatches are inert there; the
     -- Classic WoW UI fill is the user's, so they stay live under it.
-    local castFillBlizz = EllesmereUI.BlizzStyle.Active("castbar") == "blizzard"
     EllesmereUI.BuildInlineSwatches(castColorRow._leftRegion, {
               { tooltip = "Gradient End Color", hasAlpha = true,
                 disabled = function()
@@ -535,48 +677,11 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
                     local p = DB()
                     return (not p or p.castBar.classColored == true) and 1 or 0.3
                 end },
-    }, { disabled = function() return castFillBlizz or castOff() end,
+    }, { size = 20, disabled = function() return castFillBlizz or castOff() end,
          disabledTooltip = function()
              if castFillBlizz then return "This option requires Blizzard Style to be disabled" end
              return "Player Cast Bar"
          end })
-    -- Inline cog on Fill Color: the gradient (not under Blizzard Style, whose fill
-    -- art is stock) and Out of Range Gray (every style).
-    if not EllesmereUI._prebuilding then
-        local rgn = castColorRow._leftRegion
-        local function gradientOff() return castFillBlizz end
-        EllesmereUI.BuildInlineCog(rgn, {
-            disabled = function() local p = DB(); return p and not p.castBar.enabled end,
-            disabledTooltip = "Player Cast Bar",
-            title = "Fill Settings",
-            rows = {
-                { type = "toggle", label = "Enable Gradient",
-                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
-                  get = function() local p = DB(); return p and p.castBar.gradientEnabled end,
-                  set = function(v)
-                      local p = DB(); if not p then return end
-                      p.castBar.gradientEnabled = v; RefreshCast()
-                      EllesmereUI:RefreshPage()
-                  end },
-                { type = "dropdown", label = "Gradient Direction",
-                  disabled = gradientOff, disabledTooltip = "Blizzard Style", requireState = "disabled",
-                  values = { HORIZONTAL = "Horizontal", VERTICAL = "Vertical" },
-                  order = { "HORIZONTAL", "VERTICAL" },
-                  get = function() local p = DB(); return p and p.castBar.gradientDir or "HORIZONTAL" end,
-                  set = function(v)
-                      local p = DB(); if not p then return end
-                      p.castBar.gradientDir = v; RefreshCast()
-                  end },
-                { type = "toggle", label = "Gray When Out of Range",
-                  tooltip = "Grays the fill while your target is out of range of the spell being cast.",
-                  get = function() local p = DB(); return p and p.castBar.outOfRangeGray == true end,
-                  set = function(v)
-                      local p = DB(); if not p then return end
-                      p.castBar.outOfRangeGray = v; RefreshCast()
-                  end },
-            },
-        })
-    end
 
     -- Inline color swatch on Background (right region)
     if not EllesmereUI._prebuilding then
@@ -651,34 +756,24 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
               RefreshCast(); EllesmereUI:RefreshPage()
           end }
     );  y = y - h
-    -- Spell Text colour (RGBA; white = the untinted text), left of the dropdown;
-    -- the Spell Text Settings cog below chains left of it. Dimmed and blocked
-    -- while the cast bar is off or Spell Text is None.
+    -- Inline cog on Bar Texture: Textured Background (greyed while the cast bar
+    -- is off, and under Blizzard Style, whose own background art stays).
     if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineSwatches(textRow._rightRegion, {
-            { tooltip = "Spell Text Color", hasAlpha = true,
-              disabled = function()
-                  local p = DB()
-                  return not (p and p.castBar.enabled and p.castBar.showSpellText)
-              end,
-              disabledTooltip = function() return castOff() and "Player Cast Bar" or "Spell Text" end,
-              getValue = function()
-                  local p = DB(); if not p then return 1, 1, 1, 1 end
-                  local c = p.castBar
-                  return c.spellTextR or 1, c.spellTextG or 1, c.spellTextB or 1, c.spellTextA or 1
-              end,
-              setValue = function(r, g, b, a)
-                  local p = DB(); if not p then return end
-                  local c = p.castBar
-                  c.spellTextR, c.spellTextG, c.spellTextB, c.spellTextA = r, g, b, a
-                  RefreshCast(); EllesmereUI:RefreshPage()
-              end },
-        }, { size = 20 })
+        EllesmereUI.BuildInlineCog(textRow._leftRegion, {
+            disabled = function() return castOff() or EllesmereUI.BlizzStyle.Active("castbar") == "blizzard" end,
+            disabledTooltip = function()
+                if castOff() then return "Player Cast Bar" end
+                return EllesmereUI.BlizzStyle.Label("castbar")
+            end,
+            requireState = function() if not castOff() then return "disabled" end end,
+            title = "Texture Settings",
+            rows = { TexBgRowCfg("cast", RefreshCast) },
+        })
     end
     -- Inline cog (RESIZE) on Spell Text for text size + x/y
     if not EllesmereUI._prebuilding then
         local rgn = textRow._rightRegion
-        EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+        EllesmereUI.BuildInlineCog(rgn, {
             disabled = function() local p = DB(); return p and (not p.castBar.enabled or not p.castBar.showSpellText) end,
             disabledTooltip = "Player Cast Bar",
             title = "Spell Text Settings",
@@ -701,8 +796,39 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
                       local p = DB(); if not p then return end
                       p.castBar.spellTextY = v; RefreshCast()
                   end },
+                { type = "toggle", label = "Show Full Spell Name",
+                  tooltip = "Long spell names shrink to fit beside the duration instead of being cut off.",
+                  get = function() local p = DB(); return p and p.castBar.fitSpellName end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.castBar.fitSpellName = v; RefreshCast()
+                  end },
             },
         })
+    end
+    -- Spell Text colour (RGBA; white = the untinted text), left of the
+    -- Spell Text Settings cog above. Dimmed and blocked while the cast bar
+    -- is off or Spell Text is None.
+    if not EllesmereUI._prebuilding then
+        EllesmereUI.BuildInlineSwatches(textRow._rightRegion, {
+            { tooltip = "Spell Text Color", hasAlpha = true,
+              disabled = function()
+                  local p = DB()
+                  return not (p and p.castBar.enabled and p.castBar.showSpellText)
+              end,
+              disabledTooltip = function() return castOff() and "Player Cast Bar" or "Spell Text" end,
+              getValue = function()
+                  local p = DB(); if not p then return 1, 1, 1, 1 end
+                  local c = p.castBar
+                  return c.spellTextR or 1, c.spellTextG or 1, c.spellTextB or 1, c.spellTextA or 1
+              end,
+              setValue = function(r, g, b, a)
+                  local p = DB(); if not p then return end
+                  local c = p.castBar
+                  c.spellTextR, c.spellTextG, c.spellTextB, c.spellTextA = r, g, b, a
+                  RefreshCast(); EllesmereUI:RefreshPage()
+              end },
+        }, { size = 20 })
     end
     -- Row 4: Duration Text (cog RESIZE: timer size + x/y) | Show Total Duration
     local timerRow
@@ -739,34 +865,10 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
               p.castBar.showTotalDuration = v; RefreshCast()
           end }
     );  y = y - h
-    -- Duration Text colour (RGBA; white = the untinted text), left of the
-    -- dropdown; the Timer Settings cog below chains left of it. Dimmed and
-    -- blocked while the cast bar is off or Duration Text is None.
-    if not EllesmereUI._prebuilding then
-        EllesmereUI.BuildInlineSwatches(timerRow._leftRegion, {
-            { tooltip = "Duration Text Color", hasAlpha = true,
-              disabled = function()
-                  local p = DB()
-                  return not (p and p.castBar.enabled and p.castBar.showTimer)
-              end,
-              disabledTooltip = function() return castOff() and "Player Cast Bar" or "Duration Text" end,
-              getValue = function()
-                  local p = DB(); if not p then return 1, 1, 1, 1 end
-                  local c = p.castBar
-                  return c.timerR or 1, c.timerG or 1, c.timerB or 1, c.timerA or 1
-              end,
-              setValue = function(r, g, b, a)
-                  local p = DB(); if not p then return end
-                  local c = p.castBar
-                  c.timerR, c.timerG, c.timerB, c.timerA = r, g, b, a
-                  RefreshCast(); EllesmereUI:RefreshPage()
-              end },
-        }, { size = 20 })
-    end
     -- Inline cog (RESIZE) on Duration Text for timer size + x/y
     if not EllesmereUI._prebuilding then
         local rgn = timerRow._leftRegion
-        EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+        EllesmereUI.BuildInlineCog(rgn, {
             disabled = function() local p = DB(); return p and (not p.castBar.enabled or not p.castBar.showTimer) end,
             disabledTooltip = "Player Cast Bar",
             title = "Timer Settings",
@@ -792,11 +894,51 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
             },
         })
     end
+    -- Duration Text colour (RGBA; white = the untinted text), left of the
+    -- Timer Settings cog above. Dimmed and blocked while the cast bar is off
+    -- or Duration Text is None.
+    if not EllesmereUI._prebuilding then
+        EllesmereUI.BuildInlineSwatches(timerRow._leftRegion, {
+            { tooltip = "Duration Text Color", hasAlpha = true,
+              disabled = function()
+                  local p = DB()
+                  return not (p and p.castBar.enabled and p.castBar.showTimer)
+              end,
+              disabledTooltip = function() return castOff() and "Player Cast Bar" or "Duration Text" end,
+              getValue = function()
+                  local p = DB(); if not p then return 1, 1, 1, 1 end
+                  local c = p.castBar
+                  return c.timerR or 1, c.timerG or 1, c.timerB or 1, c.timerA or 1
+              end,
+              setValue = function(r, g, b, a)
+                  local p = DB(); if not p then return end
+                  local c = p.castBar
+                  c.timerR, c.timerG, c.timerB, c.timerA = r, g, b, a
+                  RefreshCast(); EllesmereUI:RefreshPage()
+              end },
+        }, { size = 20 })
+    end
 
 
-    -- Row 5: Show Spell Rank (spell ranks exist only on WoW Forever)
-    if EllesmereUI.IS_FOREVER then
+    -- Row 5: Craft Batches, plus Show Spell Rank (spell ranks exist only on WoW Forever)
+    -- Craft Batches is stored as fullCraftTime (text) and mergeCrafts (bar + text).
     _, h = W:DualRow(parent, y,
+        { type = "dropdown", text = "Craft Batches",
+          tooltip = "While crafting several items at once. Full Time Text: the duration text shows the time left for the whole batch and the spell text shows the craft count. Merge Bar: also one cast bar spans the whole batch instead of refilling for every craft.",
+          disabled = castOff,
+          disabledTooltip = "Player Cast Bar",
+          values = { off = "Off", text = "Full Time Text", merge = "Merge Bar" },
+          order = { "off", "text", "merge" },
+          getValue = function()
+              local p = DB(); if not p then return "off" end
+              return p.castBar.mergeCrafts and "merge" or p.castBar.fullCraftTime and "text" or "off"
+          end,
+          setValue = function(v)
+              local p = DB(); if not p then return end
+              p.castBar.fullCraftTime = v == "text"
+              p.castBar.mergeCrafts = v == "merge"
+          end },
+        EllesmereUI.IS_FOREVER and
         { type = "toggle", text = "Show Spell Rank",
           tooltip = "Appends the spell's rank to the spell name, for spells that have one.",
           disabled = function()
@@ -808,10 +950,9 @@ function ns.ERB_BuildCastBarPage(pageName, parent, yOffset)
           setValue = function(v)
               local p = DB(); if not p then return end
               p.castBar.showSpellRank = v
-          end },
-        EllesmereUI.BlankRowCfg()
+          end }
+        or EllesmereUI.BlankRowCfg()
     );  y = y - h
-    end -- IS_FOREVER
 
 
     -- MARKS section

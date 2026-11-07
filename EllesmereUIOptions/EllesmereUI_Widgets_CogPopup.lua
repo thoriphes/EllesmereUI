@@ -695,10 +695,14 @@ local function BuildCogPopup(opts)
                 box:SetAutoFocus(false)
                 box:SetFont(EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
                 box:SetTextColor(1, 1, 1, POPUP_INPUT_A)
-                box:SetJustifyH("CENTER")
+                box:SetJustifyH(row.inputJustify or "CENTER")
+                if row.inputJustify == "LEFT" then box:SetTextInsets(6, 6, 0, 0) end
                 local boxBg = SolidTex(box, "BACKGROUND", 0.12, 0.12, 0.12, 0.8)
                 boxBg:SetAllPoints()
+                EllesmereUI.RoundBody(box, boxBg)
                 box:SetText(row.get and row.get() or "")
+                -- Left-aligned text that overflows shows its start, not its end.
+                if row.inputJustify == "LEFT" then box:SetCursorPosition(0) end
 
                 local _committing = false  -- guard ClearFocus -> OnEditFocusLost reentry
                 local function ApplyInput()
@@ -726,6 +730,7 @@ local function BuildCogPopup(opts)
                     -- Cancel: guard + restore BEFORE ClearFocus -- in commitOnBlur mode ClearFocus fires OnEditFocusLost, which would otherwise SAVE the discarded text.
                     _committing = true
                     self:SetText(row.get and row.get() or "")
+                    if row.inputJustify == "LEFT" then self:SetCursorPosition(0) end
                     self:ClearFocus()
                     _committing = false
                 end)
@@ -754,7 +759,7 @@ local function BuildCogPopup(opts)
                     inputDis:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
                 end
 
-                rowWidgets[#rowWidgets + 1] = { type = 'input', box = box, get = row.get, disOverlay = inputDis, disCheck = row.disabled, saveBg = saveBg }
+                rowWidgets[#rowWidgets + 1] = { type = 'input', box = box, get = row.get, disOverlay = inputDis, disCheck = row.disabled, saveBg = saveBg, leftJustify = row.inputJustify == "LEFT" }
                 curY = curY - ROW_H
 
             elseif row.type == 'button' then
@@ -787,7 +792,7 @@ local function BuildCogPopup(opts)
                 ddBtn:SetFrameLevel(pf:GetFrameLevel() + 2)
                 local rBg = SolidTex(ddBtn, "BACKGROUND", EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
                 rBg:SetAllPoints()
-                local rBrd = MakeBorder(ddBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+                local rBrd = EllesmereUI.MakeRoundedBorder(ddBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, rBg)
                 local rLbl = MakeFont(ddBtn, 12, nil, 1, 1, 1)
                 rLbl:SetAlpha(EllesmereUI.DD_TXT_A)
                 rLbl:SetJustifyH("LEFT"); rLbl:SetWordWrap(false); rLbl:SetMaxLines(1)
@@ -820,7 +825,7 @@ local function BuildCogPopup(opts)
                 if EllesmereUI.PadCP() then menu.CloseButton = ddBtn end
                 local mBg2 = SolidTex(menu, "BACKGROUND", EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, 0.98)
                 mBg2:SetAllPoints()
-                MakeBorder(menu, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, EllesmereUI.DD_BRD_A, mBg2, nil, true)
                 menu:SetPoint("TOPLEFT", ddBtn, "BOTTOMLEFT", 0, -2)
                 ddBtn._ddMenu = menu  -- popup click-outside ignores menu interaction
 
@@ -1091,12 +1096,7 @@ local function BuildCogPopup(opts)
             unlockFS:SetPoint("CENTER")
             unlockBtn:SetScript("OnClick", function()
                 pf:Hide()
-                if EllesmereUI._openUnlockMode then
-                    EllesmereUI._unlockAutoSelectKey = opts.footer.unlockKey
-                    local panel = EllesmereUI._mainFrame
-                    if panel and panel:IsShown() then panel:Hide() end
-                    C_Timer.After(0, EllesmereUI._openUnlockMode)
-                end
+                EllesmereUI.OpenUnlockModeAt(opts.footer.unlockKey)
             end)
             unlockBtn:SetScript("OnEnter", function(self)
                 unlockFS:SetTextColor(_uhr, _uhg, _uhb)
@@ -1152,6 +1152,7 @@ local function BuildCogPopup(opts)
                     end
                     if rw.box and rw.get and not rw.box:HasFocus() then
                         rw.box:SetText(rw.get())
+                        if rw.leftJustify then rw.box:SetCursorPosition(0) end
                     end
                     -- Re-apply save button colour for the current theme
                     if rw.saveBg then
@@ -1264,8 +1265,11 @@ local function BuildCogPopup(opts)
             local owner = popupOwner
             popupOwner = nil; pf._owner = nil
             -- Dim the anchor back to cog idle alpha; skipped via noOwnerDim when the anchor isn't a cog (e.g. a preview icon) and must not fade.
+            -- A hand-built glyph button goes back to its idle alpha through SetGlyphAlpha.
             if owner and owner._euiCogState then owner._euiCogState()
-            elseif owner and not opts.noOwnerDim then owner:SetAlpha(0.4) end
+            elseif owner and not opts.noOwnerDim then
+                if owner._glyphA then EllesmereUI.SetGlyphAlpha(owner, 0.4) else owner:SetAlpha(0.4) end
+            end
             -- Controller cursor: back onto the cog (not for the hover-opened popups,
             -- where it stays free; a no-op once the cog is hidden).
             if owner and not opts.noOwnerDim and EllesmereUI.PadCursorShown() then

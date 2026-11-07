@@ -59,7 +59,9 @@ function EllesmereUI.ShowTrackedAurasPopup(opts)
     if _trackedAurasDimmer then _trackedAurasDimmer:Hide(); _trackedAurasDimmer = nil end
     if _trackedAurasPanel then _trackedAurasPanel:Hide() end
 
-    local dimmer = PoolKept(POPUPS, "trackedAuras", "Button", UIParent, nil, "EUITrackedAurasDimmer")
+    -- Kept hidden: shown below once dressed, so the Escape/Back hooks a named
+    -- dimmer keeps through resets run at that show alone, never at the reset.
+    local dimmer = PoolKept(POPUPS, "trackedAuras", "Button", UIParent, nil, "EUITrackedAurasDimmer", true)
     -- This open's dress: a list refresh that arrives from an earlier open (an
     -- Add Spell ID confirm) leaves the rows this open dressed alone.
     local dressGen = PoolGen(dimmer)
@@ -131,8 +133,9 @@ function EllesmereUI.ShowTrackedAurasPopup(opts)
     end
 
     -- Escape closes (consume Escape only; other keys propagate so chat/UI shortcuts keep working behind the dimmer).
-    panel:EnableKeyboard(true)
+    EllesmereUI.PopupTakeKeys(panel, dimmer)
     panel:SetScript("OnKeyDown", function(self, key)
+        if InCombatLockdown() then return end
         self:SetPropagateKeyboardInput(key ~= "ESCAPE")
         if key == "ESCAPE" then ClosePopup() end
     end)
@@ -221,7 +224,7 @@ function EllesmereUI.ShowTrackedAurasPopup(opts)
         ddBtn:SetPoint("RIGHT", applyBtn, "LEFT", -8, 0)
         local ddBg = ddBtn:CreateTexture(nil, "BACKGROUND")
         ddBg:SetAllPoints(); ddBg:SetColorTexture(0.114, 0.106, 0.099, 1)
-        EllesmereUI.MakeBorder(ddBtn, 0.4, 0.4, 0.4, 0.6, PP)
+        EllesmereUI.MakeRoundedBorder(ddBtn, 0.4, 0.4, 0.4, 0.6, ddBg)
         local ddLbl = ddBtn:CreateFontString(nil, "OVERLAY")
         ddLbl:SetFont(fontPath, 12, "")
         ddLbl:SetPoint("LEFT", ddBtn, "LEFT", 8, 0)
@@ -239,7 +242,7 @@ function EllesmereUI.ShowTrackedAurasPopup(opts)
         menu:SetSize(110, #cf.choices * 22 + 8)
         local mBg = menu:CreateTexture(nil, "BACKGROUND")
         mBg:SetAllPoints(); mBg:SetColorTexture(0.077, 0.068, 0.058, 0.98)
-        EllesmereUI.MakeBorder(menu, 1, 1, 1, 0.15, PP)
+        EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, 0.15, mBg, nil, true)
         menu:Hide()
         for i = 1, #cf.choices do
             local choice = cf.choices[i]
@@ -562,17 +565,17 @@ function EllesmereUI.ShowTrackedAurasPopup(opts)
     -- controller's Back (registered while hidden, so it counts from this show);
     -- the full-screen dimmer and the panel are no stops, Cancel clicks the X, the
     -- cursor starts on Done.
-    if EllesmereUI.PadInUse() then
-        dimmer:Hide()
+    local pad = EllesmereUI.PadInUse()
+    if pad then
         -- Every open asks: the call returns at once while the kept dimmer is
         -- still registered (a named dimmer stays so through the pool's resets).
         EllesmereUI.RegisterEscapeClose(dimmer, TRACKED_AURAS_ESC)
         EllesmereUI.PadHint(dimmer, "nodepass")
         EllesmereUI.PadHint(panel, "nodepass")
         if EllesmereUI.PadCP() then panel.CloseButton = closeBtn end
-        dimmer:Show()
-        if EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(doneBtn) end
     end
+    dimmer:Show()
+    if pad and EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(doneBtn) end
 
     RefreshBoth()
 end
@@ -601,8 +604,9 @@ function EllesmereUI.ShowSpellBlacklistPopup(opts)
     -- take the popup as a window and its Cancel press can click the dimmer shut.
     -- One kept dimmer per kind (a kept frame never changes its type).
     local padCP = EllesmereUI.PadCP()
+    -- Kept hidden: shown below once dressed (see ShowTrackedAurasPopup).
     local dimmer = PoolKept(POPUPS, padCP and "spellBlacklistPad" or "spellBlacklist",
-        padCP and "Button" or "Frame", UIParent, nil, padCP and "EUISpellBlacklistDimmer" or nil)
+        padCP and "Button" or "Frame", UIParent, nil, padCP and "EUISpellBlacklistDimmer" or nil, true)
     -- This open's dress (see ShowTrackedAurasPopup).
     local dressGen = PoolGen(dimmer)
     dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
@@ -654,8 +658,9 @@ function EllesmereUI.ShowSpellBlacklistPopup(opts)
     -- Every open starts empty: the dress sets the text itself rather than rely on
     -- the kept box's reset (set before OnTextChanged, so nothing fires).
     addBox:SetText("")
-    EllesmereUI.SolidTex(addBox, "BACKGROUND", 0, 0, 0, 0.4):SetAllPoints(addBox)
-    EllesmereUI.MakeBorder(addBox, 1, 1, 1, 0.15)
+    local addBg = EllesmereUI.SolidTex(addBox, "BACKGROUND", 0, 0, 0, 0.4)
+    addBg:SetAllPoints(addBox)
+    EllesmereUI.MakeRoundedBorder(addBox, 1, 1, 1, 0.15, addBg)
     local ph = addBox:CreateFontString(nil, "OVERLAY")
     ph:SetFont(fontPath, 11, "")
     ph:SetPoint("LEFT", addBox, "LEFT", 6, 0)
@@ -779,7 +784,6 @@ function EllesmereUI.ShowSpellBlacklistPopup(opts)
     -- the dimmer and the panel are no stops, Cancel clicks the dimmer (the popup
     -- has no close button), and the cursor starts inside the popup.
     if padCP or EllesmereUI.PadNative() then
-        dimmer:Hide()
         if padCP then
             dimmer:SetScript("OnClick", CloseBlacklist)
             EllesmereUI.PadHint(dimmer, "nodepass")
@@ -789,8 +793,8 @@ function EllesmereUI.ShowSpellBlacklistPopup(opts)
         -- Every open asks: a named dimmer stays registered through the pool's
         -- resets (the call returns at once), an unnamed one is registered anew.
         EllesmereUI.RegisterEscapeClose(dimmer, BLACKLIST_ESC)
-        dimmer:Show()
     end
+    dimmer:Show()
 
     RebuildList()
     if padCP and EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(popup) end

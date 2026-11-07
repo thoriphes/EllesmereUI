@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
+
 
 SimpleLootCouncil = SimpleLootCouncil or {}
 local addon = SimpleLootCouncil
@@ -212,13 +213,33 @@ local function Install(entries)
     end
 end
 
+local ran = {}
+
 function Locale.Register(locale, entries)
+    ran[#ran + 1] = locale
     if locale == clientLocale then Install(entries) end
 end
 
 
 function Locale.RegisterShared(entries)
+    ran[#ran + 1] = "shared"
     Install(entries)
+end
+
+
+function Locale.Loaded()
+    local count = 0
+    for _ in pairs(registered) do count = count + 1 end
+    return ran, count
+end
+
+function Locale.ValidTranslation(key, text, plural)
+    if type(key) ~= "string" then return false, "key is not a string" end
+    local keySlots = Slots(key)
+    if not keySlots then return false, "invalid key format slot" end
+    local keyEscapes = Escapes(key)
+    if not keyEscapes then return false, "invalid key escape" end
+    return ValidForm(keySlots, keyEscapes, text, plural)
 end
 
 function Locale.Plural(forms)
@@ -274,32 +295,35 @@ Locale.PluralForm = PluralForm
 
 
 
+local function FormatString(format, ...)
+    if not format:find("%%%d+%$") then return format:format(...) end
+    local slots = Slots(format)
+    if not slots then return format:format(...) end
+    local pieces, values, last = {}, {}, 1
+    for index, slot in ipairs(slots) do
+        pieces[#pieces + 1] = format:sub(last, slot.first - 1)
+        pieces[#pieces + 1] = slot.plain
+        local from = slot.index or index
+        values[index] = from >= 1 and (select(from, ...)) or nil
+        last = slot.last + 1
+    end
+    pieces[#pieces + 1] = format:sub(last)
+    return string.format(table.concat(pieces), unpack(values, 1, #slots))
+end
+
+
+
 
 
 function Locale.Format(message, ...)
-    local function formatString(format, ...)
-        if not format:find("%%%d+%$") then return format:format(...) end
-        local slots = Slots(format)
-        if not slots then return format:format(...) end
-        local pieces, values, last = {}, {}, 1
-        local args = {...}
-        for index, slot in ipairs(slots) do
-            pieces[#pieces + 1] = format:sub(last, slot.first - 1)
-            pieces[#pieces + 1] = slot.plain
-            values[index] = args[slot.index or index]
-            last = slot.last + 1
-        end
-        pieces[#pieces + 1] = format:sub(last)
-        return string.format(table.concat(pieces), unpack(values, 1, #slots))
-    end
     if type(message) == "table" then
         local form = PluralForm(select(1, ...))
         message = message[form] or message.other or message.one
         if type(message) ~= "string" then return "" end
-        return formatString(message, select(2, ...))
+        return FormatString(message, select(2, ...))
     end
     if type(message) ~= "string" then return "" end
-    return formatString(message, ...)
+    return FormatString(message, ...)
 end
 
 

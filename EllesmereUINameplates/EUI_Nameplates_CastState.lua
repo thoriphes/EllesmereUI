@@ -14,6 +14,7 @@ I.broken = true
 
 local pairs, type = pairs, type
 local UnitIsUnit, UnitCanAttack = UnitIsUnit, UnitCanAttack
+local UnitAffectingCombat = UnitAffectingCombat
 local C_NamePlate = C_NamePlate
 local NamePlateConstants, Enum = NamePlateConstants, Enum
 
@@ -34,6 +35,13 @@ I.profileSetters[#I.profileSetters + 1] = function(v) p = v end
 ns._ntAlpha = 1   -- cached 0..1 from the profile; 1 = inert
 ns._ntKeepFocus = true   -- cached "Keep Focus Full Opacity" (default on)
 ns._oorAlpha = 1  -- cached out-of-range alpha; 1 = inert
+-- Out of Combat Opacity: plates of mobs not in combat fade to outOfCombatAlpha (0-100).
+-- 100 = OFF. Target and kept focus are exempt.
+ns._oocAlpha = 1
+-- Full Opacity While Casting: a casting plate skips the Non-Target fade (Out of Combat and
+-- out-of-range still apply). Important-only gates it on the cast's possibly SECRET important flag.
+ns._ntCastFull = false
+ns._ntCastImportantOnly = false
 
 -- Applies the correct root alpha to ONE plate. Value-guarded via _ntCurAlpha so redundant
 -- SetAlpha calls are skipped and pooled frames reset cheaply (nil = never faded).
@@ -48,7 +56,33 @@ function ns.NT_Apply(plate)
        and not UnitIsUnit(unit, "player") then
         a = nt
     end
-    a = a * (plate._oorCurAlpha or 1)
+    -- Out of Combat and out-of-range fades, which casting never lifts.
+    local rest = plate._oorCurAlpha or 1
+    local ooc = ns._oocAlpha
+    if ooc < 1 and not UnitAffectingCombat(unit) and not UnitIsUnit(unit, "target")
+       and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus")) then
+        rest = rest * ooc
+    end
+    if a < 1 and ns._ntCastFull and ns._castingPlates[plate] then
+        if ns._ntCastImportantOnly then
+            -- The flag may be SECRET, so the write is change-checked on its numeric
+            -- inputs; NotifyCastStarted drops them when a new cast brings a new flag.
+            local lo = a * rest
+            if plate._ntCurAlpha ~= -1 or plate._ntBoolHi ~= rest or plate._ntBoolLo ~= lo then
+                local imp = plate._castImportant
+                if type(imp) == "nil" then imp = false end
+                -- Never a plain number: the next numeric apply always writes.
+                plate._ntCurAlpha = -1
+                plate._ntBoolHi, plate._ntBoolLo = rest, lo
+                -- A SECRET flag makes the plate root's alpha secret for the session: never
+                -- compare its GetAlpha() or a child's GetEffectiveAlpha().
+                plate:SetAlphaFromBoolean(imp, rest, lo)
+            end
+            return
+        end
+        a = 1
+    end
+    a = a * rest
     if (plate._ntCurAlpha or 1) ~= a then
         plate._ntCurAlpha = a
         plate:SetAlpha(a)
@@ -68,6 +102,22 @@ function ns.NT_RefreshSetting()
     if v < 0 then v = 0 elseif v > 100 then v = 100 end
     ns._ntAlpha = v / 100
     ns._ntKeepFocus = not (p and p.nonTargetKeepFocus == false)
+    ns._ntCastFull = (p and p.nonTargetCastFull) == true
+    ns._ntCastImportantOnly = (p and p.nonTargetCastImportantOnly) == true
+    local wasOn = ns._oocAlpha < 1
+    v = tonumber(p and p.outOfCombatAlpha) or 100
+    if v < 0 then v = 0 elseif v > 100 then v = 100 end
+    ns._oocAlpha = v / 100
+    local on = ns._oocAlpha < 1
+    if on ~= wasOn then
+        for _, plate in pairs(ns.plates) do
+            if not on then
+                plate:UnregisterEvent("UNIT_FLAGS")
+            elseif plate.unit then
+                plate:RegisterUnitEvent("UNIT_FLAGS", plate.unit)
+            end
+        end
+    end
     ns.NT_ApplyAll()
 end
 
@@ -160,24 +210,28 @@ function ns.RefreshHoverEffect()
 end
 
 local kickWatcher = CreateFrame("Frame")
+kickWatcher:Hide()
 local activeCastCount = 0
 -- PERF: set of plates currently casting, so kick/color updates iterate only the
 -- 1-3 casting plates instead of all 20+ in the scene. On ns (200-local pressure).
 ns._castingPlates = {}
-kickWatcher:SetScript("OnEvent", function(self, event)
-    if event == "SPELL_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_USABLE" then
-        -- No per-event cast-info re-reads or geometry: cast identity (protection/channel
-        -- flags) is cached by UpdateKickTick at setup and by INTERRUPTIBLE handlers on
-        -- mid-cast flips, so cooldown events only refresh marker value + alpha. A hidden tick
-        -- means re-setup from cache (kick learned mid-cast, late CD info, toggle on).
-        for plate in pairs(ns._castingPlates) do
-            if plate.isCasting and plate.unit and type(plate._kickProtected) ~= "nil" then
-                plate:ApplyCastColor(plate._kickProtected)
-                if not plate.kickPositioner:IsShown() then
-                    plate:UpdateKickTick(plate._kickProtected, plate._kickIsChannel, plate._kickIsEmpowered)
-                else
-                    plate:RefreshKickTick()
-                end
+-- SPELL_UPDATE_COOLDOWN and SPELL_UPDATE_USABLE (the only events this frame
+-- holds) usually arrive together, and again for every spell the GCD touches:
+-- each only shows the frame, and its next OnUpdate makes ONE pass for them all.
+kickWatcher:SetScript("OnEvent", function(self) self:Show() end)
+kickWatcher:SetScript("OnUpdate", function(self)
+    self:Hide()
+    -- No per-event cast-info re-reads or geometry: cast identity (protection/channel
+    -- flags) is cached by UpdateKickTick at setup and by INTERRUPTIBLE handlers on
+    -- mid-cast flips, so cooldown events only refresh marker value + alpha. A hidden tick
+    -- means re-setup from cache (kick learned mid-cast, late CD info, toggle on).
+    for plate in pairs(ns._castingPlates) do
+        if plate.isCasting and plate.unit and type(plate._kickProtected) ~= "nil" then
+            plate:ApplyCastColor(plate._kickProtected)
+            if not plate.kickPositioner:IsShown() then
+                plate:UpdateKickTick(plate._kickProtected, plate._kickIsChannel, plate._kickIsEmpowered)
+            else
+                plate:RefreshKickTick()
             end
         end
     end
@@ -186,6 +240,10 @@ local _castColorTicker
 local function NotifyCastStarted(plate)
     if plate then
         ns._castingPlates[plate] = true
+        if ns._ntCastFull and ns._ntAlpha < 1 then
+            plate._ntBoolHi = nil
+            ns.NT_Apply(plate)
+        end
         -- Arm the 10Hz cast-timer ticker (engine-slept between fires; self-stops at cast end)
         -- and paint ONCE synchronously, or the ticker's first fire alone leaves text blank 0.1s.
         if plate.cast and plate.cast._timerTicker then
@@ -211,13 +269,17 @@ local function NotifyCastStarted(plate)
     end
 end
 local function NotifyCastEnded(plate)
-    if plate then ns._castingPlates[plate] = nil end
+    if plate then
+        ns._castingPlates[plate] = nil
+        if ns._ntCastFull and ns._ntAlpha < 1 then ns.NT_Apply(plate) end
+    end
     activeCastCount = activeCastCount - 1
     if activeCastCount <= 0 then
         activeCastCount = 0
         wipe(ns._castingPlates)
         kickWatcher:UnregisterEvent("SPELL_UPDATE_COOLDOWN")
         kickWatcher:UnregisterEvent("SPELL_UPDATE_USABLE")
+        kickWatcher:Hide()
         if _castColorTicker then
             _castColorTicker:Cancel()
             _castColorTicker = nil
@@ -360,7 +422,7 @@ local function SetupAuraCVars()
             if not addedUnit or addedUnit == "preview" then return end
             local np = C_NamePlate.GetNamePlateForUnit(addedUnit)
             if not np then return end
-            if ns.NP_HideBehindCameraIcon then ns.NP_HideBehindCameraIcon(np.UnitFrame) end
+            ns.NP_HideBehindCameraIcon(np.UnitFrame)
             if UnitCanAttack("player", addedUnit) then
                 ns.HideBlizzardFrame(np, addedUnit)
             else
