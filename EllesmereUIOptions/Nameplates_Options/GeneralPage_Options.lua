@@ -1238,17 +1238,17 @@ local function BuildGeneralPage(pageName, parent, yOffset)
         })
     end
 
-    -- Row 3: Replace Quest Icon with Objective | Line of Sight Opacity
-    local questObjRow
-    questObjRow, h = W:DualRow(parent, y,
-        { type="toggle", text="Replace Quest Icon with Objective",
-          getValue=function() return DBVal("replaceQuestIconWithObjective") == true end,
+    -- Row 3: Out of Combat Opacity | Line of Sight Opacity
+    _, h = W:DualRow(parent, y,
+        { type="slider", text="Out of Combat Opacity",
+          tooltip="Fades the nameplates of enemies that are not in combat with anyone, such as packs you have not pulled. Your target, and your focus while Keep Focus Full Opacity is on, are never faded by this. Multiplies with Non-Target Opacity. 100 = no fading.",
+          min=0, max=100, step=1,
+          getValue=function() return DBVal("outOfCombatAlpha") or 100 end,
           setValue=function(v)
-            DB().replaceQuestIconWithObjective = v
-            if ns.RefreshQuestObjective then ns.RefreshQuestObjective() end
-            EllesmereUI:RefreshPage()
-          end,
-          tooltip="On quest mobs in the open world, replaces the quest icon with the objective progress (ex: kill quests show 0/6, percentage objectives show 50%)." },
+            DB().outOfCombatAlpha = v
+            if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+            EllesmereUI:RefreshPage()  -- the Keep Focus cog's disabled state
+          end },
         -- Line of Sight Opacity: pure CVar passthrough (like Lag Tolerance). Nothing stored in our DB -- getValue reflects the live CVar, setValue only writes on slider move; combat-guarded, mirrors SetCVarSafe.
         { type="slider", text="Line of Sight Opacity",
           tooltip="Nameplates opacity for units that are out of line of sight. 0 = fully transparent, 1 = fully opaque.",
@@ -1258,25 +1258,6 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             if InCombatLockdown() then return end
             EllesmereUI.SetCVar("nameplateOccludedAlphaMult", v, "EllesmereUINameplates")
           end });  y = y - h
-
-    -- Inline cog on the quest toggle: objective text size
-    if not EllesmereUI._prebuilding then
-        local function questObjOff() return DBVal("replaceQuestIconWithObjective") ~= true end
-        local rgn = questObjRow._leftRegion
-        EllesmereUI.BuildInlineCog(rgn, {
-            disabled = questObjOff,
-            disabledTooltip = "Replace Quest Icon with Objective",
-            title = "Quest Objective",
-            rows = {
-                { type = "slider", label = "Text Size", min = 6, max = 24, step = 1,
-                  get = function() return DBVal("questObjectiveTextSize") or defaults.questObjectiveTextSize end,
-                  set = function(v)
-                    DB().questObjectiveTextSize = v
-                    if ns.RefreshQuestObjective then ns.RefreshQuestObjective() end
-                  end },
-            },
-        })
-    end
 
     -- Row 4: Range Check (custom cutoff in the inline cog) | Out of Range Opacity
     local rangeCheckRow
@@ -1365,8 +1346,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
           end });  y = y - h
 
-    -- Force Nameplate on Current Target takes the free slot of the Out of Combat
-    -- Opacity row below, or a row of its own when the class option holds that slot.
+    -- Force Nameplate on Current Target: row 6, beside the class option when there is one.
     local forceTargetCfg = { type="toggle", text="Force Nameplate on Current Target",
           tooltip="Force the nameplate on your current target regardless of visibility rules: always show your current target's nameplate, even when its kind of nameplate is hidden: enemies out of combat, friendly NPCs, enemy pets, minor enemies, or anything switched off in Blizzard's Nameplate settings.\n\nWhile such a unit is targeted its nameplate kind is switched on for the target alone; every other nameplate of that kind stays hidden, and the setting is handed back when the target changes.\n\nFriendly nameplates cannot be forced inside dungeons, raids or battlegrounds (the game locks them there).",
           getValue=function() return DBVal("forceTargetPlate") == true end,
@@ -1375,10 +1355,10 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             if ns.TF_Refresh then ns.TF_Refresh() end
           end }
 
-    -- Row 6: Out of Combat Opacity | the class option, if any. Hide Copies of Blood
-    -- Plague (Blood Death Knight only) and Show Sunder Armor (WoW Forever warriors
-    -- only) are not built at all for anyone else -- each only affects that class's
-    -- debuff.
+    -- Row 6: the class option, if any, then Force Nameplate on Current Target.
+    -- Hide Copies of Blood Plague (Blood Death Knight only) and Show Sunder Armor
+    -- (WoW Forever warriors only) are not built at all for anyone else -- each
+    -- only affects that class's debuff.
     local classCfg
     do
         local _, classFile = UnitClass("player")
@@ -1403,19 +1383,8 @@ local function BuildGeneralPage(pageName, parent, yOffset)
         end
     end
     _, h = W:DualRow(parent, y,
-        { type="slider", text="Out of Combat Opacity",
-          tooltip="Fades the nameplates of enemies that are not in combat with anyone, such as packs you have not pulled. Your target, and your focus while Keep Focus Full Opacity is on, are never faded by this. Multiplies with Non-Target Opacity. 100 = no fading.",
-          min=0, max=100, step=1,
-          getValue=function() return DBVal("outOfCombatAlpha") or 100 end,
-          setValue=function(v)
-            DB().outOfCombatAlpha = v
-            if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
-            EllesmereUI:RefreshPage()  -- the Keep Focus cog's disabled state
-          end },
-        classCfg or forceTargetCfg);  y = y - h
-    if classCfg then
-        _, h = W:DualRow(parent, y, forceTargetCfg, EllesmereUI.BlankRowCfg());  y = y - h
-    end
+        classCfg or forceTargetCfg,
+        classCfg and forceTargetCfg or EllesmereUI.BlankRowCfg());  y = y - h
 
     return math.abs(y)
 end
