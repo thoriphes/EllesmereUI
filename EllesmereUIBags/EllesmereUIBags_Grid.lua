@@ -224,14 +224,17 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         btn:EnableMouse(true)
         btn._emptyBg:Hide()
         if btn.icon then btn.icon:Show() end
-        btn:SetItemButtonTexture(data.info.iconFileID)
+        ns.SetSlotIcon(btn, data.info.iconFileID)
         btn:SetItemButtonCount(data._mergedCount or data.info.stackCount)
         btn._isMerged = data._mergedCount and true or nil
 
         local quality = data.info.quality or 1
         PaintJunkState(btn, data.info, junkOn and EUI_CategoryManager:IsJunk(data.info.itemID, quality))
 
-        local filtered = data.info.isFiltered
+        -- Search misses, and a pinned item in a OneBag / MultiBag bag section
+        -- (the interactive slot sections) while Dim Items in OneBag/MultiBag
+        -- is on: its bright copy sits in the Pinned Items section.
+        local filtered = data.info.isFiltered or (interactiveEmpties and data._pinDim) or false
         btn:SetAlpha(filtered and 0.2 or 1)
         if btn._textOverlay then btn._textOverlay:SetAlpha(filtered and 0.2 or 1) end
 

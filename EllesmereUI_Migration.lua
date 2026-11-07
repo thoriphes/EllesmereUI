@@ -2260,6 +2260,41 @@ EllesmereUI.RegisterMigration({
     end,
 })
 
+-- Action Bars Advanced Fade lost its on/off switch (advancedFadeEnabled): a bar
+-- is on while one of its conditions is checked, and the conditions moved to a
+-- key of their own (advancedFadeConditions) so this pass can tell old data from
+-- new. A bar whose switch was on keeps its conditions; a bar whose switch was
+-- off (its conditions left over from before) starts with none, off as before.
+-- Both old keys go, so a second pass, or a profile born after the change (a
+-- fresh install's first profile reaches this pass unstamped), finds nothing.
+EllesmereUI.RegisterMigration({
+    id          = "ab_advanced_fade_conditions_v1",
+    scope       = "profile",
+    description = "Advanced Fade is on while a condition is checked: carry the conditions of bars whose switch was on to advancedFadeConditions and drop the switch and the old conditions key.",
+    body = function(ctx)
+        local ab = ctx.profile.addons and ctx.profile.addons.EllesmereUIActionBars
+        local abBars = ab and ab.bars
+        if type(abBars) ~= "table" then return end
+        for _, cfg in pairs(abBars) do
+            if type(cfg) == "table" and (cfg.advancedFadeEnabled ~= nil or cfg.fadeConditions ~= nil) then
+                local old = cfg.fadeConditions
+                if cfg.advancedFadeEnabled == true and type(old) == "table" then
+                    local out
+                    for k, v in pairs(old) do
+                        if v then
+                            out = out or {}
+                            out[k] = true
+                        end
+                    end
+                    if out then cfg.advancedFadeConditions = out end
+                end
+                cfg.advancedFadeEnabled = nil
+                cfg.fadeConditions = nil
+            end
+        end
+    end,
+})
+
 
 EllesmereUI.RegisterMigration({
     id          = "enhance_five_bar_off_existing_v1",
@@ -2367,6 +2402,83 @@ EllesmereUI.RegisterMigration({
     end,
 })
 
+-- Close Bags on Mail Close became the Mailbox row of Auto Close Bags.
+EllesmereUI.RegisterMigration({
+    id          = "bags_mail_close_to_auto_close_v1",
+    scope       = "global",
+    description = "Move the retired Close Bags on Mail Close off state into every profile's Auto Close Bags.",
+    body = function(ctx)
+        local db = ctx.db
+        if db.mailCloseBags == false and db.profiles then
+            for _, profData in pairs(db.profiles) do
+                if not profData.addons then profData.addons = {} end
+                local bags = profData.addons.EllesmereUIBags
+                if not bags then bags = {}; profData.addons.EllesmereUIBags = bags end
+                if not bags.bagAutoCloseWindows then bags.bagAutoCloseWindows = {} end
+                bags.bagAutoCloseWindows.mail = false
+            end
+        end
+        db.mailCloseBags = nil
+    end,
+})
+
+-- Bags' Hide Items in Their Categories (pinned items) defaults on for fresh
+-- installs and future profiles; every already-existing profile keeps it off
+-- unless its user had turned it on. Same mechanism as the Guardian Ironfur
+-- migration below.
+EllesmereUI.RegisterMigration({
+    id          = "bags_hide_pinned_existing_off_v1",
+    scope       = "global",
+    description = "Pin Bags' Hide Items in Their Categories OFF for existing users' profiles; fresh installs and future profiles inherit the new ON default.",
+    body = function(ctx)
+        local db = ctx.db
+        if not db or not db.profiles then return end
+        for _, profData in pairs(db.profiles) do
+            -- Only profiles with real child-addon data: an empty/stub profile
+            -- isn't an existing user's.
+            if type(profData) == "table" and type(profData.addons) == "table"
+               and next(profData.addons) then
+                local bags = profData.addons.EllesmereUIBags
+                if type(bags) ~= "table" then
+                    bags = {}
+                    profData.addons.EllesmereUIBags = bags
+                end
+                if bags.bagHidePinnedInCategories == nil then
+                    bags.bagHidePinnedInCategories = false
+                end
+            end
+        end
+    end,
+})
+
+-- WoW Forever: fresh installs and future profiles open the bags to MultiBag and
+-- start with Recent Items off; every already-existing profile keeps All Items and
+-- Recent Items on unless its user had changed them. Registered on the Forever
+-- client only, the one whose defaults changed.
+if EllesmereUI.IS_FOREVER == true then
+EllesmereUI.RegisterMigration({
+    id          = "bags_forever_defaults_existing_v1",
+    scope       = "global",
+    description = "Pin Bags' Default Selected Bag to All Items and Show Recent Items ON for existing WoW Forever profiles; fresh installs and future profiles inherit MultiBag and Recent Items off.",
+    body = function(ctx)
+        local db = ctx.db
+        if not db or not db.profiles then return end
+        for _, profData in pairs(db.profiles) do
+            if type(profData) == "table" and type(profData.addons) == "table"
+               and next(profData.addons) then
+                local bags = profData.addons.EllesmereUIBags
+                if type(bags) ~= "table" then
+                    bags = {}
+                    profData.addons.EllesmereUIBags = bags
+                end
+                if bags.bagShowRecentItems == nil then bags.bagShowRecentItems = true end
+                if bags.bagDefaultBagType == nil then bags.bagDefaultBagType = "all" end
+            end
+        end
+    end,
+})
+end
+
 -- Guardian Druid Ironfur bar ships ON (DEFAULTS.secondary.guardianIronfurBar=true)
 -- for new installs; existing users expect no class resource bar, so pin every
 -- already-existing profile OFF. Runs at parent ADDON_LOADED BEFORE any child NewDB
@@ -2421,6 +2533,35 @@ EllesmereUI.RegisterMigration({
                 if type(rb.secondary) ~= "table" then rb.secondary = {} end
                 if rb.secondary.protIgnorePainBar == nil then
                     rb.secondary.protIgnorePainBar = false
+                end
+            end
+        end
+    end,
+})
+
+-- Group Finder's Colored Group Names (search.nameColors) defaults off for fresh
+-- installs and future profiles; every already-existing profile keeps it on unless
+-- its user had turned it off. Same mechanism as the Guardian Ironfur migration.
+EllesmereUI.RegisterMigration({
+    id          = "groupfinder_name_colors_existing_on_v1",
+    scope       = "global",
+    description = "Pin Group Finder's Colored Group Names ON for existing users' profiles; fresh installs and future profiles inherit the new OFF default.",
+    body = function(ctx)
+        local db = ctx.db
+        if not db or not db.profiles then return end
+        for _, profData in pairs(db.profiles) do
+            -- Only profiles with real child-addon data: an empty/stub profile
+            -- isn't an existing user's.
+            if type(profData) == "table" and type(profData.addons) == "table"
+               and next(profData.addons) then
+                local gf = profData.addons.EllesmereUIGroupFinder
+                if type(gf) ~= "table" then
+                    gf = {}
+                    profData.addons.EllesmereUIGroupFinder = gf
+                end
+                if type(gf.search) ~= "table" then gf.search = {} end
+                if gf.search.nameColors == nil then
+                    gf.search.nameColors = true
                 end
             end
         end
