@@ -91,7 +91,7 @@ initFrame:SetScript("OnEvent", function(self)
             }
             EllesmereUI.BuildInlineCog(left, {
                 title = "Border Options", rows = popupRows,
-                icon = EllesmereUI.DIRECTIONS_ICON, anchorTo = left._control,
+                anchorTo = left._control,
                 disabled = disabledFn,
                 disabledTooltip = prefix == "tooltip" and "Reskin Tooltip" or "Reskin Popups and Menus",
             })
@@ -400,7 +400,7 @@ initFrame:SetScript("OnEvent", function(self)
                 return not (EllesmereUIDB and EllesmereUIDB.tooltipAnchorCursor)
             end
             EllesmereUI.BuildInlineCog(leftRgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON, gap = 9,
+                gap = 9,
                 disabled = ttCursorOff,
                 disabledTooltip = "Anchor to Cursor",
                 title = "Cursor Tooltip Position",
@@ -624,7 +624,7 @@ initFrame:SetScript("OnEvent", function(self)
                 if EllesmereUI._applyTooltipBuffs then EllesmereUI._applyTooltipBuffs() end
             end
             EllesmereUI.BuildInlineCog(ttStackRow._rightRegion, {
-                icon = EllesmereUI.DIRECTIONS_ICON, gap = 9,
+                gap = 9,
                 disabled = ttBuffsOff,
                 disabledTooltip = function()
                     return ttReskinOff() and "Reskin Tooltip" or "Show Player Buffs"
@@ -873,7 +873,7 @@ initFrame:SetScript("OnEvent", function(self)
                 return not (not EllesmereUIDB or EllesmereUIDB.reskinWidgetBars ~= false)
             end
             EllesmereUI.BuildInlineCog(lrgn, {
-                icon = EllesmereUI.RESIZE_ICON, anchorTo = lrgn._control,
+                anchorTo = lrgn._control,
                 disabled = CogOff, disabledTooltip = "Reskin Widget Bars",
                 tip = "Smallest on-screen size a reskinned bar is drawn at.\n\n" ..
                     "Widget bars on a nameplate inherit that nameplate's scale, so " ..
@@ -925,7 +925,7 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end
 
-        -- Countdown text color swatch + style cog (left of it) on the Show Queue Timer toggle.
+        -- Style cog + countdown text color swatch (left of it) on the Show Queue Timer toggle.
         if timerRgn and not EllesmereUI._prebuilding then
             local PP = EllesmereUI.PanelPP
             local QT = EllesmereUI.QUEUE_TIMER
@@ -940,21 +940,6 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB[key] = v
                 if EllesmereUI.RefreshQueueTimerStyle then EllesmereUI.RefreshQueueTimerStyle() end
             end
-
-            local qtSwatch, qtSwatchRefresh = EllesmereUI.BuildColorSwatch(timerRgn,
-                timerRgn:GetFrameLevel() + 5,
-                function()
-                    local c = EllesmereUIDB and EllesmereUIDB.queueTimerTextColor
-                    return (c and c.r) or QT.TEXT_R, (c and c.g) or QT.TEXT_G, (c and c.b) or QT.TEXT_B
-                end,
-                function(r, g, b) Set("queueTimerTextColor", { r = r, g = g, b = b }) end,
-                false, 20)
-            PP.Point(qtSwatch, "RIGHT", timerRgn._lastInline or timerRgn._control, "LEFT", -9, 0)
-            timerRgn._lastInline = qtSwatch
-            qtSwatch:HookScript("OnEnter", function(self)
-                EllesmereUI.ShowWidgetTooltip(self, "Countdown Text Color")
-            end)
-            qtSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
 
             EllesmereUI.BuildInlineCog(timerRgn, {
                 disabled = timerOff,
@@ -973,6 +958,21 @@ initFrame:SetScript("OnEvent", function(self)
                       set=function(v) Set("queueTimerTextOffsetY", v) end },
                 },
             })
+
+            local qtSwatch, qtSwatchRefresh = EllesmereUI.BuildColorSwatch(timerRgn,
+                timerRgn:GetFrameLevel() + 5,
+                function()
+                    local c = EllesmereUIDB and EllesmereUIDB.queueTimerTextColor
+                    return (c and c.r) or QT.TEXT_R, (c and c.g) or QT.TEXT_G, (c and c.b) or QT.TEXT_B
+                end,
+                function(r, g, b) Set("queueTimerTextColor", { r = r, g = g, b = b }) end,
+                false, 20)
+            PP.Point(qtSwatch, "RIGHT", timerRgn._lastInline or timerRgn._control, "LEFT", -8, 0)
+            timerRgn._lastInline = qtSwatch
+            qtSwatch:HookScript("OnEnter", function(self)
+                EllesmereUI.ShowWidgetTooltip(self, "Countdown Text Color")
+            end)
+            qtSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
 
             -- Called at build time too: the refresh list only runs on page show.
             local function UpdQueueTimerState()
@@ -1241,7 +1241,6 @@ initFrame:SetScript("OnEvent", function(self)
 
         if not EllesmereUI._prebuilding then
             local cogBtn = EllesmereUI.BuildInlineCog(enchGemRow._leftRegion, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Enchant Text",
                 rows = {
                     { type="slider", label="Text Size", min=6, max=20, step=1,
@@ -1626,7 +1625,6 @@ initFrame:SetScript("OnEvent", function(self)
         -- the enchants show as text.
         if not EllesmereUI._prebuilding then
             local cogBtn = EllesmereUI.BuildInlineCog(themedInspectSheetRow._rightRegion, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Enchant Text",
                 disabled = function() return EllesmereUIDB and EllesmereUIDB.themedInspectSheet == false end,
                 disabledTooltip = "Inspect Sheet",
@@ -1737,68 +1735,85 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  Friends List card content (WoW Forever only, where the Friends List
     --  module never loads): what that module offers retail's friends list,
-    --  from the shared friends kit, on the card's own settings
-    --  (EllesmereUIDB.friendsListCard through ns.FriendsCardGet / Set, in
-    --  EllesmereUIBlizzardSkin_FriendsForever.lua). The tiles stand down
-    --  under Blizz Default; auto-accept runs whatever the skin.
+    --  from the shared friends kit, and the custom friends list's Tile Height,
+    --  on the card's own settings (EllesmereUIDB.friendsListCard through
+    --  ns.FriendsCardGet / Set, in EllesmereUIBlizzardSkin_FriendsForever.lua).
+    --  The tiles and the custom list stand down under Blizz Default;
+    --  auto-accept runs whatever the skin.
     ---------------------------------------------------------------------------
     local function BuildFriendsCardContent(parent, y)
         local W = EllesmereUI.Widgets
         local _, row, h
         local Kit = EllesmereUI.FriendsKit
 
+        local TILES_OFF = "Friends List: Blizz Default"
         local function tilesOff()
             return EllesmereUI.GetBlizzWindowStyle("socialui") == "off"
         end
         local function tileGate(cfg)
             cfg.disabled = tilesOff
-            cfg.disabledTooltip = "Friends List: Blizz Default"
+            cfg.disabledTooltip = TILES_OFF
             cfg.requireState = "disabled"
             return cfg
-        end
-        local function toggle(text, key, tooltip)
-            return tileGate({ type="toggle", text=text, tooltip=tooltip,
-                getValue=function() return ns.FriendsCardGet(key) == true end,
-                setValue=function(v) ns.FriendsCardSet(key, v) end })
         end
 
         _, h = WSCardSection(parent, "DISPLAY", y);  y = y - h
 
-        -- Class Icon Theme | Class Color Names
-        _, h = W:DualRow(parent, y,
+        -- Tile Height | Tile Features. The height is the custom friends
+        -- list's (EllesmereUI_FriendsList.lua), which draws with the tiles.
+        local tileMin, tileMax = EllesmereUI.FriendsList.TileRange()
+        row, h = W:DualRow(parent, y,
+            tileGate({ type="slider", text="Tile Height", min=tileMin, max=tileMax, step=1,
+              tooltip="The height of each friend in the custom friends list. Shorter tiles show fewer lines.",
+              getValue=function() return ns.FriendsCardGet("tileHeight") end,
+              setValue=function(v) ns.FriendsCardSet("tileHeight", v) end }),
+            tileGate({ type="dropdown", text="Tile Features",
+              values={ __placeholder="..." }, order={ "__placeholder" },
+              getValue=function() return "__placeholder" end, setValue=function() end })
+        );  y = y - h
+
+        -- Tile Features: one checkbox dropdown over the three tile switches,
+        -- each still its own key, in place of the row's placeholder.
+        if not EllesmereUI._prebuilding then
+            local rgn = row._rightRegion
+            if rgn._control then rgn._control:Hide() end
+            local dd, refresh = EllesmereUI.BuildVisOptsCBDropdown(rgn, 220, rgn:GetFrameLevel() + 2,
+                {
+                    { key="factionBanners", label="Faction Banners" },
+                    { key="showRegionIcons", label="Region Icons",
+                      tooltip="Shows a map icon of the friend's region if they are not playing within your region" },
+                    { key="classColorNames", label="Class Colored Names" },
+                },
+                function(key) return ns.FriendsCardGet(key) == true end,
+                function(key, v) ns.FriendsCardSet(key, v and true or false) end,
+                nil, nil, nil, nil, nil,
+                { disabled = tilesOff, disabledTooltip = TILES_OFF, requireState = "disabled" })
+            EllesmereUI.PanelPP.Point(dd, "RIGHT", rgn, "RIGHT", -20, 0)
+            rgn._control = dd
+            rgn._lastInline = nil
+            EllesmereUI.RegisterWidgetRefresh(refresh)
+        end
+
+        -- Class Icon Theme | Auto-Accept Friend Invites
+        row, h = W:DualRow(parent, y,
             tileGate({ type="dropdown", text="Class Icon Theme",
               values = Kit.ICON_STYLE_VALUES,
               order  = Kit.ICON_STYLE_ORDER,
               getValue=function() return ns.FriendsCardGet("iconStyle") end,
               setValue=function(v) ns.FriendsCardSet("iconStyle", v) end }),
-            toggle("Class Color Names", "classColorNames")
-        );  y = y - h
-
-        -- Enable Faction Banners | Show Region Icons
-        _, h = W:DualRow(parent, y,
-            toggle("Enable Faction Banners", "factionBanners"),
-            toggle("Show Region Icons", "showRegionIcons",
-                "Shows a map icon of the friend's region if they are not playing within your region")
-        );  y = y - h
-
-        _, h = WSCardSection(parent, "QUALITY OF LIFE", y);  y = y - h
-
-        -- Auto-Accept Friend Invites
-        row, h = W:DualRow(parent, y,
             { type="toggle", text="Auto-Accept Friend Invites",
               tooltip="Auto-accepts all group invites from people on your friends list",
               getValue=function() return ns.FriendsCardGet("autoAcceptFriendInvites") == true end,
               setValue=function(v)
                   ns.FriendsCardSet("autoAcceptFriendInvites", v)
                   EllesmereUI:RefreshPage()  -- the guildmate cog's disabled state
-              end },
-            EllesmereUI.BlankRowCfg()
+              end }
         );  y = y - h
 
         -- Guildmates in a cog on Auto-Accept Friend Invites: it only extends
         -- that feature, so the cog blocks while the toggle is off.
         if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(row._leftRegion, {
+            EllesmereUI.BuildInlineCog(row._rightRegion, {
                 title = "Auto Accept Settings",
                 rows = {
                     { type="toggle", label="Accept Invites from Guildmates",
@@ -2219,34 +2234,6 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
-    --  Mail card content: the Alt List (retail), then GENERAL (both clients).
-    --  Close Bags on Mail Close (EllesmereUIDB.mailCloseBags, on unless set
-    --  false) is read by Bags, which closes its window as the mailbox closes.
-    ---------------------------------------------------------------------------
-    local function BuildMailContent(parent, y)
-        y = BuildMailAltList(parent, y)
-        local W = EllesmereUI.Widgets
-        local _, h
-
-        _, h = WSCardSection(parent, "GENERAL", y);  y = y - h
-
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Close Bags on Mail Close",
-              tooltip="Closes your bags when you close the mailbox.",
-              disabled=function() return not EllesmereUI._ModuleNS["EllesmereUIBags"] end,
-              disabledTooltip="Bags",
-              getValue=function() return not (EllesmereUIDB and EllesmereUIDB.mailCloseBags == false) end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.mailCloseBags = v
-              end },
-            EllesmereUI.BlankRowCfg()
-        ); y = y - h
-
-        return y
-    end
-
-    ---------------------------------------------------------------------------
     --  Blizzard Window Skins page: one expandable card per reskinned window.
     --  Card headers are custom chrome, but every sub-setting ROW is a standard
     --  W: widget built as a direct child of the page wrapper, so inline search
@@ -2564,9 +2551,8 @@ initFrame:SetScript("OnEvent", function(self)
                 if not EllesmereUIDB then EllesmereUIDB = {} end
                 EllesmereUIDB.reskinMail = v
             end,
-            buildContent = BuildMailContent,
-            searchText = not EllesmereUI.IS_FOREVER and { "Show Alt List", "Shown Characters", "Close Bags on Mail Close" }
-                or { "Close Bags on Mail Close" },
+            buildContent = not EllesmereUI.IS_FOREVER and BuildMailAltList or nil,
+            searchText = not EllesmereUI.IS_FOREVER and { "Show Alt List", "Shown Characters" } or nil,
         },
         {
             key   = "catalyst",
@@ -2848,6 +2834,7 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.reskinSocialUI = v
             end,
             buildContent = EllesmereUI.IS_FOREVER and BuildFriendsCardContent or nil,
+            searchText = EllesmereUI.IS_FOREVER and { "Tile Height", "Tile Features" } or nil,
         },
         {
             key   = "queuestatus",
@@ -3795,24 +3782,9 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v) CBSetStyle("borderSize", v) end,
               disabled = Off, disabledTooltip = GATE_REQ });  y = y - h
 
-        -- BuildInlineSwatches, not a hand-rolled BuildColorSwatch: it is the house form for
-        -- a swatch riding on a control half. It anchors through PP.Point, registers the
-        -- swatch's refresh so a profile switch repaints it, and builds the greyed-out block
-        -- plus tooltip from opts.disabled.
         if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineSwatches(fontBorderRow._leftRegion, {
-                { getValue = function() local r, g, b = CBColor("textColor"); return r, g, b, 1 end,
-                  setValue = function(r, g, b) CBSetStyle("textColor", { r=r, g=g, b=b }) end,
-                  -- Two reasons this swatch can be dead, so the tip is resolved per reason.
-                  disabled = function() return Off() or CBVal("followBlizzardColor") == true end,
-                  disabledTooltip = function()
-                      return Off() and GATE_REQ or "Follow Blizzard Default Color"
-                  end,
-                  requireState = function() return Off() and "enabled" or "disabled" end },
-            }, { disabled = Off, disabledTooltip = GATE_REQ })
-
-            -- Built AFTER the swatch on purpose: BuildInlineSwatches chains _lastInline, so a
-            -- cog made afterwards lands to its left rather than on top of it.
+            -- Built BEFORE the swatch on purpose: the cog sits beside the control, and
+            -- BuildInlineSwatches chains _lastInline, so the swatch lands to its left.
             EllesmereUI.BuildInlineCog(fontBorderRow._leftRegion, {
                 disabled = Off,
                 disabledTooltip = GATE_REQ,
@@ -3835,6 +3807,21 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                 },
             })
+
+            -- BuildInlineSwatches, not a hand-rolled BuildColorSwatch: it is the house form for
+            -- a swatch riding on a control half. It anchors through PP.Point, registers the
+            -- swatch's refresh so a profile switch repaints it, and builds the greyed-out block
+            -- plus tooltip from opts.disabled.
+            EllesmereUI.BuildInlineSwatches(fontBorderRow._leftRegion, {
+                { getValue = function() local r, g, b = CBColor("textColor"); return r, g, b, 1 end,
+                  setValue = function(r, g, b) CBSetStyle("textColor", { r=r, g=g, b=b }) end,
+                  -- Two reasons this swatch can be dead, so the tip is resolved per reason.
+                  disabled = function() return Off() or CBVal("followBlizzardColor") == true end,
+                  disabledTooltip = function()
+                      return Off() and GATE_REQ or "Follow Blizzard Default Color"
+                  end,
+                  requireState = function() return Off() and "enabled" or "disabled" end },
+            }, { disabled = Off, disabledTooltip = GATE_REQ })
 
             EllesmereUI.BuildInlineSwatches(fontBorderRow._rightRegion, {
                 { getValue = function() return CBColor("borderColor") end,
@@ -4042,7 +4029,6 @@ initFrame:SetScript("OnEvent", function(self)
         -- turning it off hands the slider the current automatic size.
         if not EllesmereUI._prebuilding then
             EllesmereUI.BuildInlineCog(wsRow._leftRegion, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Whirling Surge Icon",
                 disabled = EDR_WSOff, disabledTooltip = "Show Whirling Surge",
                 rows = {
@@ -4261,7 +4247,6 @@ initFrame:SetScript("OnEvent", function(self)
         )
         if not EllesmereUI._prebuilding then
         EllesmereUI.BuildInlineCog(speedTextRow._rightRegion, {
-            icon = EllesmereUI.RESIZE_ICON,
             title = "Speed Text Position",
             rows = {
                 { type = "slider", label = "Size",     min = 6,    max = 32,  step = 1,
@@ -4509,7 +4494,6 @@ initFrame:SetScript("OnEvent", function(self)
                     "tooltipBgOpacity", "showSpellID", "spellIDModifier", "showIconID",
                     "showItemID", "friendsListCard",
                     "mailAltList", "mailAltListMax", "mailAltListMinLevel", "mailAltListSort",
-                    "mailCloseBags",
                     -- Shown Characters (the roster itself is recorded data, not a setting)
                     "mailAltHidden",
                 }) do EllesmereUIDB[k] = nil end

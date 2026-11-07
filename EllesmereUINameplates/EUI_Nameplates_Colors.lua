@@ -293,7 +293,7 @@ end
 -------------------------------------------------------------------------------
 local questMobCache = {}
 -- Parallel cache of verified-clean "objectives remaining" strings, keyed by unit. Populated
--- only when replaceQuestIconWithObjective is ON; same invalidation lifecycle. On ns (cap).
+-- only while the Quest Objective Text element is on; same invalidation lifecycle. On ns (cap).
 ns._questObjText = ns._questObjText or {}
 -- Is this unit one of the local player's active quest objectives with work remaining? Read
 -- from the tooltip's structured data: a QuestObjective line carries `completed` plus
@@ -301,89 +301,113 @@ ns._questObjText = ns._questObjText or {}
 -- progress-string parsing. Ownership goes through the player's own quest log (only their
 -- quests answer C_QuestLog.IsOnQuest), so a group member's objective is ignored. Every
 -- structured value is possibly secret and issecretvalue-checked before use. Cached per unit;
--- cleared on QUEST_LOG_UPDATE and plate removal.
-local function IsQuestMob(unit)
-    if not (C_TooltipInfo and Enum and Enum.TooltipDataLineType) then return false end
-    local cached = questMobCache[unit]
-    if cached ~= nil then return cached end
+-- cleared on QUEST_LOG_UPDATE, plate removal and zone changes.
+local IsQuestMob
+do
+    -- The settings both caches were built under (ScanState); a call under other settings
+    -- wipes them first, so a cache never answers for settings it was not built with.
+    local built
+    -- 1 while the Quest Objective Text element is on (the scan reads the objective text).
+    -- In instanced content, plus 2 while a consumer may show the result there (the Quest
+    -- Indicator, the quest mob health colour or the Quest Objective Text, each with its Show
+    -- In Instances), else plus 4 (no scan: every unit reads as no quest mob). Open world: 0 / 1.
+    local function ScanState()
+        local st = (ns.NP_GetQuestTextSlot() ~= "none") and 1 or 0
+        if InRealInstancedContent() then
+            local ok = (ns.NP_ShowInInstances("quest")
+                    and (ns.NP_QuestIconOn() or (p and p.questMobColorEnabled) == true))
+                or (st == 1 and ns.NP_ShowInInstances("questtext"))
+            st = st + (ok and 2 or 4)
+        end
+        return st
+    end
+    IsQuestMob = function(unit)
+        if not (C_TooltipInfo and Enum and Enum.TooltipDataLineType) then return false end
+        local st = ScanState()
+        if st ~= built then
+            wipe(questMobCache)
+            wipe(ns._questObjText)
+            built = st
+        end
+        local cached = questMobCache[unit]
+        if cached ~= nil then return cached end
 
-    -- Open-world only, unless the indicator's "Show In Instances" opt-in lifts it.
-    if InRealInstancedContent() then
-        local show = p and p.classificationShowInInstances
-        if show == nil then show = defaults.classificationShowInInstances end
-        if not show then
+        -- Instanced content with no consumer that shows the result there: no scan.
+        if st >= 4 then
             questMobCache[unit] = false
             return false
         end
-    end
 
-    local info = C_TooltipInfo.GetUnit(unit)
-    if not (info and info.lines) then
-        questMobCache[unit] = false
-        return false
-    end
+        local info = C_TooltipInfo.GetUnit(unit)
+        if not (info and info.lines) then
+            questMobCache[unit] = false
+            return false
+        end
 
-    local LT = Enum.TooltipDataLineType
-    local onQuest = C_QuestLog and C_QuestLog.IsOnQuest
-    local wantText = (p and p.replaceQuestIconWithObjective == true) or false
-    local questID  -- id carried by the most recent QuestTitle line
-    local isQuest, objText = false, nil
+        local LT = Enum.TooltipDataLineType
+        local onQuest = C_QuestLog and C_QuestLog.IsOnQuest
+        local wantText = (st % 2) == 1
+        local questID  -- id carried by the most recent QuestTitle line
+        local isQuest, objText = false, nil
 
-    for _, line in ipairs(info.lines) do
-        local kind = line.type
-        if kind == LT.QuestTitle then
-            local id = line.id
-            if id and not (issecretvalue and issecretvalue(id)) then
-                questID = id
-            else
-                questID = nil
-            end
-        elseif kind == LT.QuestObjective then
-            local done = line.completed
-            -- An incomplete objective the player is actually on: their quest log scopes out a
-            -- group member's objectives. Fail open when the id is unreadable so a real quest
-            -- mob is never silently skipped.
-            if not (issecretvalue and issecretvalue(done)) and done == false
-               and (not questID or not onQuest or onQuest(questID)) then
-                isQuest = true
-                if wantText then
-                    local have, need = line.numFulfilled, line.numRequired
-                    if have and need
-                       and not (issecretvalue and (issecretvalue(have) or issecretvalue(need))) then
-                        -- Percent-style objectives (area progress bars)
-                        -- degenerate to 0/1 in the structured fields; the
-                        -- real progress lives only in the line text. Show
-                        -- the extracted percent when readable, else the
-                        -- count (real 0/1 kill objectives keep their count).
-                        local lt = line.leftText
-                        local pct
-                        if lt and not (issecretvalue and issecretvalue(lt))
-                           and type(lt) == "string" then
-                            pct = lt:match("(%d+)%s*%%")
-                        end
-                        objText = pct and (pct .. "%") or (have .. "/" .. need)
-                    end
+        for _, line in ipairs(info.lines) do
+            local kind = line.type
+            if kind == LT.QuestTitle then
+                local id = line.id
+                if id and not (issecretvalue and issecretvalue(id)) then
+                    questID = id
+                else
+                    questID = nil
                 end
-                break
+            elseif kind == LT.QuestObjective then
+                local done = line.completed
+                -- An incomplete objective the player is actually on: their quest log scopes out
+                -- a group member's objectives. Fail open when the id is unreadable so a real
+                -- quest mob is never silently skipped.
+                if not (issecretvalue and issecretvalue(done)) and done == false
+                   and (not questID or not onQuest or onQuest(questID)) then
+                    isQuest = true
+                    if wantText then
+                        local have, need = line.numFulfilled, line.numRequired
+                        if have and need
+                           and not (issecretvalue and (issecretvalue(have) or issecretvalue(need))) then
+                            -- Percent-style objectives (area progress bars)
+                            -- degenerate to 0/1 in the structured fields; the
+                            -- real progress lives only in the line text. Show
+                            -- the extracted percent when readable, else the
+                            -- count (real 0/1 kill objectives keep their count).
+                            local lt = line.leftText
+                            local pct
+                            if lt and not (issecretvalue and issecretvalue(lt))
+                               and type(lt) == "string" then
+                                pct = lt:match("(%d+)%s*%%")
+                            end
+                            objText = pct and (pct .. "%") or (have .. "/" .. need)
+                        end
+                    end
+                    break
+                end
             end
         end
-    end
 
-    questMobCache[unit] = isQuest
-    if wantText then
-        ns._questObjText[unit] = isQuest and objText or nil
+        questMobCache[unit] = isQuest
+        if wantText then
+            ns._questObjText[unit] = isQuest and objText or nil
+        end
+        return isQuest
     end
-    return isQuest
 end
 ns.IsQuestMob = IsQuestMob
 
--- Thin reader for the icon-replace feature. Returns a clean digit string or nil.
+-- The Quest Objective Text element's reader. Returns a clean "have/need" or "N%" string, or
+-- nil (no readable count or percent).
 function ns.GetQuestObjectiveText(unit)
     return ns._questObjText[unit]
 end
 
--- Live refresh for the options toggle. Wiping BOTH caches is required: IsQuestMob short-circuits
--- on questMobCache[unit] ~= nil, so a unit cached while OFF never gets objective text extracted.
+-- Live refresh for the quest options (the Rare/Quest and Quest Objective Text boxes, Show In
+-- Instances, Text Size). Wiping BOTH caches is required: IsQuestMob short-circuits on
+-- questMobCache[unit] ~= nil, so a unit cached without its objective text never gets it.
 function ns.RefreshQuestObjective()
     wipe(questMobCache)
     wipe(ns._questObjText)
@@ -461,13 +485,17 @@ ns._npSlotLevelFS = {}  -- plate font string keys painted in level mode
 ns._npSlotLevelCK = {}  -- parallel: the owning slot's colour key (unreadable-level fallback)
 -- Materialized with the class flags: the font string key each bottom slot owns
 -- (false = none, or a later slot rewrites that shared font string), whether
--- either owns one (the cast show / hide re-anchor runs only then), and the slot
--- showing Target of Target (false = none; its UNIT_TARGET registration follows
--- it) plus whether that slot is in class mode. _npToTUnits caches "<unit>target".
--- _npCustomTgt: a custom text reads [target] (UNIT_TARGET follows it too).
--- _npTgtTexts: either is shown, the one gate of every target-text trigger.
+-- either owns one (the cast show / hide re-anchor runs only then), the same for
+-- the top corner slots (their re-anchor follows the class power push with the
+-- name's), and the slot showing Target of Target (false = none; its UNIT_TARGET
+-- registration follows it) plus whether that slot is in class mode. _npToTUnits
+-- caches "<unit>target". _npCustomTgt: a custom text reads [target] (UNIT_TARGET
+-- follows it too). _npTgtTexts: either is shown, the one gate of every target-text
+-- trigger.
 ns._npBottomFS = { false, false }
 ns._npBottomUsed = false
+ns._npTopCornerFS = { false, false }
+ns._npTopCornerUsed = false
 ns._npToTSlot = false
 ns._npToTClass = false
 ns._npToTColorKey = nil
@@ -475,10 +503,12 @@ ns._npToTUnits = {}
 ns._npCustomTgt = false
 ns._npTgtTexts = false
 do
-    -- The order ApplyHealthTextAppearance lays the slots out in (bar slots, then top):
-    -- the last slot writing a shared font string owns it.
+    -- The order ApplyHealthTextAppearance lays the slots out in (the HP_BAR_SLOTS
+    -- entries, then Top): the last slot writing a shared font string owns it.
+    -- Indexes 4, 5 are the bottom corners, 6, 7 the top corners.
     local SLOTS = { "textSlotRight", "textSlotLeft", "textSlotCenter",
-        "textSlotBottomLeft", "textSlotBottomRight", "textSlotTop" }
+        "textSlotBottomLeft", "textSlotBottomRight", "textSlotTopLeft", "textSlotTopRight",
+        "textSlotTop" }
     local owner, ownerSlot, lastIdx = {}, {}, {}
     local COLOR_KEY = {}  -- slot -> its colour key (prebuilt for UpdateToT and the painter)
     for i = 1, #SLOTS do COLOR_KEY[SLOTS[i]] = SLOTS[i] .. "Color" end
@@ -505,7 +535,7 @@ do
         ns._npToTSlot = false
         ns._npToTClass = false
         ns._npCustomTgt = false
-        local B = ns._npBottomFS
+        local B, T = ns._npBottomFS, ns._npTopCornerFS
         -- The name is placed in FindNameSlot's slot (the first holding one), the
         -- other shared font strings by the last slot writing them.
         local nameSlot = ns.FindNameSlot()
@@ -527,6 +557,7 @@ do
             end
             if key then lastIdx[key] = i end
             if i == 4 or i == 5 then B[i - 3] = key or false end
+            if i == 6 or i == 7 then T[i - 5] = key or false end
         end
         for b = 1, 2 do
             if B[b] == "name" then
@@ -534,10 +565,16 @@ do
             elseif B[b] and lastIdx[B[b]] ~= b + 3 then
                 B[b] = false
             end
+            if T[b] == "name" then
+                if nameSlot ~= SLOTS[b + 5] then T[b] = false end
+            elseif T[b] and lastIdx[T[b]] ~= b + 5 then
+                T[b] = false
+            end
         end
         ns._npToTColorKey = ns._npToTSlot and COLOR_KEY[ns._npToTSlot] or nil
         ns._npTgtTexts = (ns._npToTSlot or ns._npCustomTgt) and true or false
         ns._npBottomUsed = (B[1] or B[2]) and true or false
+        ns._npTopCornerUsed = (T[1] or T[2]) and true or false
         for key, mode in pairs(owner) do
             if mode == "class" then
                 L[#L + 1] = key
@@ -804,8 +841,10 @@ local function GetReactionColor(unit, castSeen)
         local c = _C("tapped")
         return c.r, c.g, c.b
     end
-    -- 2. Quest mob second highest
-    if db.questMobColorEnabled and IsQuestMob(unit) then
+    -- 2. Quest mob second highest (in instanced content only while the Quest Indicator's
+    -- Show In Instances is on)
+    if db.questMobColorEnabled and (not InRealInstancedContent() or ns.NP_ShowInInstances("quest"))
+        and IsQuestMob(unit) then
         local qc = db.questMobColor or defaults.questMobColor
         return qc.r, qc.g, qc.b
     end
