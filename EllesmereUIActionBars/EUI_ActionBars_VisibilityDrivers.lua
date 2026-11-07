@@ -96,6 +96,27 @@ local function BuildVisibilityString(info, s, visOverride)
         vm = EllesmereUI.GetActiveVisibilityModes(s, "barVisibility")
     end
 
+    -- Custom conditional: replaces the checklist, the match mode and the option lanes
+    -- outright, so it settles before the Any tail below. The runtime toggle keybind
+    -- (visOverride) and an applied Visibility override (visOv) still win, the same way
+    -- they win over the saved mode. Each bar type keeps its safety prefix in front; the
+    -- pet bar's wrapper cannot AND a whole expression into its bracket, so its terms
+    -- lead as hide gates instead (adjacent brackets are OR: any of them hides).
+    if not visOverride and not visOv and EllesmereUI.VisCustomDriverString then
+        local customPrefix
+        if info.isPetBar then
+            customPrefix = "[petbattle][nopet][vehicleui][overridebar][possessbar] hide; "
+        elseif key == "MainBar" then
+            customPrefix = "[petbattle] hide; "
+        elseif info.isStance then
+            customPrefix = "[vehicleui][petbattle] hide; "
+        else
+            customPrefix = "[vehicleui][petbattle][overridebar] hide; "
+        end
+        local custom = EllesmereUI.VisCustomDriverString(s, customPrefix)
+        if custom then return custom end
+    end
+
     -- Any match: the shared builder compiles the whole tail; Lua-only lanes (instances,
     -- housing, skyriding mount) are resolved at build time, so their verdict is only as
     -- fresh as the last driver rebuild. Explicit overrides keep the legacy path.
