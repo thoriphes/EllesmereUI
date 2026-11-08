@@ -2424,6 +2424,9 @@ end
 --    bagCurrencyByChar    Bags' tracked currencies per character
 --    mageArmorByChar      AuraBuff Reminders (WoW Forever): the mage armor
 --                         each character last had up
+--    classBuffByChar      and the class buff lines each character last had up
+--    spellUprankChars     Forever Essentials' Auto Uprank Spells on Bars: the
+--                         highest spell ranks each character and pet has had
 --    global               friend groups: the groups, their order and colours,
 --                         and each friend's group by BattleTag
 --  (The upgrade-calc and gold blobs are what PRIVATE_ADDON_KEYS strips from
@@ -2463,6 +2466,8 @@ local FULL_EXPORT_EXCLUDED = {
     cdmCachedBarSizes     = true,
     bagCurrencyByChar     = true,
     mageArmorByChar       = true,
+    classBuffByChar       = true,
+    spellUprankChars      = true,
     global                = true,
     cogSeen               = true,
 }

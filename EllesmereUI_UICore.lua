@@ -1232,6 +1232,18 @@ do
         return full
     end
 
+    -- True for your own unit on WoW Forever while Blizzard's "My Surname" (UnitSurnameOwn)
+    -- is off, when your name is your first name alone: the [name:last] and [target:last]
+    -- tags show nothing for it, so "[name:first] [name:last]" reads as the first name.
+    function EllesmereUI.OwnSurnameHidden(unit)
+        if not IS_FOREVER or not unit then return false end
+        local PI = C_PlayerInfo
+        if not (PI and PI.ShouldDisplaySurname) or PI.ShouldDisplaySurname() then return false end
+        local isMe = UnitIsUnit(unit, "player")
+        if issecretvalue(isMe) then return false end
+        return isMe == true
+    end
+
     -- Name Format, on every client:
     --     EllesmereUI.ShortName(name, mode)
     -- "first" / "last" keep one word, "abbr" turns every word but the last into
