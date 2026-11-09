@@ -725,8 +725,9 @@ end
 -- spell of its rank family is (EABR.ForeverFamily). Entries are display-only
 -- textures carrying the spell for the tooltip, except the two trackers, the
 -- mage armors, the class buffs, the weapon buffs, the spell groups and the
--- custom spells the character knows, whose click casts the spell or applies
--- the item; presence goes through PlayerHasAuraByID. The section shows nothing
+-- custom spells, whose click casts the spell or applies the item (a custom
+-- spell shows only while the player knows it); presence goes through
+-- PlayerHasAuraByID. The section shows nothing
 -- in combat (its Where to Show offers no In Combat entry: always unchecked),
 -- and Camp Benefits, Well Fed, the mage armors, the class buffs and the
 -- trackers nothing in PvP either. The one-slot id table, the cached families,
@@ -833,13 +834,12 @@ function EABR.CollectForever(missing, inInstance, inPvP)
             local name = SpellName(id)
             if not (coveredIDs and (coveredIDs[id] or (name and coveredNames[name]))) then
                 local fam = EABR.ForeverFamily(id)
-                if not PlayerHasAuraByID(fam) and not (auraLock and fam and not EABR.FvRanksReadable(fam)) then
+                if Known(id) and not PlayerHasAuraByID(fam) and not (auraLock and fam and not EABR.FvRanksReadable(fam)) then
                     local dk = keys[id]
                     if not dk then dk = "forever:" .. id; keys[id] = dk end
                     local e = AcquireEntry()
-                    -- A spell the character knows (a rank in the spellbook)
-                    -- casts on click; any other (a buff someone else casts) is
-                    -- only shown.
+                    -- Only spells the character knows reach here (Known);
+                    -- with a rank in the spellbook they cast on click.
                     if name and fam and EABR._fvKnownFams[fam] then
                         CastByName(e, name, id)
                     else
