@@ -838,13 +838,11 @@ function EABR.CollectForever(missing, inInstance, inPvP)
                     local dk = keys[id]
                     if not dk then dk = "forever:" .. id; keys[id] = dk end
                     local e = AcquireEntry()
-                    -- Only spells the character knows reach here (Known);
-                    -- with a rank in the spellbook they cast on click.
-                    if name and fam and EABR._fvKnownFams[fam] then
-                        CastByName(e, name, id)
-                    else
-                        e.mode = "texture"; e.spellID = id
-                    end
+                    -- Only spells the character knows reach here (Known), and
+                    -- the click casts that spell ID on the player: a spell
+                    -- button, not the /cast-by-name macro (that one stopped
+                    -- casting a custom Find Minerals on WoW Forever).
+                    e.mode = "spell"; e.spellID = id
                     e.texture = Tex(id)
                     e.label = ShortLabel(name or tostring(id))
                     e.cat = "forever"; e.dismissKey = dk
