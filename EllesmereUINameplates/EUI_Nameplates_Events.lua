@@ -485,6 +485,11 @@ manager:SetScript("OnEvent", function(self, event, unit)
         -- Non-Target and Out of Combat Opacity: gaining/losing a target flips every plate's
         -- fade state, so this is the one full-iteration site. Zero cost while off (compares).
         if ns._ntAlpha < 1 or ns._oocAlpha < 1 then ns.NT_ApplyAll() end
+        -- Gray-level plates show while targeted: only the old and new target change.
+        if ns._trivOn then
+            if oldTarget then ns.TRIV_Eval(oldTarget) end
+            if ns._cachedTargetPlate then ns.TRIV_Eval(ns._cachedTargetPlate) end
+        end
     elseif event == "PLAYER_FOCUS_CHANGED" then
         -- PERF: only update old + new focus plates instead of iterating all
         local oldFocus = ns._cachedFocusPlate
@@ -524,6 +529,10 @@ manager:SetScript("OnEvent", function(self, event, unit)
             if ns._cachedFocusPlate and ns._cachedFocusPlate ~= oldFocus then
                 ns.NT_Apply(ns._cachedFocusPlate)
             end
+        end
+        if ns._trivOn then
+            if oldFocus then ns.TRIV_Eval(oldFocus) end
+            if ns._cachedFocusPlate then ns.TRIV_Eval(ns._cachedFocusPlate) end
         end
     elseif event == "UPDATE_MOUSEOVER_UNIT" then
         ns._UpdateMouseover()
