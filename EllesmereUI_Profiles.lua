@@ -2462,6 +2462,7 @@ end
 --                         character's birthday
 --    cdmCachedBarSizes    Cooldown Manager bar sizes cached per character
 --    bagCurrencyByChar    Bags' tracked currencies per character
+--    bagPinnedByChar      Bags' pinned items per character
 --    mageArmorByChar      AuraBuff Reminders (WoW Forever): the mage armor
 --                         each character last had up
 --    classBuffByChar      and the class buff lines each character last had up
@@ -2505,6 +2506,7 @@ local FULL_EXPORT_EXCLUDED = {
     raidHoroscope         = true,
     cdmCachedBarSizes     = true,
     bagCurrencyByChar     = true,
+    bagPinnedByChar       = true,
     mageArmorByChar       = true,
     classBuffByChar       = true,
     spellUprankChars      = true,
@@ -4656,7 +4658,7 @@ local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLab
     local bg = popup:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(0.077, 0.068, 0.058, 1)
-    EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PanelPP)
+    EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, bg)
 
     -- Title
     local titleFS = EllesmereUI.MakeFont(popup, 15, "", 1, 1, 1)
