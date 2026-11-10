@@ -298,9 +298,10 @@ _dragUpdateFrame:SetScript("OnUpdate", function()
 
         local cats = EUI_CategoryManager:GetCategories()
 
-        -- Block drops onto/above special entries (Pinned Items, Recent Items) -- nothing drags above the divider.
+        -- Block drops onto/above special entries (Pinned Items, Recent Items) -- nothing drags above the divider,
+        -- and nothing lands among the virtual categories at the tail.
         local targetCatCheck = cats[target]
-        if targetCatCheck and (targetCatCheck.isPinned or targetCatCheck.isRecent) then
+        if targetCatCheck and (targetCatCheck.isPinned or targetCatCheck.isRecent or targetCatCheck.isVirtual) then
             line:Hide(); hl:Hide()
             _dragDropMode = nil; _dragDropTarget = nil
             return
@@ -545,8 +546,10 @@ local function StopSidebarDrag()
                     end
                     if insertAt < 1 then insertAt = 1 end
                     if insertAt > #cats + 1 then insertAt = #cats + 1 end
-                    -- Junk stays last (as in ReorderCategory)
-                    if cats[#cats] and cats[#cats].isJunk and insertAt > #cats then insertAt = #cats end
+                    -- Virtual categories stay the tail and Junk stays last (as in ReorderCategory)
+                    local last = EUI_CategoryManager:GetSavedCount()
+                    if insertAt > last + 1 then insertAt = last + 1 end
+                    if cats[last] and cats[last].isJunk and insertAt > last then insertAt = last end
                     for b = #ordered, 1, -1 do
                         table.insert(cats, insertAt, ordered[b])
                     end
@@ -964,8 +967,8 @@ local function ShowCategoryContextMenu(btn, catIdx, isGroupHeader, isGroupMember
     local cats = EUI_CategoryManager:GetCategories()
     local cat = cats[catIdx]
     if not cat then return end
-    -- Set children have no menu actions (rename/group/hide all N/A): no empty menu
-    if cat.isEquipSet then return end
+    -- Set children and virtual categories have no menu actions (rename/group/hide all N/A): no empty menu
+    if cat.isEquipSet or cat.isVirtual then return end
 
     MenuUtil.CreateContextMenu(btn, function(_, rootDescription)
         local myGroup = cat.groupName
@@ -1218,7 +1221,7 @@ local function BuildSidebarButtons(categoryCounts, totalCount)
             elseif cat.isRecent and BP().bagShowRecentItems == false then
                 -- skip
             else
-                displayList[#displayList + 1] = { catIdx = ci, name = cat.name, icon = cat.icon or 134400, isAtlas = cat.isAtlas, count = count, noMove = cat.noMove, isPinned = cat.isPinned, isRecent = cat.isRecent, isUserCreated = cat.isUserCreated }
+                displayList[#displayList + 1] = { catIdx = ci, name = cat.name, icon = cat.icon or 134400, isAtlas = cat.isAtlas, count = count, noMove = cat.noMove, isPinned = cat.isPinned, isRecent = cat.isRecent, isUserCreated = cat.isUserCreated, isVirtual = cat.isVirtual }
                 if anchor then EmitSetChildren(1) end
             end
         end
@@ -1232,7 +1235,8 @@ local function BuildSidebarButtons(categoryCounts, totalCount)
             local keep = true
             if entry.count == 0 then
                 -- Always keep: All Items, OneBag, noMove (Pinned/Recent), user-created
-                if entry.catIdx >= 1 and not entry.noMove and not entry.isUserCreated then
+                -- (virtual categories are noMove too, but hide when empty)
+                if entry.catIdx >= 1 and (not entry.noMove or entry.isVirtual) and not entry.isUserCreated then
                     if entry.isGroupHeader then
                         -- Hide group header if all members are 0
                         keep = false

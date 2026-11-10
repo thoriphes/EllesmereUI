@@ -19,6 +19,8 @@ local CANCEL_H = 18  -- smallest cancel square
 local GAP = 2
 local Secret = EllesmereUI.IsSecret
 local function Readable(t) return type(t) == "table" and not Secret(t) and not (canaccesstable and not canaccesstable(t)) end
+-- eui's group finder skin is on; off, our rows and buttons take blizzard's look (a reload swaps, like the skin)
+local function Skinned() return ns.SkinOn and ns.SkinOn() or false end
 
 -- display settings, in the profile (EllesmereUIGroupFinder.lua)
 local function DB() return ns.OwnListDB() end
@@ -119,9 +121,19 @@ local function SignedUpAt(id)
     end
     return appliedAt[id]
 end
-local function Elapsed(at)
-    local s = math.max(0, math.floor(GetTime() - at))
+-- time left before the application times out, like blizzard's
+local function TimeLeft(at)
+    local s = math.max(0, APP_TIMEOUT - math.floor(GetTime() - at))
     return string.format("%d:%02d", math.floor(s / 60), s % 60)
+end
+
+-- a friend or guildmate in the group: blizzard's blue name (once per row paint: no table)
+local function FriendColor(info)
+    local bn, char, guild = info.numBNetFriends, info.numCharFriends, info.numGuildMates
+    if Secret(bn) or Secret(char) or Secret(guild) then return nil end
+    if (tonumber(bn) or 0) + (tonumber(char) or 0) + (tonumber(guild) or 0) > 0 and BATTLENET_FONT_COLOR then
+        return BATTLENET_FONT_COLOR:GetRGB()
+    end
 end
 
 -- blizzard's row check, plus the relisted case
@@ -412,13 +424,17 @@ local STATUS = {
     failed            = St(LFG_LIST_APP_FAILED, "Failed", R),
 }
 -- underline setting + color per status
-local LINE_DELISTED  = { "lineDelisted", 0.6, 0.6, 0.6 }
-local LINE_ACCEPTED  = { "lineAccepted", 0.1, 0.9, 0.1 }
-local LINE_CANCELLED = { "lineCancelled", 1, 0.55, 0.1 }
-local LINE_DECLINED  = { "lineDeclined", 1, 0.2, 0.2 }
+-- each status: its switch, its own color and the key of the user's color
+local LINE_DELISTED  = { "lineDelisted", 0.6, 0.6, 0.6, "color_lineDelisted" }
+local LINE_ACCEPTED  = { "lineAccepted", 0.1, 0.9, 0.1, "color_lineAccepted" }
+local LINE_CANCELLED = { "lineCancelled", 1, 0.55, 0.1, "color_lineCancelled" }
+local LINE_DECLINED  = { "lineDeclined", 1, 0.2, 0.2, "color_lineDeclined" }
+-- by switch, for the settings page's color pickers
+ns.STATUS_LINES = { lineDelisted = LINE_DELISTED, lineAccepted = LINE_ACCEPTED,
+    lineCancelled = LINE_CANCELLED, lineDeclined = LINE_DECLINED }
 -- a status's color: the user's, else its own
 local function StatusColor(line)
-    local c = ns.OwnListGet("color_" .. line[1])
+    local c = ns.OwnListGet(line[5])
     if type(c) == "table" then return c.r or 1, c.g or 1, c.b or 1 end
     return line[2], line[3], line[4]
 end
@@ -434,11 +450,18 @@ local LINE_OF = {
 local function MakeRow(i, parent)
     local r = CreateFrame("Button", nil, parent or body)
     r:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    local stock = not Skinned()
+    r.stock = stock
     r.bg = r:CreateTexture(nil, "BACKGROUND")
     r.bg:SetAllPoints()
-    r.bg:SetColorTexture(1, 1, 1, 0.03)
+    r.bg:SetColorTexture(1, 1, 1, stock and 0.04 or 0.03)
     r.sel = r:CreateTexture(nil, "BORDER")
     r.sel:SetAllPoints()
+    if stock then
+        r.sel:SetAtlas("groupfinder-highlightbar-yellow")
+        r.sel:SetBlendMode("ADD")
+        r.sel:Hide()
+    end
     -- status underline
     r.under = r:CreateTexture(nil, "ARTWORK", nil, 7)
     r.under:SetPoint("BOTTOMLEFT", r, "BOTTOMLEFT", 0, 0)
@@ -451,7 +474,12 @@ local function MakeRow(i, parent)
     r.stat:Hide()
     r.hl = r:CreateTexture(nil, "HIGHLIGHT")
     r.hl:SetAllPoints()
-    r.hl:SetColorTexture(1, 1, 1, 0.06)
+    if stock then
+        r.hl:SetAtlas("groupfinder-highlightbar-blue")
+        r.hl:SetBlendMode("ADD")
+    else
+        r.hl:SetColorTexture(1, 1, 1, 0.06)
+    end
     -- the row without its note: icons and counts centre on it
     r.mid = r:CreateTexture(nil, "BACKGROUND")
     r.mid:SetPoint("TOPLEFT", r, "TOPLEFT", 0, 0)
@@ -490,23 +518,43 @@ local function MakeRow(i, parent)
     r.lineH, r.lineY = {}, {}
     r.members, r.mpool, r.needs = {}, {}, {}
     -- cancel button
-    r.cancel = CreateFrame("Button", nil, r)
-    r.cancel.bg = r.cancel:CreateTexture(nil, "BACKGROUND")
-    r.cancel.bg:SetAllPoints()
-    r.cancel.bg:SetColorTexture(0.06, 0.06, 0.06, 0.95)
-    r.cancel.edge = EUI.MakeBorder(r.cancel, 0.25, 0.25, 0.25, 1, EUI.PanelPP)
-    r.cancel.tex = r.cancel:CreateTexture(nil, "OVERLAY")
-    r.cancel.tex:SetTexture(X_TEX)
-    r.cancel.tex:SetPoint("CENTER")
-    r.cancel.tex:SetVertexColor(0.8, 0.8, 0.8, 1)
+    if stock then
+        -- blizzard's red x button
+        r.cancel = CreateFrame("Button", nil, r, "UIMenuButtonStretchTemplate")
+        r.cancel.tex = r.cancel:CreateTexture(nil, "ARTWORK")
+        r.cancel.tex:SetAtlas("groupfinder-icon-redx")
+        r.cancel.tex:SetPoint("CENTER")
+        r.cancel:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+        -- the template's highlight is inset and cropped; the whole glow, on the whole button
+        local hl = r.cancel:GetHighlightTexture()
+        if hl then
+            hl:ClearAllPoints()
+            hl:SetAllPoints()
+            hl:SetTexCoord(0, 1, 0, 1)
+        end
+    else
+        r.cancel = CreateFrame("Button", nil, r)
+        r.cancel.bg = r.cancel:CreateTexture(nil, "BACKGROUND")
+        r.cancel.bg:SetAllPoints()
+        r.cancel.bg:SetColorTexture(0.06, 0.06, 0.06, 0.95)
+        r.cancel.edge = EUI.MakeBorder(r.cancel, 0.25, 0.25, 0.25, 1, EUI.PanelPP)
+        r.cancel.tex = r.cancel:CreateTexture(nil, "OVERLAY")
+        r.cancel.tex:SetTexture(X_TEX)
+        r.cancel.tex:SetPoint("CENTER")
+        r.cancel.tex:SetVertexColor(0.8, 0.8, 0.8, 1)
+    end
     r.cancel:SetScript("OnEnter", function(self)
-        self.tex:SetVertexColor(1, 0.3, 0.3, 1)
-        if self.edge and self.edge.SetColor then self.edge:SetColor(1, 0.3, 0.3, 1) end
+        if not stock then
+            self.tex:SetVertexColor(1, 0.3, 0.3, 1)
+            if self.edge and self.edge.SetColor then self.edge:SetColor(1, 0.3, 0.3, 1) end
+        end
         EUI.ShowWidgetTooltip(self, CANCEL_SIGN_UP or "Cancel Sign Up")
     end)
     r.cancel:SetScript("OnLeave", function(self)
-        self.tex:SetVertexColor(0.8, 0.8, 0.8, 1)
-        if self.edge and self.edge.SetColor then self.edge:SetColor(0.25, 0.25, 0.25, 1) end
+        if not stock then
+            self.tex:SetVertexColor(0.8, 0.8, 0.8, 1)
+            if self.edge and self.edge.SetColor then self.edge:SetColor(0.25, 0.25, 0.25, 1) end
+        end
         EUI.HideWidgetTooltip()
     end)
     r.cancel:SetScript("OnClick", function(self)
@@ -733,7 +781,8 @@ local function Layout(r, h)
     -- cancel square left of the text, about two lines tall (placed in fill)
     local cs = math.max(CANCEL_H, math.min(h - 8, tS + nS + 6))
     r.cancel:SetSize(cs, cs)
-    r.cancel.tex:SetSize(math.floor(cs * 0.45 + 0.5), math.floor(cs * 0.45 + 0.5))
+    local xs = math.floor(cs * (r.stock and 0.6 or 0.45) + 0.5)
+    r.cancel.tex:SetSize(xs, xs)
     r.cancelSize = cs
     r.cancel:SetFrameLevel(r:GetFrameLevel() + 5)
     SetSize(r.score, ns.OwnListSize("scoreSize"))
@@ -815,7 +864,7 @@ local function LineThree(r, id, info, src)
     local at = src.signedAt(id)
     if at then
         if r.l3prev then Put(r, r.sep3, 4) end
-        r.timer:SetText(Elapsed(at))
+        r.timer:SetText(TimeLeft(at))
         Put(r, r.timer, 4)
         r.signedAt = at
     end
@@ -835,6 +884,7 @@ local function Fill(r, id, src)
     -- colored group names
     local nr, ng, nb
     nr, ng, nb = src.nameColor(id, info, ai)  -- "and" would drop g and b
+    if not nr then nr, ng, nb = FriendColor(info) end
     if nr then r.name:SetTextColor(nr, ng, nb) else r.name:SetTextColor(1, 0.82, 0) end
     r.act:SetText(ai and ai.fullName or "")
     -- the note, only where the list left room for it (protected text, straight to the font string)
@@ -1132,8 +1182,12 @@ local function Fill(r, id, src)
         r.score:ClearAllPoints()
         r.score:SetPoint("RIGHT", r.mid, "RIGHT", r.scoreX or -6, 0)
     end
-    local ar, ag, ab = Accent()
-    r.sel:SetColorTexture(ar, ag, ab, selected == id and 0.18 or 0)
+    if r.stock then
+        r.sel:SetShown(selected == id)
+    else
+        local ar, ag, ab = Accent()
+        r.sel:SetColorTexture(ar, ag, ab, selected == id and 0.18 or 0)
+    end
     if dimmed[id] then r:SetAlpha(0.35)
     else r:SetAlpha((st and st ~= STATUS.applied and st ~= STATUS.invited) and 0.5 or 1) end
     r:Show()
@@ -1336,16 +1390,10 @@ local function PvFit()
     return math.ceil(fh * s) + PV_MARGIN * 2
 end
 
--- the tooltips' names: the raid & party frames preview roster (supporters'
--- names, EUI_RaidFrames_Preview.lua ns._PV_ROSTER), kept in step with it.
--- members take a name of their own class first
-local PV_ROSTER = {
-    { "Xeno", "MONK" }, { "Grimjaw", "WARRIOR" }, { "Stickymittens", "PALADIN" }, { "Toxik", "MONK" },
-    { "Delasteve", "PALADIN" }, { "Burne", "DRUID" }, { "Lily", "PALADIN" }, { "Kulia", "PALADIN" },
-    { "Thiaspriest", "PRIEST" }, { "Pelleas", "SHAMAN" }, { "Khardi", "HUNTER" }, { "Morgath", "DEATHKNIGHT" },
-    { "Drakmoor", "DEMONHUNTER" }, { "Embertide", "EVOKER" }, { "Elyndra", "MAGE" }, { "Fenwick", "ROGUE" },
-    { "Zulkhar", "WARLOCK" }, { "Luneth", "DRUID" }, { "Stormhelm", "SHAMAN" },
-}
+-- the tooltips' names: the suite's preview roster (EllesmereUI.PREVIEW_ROSTER,
+-- shared with the raid & party frames preview). members take a name of their
+-- own class first
+local PV_ROSTER = EllesmereUI.PREVIEW_ROSTER
 
 ns.PreviewRoster = PV_ROSTER  -- the applicant preview's names too
 
@@ -1357,9 +1405,9 @@ local function PvPlayers(id)
             for i = 0, #PV_ROSTER - 1 do
                 local k = (start + i) % #PV_ROSTER + 1
                 local e = PV_ROSTER[k]
-                if not used[k] and (pass == 2 or e[2] == cls) then
+                if not used[k] and (pass == 2 or e.class == cls) then
                     used[k] = true
-                    return e[1]
+                    return e.name
                 end
             end
         end
@@ -1460,20 +1508,19 @@ function ns.OwnListPreviewBuild(hdr, hdrW)
         pv.appHost:SetPoint("TOPLEFT", view, "TOPLEFT", 0, 0)
         pv.appHost:SetClipsChildren(true)
         pv.appHost:Hide()
-        -- groups or applicants, picked right of the preview
-        if EUI.BuildDropdownControl then
-            local dd = EUI.BuildDropdownControl(hdr, PV_DD_W, hdr:GetFrameLevel() + 3,
-                { groups = "Groups", dungeon = "Dungeon Applicants", raid = "Raid Applicants" },
-                { "groups", "dungeon", "raid" },
-                function() return pv.mode or "groups" end,
-                function(v)
-                    pv.mode = v
-                    GameTooltip_Hide()
-                    ns.OwnListPreviewPaint()
-                end)
-            dd:SetPoint("LEFT", f, "RIGHT", PV_DD_GAP, 0)
-            pv.dd = dd
-        end
+        -- groups or applicants, picked right of the preview (the settings page
+        -- builds this header, so the options widgets are loaded)
+        local dd = EUI.BuildDropdownControl(hdr, PV_DD_W, hdr:GetFrameLevel() + 3,
+            { groups = "Groups", dungeon = "Dungeon Applicants", raid = "Raid Applicants" },
+            { "groups", "dungeon", "raid" },
+            function() return pv.mode or "groups" end,
+            function(v)
+                pv.mode = v
+                GameTooltip_Hide()
+                ns.OwnListPreviewPaint()
+            end)
+        dd:SetPoint("LEFT", f, "RIGHT", PV_DD_GAP, 0)
+        pv.dd = dd
         pv.rows = {}
         for i = 1, #PV_IDS do
             local r = MakeRow(nil, view)
@@ -1637,6 +1684,7 @@ local function Flush()
         full = by == "high" or by == "low" or by == "big" or by == "small"
     end
     if not full then
+        local notesOn = ns.OwnListGet("groupNotes")
         for id in pairs(dirty) do
             if ResultSecret(id) then
                 full = true
@@ -1650,6 +1698,12 @@ local function Flush()
                     full = true
                     break
                 end
+            end
+            -- a listed group's note came or went: its row is a line taller or shorter
+            if notesOn and (isApp[id] or was == true or dimmed[id])
+               and (NoteText(C_LFGList.GetSearchResultInfo(id)) ~= nil) ~= (noteOf[id] == true) then
+                full = true
+                break
             end
         end
     end
@@ -1700,7 +1754,8 @@ local function Build()
     -- our sign up button over blizzard's
     local sb = SP.SignUpButton
     if sb then
-        signBtn = CreateFrame("Button", nil, SP)
+        local stock = not Skinned()
+        signBtn = CreateFrame("Button", nil, SP, stock and "UIPanelButtonTemplate" or nil)
         signBtn:SetAllPoints(sb)
         signBtn:SetFrameLevel(sb:GetFrameLevel() + 5)
         signBtn:SetNormalFontObject("GameFontNormal")
@@ -1710,9 +1765,10 @@ local function Build()
         signBtn:SetMotionScriptsWhileDisabled(true)
         local skin = EUI._ModuleNS and EUI._ModuleNS.EllesmereUIBlizzardSkin
         local S = skin and skin.WSkin
-        if S and S.Button then
+        -- stock keeps the template's art
+        if not stock and S and S.Button then
             S.Button(signBtn)
-        else
+        elseif not stock then
             local bg = signBtn:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints()
             bg:SetColorTexture(0.06, 0.06, 0.06, 0.95)
@@ -1747,7 +1803,7 @@ local function Build()
         tick = 0
         for i = 1, #rows do
             local r = rows[i]
-            if r.signedAt and r:IsShown() then r.timer:SetText(Elapsed(r.signedAt)) end
+            if r.signedAt and r:IsShown() then r.timer:SetText(TimeLeft(r.signedAt)) end
         end
     end)
     -- result updates gather here and flush once, on the next frame
