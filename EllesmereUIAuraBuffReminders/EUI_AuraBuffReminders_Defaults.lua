@@ -216,6 +216,8 @@ if EABR.FOREVER then
         customIDs = {},     -- spell IDs the user tracks, in the order added
         customClasses = {}, -- spell ID -> { CLASS = false }: the classes a custom ID does not remind (unset: every class)
         customGroups = {},  -- { name = string, ids = { spell IDs } }: one reminder while none of ids is active
+        palAura = false,        -- paladin: aura reminder
+        palRF = false,          -- paladin: Righteous Fury while grouped as Tank
     }
 end
 
