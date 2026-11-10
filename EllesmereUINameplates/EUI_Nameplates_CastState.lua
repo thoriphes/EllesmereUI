@@ -49,40 +49,47 @@ function ns.NT_Apply(plate)
     local unit = plate.unit
     if not unit then return end
     local a = 1
-    local nt = ns._ntAlpha
-    if nt < 1 and UnitExists("target")
-       and not UnitIsUnit(unit, "target")
-       and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus"))
-       and not UnitIsUnit(unit, "player") then
-        a = nt
-    end
-    -- Out of Combat and out-of-range fades, which casting never lifts.
-    local rest = plate._oorCurAlpha or 1
-    local ooc = ns._oocAlpha
-    if ooc < 1 and not UnitAffectingCombat(unit) and not UnitIsUnit(unit, "target")
-       and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus")) then
-        rest = rest * ooc
-    end
-    if a < 1 and ns._ntCastFull and ns._castingPlates[plate] then
-        if ns._ntCastImportantOnly then
-            -- The flag may be SECRET, so the write is change-checked on its numeric
-            -- inputs; NotifyCastStarted drops them when a new cast brings a new flag.
-            local lo = a * rest
-            if plate._ntCurAlpha ~= -1 or plate._ntBoolHi ~= rest or plate._ntBoolLo ~= lo then
-                local imp = plate._castImportant
-                if type(imp) == "nil" then imp = false end
-                -- Never a plain number: the next numeric apply always writes.
-                plate._ntCurAlpha = -1
-                plate._ntBoolHi, plate._ntBoolLo = rest, lo
-                -- A SECRET flag makes the plate root's alpha secret for the session: never
-                -- compare its GetAlpha() or a child's GetEffectiveAlpha().
-                plate:SetAlphaFromBoolean(imp, rest, lo)
-            end
-            return
+    local tfHidden = ns._tfHidden
+    if tfHidden and tfHidden[unit] then
+        -- Force Nameplate on Current Target: a plate in a category held on for
+        -- the target alone (EUI_Nameplates_TargetForce.lua). Fully hidden.
+        a = 0
+    else
+        local nt = ns._ntAlpha
+        if nt < 1 and UnitExists("target")
+           and not UnitIsUnit(unit, "target")
+           and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus"))
+           and not UnitIsUnit(unit, "player") then
+            a = nt
         end
-        a = 1
+        -- Out of Combat and out-of-range fades, which casting never lifts.
+        local rest = plate._oorCurAlpha or 1
+        local ooc = ns._oocAlpha
+        if ooc < 1 and not UnitAffectingCombat(unit) and not UnitIsUnit(unit, "target")
+           and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus")) then
+            rest = rest * ooc
+        end
+        if a < 1 and ns._ntCastFull and ns._castingPlates[plate] then
+            if ns._ntCastImportantOnly then
+                -- The flag may be SECRET, so the write is change-checked on its numeric
+                -- inputs; NotifyCastStarted drops them when a new cast brings a new flag.
+                local lo = a * rest
+                if plate._ntCurAlpha ~= -1 or plate._ntBoolHi ~= rest or plate._ntBoolLo ~= lo then
+                    local imp = plate._castImportant
+                    if type(imp) == "nil" then imp = false end
+                    -- Never a plain number: the next numeric apply always writes.
+                    plate._ntCurAlpha = -1
+                    plate._ntBoolHi, plate._ntBoolLo = rest, lo
+                    -- A SECRET flag makes the plate root's alpha secret for the session: never
+                    -- compare its GetAlpha() or a child's GetEffectiveAlpha().
+                    plate:SetAlphaFromBoolean(imp, rest, lo)
+                end
+                return
+            end
+            a = 1
+        end
+        a = a * rest
     end
-    a = a * rest
     if (plate._ntCurAlpha or 1) ~= a then
         plate._ntCurAlpha = a
         plate:SetAlpha(a)

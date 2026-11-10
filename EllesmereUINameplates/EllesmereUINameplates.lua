@@ -321,6 +321,7 @@ local defaults = {
     friendlyShowLevel = false,
     friendlyLevelDiffColor = false,
     showEnemyPets = false,
+    forceTargetPlate = false,  -- Force Nameplate on Current Target (EUI_Nameplates_TargetForce.lua)
     font = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF",
     textSlotTop = "enemyName",
     textSlotRight = "healthPercent",
