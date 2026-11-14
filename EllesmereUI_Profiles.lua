@@ -141,7 +141,7 @@ end
 -------------------------------------------------------------------------------
 local PRIVATE_ADDON_KEYS = {
     ["EllesmereUIDataBars"] = { "characters" },  -- gold record -> EllesmereUIDB.goldLedger
-    ["EllesmereUIQoL"]      = { "chars" },       -- upgrade calc -> EllesmereUIDB.qolUpgradeCalcChars
+    ["EllesmereUIQoL"]      = { "chars" },       -- upgrade calc -> EllesmereUIDB.chars[guid].upgradeCalc
 }
 
 -- Strip account data from an addons table, in place. Accepts either keyspace
@@ -201,7 +201,7 @@ if EllesmereUI.IS_FOREVER == true then AB_BAREWORD.FavorBar = true end
 local UF_BAREWORD = {
     player=true, target=true, focus=true, pet=true, targettarget=true,
     focustarget=true, boss=true, classPower=true,
-    playerCastbar=true, targetCastbar=true, focusCastbar=true,
+    playerCastbar=true, targetCastbar=true, focusCastbar=true, petCastbar=true,
 }
 -- providedFolder (already a local folder: elem.folder, or a payload value that
 -- has been CanonToLocal'd) wins; the static resolution is the fallback.
@@ -778,6 +778,7 @@ local function StampUnlockLayoutIfMissing(prof)
         { cb = "playerCastbar", parent = "player" },
         { cb = "targetCastbar", parent = "target" },
         { cb = "focusCastbar",  parent = "focus" },
+        { cb = "petCastbar",    parent = "pet" },
     }
     for _, def in ipairs(CB_DEFAULTS) do
         if not snap.anchors[def.cb] then
@@ -954,7 +955,7 @@ end
 --  runtime spec event handler.
 --
 --  Resolution order:
---    1. Cached spec from lastSpecByChar (reliable across sessions)
+--    1. Cached spec from EllesmereUIDB.chars[guid].lastSpec (reliable across sessions)
 --    2. Live C_SpecializationInfo.GetSpecialization() API (available after ADDON_LOADED for
 --       returning characters, may be nil for brand-new characters)
 --
@@ -966,13 +967,11 @@ local function ResolveSpecProfile()
     local specProfiles = EllesmereUIDB.specProfiles
     if not specProfiles or not next(specProfiles) then return nil end
 
-    local charKey = EllesmereUI.CharKey(" - ", EllesmereUIDB.lastSpecByChar)
-    if not EllesmereUIDB.lastSpecByChar then
-        EllesmereUIDB.lastSpecByChar = {}
-    end
+    local charKey = EllesmereUI.CharGUID()
+    local mine = EllesmereUI.CharEntry(true)
 
     -- Prefer cached spec from last session (always reliable)
-    local resolvedSpecID = EllesmereUIDB.lastSpecByChar[charKey]
+    local resolvedSpecID = mine and mine.lastSpec
 
     -- Fall back to live API if no cached value
     if not resolvedSpecID then
@@ -981,7 +980,7 @@ local function ResolveSpecProfile()
             local liveSpecID = C_SpecializationInfo.GetSpecializationInfo(specIdx)
             if liveSpecID then
                 resolvedSpecID = liveSpecID
-                EllesmereUIDB.lastSpecByChar[charKey] = resolvedSpecID
+                if mine then mine.lastSpec = resolvedSpecID end
             end
         end
     end
@@ -1846,6 +1845,14 @@ function EllesmereUI.ProfileChangesStyle(profileData)
     if type(profileData) ~= "table" or type(profileData.addons) ~= "table" then return false end
     local reg = EllesmereUI._ModuleNS
     if not reg then return false end
+    -- Bags' WoW Forever style: the incoming profile's own Bags pick, else the
+    -- look most of its modules use (BagsForeverWanted).
+    local bags = EllesmereUI.IS_FOREVER and reg.EllesmereUIBags
+    if bags and bags.BagsForeverWanted then
+        local incoming = profileData.addons.EllesmereUIBags
+        local want = bags.BagsForeverWanted(type(incoming) == "table" and incoming or nil, profileData.addons)
+        if bags.BagsForever() ~= want then return true end
+    end
     for i = 1, #STYLE_FLAGS do
         local f = STYLE_FLAGS[i]
         local mns = reg[f.folder]
@@ -1901,6 +1908,37 @@ function EllesmereUI.RenderedLook()
         if look ~= "blizzard" and look ~= "forever" then return false end
     end
     return look
+end
+
+--- WoW Forever: true when more than half of the loaded modules' styleable
+--- surfaces are on the WoW Forever look in a profile's addons table (nil = the
+--- active profile's): the Blizzard flag set with its Forever sibling, which a
+--- surface with no variant of its own also carries beside the Blizzard flag (as
+--- RenderedLook reads it); the Classic flag wins. Bags' WoW Forever style
+--- follows it while the profile has no Bags style picked. false off the Forever
+--- client and with no loaded surface. Reads settings only.
+function EllesmereUI.ForeverLookMajority(addons)
+    if not EllesmereUI.IS_FOREVER then return false end
+    if addons == nil then
+        local p = EllesmereUI.GetActiveProfileData()
+        addons = p and p.addons
+    end
+    local reg = EllesmereUI._ModuleNS
+    if type(addons) ~= "table" or not reg then return false end
+    local total, forever = 0, 0
+    for i = 1, #STYLE_FLAGS do
+        local f = STYLE_FLAGS[i]
+        if reg[f.folder] and not f.retailOnly then
+            total = total + 1
+            local t = addons[f.data or f.folder]
+            if f.sub and type(t) == "table" then t = t[f.sub] end
+            if type(t) == "table" and t[f.key] and not t[f.classic]
+                and t[f.forever or (f.key:gsub("Blizzard", "Forever", 1))] then
+                forever = forever + 1
+            end
+        end
+    end
+    return forever * 2 > total
 end
 
 -------------------------------------------------------------------------------
@@ -2058,8 +2096,9 @@ end
 -- roles), charSheetCollapsedSections (transient UI state), characterFramePos /
 -- friendsFramePos (dragged panel positions, resolution- bound), tooltipFixedPos (stale
 -- account key; the live one is per-profile and rides the profile itself),
--- blizzWindowModernBG (dead key, read nowhere), mailAltRoster / mailAltHidden (the
--- player's own characters and which of them the Mail card's Alt List leaves out).
+-- blizzWindowModernBG (dead key, read nowhere), the character roster and its mailAltHidden
+-- (the player's own characters and which of them the Mail card's Alt List leaves out),
+-- mailAltFriends (the friends' characters it has seen), mailAltListTab (its shown tab).
 -------------------------------------------------------------------------------
 local BLIZZ_SKIN_GLOBAL_KEYS = {}
 do
@@ -2089,12 +2128,19 @@ do
         "queueTimerBarHeight", "queueTimerTextOffsetY",
         "resurrectAcceptGlow",
         "reskinWidgetBars", "widgetBarMinSize", "reskinExtraActionButton",
+        "reskinTimerBars", "timerBarsTexture", "timerBarsFillMode",
+        "timerBarsFillColor", "timerBarsFillOpacity", "timerBarsBgColor",
+        "timerBarsBgOpacity", "timerBarsTypeColors", "timerBarsBreathColor",
+        "timerBarsFatigueColor", "timerBarsFeignColor", "timerBarsShowText",
+        "timerBarsTextSize", "timerBarsTextColor", "timerBarsTextX",
+        "timerBarsTextY", "timerBarsWidth", "timerBarsHeight",
+        "timerBarsCornerRadius", "timerBarsCornerMask",
         "popupMenuButtonBackgroundColor", "popupMenuButtonTextColorMode",
         "popupMenuButtonTextColor",
         "accentReskinElements",
     })
     -- Shared border-editor key sets (tooltip / popup menu / popup menu button)
-    for _, prefix in ipairs({ "tooltip", "popupMenu", "popupMenuButton", "lootWindow", "lootIcon" }) do
+    for _, prefix in ipairs({ "tooltip", "popupMenu", "popupMenuButton", "lootWindow", "lootIcon", "timerBars" }) do
         for _, suffix in ipairs({
             "BorderTexture", "BorderThickness", "BorderThicknessPx", "BorderColor",
             "BorderColorMode", "BorderOpacity", "BorderOffsetX",
@@ -2152,8 +2198,8 @@ do
         "lfgRememberRoles",
         "merchantShowAsList", "merchantListRowHeight", "merchantShowItemLevel", "merchantBulkBuy",
         "merchantExpand", "merchantCols", "merchantRows",
+        "merchantMarkOwned", "merchantHideKnown",
         "mailAltList", "mailAltListMax", "mailAltListMinLevel", "mailAltListSort",
-        "mailCloseBags",
         -- Friends List card (WoW Forever: the friend tiles and auto-accept)
         "friendsListCard",
     })
@@ -2395,8 +2441,8 @@ end
 --  assignments, first-install state. Stores keyed by the recipient's own
 --  profiles keep the recipient's entries and take only the carried
 --  profile's from the string (FULL_IMPORT_MERGE: profile keybinds, sync
---  groups, last-spec records, color pull-from pointers, the other
---  profiles' CDM spell layouts).
+--  groups, color pull-from pointers, the other profiles' CDM spell
+--  layouts).
 --
 --  It shares NOTHING with ExportProfile / ImportProfile: no include toggles,
 --  no per-module filtering, no canonical re-keying, no store merging, no
@@ -2408,56 +2454,51 @@ end
 --  what to include: any account key added in a future version rides
 --  automatically instead of being silently missed.
 --
---  Excluded by design -- per-character data that is nobody else's:
---    goldLedger           cross-character and warband gold record
---    qolUpgradeCalcChars  Upgrade Calculator per-character cache
---    xpBarChars           XP bar session clock, XP rate and time this level
---    questWatchChars      WoW Forever quest tools: quests each character's
---                         filters and auto-track moved
---    mailAltRoster        the Mail card's Alt List: every character recorded
---    mailAltHidden        and the ones its Shown Characters leaves out
---    raidHoroscope        Party Mode's Should I Raid Tonight?: each
---                         character's birthday
---    cdmCachedBarSizes    Cooldown Manager bar sizes cached per character
---    bagCurrencyByChar    Bags' tracked currencies per character
---    mageArmorByChar      AuraBuff Reminders (WoW Forever): the mage armor
---                         each character last had up
---  (The upgrade-calc and gold blobs are what PRIVATE_ADDON_KEYS strips from
---  normal strings, at their current top-level homes. The three legacy gold
---  keys stay listed: until Bags or DataBars loads and absorbs them they are
---  still on disk.) And the game settings this client had
---  before EllesmereUI, which Uninstall EUI puts back, with the values modules
---  hand back to this client's CVars later:
---    restoreOnUninstall     (EllesmereUI_Uninstall.lua)
---    gfxBackup              Optimize My FPS and Graphics' Restore values
---    friendlyPlateVisSaved  friendly plates hidden in a follower dungeon
---    chatTellMuted          the whisper sound Chat muted
+--  FULL_EXPORT_EXCLUDED lists what it leaves out.
 -------------------------------------------------------------------------------
 local FULL_EXPORT_TYPE = "fullaccount"
 local FULL_EXPORT_EXCLUDED = {
-    goldLedger            = true,
-    dataBarsGold          = true,
-    characterGold         = true,
+    -- Per-character data that is nobody else's
+    chars                 = true, -- every character's own data, by GUID (EllesmereUI.Chars)
+    goldLedger            = true, -- warband gold and the tracking switch
+    groupFinderApps       = true, -- Group Finder application counts (account, session)
+    mailAltFriends        = true, -- Mail card Alt List: friends' characters seen
+    kickMarkers           = true, -- Kick Tracker: the group's announced markers of one instance
+    dataBarsGold          = true, -- legacy gold keys: on disk until Bags or
+    characterGold         = true, -- DataBars loads and absorbs them
     warbandGold           = true,
-    qolUpgradeCalcChars   = true,
-    xpBarChars            = true,
-    restoreOnUninstall    = true,
-    gfxBackup             = true,
-    friendlyPlateVisSaved = true,
-    chatTellMuted         = true,
-    groupFinderApps       = true,
-    questWatchChars       = true,
-    cdmRepopulatePending  = true,
+    -- Per-character stores of older builds, folded into chars by
+    -- char_roster_v1; strings from those builds still carry them
+    lastSpecByChar        = true, -- spec of each character's last session
+    qolUpgradeCalcChars   = true, -- Upgrade Calculator cache
+    xpBarChars            = true, -- XP bar session clock, rate, time this level
+    timePlayedChars       = true, -- Time Played block totals
+    travelHearths         = true, -- Travel block: hearth bind and ready time
+    questWatchChars       = true, -- Forever quest tools: filter/auto-track moves
+    questTrackerChars     = true, -- Forever quest tracker: untracked, collapsed, pinned
+    cdmRepopulatePending  = true, -- CDM spec repopulate state
     cdmRepopulateDone     = true,
-    mailAltRoster         = true,
-    mailAltHidden         = true,
-    raidHoroscope         = true,
-    cdmCachedBarSizes     = true,
-    bagCurrencyByChar     = true,
-    mageArmorByChar       = true,
+    cdmCachedBarSizes     = true, -- CDM bar sizes
+    mailAltRoster         = true, -- Mail card Alt List
+    mailAltHidden         = true, -- and the characters it hides
+    lootFeedHistory       = true, -- Forever Loot History rows
+    raidHoroscope         = true, -- Party Mode birthdays
+    bagCurrencyByChar     = true, -- Bags tracked currencies
+    bagPinnedByChar       = true, -- Bags pinned items
+    mageArmorByChar       = true, -- AuraBuff Reminders (Forever): last mage armor
+    classBuffByChar       = true, -- and last class buff lines
+    spellUprankChars      = true, -- Auto Uprank: highest ranks per character and pet
+    global                = true, -- friend groups, keyed by BattleTag
+    -- Game settings from before EllesmereUI, put back by Uninstall EUI
+    restoreOnUninstall    = true, -- EllesmereUI_Uninstall.lua
+    gfxBackup             = true, -- Optimize My FPS and Graphics' Restore values
+    friendlyPlateVisSaved = true, -- friendly plates hidden in a follower dungeon
+    chatTellMuted         = true, -- whisper sound Chat muted
+    -- Opened inline cogs: their notification dots stay for the importer
+    cogSeen               = true,
 }
 
--- Root stores keyed by profile name (or character) describe the recipient's
+-- Root stores keyed by profile name describe the recipient's
 -- own profiles. A full import keeps them and takes from the string only the
 -- carried profile's entry: fn(own, fromString, carriedName) -> new value.
 local function KeepOwn(own) return own end
@@ -2469,7 +2510,6 @@ local function OwnOrCarried(own, str, name)
 end
 local FULL_IMPORT_MERGE = {
     syncedModules  = KeepOwn,
-    lastSpecByChar = KeepOwn,
     lastNonSpecProfile = OwnOrCarried,
     colorsPullFrom     = OwnOrCarried,
     colorsSectionPullFrom = function(own, str, name)
@@ -4175,13 +4215,10 @@ do
                         specRetryTimer = nil
                         -- Record the spec so future events use the fast path
                         lastKnownSpecID = sid
-                        local ck = EllesmereUI.CharKey(" - ")
-                        lastKnownCharKey = ck
+                        lastKnownCharKey = EllesmereUI.CharGUID()
                         if not EllesmereUIDB then EllesmereUIDB = {} end
-                        if not EllesmereUIDB.lastSpecByChar then
-                            EllesmereUIDB.lastSpecByChar = {}
-                        end
-                        EllesmereUIDB.lastSpecByChar[ck] = sid
+                        local mine = EllesmereUI.CharEntry(true)
+                        if mine then mine.lastSpec = sid end
                         EllesmereUI._profileSaveLocked = false
                         -- Resolve via the unified function
                         local target = ResolveSpecProfile()
@@ -4227,7 +4264,7 @@ do
             specRetryTimer = nil
         end
 
-        local charKey = EllesmereUI.CharKey(" - ")
+        local charKey = EllesmereUI.CharGUID()
         local isFirstLogin = (lastKnownSpecID == nil)
         -- charChanged is true when the active character is different from the
         -- last session (alt-swap). On a plain /reload the charKey stays the same.
@@ -4250,8 +4287,8 @@ do
         -- Persist the current spec so PreSeedSpecProfile can guarantee the
         -- correct profile is loaded on next login via ResolveSpecProfile().
         if not EllesmereUIDB then EllesmereUIDB = {} end
-        if not EllesmereUIDB.lastSpecByChar then EllesmereUIDB.lastSpecByChar = {} end
-        EllesmereUIDB.lastSpecByChar[charKey] = specID
+        local mine = EllesmereUI.CharEntry(true)
+        if mine then mine.lastSpec = specID end
 
         -- Spec resolved successfully -- unlock auto-save if it was locked
         -- during PreSeedSpecProfile when spec was unavailable.
@@ -4337,7 +4374,7 @@ do
                 -- already injected the correct data into each child SV, the
                 -- addons built with the right values and no further action is
                 -- needed. Only call SwitchProfile if the pre-seed did not run
-                -- (e.g. first session after update, no lastSpecByChar entry).
+                -- (e.g. first session after update, no cached lastSpec).
                 if not EllesmereUI._preSeedComplete then
                     C_Timer.After(0, function()
                         C_Timer.After(0, function()
@@ -4576,7 +4613,7 @@ function EllesmereUI.AttachImportPasteAbsorber(editBox, onRetry)
     }
 end
 
-local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLabel)
+local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLabel, rawPaste)
     local POPUP_W, POPUP_H = 520, 310
     local FONT = EllesmereUI.EXPRESSWAY
 
@@ -4601,7 +4638,7 @@ local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLab
     local bg = popup:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(0.077, 0.068, 0.058, 1)
-    EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PanelPP)
+    EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, bg)
 
     -- Title
     local titleFS = EllesmereUI.MakeFont(popup, 15, "", 1, 1, 1)
@@ -4614,11 +4651,21 @@ local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLab
     subFS:SetPoint("TOP", titleFS, "BOTTOM", 0, -4)
     subFS:SetText(subtitle)
 
+    -- An empty editable box needs a visible field to paste into.
+    if not readOnly then
+        local field = CreateFrame("Frame", nil, popup)
+        field:SetPoint("TOPLEFT",     popup, "TOPLEFT",     14, -52)
+        field:SetPoint("BOTTOMRIGHT", popup, "BOTTOMRIGHT", -14, 46)
+        field:SetFrameLevel(popup:GetFrameLevel() + 1)
+        EllesmereUI.SolidTex(field, "BACKGROUND", 0, 0, 0, 0.3):SetAllPoints()
+        EllesmereUI.MakeBorder(field, 1, 1, 1, 0.12, EllesmereUI.PanelPP)
+    end
+
     -- ScrollFrame containing the EditBox
     local sf = CreateFrame("ScrollFrame", nil, popup)
     sf:SetPoint("TOPLEFT",     popup, "TOPLEFT",     20, -58)
     sf:SetPoint("BOTTOMRIGHT", popup, "BOTTOMRIGHT", -20, 52)
-    sf:SetFrameLevel(popup:GetFrameLevel() + 1)
+    sf:SetFrameLevel(popup:GetFrameLevel() + 2)
     sf:EnableMouseWheel(true)
 
     local sc = CreateFrame("Frame", nil, sf)
@@ -4696,7 +4743,7 @@ local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLab
     -- (import mode only; export boxes are read-only and set text directly).
     -- Attached after the OnTextChanged SetScript above so the hook survives.
     local absorber
-    if not readOnly then
+    if not readOnly and not rawPaste then
         absorber = EllesmereUI.AttachImportPasteAbsorber(editBox)
     end
 
@@ -4878,13 +4925,15 @@ end
 -------------------------------------------------------------------------------
 --  Import Popup
 -------------------------------------------------------------------------------
-function EllesmereUI:ShowImportPopup(onImport, title, subtitle)
+-- opts: confirmLabel (button text), rawPaste (no paste absorber; for short multi-line text).
+function EllesmereUI:ShowImportPopup(onImport, title, subtitle, opts)
+    opts = opts or {}
     local dimmer, editBox = BuildStringPopup(
         title or "Import Profile",
         subtitle or "Paste an EllesmereUI profile string below",
         false,
         function(str) if onImport then onImport(str) end end,
-        "Import")
+        opts.confirmLabel or "Import", opts.rawPaste)
 
     dimmer:Show()
     C_Timer.After(0.05, function() editBox:SetFocus() end)

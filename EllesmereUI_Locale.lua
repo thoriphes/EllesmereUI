@@ -4,7 +4,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Central multi-language engine for the EllesmereUI options panel, unlock mode,
 --  and custom popups/tooltips. Short in-game STATUS text is also in scope where a
 --  locale provides it (raid frame DEAD/OFFLINE/AFK, nameplate "Interrupted",
---  auto-repair chat feedback) -- untranslated keys fall back to English silently.
+--  auto-repair chat feedback) -- untranslated keys fall back to English silently
+--  (esMX first falls back to esES per key, see FALLBACK).
 --
 --  Design: "translate the pixels, never the data." Translation is applied at the
 --  render boundary (the :SetText call) inside the shared widget builders, so the
@@ -42,6 +43,10 @@ local SUPPORTED = {
 -- loads (ADDON_LOADED below; English clients never load it). The active one
 -- is selected later.
 local localeData = {}
+
+-- Per-key fallback: a key the active locale leaves out takes this locale's
+-- entry before English. esMX reads esES (same language, far more complete).
+local FALLBACK = { esMX = "esES" }
 
 -- The currently active translation table (nil = English / identity), and the
 -- reverse (translation -> English) map used by EnKey. Both are (re)assigned by
@@ -92,11 +97,12 @@ local effectiveLocale = nil
 
 -- Entry point every EllesmereUILocales/<code>.lua file calls. Returns the
 -- per-locale table to populate, or nil for every code but the effective
--- locale once that is recorded, so only the active catalog builds (each
--- locale file returns on nil). A load before then gets a table for every
--- code; the engine selects the active one in Activate().
+-- locale (and its FALLBACK) once that is recorded, so only the active catalog
+-- builds (each locale file returns on nil). A load before then gets a table
+-- for every code; the engine selects the active one in Activate().
 EllesmereUI.RegisterLocale = function(code)
-    if effectiveLocale and code ~= effectiveLocale then return nil end
+    if effectiveLocale and code ~= effectiveLocale
+        and code ~= FALLBACK[effectiveLocale] then return nil end
     local t = localeData[code]
     if not t then t = {}; localeData[code] = t end
     return t
@@ -112,6 +118,37 @@ EllesmereUI.LocaleModuleLoads = function(folder)
     if held and held[folder] then return false end
     if not (C_AddOns and C_AddOns.IsAddOnLoadable) then return true end
     return C_AddOns.IsAddOnLoadable(folder, UnitName("player")) == true
+end
+
+-- World object names in the CLIENT's language whatever the options language,
+-- filled by EllesmereUILocales/<code>_GameNames.lua, to match the game's text.
+-- The module that reads them lists its client language's file in its own TOC
+-- (Forever Essentials), so the names come in with it and the locale addon is
+-- not loaded for them.
+local gameNames, gameNamesIn = {}, false
+local GAME_NAME_FILES = {
+    deDE = true, esES = true, esMX = true, frFR = true, koKR = true,
+    ptBR = true, ruRU = true, zhCN = true, zhTW = true,
+}
+EllesmereUI.RegisterGameNames = function(code)
+    if code ~= GetLocale() then return nil end
+    gameNamesIn = true
+    return gameNames
+end
+
+-- For a caller about to read GameName. Where the client's names did not come
+-- in with the caller's own TOC, the locale addon, which lists the files too,
+-- is loaded for them: it compiles the client's whole catalog, so only then.
+-- A client language with no names file (English among them) loads nothing.
+EllesmereUI.LoadGameNames = function()
+    if gameNamesIn or not GAME_NAME_FILES[GetLocale()] then return end
+    if C_AddOns and C_AddOns.LoadAddOn and not C_AddOns.IsAddOnLoaded("EllesmereUILocales") then
+        C_AddOns.LoadAddOn("EllesmereUILocales")
+    end
+end
+
+EllesmereUI.GameName = function(s)
+    return gameNames[s] or s
 end
 
 --------------------------------------------------------------------------------
@@ -161,6 +198,18 @@ local function Activate()
         activeCatalog = nil
     else
         local src = localeData[locale]
+        -- Fill keys this locale leaves out from its FALLBACK locale once here,
+        -- so L() stays one lookup. Own entries (including "= true") win; the
+        -- fallback table is released afterwards.
+        local fbCode = FALLBACK[locale]
+        local fb = fbCode and localeData[fbCode]
+        if fb then
+            if not src then src = {}; localeData[locale] = src end
+            for k, v in pairs(fb) do
+                if src[k] == nil then src[k] = v end
+            end
+            localeData[fbCode] = nil
+        end
         if src then
             -- Resolve the "= true" keep-English sentinel and build the reverse map.
             for k, v in pairs(src) do

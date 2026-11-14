@@ -97,7 +97,7 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  Visibility row builder (reused across all pages)
     ---------------------------------------------------------------------------
-    local PP = EllesmereUI.PP
+    local PP = EllesmereUI.PanelPP
     -- One control for both halves (see EllesmereUI.BuildVisibilityRow): the mode axes
     -- and the option axes are Show/Hide lanes of the same list now. Storage is
     -- unchanged, so nothing else in this module had to move. The right DualRow slot
@@ -432,7 +432,6 @@ initFrame:SetScript("OnEvent", function(self)
                 local m = MinimapDB(); return (m and m.borderSize) or 1
             end
             local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON,
                 title = "Border Options",
                 rows = {
                     { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -482,7 +481,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- slider. Modes are mutually exclusive: class > accent > custom.
         if not EllesmereUI._prebuilding then
             local rgn = borderRow._rightRegion
-            local PPl = EllesmereUI.PP
+            local PPl = EllesmereUI.PanelPP
 
             -- Accent swatch (nearest the control): live theme accent.
             local accentSwatch, updateAccent = EllesmereUI.BuildColorSwatch(
@@ -740,8 +739,7 @@ initFrame:SetScript("OnEvent", function(self)
                         FullRebuildMinimap()
                     end,
                 })
-            local PP = EllesmereUI.PP
-            PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
             leftRgn._control = cbDD
             leftRgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
@@ -836,8 +834,7 @@ initFrame:SetScript("OnEvent", function(self)
                         RefreshMinimap()
                     end,
                 })
-            local PP = EllesmereUI.PP
-            PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
             leftRgn._control = cbDD
             leftRgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
@@ -950,7 +947,6 @@ initFrame:SetScript("OnEvent", function(self)
         if not EllesmereUI._prebuilding then
             local rgn = btnRowRow._leftRegion
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Button Row Settings",
                 rows = {
                     { type = "slider", pixel = true, label = "Icon Spacing", min = -20, max = 40, step = 1,
@@ -1194,7 +1190,7 @@ initFrame:SetScript("OnEvent", function(self)
                     RefreshMinimap()
                     EllesmereUI:RefreshPage()
                 end)
-            PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
             rgn._control = cbDD
             rgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
@@ -1241,7 +1237,6 @@ initFrame:SetScript("OnEvent", function(self)
                 return not m or m.hideMail or (m.mailPosition or "button") == "button"
             end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON,
                 disabled = mailOff,
                 disabledTooltip = function()
                     local m = MinimapDB()
@@ -1273,7 +1268,6 @@ initFrame:SetScript("OnEvent", function(self)
                 return not ShapeUsesRectLayout()
             end
             local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON,
                 disabled = elOff,
                 disabledTooltip = "Square or Rectangular Shape",
                 title = "Element Row Spacing",
@@ -1352,7 +1346,7 @@ initFrame:SetScript("OnEvent", function(self)
                 return ClockMode() == "none"
             end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = clockOff,
                 disabledTooltip = "Clock Style",
                 title = "Clock Size and Position",
@@ -1457,7 +1451,7 @@ initFrame:SetScript("OnEvent", function(self)
                 return LocationMode() == "none"
             end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = locOff,
                 disabledTooltip = "Zone Text Style",
                 title = "Zone Text Size and Position",
@@ -1547,7 +1541,7 @@ initFrame:SetScript("OnEvent", function(self)
             local rgn = coordsRow._rightRegion
             local function coordsOff() return CoordsMode() == "never" end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = coordsOff,
                 disabledTooltip = "Show Coordinates",
                 title = "Coordinates Size and Position",
@@ -1655,7 +1649,7 @@ initFrame:SetScript("OnEvent", function(self)
         if not EllesmereUI._prebuilding then
             local rgn = fpsRow._rightRegion
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = FpsOff,
                 disabledTooltip = "Show FPS/MS",
                 title = "FPS/MS Size and Position",
@@ -1757,7 +1751,7 @@ initFrame:SetScript("OnEvent", function(self)
                 return not DiffTextOn()
             end
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON, chain = false,
+                chain = false,
                 disabled = diffOff,
                 disabledTooltip = "Show Instance Difficulty as Text",
                 title = "Difficulty Text Size and Position",
@@ -1841,7 +1835,7 @@ initFrame:SetScript("OnEvent", function(self)
                     end
                     RefreshMinimap()
                 end)
-            PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
             rgn._control = cbDD
             rgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)

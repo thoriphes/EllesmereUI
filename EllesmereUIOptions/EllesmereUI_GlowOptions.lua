@@ -13,6 +13,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  and styleDisabled + styleDisabledTooltip (a whole sentence, shown as is):
 --  a lock on the style alone -- the color swatches and the Pixel Glow cog stay
 --  live, and the template leaves the site alone while it holds.
+--  defaultColorOnPick (a set of shared style indexes): for a site that draws
+--  those styles in art with colors of its own, switching the style control to
+--  one of them selects the Default color (the custom color itself is kept).
 
 
 local GO = {}
@@ -254,10 +257,22 @@ local function StyleLock(desc)
         end
 end
 
+-- A pick from a style control; shown is the value the control showed before it. Switching
+-- to a style the site lists in defaultColorOnPick selects the Default color.
+local function PickStyle(desc, v, shown)
+    local own = desc.defaultColorOnPick
+    if own and v ~= shown and desc.caps and desc.caps.mode then
+        local idx = GO.ToShared(desc, v)
+        if idx and own[idx] then desc.set("mode", "default") end
+    end
+    desc.set("style", v)
+end
+
 -- DualRow half spec for the style dropdown.
 function GO.DropdownSpec(desc, text, tooltip)
     local values, order = GO.StyleValues(desc)
     local lockFn, lockTip, lockRaw = StyleLock(desc)
+    local getStyle = StyleGetter(desc, values)
     return {
         type = "dropdown", text = text or "Glow",
         values = values, order = order,
@@ -265,10 +280,10 @@ function GO.DropdownSpec(desc, text, tooltip)
         disabled = lockFn,
         disabledTooltip = lockTip,
         rawTooltip = lockRaw,
-        getValue = StyleGetter(desc, values),
+        getValue = getStyle,
         setValue = function(v)
             local function commit()
-                desc.set("style", v)
+                PickStyle(desc, v, getStyle())
                 GO.Changed(desc)
                 C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
             end
@@ -380,12 +395,13 @@ function GO.PopupRows(desc, styleLabel, hidePixel)
     local rows = {}
     local off = function() return not GO.Renders(desc) end
     local lockFn, lockTip, lockRaw = StyleLock(desc)
+    local getStyle = StyleGetter(desc, values)
     rows[#rows + 1] = { type = "dropdown", label = styleLabel or "Glow Style",
         values = values, order = order, ddWidth = 170,
         disabled = lockFn, disabledTooltip = lockTip, rawTooltip = lockRaw,
-        get = StyleGetter(desc, values),
+        get = getStyle,
         set = function(v)
-            local function commit() desc.set("style", v); GO.Changed(desc); EllesmereUI:RefreshPage() end
+            local function commit() PickStyle(desc, v, getStyle()); GO.Changed(desc); EllesmereUI:RefreshPage() end
             if desc.confirm then desc.confirm(v, commit) else commit() end
         end }
     local caps = desc.caps or {}
@@ -400,7 +416,7 @@ function GO.PopupRows(desc, styleLabel, hidePixel)
     return rows
 end
 
--- Color swatches and the Pixel Glow cog, chained left of the region's control.
+-- The Pixel Glow cog and the color swatches, chained left of the region's control (the cog closest).
 -- rgn = the DualRow half-region holding the style dropdown; colorRgn = an
 -- optional free half-region (a "Glow Color" label) that takes the swatches.
 -- A style-only lock (desc.styleDisabled) leaves both live.
@@ -455,8 +471,33 @@ function GO.AttachInline(rgn, desc, colorRgn)
 
     -- colorInCog: the row is too narrow for the swatches; they go in the cog.
     local colorInCog = desc.colorInCog and caps.mode
+
+    local cog
+    local rows = CogRows(desc)
+    if colorInCog then table.insert(rows, 1, ColorRow(desc, colorOff)) end
+    if #rows > 0 then
+        local hasExtra = (desc.cogRows and #desc.cogRows > 0) or colorInCog
+        cog = EllesmereUI.BuildInlineCog(rgn, {
+            title = "Glow Settings",
+            rows = rows,
+            captureRegion = rgn,
+            disabled = function()
+                if off() then return true end
+                return not hasExtra and not GO.IsPixel(desc)
+            end,
+            -- Whichever lock holds, as the sentence shown: the site's own
+            -- requirement, else a glow to set (rows beyond Pixel's), else Pixel Glow.
+            disabledTooltip = function()
+                if siteOff() then return EllesmereUI.ResolveDisabledTip(desc) end
+                if hasExtra then return EllesmereUI.DisabledTooltip(NO_STYLE_TIP) end
+                return EllesmereUI.DisabledTooltip("Pixel Glow")
+            end,
+            rawTooltip = true,
+        })
+    end
+
     if colorInCog then
-        -- The swatches are the cog's first row (below).
+        -- The swatches are the cog's first row (above).
     elseif caps.mode then
         local srgn = colorRgn or rgn
         local customSw, defaultSw, classSw = EllesmereUI.BuildTrioColorSwatch(srgn, level, {
@@ -476,7 +517,8 @@ function GO.AttachInline(rgn, desc, colorRgn)
         })
         local anchor = srgn._lastInline or srgn._control
         if anchor then
-            PP.Point(classSw, "RIGHT", anchor, "LEFT", -12, 0)
+            -- 8 left of the cog when it shares this half, else 12 left of the control.
+            PP.Point(classSw, "RIGHT", anchor, "LEFT", (cog and srgn == rgn) and -8 or -12, 0)
         else
             PP.Point(classSw, "RIGHT", srgn, "RIGHT", -20, 0)
         end
@@ -493,29 +535,6 @@ function GO.AttachInline(rgn, desc, colorRgn)
         end
         SyncColorLock()
         EllesmereUI.RegisterWidgetRefresh(SyncColorLock)
-    end
-
-    local rows = CogRows(desc)
-    if colorInCog then table.insert(rows, 1, ColorRow(desc, colorOff)) end
-    if #rows > 0 then
-        local hasExtra = (desc.cogRows and #desc.cogRows > 0) or colorInCog
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Glow Settings",
-            rows = rows,
-            captureRegion = rgn,
-            disabled = function()
-                if off() then return true end
-                return not hasExtra and not GO.IsPixel(desc)
-            end,
-            -- Whichever lock holds, as the sentence shown: the site's own
-            -- requirement, else a glow to set (rows beyond Pixel's), else Pixel Glow.
-            disabledTooltip = function()
-                if siteOff() then return EllesmereUI.ResolveDisabledTip(desc) end
-                if hasExtra then return EllesmereUI.DisabledTooltip(NO_STYLE_TIP) end
-                return EllesmereUI.DisabledTooltip("Pixel Glow")
-            end,
-            rawTooltip = true,
-        })
     end
 end
 

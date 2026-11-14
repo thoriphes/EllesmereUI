@@ -98,6 +98,12 @@ function EllesmereUI.GetUnlockOverlapMethod()
     local db = EllesmereUIDB
     return (db and db.unlockOverlapMethod) or "scroll"
 end
+-- Each method's label: the Global Settings dropdown and the top bar's controls
+-- help (EUI_UnlockMode_Session.lua) read it, each through L().
+EllesmereUI.UNLOCK_OVERLAP_LABELS = {
+    disabled = "Disabled", scroll = "Scroll", shiftscroll = "Shift + Scroll",
+    controlscroll = "Ctrl + Scroll", altscroll = "Alt + Scroll",
+}
 
 -------------------------------------------------------------------------------
 --  Anchor reapply stub (pre-EnsureLoaded): lets child addons (CDM) reposition
@@ -193,7 +199,9 @@ if not EllesmereUI.NotifyElementResized then
         if anchors and anchors[key] and anchors[key].target then return end
 
         local growDir
-        if key == "EQT_Tracker" then growDir = "DOWN"
+        if key == "EQT_Tracker" then
+            local get = EllesmereUI.GetQuestTrackerGrowDir
+            growDir = get and get() or "DOWN"
         elseif key:sub(1, 4) == "CDM_" then
             local rawKey = key:sub(5)
             local cdm = EllesmereUI.Lite and EllesmereUI.Lite.GetAddon and EllesmereUI.Lite.GetAddon("EllesmereUICooldownManager", true)
@@ -615,12 +623,15 @@ EllesmereUI._ELEMENT_SETTINGS_MAP = {
     ["playerCastbar"] = { module = "EllesmereUIUnitFrames",      page = "Main Frames",   sectionName = "CAST BAR",         preSelectFn = SelectUnitFrame("player"),                   highlightText = "Show Cast Bar" },
     ["targetCastbar"] = { module = "EllesmereUIUnitFrames",      page = "Main Frames",   sectionName = "CAST BAR",         preSelectFn = SelectUnitFrame("target"),                   highlightText = "Show Cast Bar" },
     ["focusCastbar"]  = { module = "EllesmereUIUnitFrames",      page = "Main Frames",   sectionName = "CAST BAR",         preSelectFn = SelectUnitFrame("focus"),                    highlightText = "Show Cast Bar" },
+    ["petCastbar"]    = { module = "EllesmereUIUnitFrames",      page = "Mini Frames",   sectionName = "CAST BAR",         preSelectFn = EllesmereUI._SelectMiniUnit("pet"),          highlightText = "Show Cast Bar" },
 
     -- Resource Bars (no dropdown -- each bar has its own section)
     ["ERB_Health"]        = { module = "EllesmereUIResourceBars",       page = "Class, Power and Health Bars", sectionName = "HEALTH BAR",           highlightText = "Bar Height" },
     ["ERB_Power"]         = { module = "EllesmereUIResourceBars",       page = "Class, Power and Health Bars", sectionName = "POWER BAR",            highlightText = "Bar Height" },
     ["ERB_ClassResource"] = { module = "EllesmereUIResourceBars",       page = "Class, Power and Health Bars", sectionName = "CLASS RESOURCE BAR",   highlightText = "Bar Height" },
     ["ERB_CastBar"]       = { module = "EllesmereUIResourceBars",       page = "Cast Bar",                     sectionName = "BAR DISPLAY",          highlightText = "Bar Height" },
+    -- Mirror Timers: their stack's one mover, the OTHER BARS section of the Cast Bar page.
+    ["ERB_MirrorBars"]    = { module = "EllesmereUIResourceBars",       page = "Cast Bar",                     sectionName = "OTHER BARS" },
 
     -- Action Bars (all share "Bar Display" page; dropdown pre-selected to correct bar)
     ["MainBar"]   = { module = "EllesmereUIActionBars",          page = "Bar Display",                  sectionName = "LAYOUT",  preSelectFn = SelectActionBar("MainBar"),   highlightText = "Icon Size" },

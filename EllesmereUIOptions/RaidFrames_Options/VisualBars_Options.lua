@@ -176,7 +176,6 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         eyeBtn:SetFrameLevel(healthHeader:GetFrameLevel() + 5)
         EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshHealthEye()
             if IsPreviewOff() then
@@ -306,6 +305,24 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
     if not EllesmereUI._prebuilding then
         local rgn = row._leftRegion
 
+        -- Gradient thresholds cog: built first so every swatch lands left of it; live only in Custom Dynamic.
+        local thresholdCog = EllesmereUI.BuildInlineCog(rgn, {
+            disabled = function() return SVal("healthColorMode", "class") ~= "customDynamic" end,
+            disabledTooltip = "Only available with Custom Dynamic Colors",
+            rawTooltip = true,
+            title = "Gradient Thresholds",
+            rows = {
+                { type="slider", label="Low Threshold (%)", min=0, max=20, step=1,
+                  tooltip="At or below this health the 0% color holds fully; it blends toward the 50% color above it.",
+                  get=function() return SVal("dynamicLow", 0) end,
+                  set=function(v) SSet("dynamicLow", v) end },
+                { type="slider", label="High Threshold (%)", min=80, max=100, step=1,
+                  tooltip="At or above this health the 100% color holds fully; it blends toward the 50% color below it.",
+                  get=function() return SVal("dynamicHigh", 100) end,
+                  set=function(v) SSet("dynamicHigh", v) end },
+            },
+        })
+
         local swatch = EllesmereUI.BuildColorSwatch(
             rgn, row:GetFrameLevel() + 3,
             function()
@@ -328,13 +345,27 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
 
         -- Three gradient-stop swatches, built right-to-left so the visual order reads 100% | 50% | 0%; tooltips carry the pct.
+        -- The thresholds belong to Custom Dynamic alone: Class Reactive shows the 0% swatch
+        -- too, and its curve ends at 0% whatever they say.
+        local function Thresholded() return SVal("healthColorMode", "class") == "customDynamic" end
         local dynDefs = {
-            { key = "dynamicColor100", def = { r = 0, g = 1, b = 0 }, label = "100%", tip = "Health bar color at full (100%) health" },
-            { key = "dynamicColor50",  def = { r = 0xEC/255, g = 0xEC/255, b = 0x32/255 }, label = "50%",  tip = "Health bar color at half (50%) health" },
-            { key = "dynamicColor0",   def = { r = 0xE3/255, g = 0x30/255, b = 0x30/255 }, label = "0%",   tip = "Health bar color at empty (0%) health" },
+            { key = "dynamicColor100", def = { r = 0, g = 1, b = 0 }, label = "100%",
+              tip = function()
+                  local hi = SVal("dynamicHigh", 100)
+                  if hi >= 100 or not Thresholded() then return "Health bar color at full (100%) health" end
+                  return EllesmereUI.Lf("Health bar color at %d%% health and above", hi)
+              end },
+            { key = "dynamicColor50",  def = { r = 0xEC/255, g = 0xEC/255, b = 0x32/255 }, label = "50%",
+              tip = function() return "Health bar color at half (50%) health" end },
+            { key = "dynamicColor0",   def = { r = 0xE3/255, g = 0x30/255, b = 0x30/255 }, label = "0%",
+              tip = function()
+                  local lo = SVal("dynamicLow", 0)
+                  if lo <= 0 or not Thresholded() then return "Health bar color at empty (0%) health" end
+                  return EllesmereUI.Lf("Health bar color at %d%% health and below", lo)
+              end },
         }
         local dynSwatches = {}
-        local prevAnchor = rgn._control
+        local prevAnchor = thresholdCog or rgn._control
         for i = #dynDefs, 1, -1 do
             local dd = dynDefs[i]
             local sw = EllesmereUI.BuildColorSwatch(
@@ -347,8 +378,8 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                     SWrite(dd.key, { r=r, g=g, b=b })
                     ReloadAndUpdate()
                 end, false, 18)
-            sw:SetPoint("RIGHT", prevAnchor, "LEFT", (prevAnchor == rgn._control) and -8 or -6, 0)
-            sw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, dd.tip) end)
+            sw:SetPoint("RIGHT", prevAnchor, "LEFT", (prevAnchor == thresholdCog or prevAnchor == rgn._control) and -8 or -6, 0)
+            sw:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(sw, dd.tip()) end)
             sw:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
             dynSwatches[i] = sw
             prevAnchor = sw
@@ -572,7 +603,6 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         eyeBtn:SetFrameLevel(absorbsHeader:GetFrameLevel() + 5)
         EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
 
         -- On ns so the preview renderer can read it.
@@ -649,36 +679,6 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
           getValue=function() return SVal("absorbOpacity", 90) end,
           setValue=function(v) SSet("absorbOpacity", v) end });  y = y - h
     editTargets.absorbs = absorbRow
-    if not EllesmereUI._prebuilding then
-        local rgn = absorbRow._leftRegion
-        local swatch = EllesmereUI.BuildColorSwatch(
-            rgn, absorbRow:GetFrameLevel() + 3,
-            function()
-                local c = SGet("absorbColor")
-                if c then return c.r, c.g, c.b, 1 end
-                return 1, 1, 1, 1
-            end,
-            function(r, g, b)
-                SWrite("absorbColor", { r=r, g=g, b=b })
-                ReloadAndUpdate()
-            end, false, 20)
-        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        -- BuildColorSwatch has no disabled state, so a mouse-enabled frame on top eats clicks when the color isn't user-editable (no absorb, or hardcoded-color "Blizzard (Modern)").
-        local swatchBlock = CreateFrame("Frame", nil, swatch)
-        swatchBlock:SetAllPoints()
-        swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
-        swatchBlock:EnableMouse(true)
-        swatchBlock:Hide()
-        local function UpdateAbsorbSwatchVis()
-            local st = SVal("absorbStyle", "none")
-            local off = (st == "none" or st == "blizzardModern")
-            swatch:SetAlpha(off and 0.3 or 1)
-            if off then swatchBlock:Show() else swatchBlock:Hide() end
-        end
-        EllesmereUI.RegisterWidgetRefresh(UpdateAbsorbSwatchVis)
-        UpdateAbsorbSwatchVis()
-    end
     -- Inline cog: absorb placement (overlay / right edge / left edge)
     do
         local rgn = absorbRow._leftRegion
@@ -762,6 +762,36 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                 end
             end
         end)
+    end
+    if not EllesmereUI._prebuilding then
+        local rgn = absorbRow._leftRegion
+        local swatch = EllesmereUI.BuildColorSwatch(
+            rgn, absorbRow:GetFrameLevel() + 3,
+            function()
+                local c = SGet("absorbColor")
+                if c then return c.r, c.g, c.b, 1 end
+                return 1, 1, 1, 1
+            end,
+            function(r, g, b)
+                SWrite("absorbColor", { r=r, g=g, b=b })
+                ReloadAndUpdate()
+            end, false, 20)
+        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        -- BuildColorSwatch has no disabled state, so a mouse-enabled frame on top eats clicks when the color isn't user-editable (no absorb, or hardcoded-color "Blizzard (Modern)").
+        local swatchBlock = CreateFrame("Frame", nil, swatch)
+        swatchBlock:SetAllPoints()
+        swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
+        swatchBlock:EnableMouse(true)
+        swatchBlock:Hide()
+        local function UpdateAbsorbSwatchVis()
+            local st = SVal("absorbStyle", "none")
+            local off = (st == "none" or st == "blizzardModern")
+            swatch:SetAlpha(off and 0.3 or 1)
+            if off then swatchBlock:Show() else swatchBlock:Hide() end
+        end
+        EllesmereUI.RegisterWidgetRefresh(UpdateAbsorbSwatchVis)
+        UpdateAbsorbSwatchVis()
     end
 
     local function CurAbsorbBarPos()
@@ -863,36 +893,6 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
           getValue=function() return SVal("healAbsorbOpacity", 75) end,
           setValue=function(v) SSet("healAbsorbOpacity", v) end });  y = y - h
     editTargets.healAbsorbs = healAbsorbRow
-    if not EllesmereUI._prebuilding then
-        local rgn = healAbsorbRow._leftRegion
-        local swatch = EllesmereUI.BuildColorSwatch(
-            rgn, healAbsorbRow:GetFrameLevel() + 3,
-            function()
-                local c = SGet("healAbsorbColor")
-                if c then return c.r or 0.8, c.g or 0.15, c.b or 0.15, 1 end
-                return 0.8, 0.15, 0.15, 1
-            end,
-            function(r, g, b)
-                SWrite("healAbsorbColor", { r=r, g=g, b=b })
-                ReloadAndUpdate()
-            end, false, 20)
-        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        -- Blocked for "none" and the pre-colored heal styles (healBlizzModern is hardcoded white).
-        local swatchBlock = CreateFrame("Frame", nil, swatch)
-        swatchBlock:SetAllPoints()
-        swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
-        swatchBlock:EnableMouse(true)
-        swatchBlock:Hide()
-        local function UpdateHealAbsorbSwatchVis()
-            local st = SVal("healAbsorbStyle", "clean")
-            local off = (st == "none" or st == "healBlizzModern" or st == "largeOutlinedStripes" or st == "largeOutlinedStripesR")
-            swatch:SetAlpha(off and 0.3 or 1)
-            if off then swatchBlock:Show() else swatchBlock:Hide() end
-        end
-        EllesmereUI.RegisterWidgetRefresh(UpdateHealAbsorbSwatchVis)
-        UpdateHealAbsorbSwatchVis()
-    end
     -- Inline cog: heal absorb placement (independent of shield absorb)
     do
         local rgn = healAbsorbRow._leftRegion
@@ -934,6 +934,36 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
                 end
             end
         end)
+    end
+    if not EllesmereUI._prebuilding then
+        local rgn = healAbsorbRow._leftRegion
+        local swatch = EllesmereUI.BuildColorSwatch(
+            rgn, healAbsorbRow:GetFrameLevel() + 3,
+            function()
+                local c = SGet("healAbsorbColor")
+                if c then return c.r or 0.8, c.g or 0.15, c.b or 0.15, 1 end
+                return 0.8, 0.15, 0.15, 1
+            end,
+            function(r, g, b)
+                SWrite("healAbsorbColor", { r=r, g=g, b=b })
+                ReloadAndUpdate()
+            end, false, 20)
+        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        -- Blocked for "none" and the pre-colored heal styles (healBlizzModern is hardcoded white).
+        local swatchBlock = CreateFrame("Frame", nil, swatch)
+        swatchBlock:SetAllPoints()
+        swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
+        swatchBlock:EnableMouse(true)
+        swatchBlock:Hide()
+        local function UpdateHealAbsorbSwatchVis()
+            local st = SVal("healAbsorbStyle", "clean")
+            local off = (st == "none" or st == "healBlizzModern" or st == "largeOutlinedStripes" or st == "largeOutlinedStripesR")
+            swatch:SetAlpha(off and 0.3 or 1)
+            if off then swatchBlock:Show() else swatchBlock:Hide() end
+        end
+        EllesmereUI.RegisterWidgetRefresh(UpdateHealAbsorbSwatchVis)
+        UpdateHealAbsorbSwatchVis()
     end
 
     do
@@ -1012,7 +1042,7 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         end
     end
 
-    -- Max Health Texture (+swatch+cog) | Max Health Opacity. Styles mirror Heal Absorb plus "Max Health Stripes" first; no placement control, overlay is always right-anchored.
+    -- Max Health Texture (+cog+swatch) | Max Health Opacity. Styles mirror Heal Absorb plus "Max Health Stripes" first; no placement control, overlay is always right-anchored.
     do
         local maxHealthRow
         maxHealthRow, h = W:DualRow(parent, y,
@@ -1025,6 +1055,18 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
               disabledTooltip="Max Health Style",
               getValue=function() return SVal("maxHealthOpacity", 100) end,
               setValue=function(v) SSet("maxHealthOpacity", v) end });  y = y - h
+        -- Cog carries backing opacity only; placement is fixed right-side.
+        if not EllesmereUI._prebuilding then
+            local rgn = maxHealthRow._leftRegion
+            EllesmereUI.BuildInlineCog(rgn, {
+                title = "Max Health Rendering",
+                rows = {
+                    { type="slider", label="Backing Opacity", min=0, max=100, step=1,
+                      get=function() return SVal("maxHealthBgOpacity", 100) end,
+                      set=function(v) SSet("maxHealthBgOpacity", v) end },
+                },
+            })
+        end
         -- Swatch tints the max health texture.
         if not EllesmereUI._prebuilding then
             local rgn = maxHealthRow._leftRegion
@@ -1055,18 +1097,6 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
             end
             EllesmereUI.RegisterWidgetRefresh(UpdateMaxHealthSwatchVis)
             UpdateMaxHealthSwatchVis()
-        end
-        -- Cog carries backing opacity only; placement is fixed right-side.
-        if not EllesmereUI._prebuilding then
-            local rgn = maxHealthRow._leftRegion
-            EllesmereUI.BuildInlineCog(rgn, {
-                title = "Max Health Rendering",
-                rows = {
-                    { type="slider", label="Backing Opacity", min=0, max=100, step=1,
-                      get=function() return SVal("maxHealthBgOpacity", 100) end,
-                      set=function(v) SSet("maxHealthBgOpacity", v) end },
-                },
-            })
         end
     end
 
@@ -1172,7 +1202,6 @@ local function BuildVisualBars(parent, y, W, onSection, EYE)
         eyeBtn:SetFrameLevel(powerHeader:GetFrameLevel() + 5)
         EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshPowerEye()
             if IsPreviewOff() then

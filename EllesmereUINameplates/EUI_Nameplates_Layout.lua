@@ -115,7 +115,11 @@ local function GetPandemicGlowSpeed()
     return (p and p.pandemicGlowSpeed) or defaults.pandemicGlowSpeed
 end
 ns.GetPandemicGlowSpeed = GetPandemicGlowSpeed
+-- WoW Forever has no pandemic window (a refresh carries no time over there, so the game
+-- never opens one): the glow is off whatever is saved, and its options are not built.
+ns.NP_PANDEMIC_NONE = EllesmereUI.IS_FOREVER == true
 function ns.GetPandemicGlow()
+    if ns.NP_PANDEMIC_NONE then return false end
     local v = p and p.pandemicGlow
     if v == nil then v = defaults.pandemicGlow end
     return v == true
@@ -314,12 +318,15 @@ function ns.LayoutCastBar(plate, footprintW, castH)
     -- Snap to whole physical pixels at the plate's own scale (nameplates have their own scale
     -- stack, not UIParent's) so the health-bottom/cast-top gap stays constant instead of
     -- oscillating +/-1px as the plate slides to fractional screen positions.
-    if offsetY ~= 0 and PP then
+    local offsetX = ns.GetCastBarOffsetX()
+    if (offsetY ~= 0 or offsetX ~= 0) and PP then
         local plateES = plate:GetEffectiveScale()
         local onePx = (plateES and plateES > 0) and (PP.perfect / plateES) or (PP.mult or 1)
         offsetY = math.floor(offsetY / onePx + 0.5) * onePx
+        offsetX = math.floor(offsetX / onePx + 0.5) * onePx
     end
-    plate.cast:SetPoint("TOPLEFT", plate.health, "BOTTOMLEFT", shiftX, offsetY)
+    plate._castOffsetX = offsetX
+    plate.cast:SetPoint("TOPLEFT", plate.health, "BOTTOMLEFT", shiftX + offsetX, offsetY)
     -- The cast bar's bottom edge below the health bar's: the bottom text slots
     -- drop by this while a cast shows (PlaceSlotText). Clamped at 0, so a cast
     -- bar raised above the health bar never lifts them.
@@ -359,12 +366,14 @@ function ns.LayoutCastIcon(plate, castH)
         -- size: anchored to the same points the health/cast borders use, they pixel-snap
         -- together and shift as ONE unit instead of rounding independently. SetWidth keeps it
         -- square (height is fixed by the top/bottom anchors = side).
+        -- The top corner follows the cast bar's X offset, as the bottom one does.
         icon:SetWidth(side)
+        local barX = plate._castOffsetX or 0
         if onRight then
-            icon:SetPoint("TOPLEFT", plate.health, "TOPRIGHT", xOff, yOff)
+            icon:SetPoint("TOPLEFT", plate.health, "TOPRIGHT", xOff + barX, yOff)
             icon:SetPoint("BOTTOMLEFT", plate.cast, "BOTTOMRIGHT", xOff, yOff)
         else
-            icon:SetPoint("TOPRIGHT", plate.health, "TOPLEFT", xOff, yOff)
+            icon:SetPoint("TOPRIGHT", plate.health, "TOPLEFT", xOff + barX, yOff)
             icon:SetPoint("BOTTOMRIGHT", plate.cast, "BOTTOMLEFT", xOff, yOff)
         end
     else
@@ -376,6 +385,9 @@ function ns.LayoutCastIcon(plate, castH)
             icon:SetPoint("TOPRIGHT", plate.cast, "TOPLEFT", xOff, yOff)
         end
     end
+    -- A cast glow art showing on this plate goes around the icon (the cast file, which loads
+    -- after this one).
+    if ns.NP_PlaceCastGlowArt then ns.NP_PlaceCastGlowArt(plate) end
 end
 
 -- How far the cast icon protrudes past the bar edge, plus that side ("left"/"right"). The
@@ -428,10 +440,10 @@ function ns.NP_FullIconPush(plate, side, y0, y1)
     return 0
 end
 
--- How far an icon in a side slot (raid marker, classification, faction; the target arrows
--- too) steps out on `side`. It centres on the bar plus y and is sz tall. The normal-size cast
--- icon's reserve always applies, the full-size icon's only where the two meet; plus Classic
--- WoW UI's border reach or WoW Forever's level box (ns.NP_ClassicSide).
+-- How far an icon in a side slot (raid marker, classification, faction, Quest Objective Text;
+-- the target arrows too) steps out on `side`. It centres on the bar plus y and is sz tall.
+-- The normal-size cast icon's reserve always applies, the full-size icon's only where the two
+-- meet; plus Classic WoW UI's border reach or WoW Forever's level box (ns.NP_ClassicSide).
 function ns.NP_SideIconPush(plate, side, y, sz)
     local push
     if ns.GetCastIconFullSize() then
@@ -478,10 +490,9 @@ local function GetRaidMarkerPos()
     return (p and p.raidMarkerPos) or defaults.raidMarkerPos
 end
 ns.GetRaidMarkerPos = GetRaidMarkerPos
+-- Core Positions element sizes: ns.NP_ElementSize (below, beside the slot getters).
 local function GetRaidMarkerSize()
-    local pos = (p and p.raidMarkerPos) or defaults.raidMarkerPos
-    if pos == "none" then return defaults.raidMarkerSize or 24 end
-    return (p and p[pos .. "SlotSize"]) or defaults[pos .. "SlotSize"] or 24
+    return ns.NP_ElementSize("raidmarker")
 end
 ns.GetRaidMarkerSize = GetRaidMarkerSize
 local function GetRaidMarkerYOffset()
@@ -492,22 +503,19 @@ local function GetClassificationSlot()
     return (p and p.classificationSlot) or defaults.classificationSlot
 end
 ns.GetClassificationSlot = GetClassificationSlot
+-- The Elite/Rare Indicator's size (the quest icon has its own: ns.NP_ElementSize("quest")).
 local function GetRareEliteIconSize()
-    local pos = (p and p.classificationSlot) or defaults.classificationSlot
-    if pos == "none" then return defaults.rareEliteIconSize or 20 end
-    return (p and p[pos .. "SlotSize"]) or defaults[pos .. "SlotSize"] or 20
+    return ns.NP_ElementSize("rare")
 end
 ns.GetRareEliteIconSize = GetRareEliteIconSize
--- Faction badge slot and size (same per-slot size as every Core Positions element).
--- With "Rare/Quest + Faction" the badge rides the classification slot.
+-- Faction badge slot and size. With "Rare/Quest + Faction" the badge rides the
+-- classification slot.
 function ns.NP_GetFactionSlot()
     if p and p.classificationIncludeFaction then return GetClassificationSlot() end
     return (p and p.factionSlot) or defaults.factionSlot
 end
 function ns.NP_GetFactionIconSize()
-    local pos = ns.NP_GetFactionSlot()
-    if pos == "none" then return 20 end
-    return (p and p[pos .. "SlotSize"]) or defaults[pos .. "SlotSize"] or 20
+    return ns.NP_ElementSize("faction")
 end
 function ns.NP_GetFactionStyle()
     return (p and p.factionStyle) or defaults.factionStyle
@@ -550,7 +558,7 @@ local function GetNameYOffset()
 end
 ns.GetNameYOffset = GetNameYOffset
 local textSlotKeys = { "textSlotTop", "textSlotRight", "textSlotLeft", "textSlotCenter",
-    "textSlotBottomLeft", "textSlotBottomRight" }
+    "textSlotBottomLeft", "textSlotBottomRight", "textSlotTopLeft", "textSlotTopRight" }
 ns.textSlotKeys = textSlotKeys
 -- The slots that share the bar's line for the name-width estimate.
 ns._npBarTextKeys = { "textSlotRight", "textSlotLeft", "textSlotCenter" }
@@ -757,6 +765,8 @@ do
             textSlotLeft = "textSlotLeftNameFormat", textSlotCenter = "textSlotCenterNameFormat",
             textSlotBottomLeft  = "textSlotBottomLeftNameFormat",
             textSlotBottomRight = "textSlotBottomRightNameFormat",
+            textSlotTopLeft     = "textSlotTopLeftNameFormat",
+            textSlotTopRight    = "textSlotTopRightNameFormat",
         }
         local short = EllesmereUI.ShortName
         function ns.NP_FormatName(name, slotKey, unit)
@@ -810,8 +820,11 @@ do
         return ns.NP_FormatName(name, slotKey, u)
     end
     -- Tag modifiers shape the plain name. They do not also apply the slot's Name Format.
+    -- [name:last] and [target:last] show nothing for your own unit while your name is
+    -- your first name alone (OwnSurnameHidden: WoW Forever, Blizzard's My Surname off).
     local function Shaped(mode)
         return function(u)
+            if mode == "last" and EllesmereUI.OwnSurnameHidden(u) then return "" end
             local name = EllesmereUI.WithSurname(UnitName(u))
             if type(name) == "nil" then return "" end
             return EllesmereUI.ShortName(name, mode)
@@ -933,6 +946,36 @@ local function GetHealthBarWidth()
 end
 ns.GetHealthBarWidth = GetHealthBarWidth
 
+-- The Top Left / Top Right texts sit on the bar's top corners, at the Top text's
+-- height. A Core Positions element on the same corner (the raid marker, the Rare/Quest
+-- indicator, the Quest Objective Text, the faction badge, an aura row, the cast lockout)
+-- rises by this to clear the text: the text's top above the bar, from its Size and Y offset
+-- (0 while the corner shows no text). pos: "topleft" / "topright". db: a profile to read
+-- instead of the live one.
+do
+    local CORNER_KEY = { topleft = "textSlotTopLeft", topright = "textSlotTopRight" }
+    function ns.NP_TopCornerLift(pos, db)
+        db = db or p
+        local key = CORNER_KEY[pos]
+        if not key then return 0 end
+        local el = (db and db[key]) or defaults[key]
+        if not ns.NP_ElementFSKey(el, key) then return 0 end
+        local size = (db and db[key .. "Size"]) or defaults[key .. "Size"] or 10
+        local y = (db and db[key .. "YOffset"]) or 0
+        local nameY = (db and db.nameYOffset) or defaults.nameYOffset or 0
+        return math.max(0, 4 + nameY + y + size)
+    end
+    -- The estimated width of a top corner's text, 0 while it shows none (a Top name
+    -- leaves room for the wider of the two on each side). db: as above.
+    function ns.NP_TopCornerTextWidth(key, db)
+        db = db or p
+        local el = (db and db[key]) or defaults[key]
+        if el == "custom" then return ns.NP_CustomWidth(key, db) end
+        if not ns.NP_ElementFSKey(el, key) or ns.IsNameElement(el) then return 0 end
+        return EstimateHealthTextWidth(el)
+    end
+end
+
 -- Y offset for plate content relative to the nameplate frame. Always 0: the Blizzard nameplate
 -- frame grows from its CENTER, not its base, so a taller SetNamePlateSize enlarges the hitbox
 -- evenly above AND below the unit; anchoring content at the frame center needs no compensation.
@@ -967,22 +1010,137 @@ local function GetSlotOffsets(posKey)
     return xOff, yOff
 end
 ns.GetSlotOffsets = GetSlotOffsets
+
+-- Core Positions elements: the one place their sizes, their slots, the Quest Objective
+-- Text view and the split Show In Instances keys are read. Elements are named by the
+-- options' row keys (debuffs, buffs, ccs, raidmarker, rare, quest, questtext, faction).
+-- Every function takes an optional db (a profile to read instead of the live one).
+-- Plain table reads, no allocation. do/end + ns functions: no new main-chunk locals.
+do
+    -- Each element's own size (no defaults entry: unset follows the slot's size).
+    local SIZE_KEY = {
+        debuffs = "debuffCoreSize", buffs = "buffCoreSize", ccs = "ccCoreSize",
+        raidmarker = "raidMarkerCoreSize", rare = "rareCoreSize", quest = "questCoreSize",
+        faction = "factionCoreSize",
+    }
+    ns.NP_CORE_SIZE_KEY = SIZE_KEY
+    -- Split Show In Instances keys (no defaults entry: unset follows
+    -- classificationShowInInstances).
+    local SII_KEY = { rare = "rareShowInInstances", quest = "questShowInInstances",
+        questtext = "questTextShowInInstances" }
+    ns.NP_SHOW_IN_INSTANCES_KEY = SII_KEY
+    local SLOT_KEY = {
+        debuffs = "debuffSlot", buffs = "buffSlot", ccs = "ccSlot", raidmarker = "raidMarkerPos",
+        rare = "classificationSlot", quest = "classificationSlot", faction = "factionSlot",
+    }
+    -- The size an element has while its slot is None: its defaults key, else the literal.
+    local NONE_KEY = {
+        debuffs = "debuffIconSize", buffs = "buffIconSize", ccs = "ccIconSize",
+        raidmarker = "raidMarkerSize", rare = "rareEliteIconSize", quest = "rareEliteIconSize",
+    }
+    local NONE_LAST = { debuffs = 26, buffs = 24, ccs = 24, raidmarker = 24, rare = 20, quest = 20, faction = 20 }
+    -- The last fallback of a slot size with no defaults entry.
+    local SLOT_LAST = { rare = 20, quest = 20, faction = 20 }
+
+    local function ClassSlot(d)
+        return (d and d.classificationSlot) or defaults.classificationSlot
+    end
+    local function HideQuest(d)
+        local v = d and d.classificationHideQuest
+        if v == nil then v = defaults.classificationHideQuest end
+        return v and true or false
+    end
+    -- Quest Objective Text read from the legacy Replace Quest Icon with Objective key: no
+    -- questTextSlot yet, Replace on and the Quest Indicator on in a slot. The text then
+    -- takes the indicator's slot and the indicator reads off.
+    local function Legacy(d)
+        if d and d.questTextSlot ~= nil then return false end
+        local r = d and d.replaceQuestIconWithObjective
+        if r == nil then r = defaults.replaceQuestIconWithObjective end
+        if r ~= true or ClassSlot(d) == "none" then return false end
+        return not HideQuest(d)
+    end
+    local function QuestTextSlot(d)
+        local v = d and d.questTextSlot
+        if v ~= nil then return v end
+        if Legacy(d) then return ClassSlot(d) end
+        return "none"
+    end
+    local function ElementSlot(elem, d)
+        if elem == "questtext" then return QuestTextSlot(d) end
+        if elem == "faction" and d and d.classificationIncludeFaction then return ClassSlot(d) end
+        local key = SLOT_KEY[elem]
+        if not key then return "none" end
+        return (d and d[key]) or defaults[key]
+    end
+
+    function ns.NP_LegacyQuestText(db)
+        return Legacy(db or p)
+    end
+    function ns.NP_GetQuestTextSlot(db)
+        return QuestTextSlot(db or p)
+    end
+    -- The Quest Indicator half of the Rare/Quest element is on.
+    function ns.NP_QuestIconOn(db)
+        local d = db or p
+        if ClassSlot(d) == "none" or HideQuest(d) then return false end
+        return not Legacy(d)
+    end
+    function ns.NP_ElementSlot(elem, db)
+        return ElementSlot(elem, db or p)
+    end
+    -- An element's size: its own key, else the size of slot pos (default: its own slot),
+    -- else that slot's default; while the slot is None, the element's own fallback.
+    function ns.NP_ElementSize(elem, db, pos)
+        local d = db or p
+        local key = SIZE_KEY[elem]
+        local v = key and d and d[key]
+        if type(v) == "number" then return v end
+        pos = pos or ElementSlot(elem, d)
+        if not pos or pos == "none" then
+            local nk = NONE_KEY[elem]
+            return (nk and defaults[nk]) or NONE_LAST[elem] or 24
+        end
+        local m = GetSlotKeys(pos)
+        return (d and d[m.size]) or defaults[m.size] or SLOT_LAST[elem] or 24
+    end
+    -- Show In Instances of kind "rare" / "quest" / "questtext".
+    function ns.NP_ShowInInstances(kind, db)
+        local d = db or p
+        local key = SII_KEY[kind]
+        local v = key and d and d[key]
+        if v == nil then
+            v = d and d.classificationShowInInstances
+            if v == nil then v = defaults.classificationShowInInstances end
+        end
+        return v and true or false
+    end
+    function ns.NP_QuestTextSize(db)
+        local d = db or p
+        return (d and d.questObjectiveTextSize) or defaults.questObjectiveTextSize or 14
+    end
+    -- Writes the Quest Objective Text view into the profile before a change of the
+    -- Elite/Rare, Quest or Quest Objective Text boxes: questTextSlot takes its effective
+    -- value, and a profile read through the legacy key unchecks the Quest Indicator too.
+    -- The legacy key is never read for the profile again.
+    function ns.NP_MaterializeQuestText(db)
+        if not db or db.questTextSlot ~= nil then return end
+        local legacy = Legacy(db)
+        db.questTextSlot = legacy and ClassSlot(db) or "none"
+        if legacy then db.classificationHideQuest = true end
+    end
+end
+
 local function GetDebuffIconSize()
-    local slot = (p and p.debuffSlot) or defaults.debuffSlot
-    if slot == "none" then return defaults.debuffIconSize or 26 end
-    return GetSlotSize(slot)
+    return ns.NP_ElementSize("debuffs")
 end
 ns.GetDebuffIconSize = GetDebuffIconSize
 local function GetBuffIconSize()
-    local slot = (p and p.buffSlot) or defaults.buffSlot
-    if slot == "none" then return defaults.buffIconSize or 24 end
-    return GetSlotSize(slot)
+    return ns.NP_ElementSize("buffs")
 end
 ns.GetBuffIconSize = GetBuffIconSize
 local function GetCCIconSize()
-    local slot = (p and p.ccSlot) or defaults.ccSlot
-    if slot == "none" then return defaults.ccIconSize or 24 end
-    return GetSlotSize(slot)
+    return ns.NP_ElementSize("ccs")
 end
 ns.GetCCIconSize = GetCCIconSize
 -- Cropped aura icons (mirrors Unit Frames "Cropped Icons"). On: icon frame goes rectangular
@@ -1395,6 +1553,29 @@ function ns.GetWrapBorderCastbar()
     if v == nil then return defaults.wrapBorderCastbar end
     return v
 end
+-- Whether Wrap Around Castbar can draw: the setting is on and there is a border to wrap
+-- (Basic or Custom). Neither stock style has one, and neither has Border None.
+function ns.NP_WrapCanDraw()
+    return (ns.GetWrapBorderCastbar() and (IsBorderEnabled() or ns.IsCustomBorderEnabled())) and true or false
+end
+-- Cast Bar X Offset; 0 while the border can wrap the cast bar (the wrap spans the health
+-- bar's width). A saved wrap that cannot draw holds nothing back.
+function ns.GetCastBarOffsetX()
+    if ns.NP_WrapCanDraw() then return 0 end
+    return (p and p.castBarOffsetX) or defaults.castBarOffsetX
+end
+-- Places the cast bars and cast icons again, for a setting that only moves the cast bar:
+-- each live plate at its cast bar's own height (a focus plate keeps its Focus Cast Height),
+-- pooled plates at their next spawn (the appearance pass).
+function ns.NP_RelayoutCastBars()
+    ns._npAppearanceGen = (ns._npAppearanceGen or 0) + 1
+    local barW = ns.GetHealthBarWidth()
+    for _, plate in pairs(ns.plates) do
+        local castH = plate.cast:GetHeight()
+        ns.LayoutCastBar(plate, barW, castH)
+        ns.LayoutCastIcon(plate, castH)
+    end
+end
 local function GetAuraSlots()
     local ds = (p and p.debuffSlot) or defaults.debuffSlot
     local bs = (p and p.buffSlot)   or defaults.buffSlot
@@ -1428,6 +1609,9 @@ function ns.ApplySlotStrata(plate)
     end
     if plate.factionFrame then
         plate.factionFrame:SetFrameStrata(StrataFor(ns.NP_GetFactionSlot()))
+    end
+    if plate.questTextFrame then
+        plate.questTextFrame:SetFrameStrata(StrataFor(ns.NP_GetQuestTextSlot()))
     end
 end
 
@@ -1613,10 +1797,11 @@ end
 
 -- How far one side-slot icon pushes a target arrow out: 0 unless it meets the arrow's span (the
 -- icon centres on the bar plus y and is sz tall, the arrow ah tall), else its outer edge, past
--- its own cast icon push (as its Update* placed it) and its slot's X offset.
-local function ArrowSideReach(plate, side, y, sz, xOff, ah)
+-- its own cast icon push (as its Update* placed it) and its slot's X offset. w: its width
+-- (default sz; the Quest Objective Text is as wide as its text).
+local function ArrowSideReach(plate, side, y, sz, xOff, ah, w)
     if math.abs(y) >= (sz + ah) / 2 then return 0 end
-    local reach = GetSideAuraXOffset() + ns.NP_SideIconPush(plate, side, y, sz) + sz
+    local reach = GetSideAuraXOffset() + ns.NP_SideIconPush(plate, side, y, sz) + (w or sz)
     if side == "left" then return reach - xOff end
     return reach + xOff
 end
@@ -1691,8 +1876,8 @@ local function PlaceArrow(plate, arrow, side, extent, aw, ah)
 end
 
 -- Position target arrows outside the side elements they meet: the cast icon, the side-slot
--- icons (raid marker, classification, faction) and a side aura row. An element its slot's Y
--- offset moved clear of the arrows (above or below them) is passed over.
+-- icons (raid marker, classification, faction, Quest Objective Text) and a side aura row. An
+-- element its slot's Y offset moved clear of the arrows (above or below them) is passed over.
 local function PositionArrowsOutsideAuras(plate)
     if not plate.leftArrow then return end
     if not plate.leftArrow:IsShown() then return end
@@ -1709,10 +1894,12 @@ local function PositionArrowsOutsideAuras(plate)
         local r = ArrowSideReach(plate, rmPos, ry, GetRaidMarkerSize(), rx, ah)
         if rmPos == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
     end
+    -- The Rare/Quest icon at the size its update set (elite/rare mark or quest icon).
     local clSlot = GetClassificationSlot()
-    if (clSlot == "left" or clSlot == "right") and plate.classFrame and plate.classFrame:IsShown() then
+    local cf = plate.classFrame
+    if (clSlot == "left" or clSlot == "right") and cf and cf:IsShown() then
         local cx, cy = GetAuraSlotOffsets("classification")
-        local r = ArrowSideReach(plate, clSlot, cy, GetRareEliteIconSize(), cx, ah)
+        local r = ArrowSideReach(plate, clSlot, cy, cf._npSz or GetRareEliteIconSize(), cx, ah)
         if clSlot == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
     end
     -- The faction badge (its own, or Rare/Quest + Faction, stacked higher behind a showing
@@ -1720,11 +1907,21 @@ local function PositionArrowsOutsideAuras(plate)
     local fcSlot = ns.NP_GetFactionSlot()
     if (fcSlot == "left" or fcSlot == "right") and plate.factionFrame and plate.factionFrame:IsShown() then
         local fx, fy = GetSlotOffsets(fcSlot)
-        if p and p.classificationIncludeFaction and plate.classFrame:IsShown() then
-            fy = fy + math.floor(GetRareEliteIconSize() * 0.6 + 0.5)
+        if p and p.classificationIncludeFaction and cf:IsShown() then
+            fy = fy + math.floor((cf._npSz or GetRareEliteIconSize()) * 0.6 + 0.5)
         end
         local r = ArrowSideReach(plate, fcSlot, fy, ns.NP_GetFactionIconSize(), fx, ah)
         if fcSlot == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
+    end
+    -- The Quest Objective Text (its text, or the quest icon standing in for it).
+    local qf = plate.questTextFrame
+    if qf and qf:IsShown() then
+        local qtSlot = ns.NP_GetQuestTextSlot()
+        if qtSlot == "left" or qtSlot == "right" then
+            local qx, qy = GetSlotOffsets(qtSlot)
+            local r = ArrowSideReach(plate, qtSlot, qy, qf._npSz or 0, qx, ah, qf._npW)
+            if qtSlot == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
+        end
     end
     PlaceArrow(plate, plate.leftArrow, "left", leftExtent, aw, ah)
     PlaceArrow(plate, plate.rightArrow, "right", rightExtent, aw, ah)

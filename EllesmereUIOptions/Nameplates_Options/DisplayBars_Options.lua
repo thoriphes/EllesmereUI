@@ -1,11 +1,11 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
 --  Nameplates_Options\DisplayBars_Options.lua
---  Nameplates options: the Health and Cast Bar, Cast Colors and Effects,
---  Target/Focus/Hover Effects, Class Resource and General Text sections of the
---  Display page. Called by BuildDisplayPage after DisplayLayout_Options.lua;
---  returns y and the rows its click navigation maps to. Shared helpers come
---  from ns._NPO_OptEnv, the per-build helpers from ctx.
+--  Nameplates options: the Health and Cast Bar, Cast Colors and Effects, Class
+--  Resource and General Text sections of the Display page. Called by
+--  BuildDisplayPage after DisplayLayout_Options.lua; returns y and the rows
+--  its click navigation maps to. Shared helpers come from ns._NPO_OptEnv, the
+--  per-build helpers from ctx.
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUINameplates"]
 if not ns then return end  -- module disabled: no options page
@@ -13,17 +13,15 @@ if not ns then return end  -- module disabled: no options page
 -- The options page frame pool (EllesmereUI_FramePool.lua): frames made under a
 -- pooled page part are handed back to the page's next build.
 local CreateFrame = EllesmereUI._Pool.CreateFrame
-local PoolGen, PoolIsIdle = EllesmereUI._Pool.Gen, EllesmereUI._Pool.IsIdle
 
 local function BuildDisplayBars(parent, y, ctx)
     local env = ns._NPO_OptEnv
     local BAR_W, DB, DBColor, DBVal = env.BAR_W, env.DB, env.DBColor, env.DBVal
-    local defaults, displayCastIcons, hbtOrder, hbtValues = env.defaults, env.displayCastIcons, env.hbtOrder, env.hbtValues
-    local LazyColorPreviewBar, npImpCastGlowDesc, optState, pairs = env.LazyColorPreviewBar, env.npImpCastGlowDesc, env.optState, env.pairs
-    local plates, PP, RefreshAllPlates, SECTION_CASTBAR = env.plates, env.PP, env.RefreshAllPlates, env.SECTION_CASTBAR
-    local UpdatePreview, npCastTargetGlowDesc = env.UpdatePreview, env.npCastTargetGlowDesc
+    local defaults, displayCastIcons, npImpCastGlowDesc, optState = env.defaults, env.displayCastIcons, env.npImpCastGlowDesc, env.optState
+    local pairs, plates, PP, RefreshAllPlates = env.pairs, env.plates, env.PP, env.RefreshAllPlates
+    local SECTION_CASTBAR, UpdatePreview, npCastTargetGlowDesc = env.SECTION_CASTBAR, env.UpdatePreview, env.npCastTargetGlowDesc
     local asFallback, atFallback, AuraDurationVal, CogPopupOpen = ctx.asFallback, ctx.atFallback, ctx.AuraDurationVal, ctx.CogPopupOpen
-    local LiveApplyAuraText, RefreshAllTextures, ShowCogPopup = ctx.LiveApplyAuraText, ctx.RefreshAllTextures, ctx.ShowCogPopup
+    local LiveApplyAuraText, ShowCogPopup = ctx.LiveApplyAuraText, ctx.ShowCogPopup
     local timerPosOrder, timerPosValues = ctx.timerPosOrder, ctx.timerPosValues
     local W = ctx.W
     local _, h
@@ -122,7 +120,6 @@ local function BuildDisplayBars(parent, y, ctx)
         local rightRgn = castBarHeightRow._rightRegion
         EllesmereUI.BuildInlineCog(rightRgn, {
             anchorTo = rightRgn._control,
-            icon = EllesmereUI.RESIZE_ICON,
             disabled = castIconOff,
             disabledTooltip = "Spell Icon",
             title = "Spell Icon Settings",
@@ -139,6 +136,8 @@ local function BuildDisplayBars(parent, y, ctx)
                     if not (DB() and DB().castIconFullSize) then
                         for _, plate in pairs(plates) do
                             plate.castIconFrame:SetScale(v)
+                            -- a cast glow art showing on the plate goes around the resized icon
+                            ns.NP_PlaceCastGlowArt(plate)
                         end
                     end
                     UpdatePreview()
@@ -326,11 +325,7 @@ local function BuildDisplayBars(parent, y, ctx)
           getValue=function() return DBVal("castBarOffsetY") or defaults.castBarOffsetY end,
           setValue=function(v)
             DB().castBarOffsetY = v
-            local barW = ns.GetHealthBarWidth()
-            local castH = ns.GetCastBarHeight()
-            for _, plate in pairs(plates) do
-                ns.LayoutCastBar(plate, barW, castH)
-            end
+            ns.NP_RelayoutCastBars()
             UpdatePreview()
           end });  y = y - h
     if not EllesmereUI._prebuilding then
@@ -346,15 +341,9 @@ local function BuildDisplayBars(parent, y, ctx)
             end
             UpdatePreview()
         end
-        local ctSwatch, ctUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, ctColorGet, ctColorSet, nil, 20)
-        PP.Point(ctSwatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-        leftRgn._lastInline = ctSwatch
-        EllesmereUI.RegisterWidgetRefresh(function() ctUpdateSwatch() end)
 
         -- Inline cog for Cast Timer Size / X / Y
         EllesmereUI.BuildInlineCog(leftRgn, {
-            anchorTo = ctSwatch, gap = 6,
-            icon = EllesmereUI.RESIZE_ICON,
             isOpen = CogPopupOpen,
             show = function(self)
                 ShowCogPopup(self, {
@@ -369,6 +358,31 @@ local function BuildDisplayBars(parent, y, ctx)
                     sizeFirst = true,
                 })
             end,
+        })
+        local ctSwatch, ctUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, ctColorGet, ctColorSet, nil, 20)
+        PP.Point(ctSwatch, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
+        leftRgn._lastInline = ctSwatch
+        EllesmereUI.RegisterWidgetRefresh(function() ctUpdateSwatch() end)
+
+        -- Inline cog on Cast Bar Y Offset (right region) for X Offset. The offset stands
+        -- down only while the wrap can draw: with no border to wrap (a stock style, Border
+        -- None), a saved Wrap Around Castbar holds nothing back and the cog stays live.
+        local rightRgn = castTimerRow._rightRegion
+        EllesmereUI.BuildInlineCog(rightRgn, {
+            anchorTo = rightRgn._control,
+            disabled = function() return ns.NP_WrapCanDraw() end,
+            disabledTooltip = "Wrap Around Castbar",
+            requireState = "disabled",
+            title = EllesmereUI.L("Cast Bar Position"),
+            rows = {
+                { type="slider", label="X Offset", min=-50, max=50, step=1,
+                  get=function() return DBVal("castBarOffsetX") or defaults.castBarOffsetX end,
+                  set=function(v)
+                    DB().castBarOffsetX = v
+                    ns.NP_RelayoutCastBars()
+                    UpdatePreview()
+                  end },
+            },
         })
     end
 
@@ -694,923 +708,6 @@ local function BuildDisplayBars(parent, y, ctx)
     _, h = W:Spacer(parent, y, 20);  y = y - h
 
     -----------------------------------------------------------------------
-    --  TARGET, FOCUS & HOVER EFFECTS
-    -----------------------------------------------------------------------
-    local tfxHeader
-    tfxHeader, h = W:SectionHeader(parent, "TARGET, FOCUS & HOVER EFFECTS", y);  y = y - h
-
-    local targetGlowRow
-    -- Build the arrow-style dropdown options from the shared style table.
-    local arrowVals = { none = "None" }
-    local arrowOrd = { "none" }
-    for _, k in ipairs(ns.TARGET_ARROW_ORDER) do
-        arrowVals[k] = ns.TARGET_ARROW_STYLES[k].label
-        arrowOrd[#arrowOrd + 1] = k
-    end
-    -- Preview the right-arrow texture on the right of each dropdown row.
-    arrowVals._menuOpts = {
-        itemHeight = 26,
-        icon = function(key)
-            local st = ns.TARGET_ARROW_STYLES[key]
-            if not st then return nil end  -- "none" has no preview
-            return ns.TARGET_ARROW_DIR .. st.l .. ".png"
-        end,
-        iconWidth = function(key)
-            local st = ns.TARGET_ARROW_STYLES[key]
-            if not st then return nil end
-            -- Match in-game aspect: drawn width is st.w at height 16, icon slot is itemHeight(32)-8=24 tall, so scale width by 24/16.
-            return math.floor(st.w * 24 / 16 + 0.5)
-        end,
-    }
-    targetGlowRow, h = W:DualRow(parent, y,
-        { type="dropdown", text="Target Effect",
-          values={ __placeholder = "..." }, order={ "__placeholder" },
-          getValue=function() return "__placeholder" end,
-          setValue=function() end },
-        { type="dropdown", text="Target Arrows",
-          values=arrowVals,
-          order=arrowOrd,
-          getValue=function()
-            if DBVal("showTargetArrows") ~= true then return "none" end
-            return DBVal("targetArrowStyle") or (DBVal("targetArrowDouble") and "double") or "simple"
-          end,
-          setValue=function(v)
-            if v == "none" then
-                DB().showTargetArrows = false
-            else
-                DB().showTargetArrows = true
-                DB().targetArrowStyle = v
-            end
-            for _, plate in pairs(plates) do
-                plate:ApplyTarget()
-            end
-            UpdatePreview()
-          end });  y = y - h
-
-    -- Target Effect: multi-select checkbox dropdown (EUI Glow/Border Color/Highlight), independent toggles; data model live-converts from the legacy targetGlowStyle string (see ns.GetTargetGlow* in the core file).
-    local refreshTargetBorderSwatch  -- fwd decl; assigned when the swatch builds
-    local refreshTargetGlowSwatch    -- fwd decl; assigned when the glow swatch builds
-    local refreshTargetHighlightCog  -- fwd decl; assigned when the cog builds
-    if not EllesmereUI._prebuilding then
-        local leftRgn = targetGlowRow._leftRegion
-        if leftRgn._control then leftRgn._control:Hide() end
-        -- The WoW Forever style offers Highlight alone: the other three are
-        -- locked there (their getters read off, so they draw nothing).
-        local function fvLocked() return EllesmereUI.BlizzStyle.Forever("nameplates") end
-        local function fvTip() return EllesmereUI.L("Not available in the WoW Forever style.") end
-        local glowItems = {
-            { key = "ellesmereui", label = "EUI Glow", lockedFn = fvLocked, lockedTooltip = fvTip },
-            { key = "borderColor", label = "Border Color", lockedFn = fvLocked, lockedTooltip = fvTip },
-            { key = "highlight",   label = "Highlight" },
-            { key = "borderSize",  label = "Border Size",
-              tooltip = "Change Size in the Cogwheel", lockedFn = fvLocked, lockedTooltip = fvTip },
-        }
-        local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-            leftRgn, 170, leftRgn:GetFrameLevel() + 2,
-            glowItems,
-            function(k)
-                if k == "ellesmereui" then return ns.GetTargetGlowEllesmereUI() end
-                if k == "borderColor" then return ns.GetTargetGlowBorderColor() end
-                if k == "highlight"   then return ns.GetTargetGlowHighlight() end
-                if k == "borderSize"  then return ns.GetTargetGlowBorderSize() end
-                return false
-            end,
-            function(k, v)
-                if k == "ellesmereui" then DB().targetGlowEllesmereUI = v
-                elseif k == "borderColor" then DB().targetGlowBorderColor = v
-                elseif k == "highlight" then DB().targetGlowHighlight = v
-                elseif k == "borderSize" then
-                    DB().targetGlowBorderSize = v
-                    -- First-enable snapshot: seed the cog slider with the user's CURRENT border size, so enabling changes nothing until they move it (one-time, never re-snapshots later).
-                    if v and DB().targetBorderSizeValue == nil then
-                        if ns.IsCustomBorderEnabled() then
-                            DB().targetBorderSizeValue = DBVal("customBorderSize") or defaults.customBorderSize
-                        else
-                            DB().targetBorderSizeValue = DBVal("borderSize") or defaults.borderSize
-                        end
-                    end
-                end
-                for _, plate in pairs(plates) do plate:ApplyTarget() end
-                for _, fp in pairs(ns.friendlyPlates) do fp:ApplyTarget() end
-                UpdatePreview()
-                if refreshTargetBorderSwatch then refreshTargetBorderSwatch() end
-                if refreshTargetGlowSwatch then refreshTargetGlowSwatch() end
-                if refreshTargetHighlightCog then refreshTargetHighlightCog() end
-            end)
-        PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
-        leftRgn._control = cbDD
-        leftRgn._lastInline = nil
-        EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-
-        -- Inline Border Color swatch: edits targetBorderColor (default white), tints the custom border; dimmed+non-interactive unless Border Color is checked.
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5,
-            function() local c = ns.GetTargetBorderColor(); return c.r, c.g, c.b end,
-            function(r, g, b)
-                DB().targetBorderColor = { r = r, g = g, b = b }
-                for _, plate in pairs(plates) do plate:ApplyTarget() end
-                for _, fp in pairs(ns.friendlyPlates) do fp:ApplyTarget() end
-                UpdatePreview()
-            end, nil, 20)
-        PP.Point(swatch, "RIGHT", leftRgn._control, "LEFT", -8, 0)
-        leftRgn._lastInline = swatch
-        -- Tooltip so the swatch's purpose is clear (shown while interactive, i.e. Border Color on).
-        swatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(swatch, "Border Color") end)
-        swatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        refreshTargetBorderSwatch = function()
-            local off = not ns.GetTargetGlowBorderColor()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end
-        EllesmereUI.RegisterWidgetRefresh(refreshTargetBorderSwatch)
-        refreshTargetBorderSwatch()
-
-        -- Inline Glow Color swatch: edits targetGlowColor (default the signature blue), tints the EUI background glow; dimmed+non-interactive unless EUI Glow is checked.
-        local glowSwatch, updateGlowSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5,
-            function() local c = ns.GetTargetGlowColor(); return c.r, c.g, c.b end,
-            function(r, g, b)
-                DB().targetGlowColor = { r = r, g = g, b = b }
-                for _, plate in pairs(plates) do plate:ApplyTarget() end
-                UpdatePreview()
-            end, nil, 20)
-        PP.Point(glowSwatch, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
-        leftRgn._lastInline = glowSwatch
-        glowSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(glowSwatch, "Glow Color") end)
-        glowSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        refreshTargetGlowSwatch = function()
-            local off = not ns.GetTargetGlowEllesmereUI()
-            glowSwatch:SetAlpha(off and 0.15 or 1)
-            glowSwatch:EnableMouse(not off)
-            updateGlowSwatch()
-        end
-        EllesmereUI.RegisterWidgetRefresh(refreshTargetGlowSwatch)
-        refreshTargetGlowSwatch()
-
-        -- Inline cog "More Effects": Highlight color/opacity + Glow opacity; enabled when Highlight OR EUI Glow is on (Glow Opacity reachable whenever the glow is active).
-        do
-            local function highlightCogOff()
-                return not (ns.GetTargetGlowHighlight() or ns.GetTargetGlowEllesmereUI()
-                    or ns.GetTargetGlowBorderSize())
-            end
-            local highlightCogBtn = EllesmereUI.BuildInlineCog(leftRgn, {
-                disabled = highlightCogOff,
-                disabledTooltip = "a Target Effect",
-                title = "More Effects",
-                rows = {
-                    { type="colorpicker", label="Highlight Color", hasAlpha=false,
-                      get=function() local c = ns.GetTargetHighlightColor(); return c.r, c.g, c.b end,
-                      set=function(r, g, b)
-                        DB().targetHighlightColor = { r = r, g = g, b = b }
-                        for _, plate in pairs(plates) do plate:ApplyTarget() end
-                        UpdatePreview()
-                      end },
-                    { type="slider", label="Highlight Opacity", min=0, max=100, step=1,
-                      get=function() return math.floor((ns.GetTargetHighlightAlpha() * 100) + 0.5) end,
-                      set=function(v)
-                        DB().targetHighlightAlpha = v / 100
-                        for _, plate in pairs(plates) do plate:ApplyTarget() end
-                        UpdatePreview()
-                      end },
-                    { type="slider", label="Glow Opacity", min=0, max=100, step=1,
-                      disabled=fvLocked, disabledTooltip=fvTip, rawTooltip=true,
-                      get=function() return math.floor((ns.GetTargetGlowAlpha() * 100) + 0.5) end,
-                      set=function(v)
-                        DB().targetGlowAlpha = v / 100
-                        for _, plate in pairs(plates) do plate:ApplyTarget() end
-                        UpdatePreview()
-                      end },
-                    { type="slider", label="Border Size", min=0, max=4, step=1,
-                      get=function()
-                        local v = DBVal("targetBorderSizeValue")
-                        if v ~= nil then return v end
-                        -- Not snapshotted yet: show the current border size.
-                        if ns.IsCustomBorderEnabled() then
-                            return DBVal("customBorderSize") or defaults.customBorderSize
-                        end
-                        return DBVal("borderSize") or defaults.borderSize
-                      end,
-                      set=function(v)
-                        DB().targetBorderSizeValue = v
-                        for _, plate in pairs(plates) do plate:ApplyTarget() end
-                        for _, fp in pairs(ns.friendlyPlates) do fp:ApplyTarget() end
-                        UpdatePreview()
-                      end,
-                      disabled=function() return not ns.GetTargetGlowBorderSize() end,
-                      disabledTooltip=function()
-                        if fvLocked() then return fvTip() end
-                        return "Border Size Target Effect"
-                      end,
-                      rawTooltip=fvLocked },
-                },
-            })
-            refreshTargetHighlightCog = highlightCogBtn and highlightCogBtn._euiCogState
-        end
-    end
-
-    -- Inline Custom + Class color swatches on Target Arrows (custom adjacent to the control, class to its left); click to switch, inactive swatch dims, both gray out when arrows off.
-    do
-        local rightRgn = targetGlowRow._rightRegion
-        local arrowOff = function() return DBVal("showTargetArrows") ~= true end
-        local customSwatch, updateCustom, classSwatch, updateClass
-        local function refreshArrowSwatches()
-            if updateCustom then updateCustom() end
-            if updateClass then updateClass() end
-            local off = arrowOff()
-            local useClass = DBVal("targetArrowClassColor") == true
-            customSwatch:SetAlpha(off and 0.15 or (useClass and 0.3 or 1))
-            classSwatch:SetAlpha(off and 0.15 or (useClass and 1 or 0.3))
-            customSwatch:SetMouseClickEnabled(not off)
-            classSwatch:SetMouseClickEnabled(not off)
-        end
-        customSwatch, updateCustom = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5,
-            function() local c = DBVal("targetArrowColor") or defaults.targetArrowColor; return c.r, c.g, c.b end,
-            function(r, g, b)
-                DB().targetArrowColor = { r = r, g = g, b = b }
-                DB().targetArrowClassColor = false
-                for _, plate in pairs(plates) do plate:ApplyTarget() end
-                UpdatePreview(); refreshArrowSwatches()
-            end, nil, 20)
-        PP.Point(customSwatch, "RIGHT", rightRgn._control, "LEFT", -8, 0)
-        local origCustomClick = customSwatch:GetScript("OnClick")
-        customSwatch:SetScript("OnClick", function(self, ...)
-            if arrowOff() then return end
-            if DBVal("targetArrowClassColor") == true then
-                DB().targetArrowClassColor = false
-                for _, plate in pairs(plates) do plate:ApplyTarget() end
-                UpdatePreview(); refreshArrowSwatches()
-                return
-            end
-            if origCustomClick then origCustomClick(self, ...) end
-        end)
-        customSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(customSwatch, "Custom Color") end)
-        customSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        classSwatch, updateClass = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5,
-            function() local _, ct = UnitClass("player"); local cc = ct and C_ClassColor and C_ClassColor.GetClassColor(ct); if cc then return cc.r, cc.g, cc.b end return 1, 1, 1 end,
-            function() end, nil, 20)
-        PP.Point(classSwatch, "RIGHT", customSwatch, "LEFT", -8, 0)
-        rightRgn._lastInline = classSwatch
-        classSwatch:SetScript("OnClick", function()
-            if arrowOff() then return end
-            DB().targetArrowClassColor = true
-            for _, plate in pairs(plates) do plate:ApplyTarget() end
-            UpdatePreview(); refreshArrowSwatches()
-        end)
-        classSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(classSwatch, "Class Color") end)
-        classSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        EllesmereUI.RegisterWidgetRefresh(refreshArrowSwatches)
-        refreshArrowSwatches()
-    end
-
-    -- Inline cog (arrow scale), to the left of the swatches
-    do
-        local rightRgn = targetGlowRow._rightRegion
-        local arrowOff = function() return DBVal("showTargetArrows") ~= true end
-        EllesmereUI.BuildInlineCog(rightRgn, {
-            icon = EllesmereUI.RESIZE_ICON,
-            disabled = arrowOff,
-            disabledTooltip = "Target Arrows",
-            title = "Arrow Scale",
-            rows = {
-                { type="slider", label="Scale", min=0.5, max=3.0, step=0.1,
-                  get=function() return DBVal("targetArrowScale") or defaults.targetArrowScale or 1.0 end,
-                  set=function(v)
-                    DB().targetArrowScale = v
-                    local _scKey = DBVal("targetArrowStyle") or (DBVal("targetArrowDouble") and "double") or "simple"
-                    local _scW = (ns.TARGET_ARROW_STYLES[_scKey] or ns.TARGET_ARROW_STYLES.simple).w
-                    for _, plate in pairs(plates) do
-                        local sc = v
-                        local aw = math.floor(_scW * sc + 0.5)
-                        local ah = math.floor(16 * sc + 0.5)
-                        if plate.leftArrow then PP.Size(plate.leftArrow, aw, ah) end
-                        if plate.rightArrow then PP.Size(plate.rightArrow, aw, ah) end
-                    end
-                    UpdatePreview()
-                  end },
-            },
-        })
-    end
-
-    -- Eye icon to the left of the Target Glow Style dropdown to toggle glow on preview
-    -- (none in the search pre-build: it indexes nothing, and the row is a stand-in there)
-    if not EllesmereUI._prebuilding then
-        local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
-        local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
-        local leftRgn = targetGlowRow._leftRegion
-        local eyeBtn = CreateFrame("Button", nil, leftRgn)
-        eyeBtn:SetSize(26, 26)
-        eyeBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
-        eyeBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
-        local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
-        eyeTex:SetAllPoints()
-        local function RefreshTargetGlowEye()
-            if optState.showTargetGlowPreview then
-                eyeTex:SetTexture(EYE_INVISIBLE)
-            else
-                eyeTex:SetTexture(EYE_VISIBLE)
-            end
-        end
-        RefreshTargetGlowEye()
-        eyeBtn:SetScript("OnClick", function()
-            optState.showTargetGlowPreview = not optState.showTargetGlowPreview
-            RefreshTargetGlowEye()
-            UpdatePreview()
-        end)
-        eyeBtn:SetScript("OnEnter", function(self) EllesmereUI.SetGlyphAlpha(self, 0.7) end)
-        eyeBtn:SetScript("OnLeave", function(self) EllesmereUI.SetGlyphAlpha(self, 0.4) end)
-    end
-
-    -- Enable Target Color ---- Target Texture
-    local isTargetColorDisabled = function()
-        local db = DB()
-        if db and db.targetColorEnabled ~= nil then return not db.targetColorEnabled end
-        return not defaults.targetColorEnabled
-    end
-    local isTargetTextureNone = function()
-        return (DBVal("targetOverlayTexture") or defaults.targetOverlayTexture) == "none"
-    end
-    -- No Tint: the target texture pattern becomes the bar's own fill texture (SetStatusBarTexture) instead of a tinted overlay, so the color swatch/opacity below stop applying.
-    local isTargetNoTint = function()
-        local v = DBVal("targetOverlayNoTint")
-        if v == nil then return defaults.targetOverlayNoTint end
-        return v
-    end
-    local isFocusColorDisabled = function()
-        local db = DB()
-        if db and db.focusColorEnabled ~= nil then return not db.focusColorEnabled end
-        return not defaults.focusColorEnabled
-    end
-    local isFocusTextureNone = function()
-        return (DBVal("focusOverlayTexture") or defaults.focusOverlayTexture) == "none"
-    end
-    local isFocusNoTint = function()
-        local v = DBVal("focusOverlayNoTint")
-        if v == nil then return defaults.focusOverlayNoTint end
-        return v
-    end
-
-    local targetPrev, focusPrev
-    local function RefreshFocusPreview()
-        RefreshAllPlates()
-        if focusPrev and focusPrev.UpdateOverlay then focusPrev.UpdateOverlay() end
-    end
-
-    local targetColorRow
-    targetColorRow, h = W:DualRow(parent, y,
-        { type="toggle", text="Enable Target Color",
-          getValue=function()
-            local db = DB()
-            if db and db.targetColorEnabled ~= nil then return db.targetColorEnabled end
-            return defaults.targetColorEnabled
-          end,
-          setValue=function(v)
-            DB().targetColorEnabled = v
-            RefreshAllPlates()
-            if targetPrev then
-                if v then
-                    targetPrev.SetColorOverride(nil)
-                else
-                    targetPrev.SetColorOverride(function() return DBColor("enemyInCombat") end)
-                end
-                targetPrev.UpdateColor()
-                targetPrev.SetDisabled(not v)
-            end
-            EllesmereUI:RefreshPage()
-          end },
-        { type="toggle", text="Enable Focus Color",
-          getValue=function()
-            local db = DB()
-            if db and db.focusColorEnabled ~= nil then return db.focusColorEnabled end
-            return defaults.focusColorEnabled
-          end,
-          setValue=function(v)
-            DB().focusColorEnabled = v
-            RefreshAllPlates()
-            if focusPrev then
-                if v then
-                    focusPrev.SetColorOverride(nil)
-                else
-                    focusPrev.SetColorOverride(function() return DBColor("enemyInCombat") end)
-                end
-                focusPrev.UpdateColor()
-                focusPrev.SetDisabled(not v)
-            end
-            EllesmereUI:RefreshPage()
-          end });  y = y - h
-
-    -- Inline Target Color swatch
-    if not EllesmereUI._prebuilding then
-        local leftRgn = targetColorRow._leftRegion
-        local targetColorGet = function() return DBColor("target") end
-        local targetColorSet = function(r, g, b)
-            DB().target = { r = r, g = g, b = b }
-            RefreshAllPlates()
-            if targetPrev then targetPrev.UpdateColor() end
-        end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, targetColorGet, targetColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = isTargetColorDisabled()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end)
-        local off = isTargetColorDisabled()
-        swatch:SetAlpha(off and 0.15 or 1)
-        swatch:EnableMouse(not off)
-    end
-
-    -- Inline Focus Color swatch
-    if not EllesmereUI._prebuilding then
-        local rightRgn = targetColorRow._rightRegion
-        local focusColorGet = function() return DBColor("focus") end
-        local focusColorSet = function(r, g, b)
-            DB().focus = { r = r, g = g, b = b }
-            RefreshAllPlates()
-            if focusPrev then focusPrev.UpdateColor() end
-        end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5, focusColorGet, focusColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rightRgn._control, "LEFT", -12, 0)
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = isFocusColorDisabled()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end)
-        local off = isFocusColorDisabled()
-        swatch:SetAlpha(off and 0.15 or 1)
-        swatch:EnableMouse(not off)
-    end
-
-    -- Target Texture ---- Focus Texture
-    -- Both dropdowns list the special stripe overlays first, then the full bar texture set (EUI + SharedMedia) shared with the main Bar Texture dropdown; stripe keys resolve to nameplate Media, bar keys resolve through the health-bar lookup at render time (ns.ResolveOverlayTexPath).
-    local ovtValues, ovtOrder = {}, {}
-    do
-        local STRIPE_ORDER = { "striped-v2", "striped-wide-v2", "stripes-medium", "stripes-small-close", "stripes-small-spread", "striped-tiny" }
-        local STRIPE_NAMES = {
-            ["striped-v2"] = "Stripes", ["striped-wide-v2"] = "Wide Stripes",
-            ["stripes-medium"] = "Medium Stripes", ["stripes-small-close"] = "Small Dense Stripes",
-            ["stripes-small-spread"] = "Small Spread Stripes", ["striped-tiny"] = "Tiny Stripes",
-        }
-        for _, k in ipairs(STRIPE_ORDER) do ovtValues[k] = STRIPE_NAMES[k]; ovtOrder[#ovtOrder + 1] = k end
-        ovtOrder[#ovtOrder + 1] = "---"
-        for _, k in ipairs(hbtOrder) do
-            ovtOrder[#ovtOrder + 1] = k
-            if k ~= "---" then ovtValues[k] = hbtValues[k] end
-        end
-        ovtValues._menuOpts = {
-            itemHeight = 28,
-            background = function(key)
-                if not key or key == "none" or key == "---" then return nil end
-                if ns.OVERLAY_STRIPE_KEYS and ns.OVERLAY_STRIPE_KEYS[key] then
-                    return "Interface\\AddOns\\EllesmereUINameplates\\Media\\" .. key .. ".png"
-                end
-                return ns.healthBarTextures and ns.healthBarTextures[key]
-            end,
-        }
-    end
-    local textureDualRow
-    textureDualRow, h = W:DualRow(parent, y,
-        { type="dropdown", text="Target Texture",
-          values=ovtValues,
-          getValue=function() return DBVal("targetOverlayTexture") or defaults.targetOverlayTexture end,
-          setValue=function(v)
-            DB().targetOverlayTexture = v
-            RefreshAllPlates()
-            if targetPrev and targetPrev.UpdateOverlay then targetPrev.UpdateOverlay() end
-            EllesmereUI:RefreshPage()
-          end,
-          order=ovtOrder },
-        { type="dropdown", text="Focus Texture",
-          values=ovtValues,
-          getValue=function() return DBVal("focusOverlayTexture") or defaults.focusOverlayTexture end,
-          setValue=function(v)
-            DB().focusOverlayTexture = v
-            RefreshAllPlates()
-            if focusPrev and focusPrev.UpdateOverlay then focusPrev.UpdateOverlay() end
-            EllesmereUI:RefreshPage()
-          end,
-          order=ovtOrder });  y = y - h
-
-    -- Inline Target Texture color swatch
-    if not EllesmereUI._prebuilding then
-        local leftRgn = textureDualRow._leftRegion
-        local targetTexColorGet = function()
-            local c = (DB() and DB().targetOverlayColor) or defaults.targetOverlayColor
-            return c.r, c.g, c.b
-        end
-        local targetTexColorSet = function(r, g, b)
-            DB().targetOverlayColor = { r = r, g = g, b = b }
-            RefreshAllPlates()
-            if targetPrev and targetPrev.UpdateOverlay then targetPrev.UpdateOverlay() end
-        end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, targetTexColorGet, targetTexColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-        leftRgn._lastInline = swatch
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = isTargetTextureNone() or isTargetNoTint()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end)
-        local off = isTargetTextureNone() or isTargetNoTint()
-        swatch:SetAlpha(off and 0.15 or 1)
-        swatch:EnableMouse(not off)
-    end
-
-    -- Inline Target Texture cog (Opacity + No Tint), to the left of the swatch
-    if not EllesmereUI._prebuilding then
-        local leftRgn = textureDualRow._leftRegion
-        EllesmereUI.BuildInlineCog(leftRgn, {
-            disabled = isTargetTextureNone,
-            disabledTooltip = "a Target Texture",
-            title = "Target Texture",
-            rows = {
-                { type="slider", label="Opacity", min=5, max=100, step=1,
-                  get=function() return math.floor(((DBVal("targetOverlayAlpha") or defaults.targetOverlayAlpha) * 100) + 0.5) end,
-                  set=function(v)
-                    DB().targetOverlayAlpha = v / 100
-                    RefreshAllPlates()
-                    if targetPrev and targetPrev.UpdateOverlay then targetPrev.UpdateOverlay() end
-                  end },
-                { type="toggle", label="Full alpha on empty part of bar",
-                  get=function()
-                    local v = DBVal("targetOverlayFullBgAlpha")
-                    if v == nil then return defaults.targetOverlayFullBgAlpha end
-                    return v
-                  end,
-                  set=function(v)
-                    DB().targetOverlayFullBgAlpha = v
-                    RefreshAllPlates()
-                    if targetPrev and targetPrev.UpdateOverlay then targetPrev.UpdateOverlay() end
-                  end },
-                { type="toggle", label="Don't tint (keep bar's own color)",
-                  tooltip="Tints the pattern with the bar's current color instead of the custom overlay color.",
-                  get=isTargetNoTint,
-                  set=function(v)
-                    DB().targetOverlayNoTint = v
-                    RefreshAllTextures()
-                    if targetPrev and targetPrev.UpdateOverlay then targetPrev.UpdateOverlay() end
-                  end },
-            },
-        })
-    end
-
-    -- Inline Focus Texture color swatch
-    if not EllesmereUI._prebuilding then
-        local rightRgn = textureDualRow._rightRegion
-        local focusTexColorGet = function()
-            local c = (DB() and DB().focusOverlayColor) or defaults.focusOverlayColor
-            return c.r, c.g, c.b
-        end
-        local focusTexColorSet = function(r, g, b)
-            DB().focusOverlayColor = { r = r, g = g, b = b }
-            RefreshAllPlates()
-            if focusPrev and focusPrev.UpdateOverlay then focusPrev.UpdateOverlay() end
-        end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5, focusTexColorGet, focusTexColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rightRgn._control, "LEFT", -12, 0)
-        rightRgn._lastInline = swatch
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = isFocusTextureNone() or isFocusNoTint()
-            swatch:SetAlpha(off and 0.15 or 1)
-            swatch:EnableMouse(not off)
-            updateSwatch()
-        end)
-        local off = isFocusTextureNone() or isFocusNoTint()
-        swatch:SetAlpha(off and 0.15 or 1)
-        swatch:EnableMouse(not off)
-    end
-
-    -- Inline Focus Texture cog (Opacity + No Tint), to the left of the swatch
-    if not EllesmereUI._prebuilding then
-        local rightRgn = textureDualRow._rightRegion
-        EllesmereUI.BuildInlineCog(rightRgn, {
-            disabled = isFocusTextureNone,
-            disabledTooltip = "a Focus Texture",
-            title = "Focus Texture",
-            rows = {
-                { type="slider", label="Opacity", min=5, max=100, step=1,
-                  get=function() return math.floor(((DBVal("focusOverlayAlpha") or defaults.focusOverlayAlpha) * 100) + 0.5) end,
-                  set=function(v)
-                    DB().focusOverlayAlpha = v / 100
-                    RefreshFocusPreview()
-                  end },
-                { type="toggle", label="Full alpha on empty part of bar",
-                  get=function()
-                    local v = DBVal("focusOverlayFullBgAlpha")
-                    if v == nil then return defaults.focusOverlayFullBgAlpha end
-                    return v
-                  end,
-                  set=function(v)
-                    DB().focusOverlayFullBgAlpha = v
-                    RefreshFocusPreview()
-                  end },
-                { type="toggle", label="Don't tint (keep bar's own color)",
-                  tooltip="Tints the pattern with the bar's current color instead of the custom overlay color.",
-                  get=isFocusNoTint,
-                  set=function(v)
-                    DB().focusOverlayNoTint = v
-                    RefreshAllTextures()
-                    RefreshFocusPreview()
-                  end },
-            },
-        })
-    end
-
-    -- Target Preview ---- Focus Preview
-    local previewDualRow
-    previewDualRow, h = W:DualRow(parent, y,
-        { type="label", text="Target Preview" },
-        { type="label", text="Focus Preview" });  y = y - h
-
-    -- The two bars sit at their half's right edge: the row's child anchored to that
-    -- half, moved. Page reuse: the row's children of its earlier dresses stay among
-    -- them, idle, and the deferred pass stops once the row was dressed again.
-    local previewRowGen = PoolGen(previewDualRow)
-    if not EllesmereUI._prebuilding then
-    targetPrev = LazyColorPreviewBar(previewDualRow, "health", "target", previewDualRow._leftRegion)
-    do
-        local function RepositionTargetBar()
-            if PoolGen(previewDualRow) ~= previewRowGen then return end
-            local rgn = previewDualRow._leftRegion
-            for _, child in ipairs({ previewDualRow:GetChildren() }) do
-                if child.GetNumPoints and child:GetNumPoints() > 0 and not PoolIsIdle(child) then
-                    local _, rel = child:GetPoint(1)
-                    if rel == rgn then
-                        child:ClearAllPoints()
-                        PP.Point(child, "RIGHT", rgn, "RIGHT", -20, 0)
-                        return
-                    end
-                end
-            end
-        end
-        previewDualRow:HookScript("OnShow", RepositionTargetBar)
-        C_Timer.After(0, RepositionTargetBar)
-    end
-    if isTargetColorDisabled() then
-        targetPrev.SetColorOverride(function() return DBColor("enemyInCombat") end)
-    end
-    targetPrev.SetDisabled(isTargetColorDisabled())
-    targetPrev.UpdateColor()
-    end
-
-    if not EllesmereUI._prebuilding then
-    focusPrev = LazyColorPreviewBar(previewDualRow, "health", "focus", previewDualRow._rightRegion)
-    do
-        local function RepositionFocusBar()
-            if PoolGen(previewDualRow) ~= previewRowGen then return end
-            local rgn = previewDualRow._rightRegion
-            for _, child in ipairs({ previewDualRow:GetChildren() }) do
-                if child.GetNumPoints and child:GetNumPoints() > 0 and not PoolIsIdle(child) then
-                    local _, rel = child:GetPoint(1)
-                    if rel == rgn then
-                        child:ClearAllPoints()
-                        PP.Point(child, "RIGHT", rgn, "RIGHT", -20, 0)
-                        return
-                    end
-                end
-            end
-        end
-        previewDualRow:HookScript("OnShow", RepositionFocusBar)
-        C_Timer.After(0, RepositionFocusBar)
-    end
-    if isFocusColorDisabled() then
-        focusPrev.SetColorOverride(function() return DBColor("enemyInCombat") end)
-    end
-    focusPrev.SetDisabled(isFocusColorDisabled())
-    focusPrev.UpdateColor()
-    end
-
-    -- Hover Texture (+ Hover Effect opacity slider + color swatch): the mouseover highlight overlay and its opacity/color, at the bottom of this section.
-    local hoverOverlayValues, hoverOverlayOrder = {}, {}
-    do
-        local STRIPE_ORDER = { "striped-v2", "striped-wide-v2", "stripes-medium", "stripes-small-close", "stripes-small-spread", "striped-tiny" }
-        local STRIPE_NAMES = {
-            ["striped-v2"] = "Stripes", ["striped-wide-v2"] = "Wide Stripes",
-            ["stripes-medium"] = "Medium Stripes", ["stripes-small-close"] = "Small Dense Stripes",
-            ["stripes-small-spread"] = "Small Spread Stripes", ["striped-tiny"] = "Tiny Stripes",
-        }
-        hoverOverlayValues.none = "None"
-        hoverOverlayOrder[#hoverOverlayOrder + 1] = "none"
-        hoverOverlayOrder[#hoverOverlayOrder + 1] = "---"
-        for _, k in ipairs(STRIPE_ORDER) do hoverOverlayValues[k] = STRIPE_NAMES[k]; hoverOverlayOrder[#hoverOverlayOrder + 1] = k end
-        hoverOverlayOrder[#hoverOverlayOrder + 1] = "---"
-        for _, k in ipairs(hbtOrder) do
-            -- "none" is already prepended above; skip the copy from hbtOrder (which starts with "none") so it shows only once.
-            if k ~= "none" then
-                hoverOverlayOrder[#hoverOverlayOrder + 1] = k
-                if k ~= "---" then hoverOverlayValues[k] = hbtValues[k] end
-            end
-        end
-        hoverOverlayValues._menuOpts = {
-            itemHeight = 28,
-            background = function(key)
-                if not key or key == "none" or key == "---" then return nil end
-                if ns.OVERLAY_STRIPE_KEYS and ns.OVERLAY_STRIPE_KEYS[key] then
-                    return "Interface\\AddOns\\EllesmereUINameplates\\Media\\" .. key .. ".png"
-                end
-                return ns.healthBarTextures and ns.healthBarTextures[key]
-            end,
-        }
-    end
-    do
-        local hoverRow
-        hoverRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Hover Texture",
-              tooltip="Uses the Hover Effect color and opacity. Set to None for the flat hover highlight.",
-              values=hoverOverlayValues, order=hoverOverlayOrder,
-              getValue=function() return DBVal("hoverOverlayTexture") or defaults.hoverOverlayTexture end,
-              setValue=function(v)
-                DB().hoverOverlayTexture = v
-                ns.RefreshHoverEffect()
-                UpdatePreview()
-                EllesmereUI:RefreshPage()
-              end },
-            { type="dropdown", text="Hover Effect",
-              values={ __placeholder = "..." }, order={ "__placeholder" },
-              getValue=function() return "__placeholder" end,
-              setValue=function() end });  y = y - h
-        if not EllesmereUI._prebuilding then
-        -- Hover Effect: the Target Effect model copied onto mouseover
-        -- (user-directed 2026-08-16, no preview integration). Highlight is
-        -- the only default-on channel and rides the legacy
-        -- hoverColor/hoverAlpha keys, so every profile keeps its exact
-        -- pre-rework hover visuals until other channels are opted in.
-        local rightRgn = hoverRow._rightRegion
-        if rightRgn._control then rightRgn._control:Hide() end
-        local refreshHoverBorderSwatch
-        local refreshHoverGlowSwatch
-        local refreshHoverCog
-        local hoverItems = {
-            { key = "ellesmereui", label = "EUI Glow" },
-            { key = "borderColor", label = "Border Color" },
-            { key = "highlight",   label = "Highlight" },
-            { key = "borderSize",  label = "Border Size",
-              tooltip = "Change Size in the Cogwheel" },
-        }
-        local hvDD, hvDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-            rightRgn, 170, rightRgn:GetFrameLevel() + 2,
-            hoverItems,
-            function(k)
-                if k == "ellesmereui" then return ns.GetHoverGlowEllesmereUI() end
-                if k == "borderColor" then return ns.GetHoverGlowBorderColor() end
-                if k == "highlight"   then return ns.GetHoverGlowHighlight() end
-                if k == "borderSize"  then return ns.GetHoverGlowBorderSize() end
-                return false
-            end,
-            function(k, v)
-                if k == "ellesmereui" then DB().hoverGlowEllesmereUI = v
-                elseif k == "borderColor" then DB().hoverGlowBorderColor = v
-                elseif k == "highlight" then DB().hoverGlowHighlight = v
-                elseif k == "borderSize" then
-                    DB().hoverGlowBorderSize = v
-                    -- First-enable snapshot: seed the cog slider with the user's
-                    -- CURRENT border size, so enabling changes nothing until they
-                    -- move it (one-time, never re-snapshots later).
-                    if v and DB().hoverBorderSizeValue == nil then
-                        if ns.IsCustomBorderEnabled() then
-                            DB().hoverBorderSizeValue = DBVal("customBorderSize") or defaults.customBorderSize
-                        else
-                            DB().hoverBorderSizeValue = DBVal("borderSize") or defaults.borderSize
-                        end
-                    end
-                end
-                ns.RefreshHoverEffect()
-                if refreshHoverBorderSwatch then refreshHoverBorderSwatch() end
-                if refreshHoverGlowSwatch then refreshHoverGlowSwatch() end
-                if refreshHoverCog then refreshHoverCog() end
-            end)
-        PP.Point(hvDD, "RIGHT", rightRgn, "RIGHT", -20, 0)
-        rightRgn._control = hvDD
-        rightRgn._lastInline = nil
-        EllesmereUI.RegisterWidgetRefresh(hvDDRefresh)
-
-        -- Inline Border Color swatch: dimmed unless Border Color is checked.
-        local hvBSwatch, hvUpdateBSwatch = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5,
-            function() local c = ns.GetHoverBorderColor(); return c.r, c.g, c.b end,
-            function(r, g, b)
-                DB().hoverBorderColor = { r = r, g = g, b = b }
-                ns.RefreshHoverEffect()
-            end, nil, 20)
-        PP.Point(hvBSwatch, "RIGHT", rightRgn._control, "LEFT", -8, 0)
-        rightRgn._lastInline = hvBSwatch
-        hvBSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(hvBSwatch, "Border Color") end)
-        hvBSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        refreshHoverBorderSwatch = function()
-            local off = not ns.GetHoverGlowBorderColor()
-            hvBSwatch:SetAlpha(off and 0.15 or 1)
-            hvBSwatch:EnableMouse(not off)
-            hvUpdateBSwatch()
-        end
-        EllesmereUI.RegisterWidgetRefresh(refreshHoverBorderSwatch)
-        refreshHoverBorderSwatch()
-
-        -- Inline Glow Color swatch: dimmed unless EUI Glow is checked.
-        local hvGSwatch, hvUpdateGSwatch = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5,
-            function() local c = ns.GetHoverGlowColor(); return c.r, c.g, c.b end,
-            function(r, g, b)
-                DB().hoverGlowColor = { r = r, g = g, b = b }
-                ns.RefreshHoverEffect()
-            end, nil, 20)
-        PP.Point(hvGSwatch, "RIGHT", rightRgn._lastInline or rightRgn._control, "LEFT", -8, 0)
-        rightRgn._lastInline = hvGSwatch
-        hvGSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(hvGSwatch, "Glow Color") end)
-        hvGSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        refreshHoverGlowSwatch = function()
-            local off = not ns.GetHoverGlowEllesmereUI()
-            hvGSwatch:SetAlpha(off and 0.15 or 1)
-            hvGSwatch:EnableMouse(not off)
-            hvUpdateGSwatch()
-        end
-        EllesmereUI.RegisterWidgetRefresh(refreshHoverGlowSwatch)
-        refreshHoverGlowSwatch()
-
-        -- Inline cog "More Effects": Highlight color/opacity (the legacy
-        -- hoverColor/hoverAlpha keys) + Glow Opacity + Border Size.
-        do
-            local function hoverCogOff()
-                return not (ns.GetHoverGlowHighlight() or ns.GetHoverGlowEllesmereUI()
-                    or ns.GetHoverGlowBorderSize())
-            end
-            local hoverCogBtn = EllesmereUI.BuildInlineCog(rightRgn, {
-                disabled = hoverCogOff,
-                disabledTooltip = "a Hover Effect",
-                title = "More Effects",
-                rows = {
-                    { type="colorpicker", label="Highlight Color", hasAlpha=false,
-                      get=function()
-                        local c = (DB() and DB().hoverColor) or defaults.hoverColor
-                        return c.r, c.g, c.b
-                      end,
-                      set=function(r, g, b)
-                        DB().hoverColor = { r = r, g = g, b = b }
-                        ns.RefreshHoverEffect()
-                        UpdatePreview()
-                      end },
-                    { type="slider", label="Highlight Opacity", min=0, max=100, step=1,
-                      get=function()
-                        return math.floor(((DBVal("hoverAlpha") or defaults.hoverAlpha) * 100) + 0.5)
-                      end,
-                      set=function(v)
-                        DB().hoverAlpha = v / 100
-                        ns.RefreshHoverEffect()
-                        UpdatePreview()
-                      end },
-                    { type="slider", label="Glow Opacity", min=0, max=100, step=1,
-                      get=function() return math.floor((ns.GetHoverGlowAlpha() * 100) + 0.5) end,
-                      set=function(v)
-                        DB().hoverGlowAlpha = v / 100
-                        ns.RefreshHoverEffect()
-                      end },
-                    { type="slider", label="Border Size", min=0, max=4, step=1,
-                      get=function()
-                        local v = DBVal("hoverBorderSizeValue")
-                        if v ~= nil then return v end
-                        if ns.IsCustomBorderEnabled() then
-                            return DBVal("customBorderSize") or defaults.customBorderSize
-                        end
-                        return DBVal("borderSize") or defaults.borderSize
-                      end,
-                      set=function(v)
-                        DB().hoverBorderSizeValue = v
-                        ns.RefreshHoverEffect()
-                      end,
-                      disabled=function() return not ns.GetHoverGlowBorderSize() end,
-                      disabledTooltip="Border Size Hover Effect" },
-                },
-            })
-            refreshHoverCog = hoverCogBtn and hoverCogBtn._euiCogState
-        end
-
-        -- Inline Hover Texture cog (Full alpha on empty part of bar), left of the dropdown; disabled while set to None.
-        local leftRgn = hoverRow._leftRegion
-        local isHoverTextureNone = function()
-            return (DBVal("hoverOverlayTexture") or defaults.hoverOverlayTexture) == "none"
-        end
-        EllesmereUI.BuildInlineCog(leftRgn, {
-            disabled = isHoverTextureNone,
-            disabledTooltip = "a Hover Texture",
-            title = "Hover Texture",
-            rows = {
-                { type="toggle", label="Full alpha on empty part of bar",
-                  get=function()
-                    local v = DBVal("hoverOverlayFullBgAlpha")
-                    if v == nil then return defaults.hoverOverlayFullBgAlpha end
-                    return v
-                  end,
-                  set=function(v)
-                    DB().hoverOverlayFullBgAlpha = v
-                    ns.RefreshHoverEffect()
-                    UpdatePreview()
-                  end },
-            },
-        })
-    end
-        end
-
-    -----------------------------------------------------------------------
     --  CLASS RESOURCE
     -----------------------------------------------------------------------
     local classResourceHeader
@@ -1711,7 +808,6 @@ local function BuildDisplayBars(parent, y, ctx)
         local leftRgn = classResourceRow2._leftRegion
         EllesmereUI.BuildInlineCog(leftRgn, {
             anchorTo = leftRgn._control,
-            icon = EllesmereUI.DIRECTIONS_ICON,
             disabled = classPowerDisabled,
             disabledTooltip = "Show Class Resource",
             isOpen = CogPopupOpen,
@@ -1746,7 +842,7 @@ local function BuildDisplayBars(parent, y, ctx)
             ns.RefreshClassPower(); UpdatePreview()
           end });  y = y - h
 
-    -- Row 4: Shape | Border (inline color swatch + thickness cog on Border)
+    -- Row 4: Shape | Border (inline thickness cog + color swatch on Border)
     local classResourceRow4
     classResourceRow4, h = W:DualRow(parent, y,
         { type="dropdown", text="Shape",
@@ -1770,7 +866,7 @@ local function BuildDisplayBars(parent, y, ctx)
             EllesmereUI:RefreshPage()
           end });  y = y - h
 
-    -- Inline border color swatch + thickness cog on the Border toggle
+    -- Inline thickness cog + border color swatch on the Border toggle
     if not EllesmereUI._prebuilding then
         local rgn = classResourceRow4._rightRegion
         local function borderOff()
@@ -1784,8 +880,20 @@ local function BuildDisplayBars(parent, y, ctx)
             DB().classPowerBorderColor = { r = r, g = g, b = b, a = 1 }
             ns.RefreshClassPower(); UpdatePreview()
         end
+
+        EllesmereUI.BuildInlineCog(rgn, {
+            disabled = borderOff,
+            disabledTooltip = "Border",
+            title = "Border Settings",
+            rows = {
+                { type="slider", label="Thickness", min=1, max=4, step=1,
+                  get=function() return DBVal("classPowerBorderSize") or defaults.classPowerBorderSize end,
+                  set=function(v) DB().classPowerBorderSize = v; ns.RefreshClassPower(); UpdatePreview() end },
+            },
+        })
+
         local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, colorGet, colorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rgn._control, "LEFT", -12, 0)
+        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
         rgn._lastInline = swatch
         EllesmereUI.RegisterWidgetRefresh(function()
             local off = borderOff()
@@ -1796,18 +904,6 @@ local function BuildDisplayBars(parent, y, ctx)
         local off = borderOff()
         swatch:SetAlpha(off and 0.15 or 1)
         swatch:EnableMouse(not off)
-
-        EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.RESIZE_ICON, gap = 9,
-            disabled = borderOff,
-            disabledTooltip = "Border",
-            title = "Border Settings",
-            rows = {
-                { type="slider", label="Thickness", min=1, max=4, step=1,
-                  get=function() return DBVal("classPowerBorderSize") or defaults.classPowerBorderSize end,
-                  set=function(v) DB().classPowerBorderSize = v; ns.RefreshClassPower(); UpdatePreview() end },
-            },
-        })
     end
     end   -- close Class Resource hidden-while-disabled gate
 
@@ -1864,13 +960,8 @@ local function BuildDisplayBars(parent, y, ctx)
                 DB()[kind .. "DurationTextColor"] = { r = r, g = g, b = b }
                 RefreshDuration()
             end
-            local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(region, region:GetFrameLevel() + 5, colorGet, colorSet, nil, 20)
-            PP.Point(swatch, "RIGHT", region._control, "LEFT", -12, 0)
-            region._lastInline = swatch
-            EllesmereUI.RegisterWidgetRefresh(function() updateSwatch() end)
 
             EllesmereUI.BuildInlineCog(region, {
-                icon = EllesmereUI.RESIZE_ICON, gap = 9,
                 title = cfg.title,
                 rows = {
                     { type="slider", label="Size", min=6, max=20, step=1,
@@ -1884,6 +975,10 @@ local function BuildDisplayBars(parent, y, ctx)
                       set=function(v) DB()[kind .. "DurationTextY"] = v; RefreshDuration() end },
                 },
             })
+            local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(region, region:GetFrameLevel() + 5, colorGet, colorSet, nil, 20)
+            PP.Point(swatch, "RIGHT", region._lastInline or region._control, "LEFT", -8, 0)
+            region._lastInline = swatch
+            EllesmereUI.RegisterWidgetRefresh(function() updateSwatch() end)
         end
 
         local durationRow1
@@ -1921,14 +1016,9 @@ local function BuildDisplayBars(parent, y, ctx)
             LiveApplyAuraText()
             UpdatePreview()
         end
-        local asSwatch, asUpdateSwatch = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5, asColorGet, asColorSet, nil, 20)
-        PP.Point(asSwatch, "RIGHT", rightRgn._control, "LEFT", -12, 0)
-        rightRgn._lastInline = asSwatch
-        EllesmereUI.RegisterWidgetRefresh(function() asUpdateSwatch() end)
 
         -- RIGHT: Aura Stacks inline cog (Size / X / Y)
         EllesmereUI.BuildInlineCog(rightRgn, {
-            icon = EllesmereUI.RESIZE_ICON, gap = 9,
             title = "Aura Stacks Settings",
             rows = {
                 { type="slider", label="Size", min=6, max=20, step=1,
@@ -1954,6 +1044,10 @@ local function BuildDisplayBars(parent, y, ctx)
                   end },
             },
         })
+        local asSwatch, asUpdateSwatch = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5, asColorGet, asColorSet, nil, 20)
+        PP.Point(asSwatch, "RIGHT", rightRgn._lastInline or rightRgn._control, "LEFT", -8, 0)
+        rightRgn._lastInline = asSwatch
+        EllesmereUI.RegisterWidgetRefresh(function() asUpdateSwatch() end)
         end
     end
 
@@ -1999,14 +1093,9 @@ local function BuildDisplayBars(parent, y, ctx)
             end
             UpdatePreview()
         end
-        local snSwatch, snUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, snColorGet, snColorSet, nil, 20)
-        PP.Point(snSwatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-        EllesmereUI.RegisterWidgetRefresh(function() snUpdateSwatch() end)
 
         -- LEFT: Spell Name inline cog for X/Y offset
         EllesmereUI.BuildInlineCog(leftRgn, {
-            chain = false, anchorTo = snSwatch, gap = 6,
-            icon = EllesmereUI.RESIZE_ICON,
             isOpen = CogPopupOpen,
             show = function(self)
                 ShowCogPopup(self, {
@@ -2047,12 +1136,38 @@ local function BuildDisplayBars(parent, y, ctx)
                 })
             end,
         })
+        local snSwatch, snUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, snColorGet, snColorSet, nil, 20)
+        PP.Point(snSwatch, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
+        leftRgn._lastInline = snSwatch
+        EllesmereUI.RegisterWidgetRefresh(function() snUpdateSwatch() end)
 
         -- RIGHT: Spell Target inline double swatch (custom + class colored)
         local rightRgn = spellNameRow._rightRegion
         local ctrl = rightRgn._control
 
-        -- Class colored swatch (rightmost)
+        -- RIGHT: Spell Target inline cog for X/Y offset
+        EllesmereUI.BuildInlineCog(rightRgn, {
+            isOpen = CogPopupOpen,
+            show = function(self)
+                ShowCogPopup(self, {
+                    title = EllesmereUI.L("Spell Target Settings"),
+                    xGet = function() return DBVal("castTargetOffsetX") or defaults.castTargetOffsetX end,
+                    xSet = function(v) DB().castTargetOffsetX = v; ns.RefreshAllSettings(); UpdatePreview() end,
+                    yGet = function() return DBVal("castTargetOffsetY") or defaults.castTargetOffsetY end,
+                    ySet = function(v) DB().castTargetOffsetY = v; ns.RefreshAllSettings(); UpdatePreview() end,
+                    sizeGet = function() return DBVal("castTargetSize") or defaults.castTargetSize end,
+                    sizeSet = function(v) DB().castTargetSize = v; ns.RefreshAllSettings(); UpdatePreview() end,
+                    sizeMin = 6, sizeMax = 20, sizeLabel = EllesmereUI.L("Size"),
+                    sizeFirst = true,
+                    widthGet = function() return DBVal("castTargetWidthPct") or defaults.castTargetWidthPct end,
+                    widthSet = function(v) DB().castTargetWidthPct = v; ns.RefreshAllSettings(); UpdatePreview() end,
+                    wrapGet = function() return DBVal("castTargetWrap") == true end,
+                    wrapSet = function(v) DB().castTargetWrap = v; ns.RefreshAllSettings(); UpdatePreview() end,
+                })
+            end,
+        })
+
+        -- Class colored swatch (beside the cog)
         local ccGet = function()
             local _, ct = UnitClass("player")
             if ct and RAID_CLASS_COLORS[ct] then
@@ -2062,7 +1177,7 @@ local function BuildDisplayBars(parent, y, ctx)
             return 1, 1, 1
         end
         local ccSwatch, ccUpdate = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5, ccGet, function() end, nil, 20)
-        PP.Point(ccSwatch, "RIGHT", ctrl, "LEFT", -12, 0)
+        PP.Point(ccSwatch, "RIGHT", rightRgn._lastInline or ctrl, "LEFT", -8, 0)
         ccSwatch:SetScript("OnClick", function()
             DB().castTargetClassColor = true
             for _, plate in pairs(plates) do plate:UpdateHealth() end
@@ -2081,6 +1196,7 @@ local function BuildDisplayBars(parent, y, ctx)
         end
         local stSwatch, stUpdate = EllesmereUI.BuildColorSwatch(rightRgn, rightRgn:GetFrameLevel() + 5, stColorGet, stColorSet, nil, 20)
         PP.Point(stSwatch, "RIGHT", ccSwatch, "LEFT", -9, 0)
+        rightRgn._lastInline = stSwatch
         stSwatch._eabOrigClick = stSwatch:GetScript("OnClick")
         stSwatch:SetScript("OnClick", function(self)
             local db = DB()
@@ -2111,35 +1227,11 @@ local function BuildDisplayBars(parent, y, ctx)
         if isCC == nil then isCC = defaults.castTargetClassColor end
         stSwatch:SetAlpha(isCC and 0.3 or 1)
         ccSwatch:SetAlpha(isCC and 1 or 0.3)
-
-        -- RIGHT: Spell Target inline cog for X/Y offset
-        EllesmereUI.BuildInlineCog(rightRgn, {
-            chain = false, anchorTo = stSwatch, gap = 6,
-            icon = EllesmereUI.RESIZE_ICON,
-            isOpen = CogPopupOpen,
-            show = function(self)
-                ShowCogPopup(self, {
-                    title = EllesmereUI.L("Spell Target Settings"),
-                    xGet = function() return DBVal("castTargetOffsetX") or defaults.castTargetOffsetX end,
-                    xSet = function(v) DB().castTargetOffsetX = v; ns.RefreshAllSettings(); UpdatePreview() end,
-                    yGet = function() return DBVal("castTargetOffsetY") or defaults.castTargetOffsetY end,
-                    ySet = function(v) DB().castTargetOffsetY = v; ns.RefreshAllSettings(); UpdatePreview() end,
-                    sizeGet = function() return DBVal("castTargetSize") or defaults.castTargetSize end,
-                    sizeSet = function(v) DB().castTargetSize = v; ns.RefreshAllSettings(); UpdatePreview() end,
-                    sizeMin = 6, sizeMax = 20, sizeLabel = EllesmereUI.L("Size"),
-                    sizeFirst = true,
-                    widthGet = function() return DBVal("castTargetWidthPct") or defaults.castTargetWidthPct end,
-                    widthSet = function(v) DB().castTargetWidthPct = v; ns.RefreshAllSettings(); UpdatePreview() end,
-                    wrapGet = function() return DBVal("castTargetWrap") == true end,
-                    wrapSet = function(v) DB().castTargetWrap = v; ns.RefreshAllSettings(); UpdatePreview() end,
-                })
-            end,
-        })
     end
     y = y - h
 
     return y, healthBarHeader, healthBarHeightRow, castBarHeightRow, showCastIconRow, castTimerRow,
-        tfxHeader, targetGlowRow, classResourceHeader, classResourceSection, generalTextHeader,
+        classResourceHeader, classResourceSection, generalTextHeader,
         auraDurPosRow, auraTimerStackRow, spellNameRow
 end
 

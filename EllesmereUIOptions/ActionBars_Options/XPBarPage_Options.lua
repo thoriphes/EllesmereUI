@@ -802,18 +802,13 @@ local function BuildXPBarPage(pageName, parent, yOffset)
             ctrl:Hide()
         end
         if p1 then cbDD:SetPoint(p1, rel, p2, ax, ay)
-        else EllesmereUI.PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0) end
+        else EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0) end
         rgn._control = cbDD
         rgn._lastInline = nil
         EllesmereUI.RegisterWidgetRefresh(cbRefresh)
         -- What the text shows, on the list while it is closed (the name above
         -- it is the position button, with its own tooltip).
-        cbDD:HookScript("OnEnter", function(self)
-            if self._ddMenu and self._ddMenu:IsShown() then return end
-            EllesmereUI.ShowWidgetTooltip(self, SLOT_TIP)
-        end)
-        cbDD:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        cbDD:HookScript("OnClick", function() EllesmereUI.HideWidgetTooltip() end)
+        cbDD._ttText = SLOT_TIP
         -- The list has no disabled state of its own: grey it and block clicks;
         -- the row's disabled overlay explains the lock.
         local function SyncLock()
@@ -852,7 +847,6 @@ local function BuildXPBarPage(pageName, parent, yOffset)
         rows[#rows + 1] = RestedRow(stem, i)
         EllesmereUI.BuildInlineCog(rgn, {
             title = EntryLabel(e),
-            icon = EllesmereUI.DIRECTIONS_ICON,
             anchorTo = rgn._control,
             captureRegion = rgn,
             disabled = function() return EntryLocked(e) end,
@@ -1270,6 +1264,33 @@ local function BuildXPBarPage(pageName, parent, yOffset)
     if chrome then
         local rgn = questRow._leftRegion
         local function overlayOff() return _blizzDis() or not S().questOverlay end
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Quest XP Overlay",
+            captureRegion = rgn,
+            disabled = overlayOff,
+            disabledTooltip = function()
+                if _blizzDis() then return BLIZZ_DIS_TIP end
+                return "Quest XP Overlay"
+            end,
+            rawTooltip = _blizzDis,
+            rows = {
+                { type="toggle", label="Completed Quests Only",
+                  tooltip="Only counts quests that are ready to turn in.",
+                  get=function() return S().questOverlayCompleted end,
+                  set=function(v)
+                      S().questOverlayCompleted = v or nil
+                      ns.ApplyDataBarLayout(XP)
+                      EllesmereUI:RefreshPage()
+                  end },
+                { type="toggle", label="Current Zone Only",
+                  tooltip="Only counts quests in your current zone.",
+                  get=function() return S().questOverlayZone end,
+                  set=function(v)
+                      S().questOverlayZone = v or nil
+                      ns.ApplyDataBarLayout(XP)
+                  end },
+            },
+        })
         EllesmereUI.BuildInlineSwatches(rgn, {
             { tooltip = "Completed Color", hasAlpha = true,
               getValue = function() return ns.XPQuestColor(S(), true) end,
@@ -1299,33 +1320,6 @@ local function BuildXPBarPage(pageName, parent, yOffset)
                 return "Quest XP Overlay"
             end,
             rawTooltip = _blizzDis })
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Quest XP Overlay",
-            captureRegion = rgn,
-            disabled = overlayOff,
-            disabledTooltip = function()
-                if _blizzDis() then return BLIZZ_DIS_TIP end
-                return "Quest XP Overlay"
-            end,
-            rawTooltip = _blizzDis,
-            rows = {
-                { type="toggle", label="Completed Quests Only",
-                  tooltip="Only counts quests that are ready to turn in.",
-                  get=function() return S().questOverlayCompleted end,
-                  set=function(v)
-                      S().questOverlayCompleted = v or nil
-                      ns.ApplyDataBarLayout(XP)
-                      EllesmereUI:RefreshPage()
-                  end },
-                { type="toggle", label="Current Zone Only",
-                  tooltip="Only counts quests in your current zone.",
-                  get=function() return S().questOverlayZone end,
-                  set=function(v)
-                      S().questOverlayZone = v or nil
-                      ns.ApplyDataBarLayout(XP)
-                  end },
-            },
-        })
     end
 
     return math.abs(y)
