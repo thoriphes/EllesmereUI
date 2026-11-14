@@ -117,7 +117,8 @@ local function ResolveSpellSettingsUncached(frame, sid2, sd2, barKey)
     -- family store below falls back to spellSettingsCD and applies a CD-era
     -- entry under the same id to the buff.
     local hostedFrame = false
-    if frame and bk and sd2 and sd2.hostedBuffSpellIDs then
+    -- A "Replace with Buff" frame takes the cooldown's identity: resolve it as that cooldown.
+    if frame and bk and sd2 and sd2.hostedBuffSpellIDs and not (fc0 and fc0.replacesCd) then
         local fdH = ns._hookFrameData and ns._hookFrameData[frame]
         if (fc0 and fc0.isHostedBuff)
            or (fdH and fdH._isBuffViewerFrame)
@@ -277,7 +278,8 @@ end
 -- Result memo over the resolver. Per-frame stamp keyed on ns._cdmResGen (bumped
 -- by EVERY input edge: per-spell/tier create-delete, host flips, cdID-key gate
 -- flip, clean-sid flips, SPELL_OVERRIDE_UPDATED, SPELLS_CHANGED, rebuilds) plus
--- the frame's content identity (sid2/resolvedSid/baseSpellID) plus the bar.
+-- the frame's content identity (sid2/resolvedSid/baseSpellID, and replacesCd: the
+-- collect pass writes it with no bump, and it decides the store) plus the bar.
 -- In-place mutation needs no bump (the memo returns the table writers edit).
 -- The hit path still re-asserts the tier chain (two bars can share one family
 -- entry) at one getmetatable+compare cost; nil-frame callers bypass the memo.
@@ -292,7 +294,8 @@ local function ResolveSpellSettings(frame, sid2, sd2, barKey)
     end
     local bk = barKey or fc0.barKey
     if fc0.ssRGen == ns._cdmResGen and fc0.ssRSid == sid2 and fc0.ssRBk == bk
-       and fc0.ssRRS == fc0.resolvedSid and fc0.ssRBS == fc0.baseSpellID then
+       and fc0.ssRRS == fc0.resolvedSid and fc0.ssRBS == fc0.baseSpellID
+       and fc0.ssRRC == fc0.replacesCd then
         local v = fc0.ssRVal
         if v == false then return nil end
         ns.ChainSettings(v, fc0.ssRTier)
@@ -305,6 +308,7 @@ local function ResolveSpellSettings(frame, sid2, sd2, barKey)
     fc0.ssRBk = bk
     fc0.ssRRS = fc0.resolvedSid
     fc0.ssRBS = fc0.baseSpellID
+    fc0.ssRRC = fc0.replacesCd
     if res == nil then
         fc0.ssRVal = false
         fc0.ssRTier = nil
@@ -503,6 +507,18 @@ local _divertedBuffCdIDs  = {}
 --- same way listing a spellID claims a spell. On ns, not a local: this file is at
 --- the 200-local cap.
 ns._divertedSlotCD = {}
+--- Item preset diversions, entry key (-itemID) -> barKey, and the key Blizzard's own
+--- potion / healthstone row renders under, by its spell category (Combat Potion 4,
+--- Health Potion 30, Healthstone 1711, Demonic Healthstone 2566: Blizzard's own table
+--- in CooldownViewerItemData.lua). Such a row carries no spell of its own, so the
+--- preset key is its one stable identity: it takes the preset's slot and settings,
+--- and the preset's own frame stands down while it is live (NativeItemKeyFor below,
+--- EUI_CDM_HookReanchor.lua Phase 1 and 3). On ns: 200-local cap.
+ns._divertedItemCD = {}
+ns._nativeItemKeyByCat = {}
+-- WoW Forever: CD-family claims by rank name (ns.CDMRankName), for a row whose
+-- cooldown info does not link the rank a bar lists. On ns: 200-local cap.
+ns._divertedRankCD = {}
 -- "Replace with Buff" (per-spell cd/util setting): buff identity -> the cooldown
 -- spellID whose slot the buff's viewer frame takes while the aura is active.
 -- Spell-keyed map is variant-expanded on write; the cooldownID map serves
@@ -693,6 +709,9 @@ function ns.RebuildSpellRouteMap()
     wipe(_divertedVarBaseCD)
     wipe(_divertedBuffCdIDs)
     wipe(ns._divertedSlotCD)
+    wipe(ns._divertedItemCD)
+    wipe(ns._nativeItemKeyByCat)
+    wipe(ns._divertedRankCD)
     wipe(ns._buffReplaceTarget)
     wipe(ns._buffReplaceTargetCd)
     wipe(ns._buffReplaceBars)
@@ -737,14 +756,18 @@ function ns.RebuildSpellRouteMap()
         end
     end
 
+    local RankName = ns.CDMRankName
     local function CollectDiversionsFor(bd, skipPositiveSet)
         local sd = ns.GetBarSpellData(bd.key)
         if not sd or not sd.assignedSpells then return end
         local targetMap = IsBuffFamily and IsBuffFamily(bd) and _divertedSpellsBuff or _divertedSpellsCD
+        local byRank = RankName and targetMap == _divertedSpellsCD
         for _, sid in ipairs(sd.assignedSpells) do
             if type(sid) == "number" and sid > 0 then
                 if not skipPositiveSet or not skipPositiveSet[sid] then
                     StoreDirect(targetMap, sid, bd.key)
+                    local n = byRank and not (sd.customSpellIDs and sd.customSpellIDs[sid]) and RankName(sid)
+                    if n then ns._divertedRankCD[n] = bd.key end
                 end
             else
                 -- Equipment slot entry: routes Blizzard's own equipment cooldown
@@ -752,7 +775,13 @@ function ns.RebuildSpellRouteMap()
                 -- order as the sid maps above, so a custom bar outranks the
                 -- default (pass 3) and a ghost bar hides it (pass 4).
                 local slot = ns.SlotIDFromKey and ns.SlotIDFromKey(sid)
-                if slot then ns._divertedSlotCD[slot] = bd.key end
+                if slot then
+                    ns._divertedSlotCD[slot] = bd.key
+                elseif ns.IsItemPresetKey(sid) then
+                    -- Item preset entry: Blizzard's own row for that item (a potion
+                    -- or healthstone category row) routes to the bar listing it.
+                    ns._divertedItemCD[sid] = bd.key
+                end
             end
         end
     end
@@ -914,7 +943,46 @@ function ns.RebuildSpellRouteMap()
         end
     end
 
+    -- The key each of Blizzard's item rows renders under: a key of its category a
+    -- visible bar lists (the player's own placement), else one the ghost bar lists
+    -- (the row hides with it), else the category's first key (the reseed lists it
+    -- where the row renders).
+    local nativeKeys = ns.CDM_NATIVE_ITEM_KEYS
+    if nativeKeys then
+        local byKey = ns.barDataByKey
+        for cat, keys in pairs(nativeKeys) do
+            local pick
+            for i = 1, #keys do
+                local bar = ns._divertedItemCD[keys[i]]
+                local bdK = bar and byKey and byKey[bar]
+                if bar and not (bdK and bdK.isGhostBar) then pick = keys[i]; break end
+            end
+            if not pick then
+                for i = 1, #keys do
+                    if ns._divertedItemCD[keys[i]] then pick = keys[i]; break end
+                end
+            end
+            ns._nativeItemKeyByCat[cat] = pick or keys[1]
+        end
+    end
+
     _routeMapBuilt = true
+end
+
+-- Blizzard's own potion / healthstone row (a spell-category row of the Essential or
+-- Utility viewer): the preset key it renders under, or nil for any other row. Reads
+-- the RAW cooldown info (the merged copy folds categories). The second return says
+-- the row's live frame resolves a racial spell: such a row is a racial, never an
+-- item, whatever category it carries, and stays on the managed spell path.
+function ns.NativeItemKeyFor(info, frame)
+    local cat = info and info.spellCategoryID
+    if type(cat) ~= "number" or (issecretvalue and issecretvalue(cat)) then return nil, false end
+    local live = frame and frame.GetSpellID and frame:GetSpellID()
+    if type(live) == "number" and not (issecretvalue and issecretvalue(live))
+       and ns.ALL_RACIAL_SPELLS[live] then
+        return nil, true
+    end
+    return ns._nativeItemKeyByCat[cat], false
 end
 
 --- Lazily resolve a cooldownID to a bar key (per-frame at reanchor).
@@ -1001,6 +1069,22 @@ local function ResolveCDIDToBar(cdID, viewerDefaultBar)
             -- slot.
             return viewerDefaultBar
         end
+        -- Blizzard's own potion / healthstone row: no spell of its own either, so
+        -- it routes by the preset key its category maps to (NativeItemKeyFor) to
+        -- the bar listing that preset (a ghost listing hides it), else the viewer
+        -- default; cached like the slot route (the reseed that lists the key
+        -- rebuilds the map). A category UNREADABLE in restricted content resolves
+        -- transiently, uncached, like an unreadable slot.
+        local cat = info.spellCategoryID
+        if cat ~= nil then
+            if issecretvalue and issecretvalue(cat) then return viewerDefaultBar end
+            local itemKey = ns._nativeItemKeyByCat[cat]
+            if itemKey then
+                local itemBar = ns._divertedItemCD[itemKey] or viewerDefaultBar
+                _cdidRouteMap[cdID] = itemBar
+                return itemBar
+            end
+        end
     end
 
     local routedBar = nil
@@ -1049,6 +1133,11 @@ local function ResolveCDIDToBar(cdID, viewerDefaultBar)
                 routedBar = RVV(divertMap, lid)
                 if routedBar then break end
             end
+        end
+        -- WoW Forever: a row that does not link the listed rank goes by its name.
+        local RankName = ns.CDMRankName
+        if not routedBar and RankName and viewerDefaultBar ~= "buffs" then
+            routedBar = ns._divertedRankCD[RankName(info.overrideSpellID) or RankName(info.spellID) or false]
         end
     end
 

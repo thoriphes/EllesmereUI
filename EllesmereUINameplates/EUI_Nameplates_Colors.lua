@@ -24,7 +24,10 @@ local defaults, GetTextSlot, IsComboHealthText = I.defaults, I.GetTextSlot, I.Is
 local MaybeDarken = I.MaybeDarken
 
 local p
-I.profileSetters[#I.profileSetters + 1] = function(v) p = v end
+I.profileSetters[#I.profileSetters + 1] = function(v)
+    p = v
+    ns._questObjectiveTypeEnabled = v and v.showQuestObjectiveTypeIcon == true or false
+end
 
 -- Cached threat-context state; updated at zone transitions and spec changes
 local _inThreatContent = false
@@ -35,8 +38,9 @@ local _isTankRole      = false
 -- UnitDetailedThreatSituation(tankToken, mob) (plain tokens in; isTanking
 -- boolean out, plain or secret; field-probed real boolean in keys) folded
 -- through C_CurveUtil.EvaluateColorValueFromBoolean so no secret is ever read
--- in Lua. Returns ok plus possibly-SECRET r,g,b: the caller must hand them to
--- SETTERS ONLY -- never compare, cache, multiply or format them. Tank tokens
+-- in Lua. Returns ok plus possibly-SECRET r,g,b, and a: 1 while another tank
+-- holds the mob, else 0 (the debuff colors' bad-threat alpha). The caller must
+-- hand them to SETTERS ONLY -- never compare, cache, multiply or format them. Tank tokens
 -- rebuild lazily off ns._otherTanksDirty (set by RefreshThreatCache's existing
 -- roster/role/zone events -- zero new registrations; own-group role reads are
 -- plain). On ns (file is at the 200-local cap).
@@ -66,7 +70,7 @@ function ns.ComputeOffTankFold(unit, br, bg, bb, otr, otg, otb)
     if not toks[1] then return false end
     -- All colors arrive from the caller: the _C accessor is declared far BELOW
     -- this function, so resolving colors here read a nil global (field crash).
-    local r, g, b = br, bg, bb
+    local r, g, b, a = br, bg, bb, 0
     if not (r and otr) then return false end
     for i = 1, #toks do
         local isTanking = UnitDetailedThreatSituation(toks[i], unit)
@@ -77,9 +81,10 @@ function ns.ComputeOffTankFold(unit, br, bg, bb, otr, otg, otb)
             r = eval(isTanking, otr, r)
             g = eval(isTanking, otg, g)
             b = eval(isTanking, otb, b)
+            a = eval(isTanking, 1, a)
         end
     end
-    return true, r, g, b
+    return true, r, g, b, a
 end
 
 -- A damage dealer's or healer's threat colors mean something only while someone else can
@@ -119,12 +124,18 @@ end
 -- the tank role assigned (fvRoleTank; with one, the role alone decides). FV_TANK_CLASS (nil
 -- off Forever and for every other class) names what a warrior, druid or paladin is watched
 -- for. The watcher is armed only while the threat colors are on: the form event for the
--- shapes, the player's aura event for Righteous Fury, its payload probed for that one aura
--- (a restricted read keeps the last answer). A changed verdict repaints the plates.
+-- shapes, the player's aura event for Righteous Fury (re-read only when the update may
+-- have brought or taken it). A read an aura restriction refuses keeps the last answer and
+-- is retried as combat ends and as the restriction lifts. A changed verdict repaints the
+-- plates.
 local FV_TANK_CLASS = EllesmereUI.IS_FOREVER
     and ({ WARRIOR = "form", DRUID = "form", PALADIN = "fury" })[select(2, UnitClass("player"))] or nil
-local FV_FURY = 25780
-local fvFury, fvFuryInst = false, nil
+-- Every spell ID the Forever client names Righteous Fury: the list to read, and each ID as
+-- a key for the aura event's probe.
+local FV_FURY_IDS = { 25780, 407627, 407628, [25780] = true, [407627] = true, [407628] = true }
+-- Whether it is up, the instance held (nil when that cannot be read), and whether the last
+-- read was refused (the answer may be old).
+local fvFury, fvFuryInst, fvFuryStale = false, nil, false
 local fvTankFrame, fvTankOn
 local fvRoleTank = false
 
@@ -136,51 +147,65 @@ local function FvReadRoleTank()
     if has or not unsure then fvRoleTank = has end
 end
 
--- Righteous Fury's state, read only while the aura is readable (outside an aura
--- restriction nothing is secret).
+-- Righteous Fury's state. Each ID is read on its own, and only while its aura is readable
+-- (outside an aura restriction nothing is secret): one that is found is certain, "not up"
+-- needs every ID read, and an ID the client refuses to answer for is passed over. False
+-- when it cannot say: the last answer stays.
 local function FvReadFury()
-    local S = C_Secrets
-    if S and S.ShouldSpellAuraBeSecret then
-        local ok, secret = pcall(S.ShouldSpellAuraBeSecret, FV_FURY)
-        if not ok or issecretvalue(secret) or secret ~= false then return end
-    end
-    local aura = C_UnitAuras.GetPlayerAuraBySpellID(FV_FURY)
-    if issecretvalue(aura) then return end
-    fvFury = aura ~= nil
-    local iid = aura and aura.auraInstanceID
-    fvFuryInst = (not issecretvalue(iid)) and iid or nil
-end
-
--- The player aura event: true when Righteous Fury may have come or gone (re-read on a full
--- update; an added instance of it, or the removal of the one held, otherwise).
-local function FvFuryProbe(info)
-    if issecretvalue(info) then return false end
-    if not info then FvReadFury(); return true end
-    local full = info.isFullUpdate
-    if issecretvalue(full) then return false end
-    if full then FvReadFury(); return true end
-    local added = info.addedAuras
-    if not issecretvalue(added) and added then
-        for i = 1, #added do
-            local a = added[i]
-            if not issecretvalue(a) then
-                local sid = a.spellId
-                if not issecretvalue(sid) and sid == FV_FURY then
-                    local iid = a.auraInstanceID
-                    fvFury = true
-                    fvFuryInst = (not issecretvalue(iid)) and iid or nil
-                    return true
-                end
+    local check = C_Secrets and C_Secrets.ShouldSpellAuraBeSecret
+    local read, blind = false, false
+    for i = 1, #FV_FURY_IDS do
+        local id = FV_FURY_IDS[i]
+        local ok, secret = true, false
+        if check then ok, secret = pcall(check, id) end
+        if not ok then
+            -- no answer for this ID: it tells nothing either way
+        elseif issecretvalue(secret) or secret ~= false then
+            blind = true
+        else
+            local aura = C_UnitAuras.GetPlayerAuraBySpellID(id)
+            if issecretvalue(aura) then
+                blind = true
+            elseif aura then
+                local inst = aura.auraInstanceID
+                fvFury, fvFuryInst = true, (not issecretvalue(inst)) and inst or nil
+                return true
+            else
+                read = true
             end
         end
     end
-    local removed = info.removedAuraInstanceIDs
-    if fvFuryInst and not issecretvalue(removed) and removed then
-        for i = 1, #removed do
-            local iid = removed[i]
-            if not issecretvalue(iid) and iid == fvFuryInst then
-                fvFury, fvFuryInst = false, nil
-                return true
+    if blind or not read then return false end
+    fvFury, fvFuryInst = false, nil
+    return true
+end
+
+-- The player aura event: whether Righteous Fury may have come or gone. A gain of one of
+-- its IDs, the loss of the instance held, a full update, or anything in the update that
+-- cannot be read (in restricted content the payload and each of its lists can be secret,
+-- and indexing one is an error, so every layer is tested). A refresh, or another aura
+-- coming or going, changes nothing.
+local function FvFuryMatters(info)
+    if info == nil or issecretvalue(info) then return true end
+    local full = info.isFullUpdate
+    if issecretvalue(full) or full then return true end
+    local added = info.addedAuras
+    if added ~= nil then
+        if issecretvalue(added) then return true end
+        for i = 1, #added do
+            local aura = added[i]
+            if aura == nil or issecretvalue(aura) then return true end
+            local id = aura.spellId
+            if issecretvalue(id) or (id and FV_FURY_IDS[id]) then return true end
+        end
+    end
+    if fvFury then
+        local removed = info.removedAuraInstanceIDs
+        if removed ~= nil then
+            if issecretvalue(removed) then return true end
+            for i = 1, #removed do
+                local inst = removed[i]
+                if not fvFuryInst or issecretvalue(inst) or inst == fvFuryInst then return true end
             end
         end
     end
@@ -195,8 +220,48 @@ local function PlayerTankVerdict()
     return EllesmereUI.ForeverTankForm() or fvFury
 end
 
-local function FvTankOnEvent(_, event, _, info)
-    if event == "UNIT_AURA" and not FvFuryProbe(info) then return end
+local FvTankOnEvent
+local FvFuryRetry
+-- Reads Righteous Fury. True when the answer is certain. A refused read marks the answer
+-- stale: the restriction's own event is listened to until a read succeeds, and in combat
+-- the read is queued for its end (the restriction can lift a moment after that event).
+local function FvFuryRead()
+    if FvReadFury() then
+        if fvFuryStale then
+            fvFuryStale = false
+            fvTankFrame:UnregisterEvent("ADDON_RESTRICTION_STATE_CHANGED")
+        end
+        return true
+    end
+    if not fvFuryStale then
+        fvFuryStale = true
+        fvTankFrame:RegisterEvent("ADDON_RESTRICTION_STATE_CHANGED")
+    end
+    if InCombatLockdown() then ns.CombatQueue.Defer("np-fv-fury", FvFuryRetry) end
+    return false
+end
+FvFuryRetry = function()
+    if fvTankOn and fvFuryStale and FvFuryRead() then FvTankOnEvent(nil, "FURY_READ") end
+end
+FvTankOnEvent = function(_, event, a1, info)
+    if event == "UNIT_AURA" then
+        if fvFuryStale then
+            -- The answer is already known to be old. In a fight nothing can be read until
+            -- it ends or the restriction lifts (FvFuryRead retries then); out of one, any
+            -- aura change is a chance to read again.
+            if InCombatLockdown() then return end
+        elseif not FvFuryMatters(info) then
+            return
+        end
+        if not FvFuryRead() then return end
+    elseif event == "ADDON_RESTRICTION_STATE_CHANGED" then
+        -- A restriction starting or lifting (registered only while the answer is stale).
+        -- Read on the next frame, after the dispatch, so the settled state is read; addon
+        -- chat restrictions never touch auras.
+        local T = Enum.AddOnRestrictionType
+        if not (T and a1 == T.Chat) then C_Timer.After(0, FvFuryRetry) end
+        return
+    end
     local was = _isTankRole
     _isTankRole = PlayerTankVerdict()
     if _isTankRole ~= was then
@@ -218,7 +283,7 @@ local function FvTankSync(on)
     if on then
         if FV_TANK_CLASS == "fury" then
             fvTankFrame:RegisterUnitEvent("UNIT_AURA", "player")
-            FvReadFury()
+            FvFuryRead()
         else
             fvTankFrame:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
         end
@@ -226,6 +291,7 @@ local function FvTankSync(on)
         _isTankRole = PlayerTankVerdict()
     else
         fvTankFrame:UnregisterAllEvents()
+        fvFuryStale = false
     end
 end
 
@@ -273,8 +339,10 @@ local function RefreshThreatCache()
     -- solo "NONE" case the old spec fallback existed for; WoW Forever adds the
     -- tank shapes and Righteous Fury while the group has no assigned tank
     -- (PlayerTankVerdict).
-    if FV_TANK_CLASS == "fury" then FvReadFury() end
-    if fvTankOn then FvReadRoleTank() end
+    if fvTankOn then
+        if FV_TANK_CLASS == "fury" then FvFuryRead() end
+        FvReadRoleTank()
+    end
     _isTankRole = PlayerTankVerdict()
     ns.NP_RefreshThreatColorFlag()
 end
@@ -290,101 +358,197 @@ end
 --  per unit; invalidated on QUEST_LOG_UPDATE and NAME_PLATE_UNIT_REMOVED.
 -------------------------------------------------------------------------------
 local questMobCache = {}
+local questObjectiveTypeCache = {}
 -- Parallel cache of verified-clean "objectives remaining" strings, keyed by unit. Populated
--- only when replaceQuestIconWithObjective is ON; same invalidation lifecycle. On ns (cap).
+-- only while the Quest Objective Text element is on; same invalidation lifecycle. On ns (cap).
 ns._questObjText = ns._questObjText or {}
+ns._questObjType = ns._questObjType or {}
+local function ResolveQuestObjectiveType(questID, tooltipText, isOnQuest)
+    if not issecretvalue then return nil end
+    if issecretvalue(questID) or issecretvalue(isOnQuest) or issecretvalue(tooltipText) then return nil end
+    if type(questID) ~= "number" or questID <= 0 or questID % 1 ~= 0
+        or isOnQuest ~= true or type(tooltipText) ~= "string"
+        or not (C_QuestLog and C_QuestLog.GetQuestObjectives) then
+        return nil
+    end
+
+    local objectives = questObjectiveTypeCache[questID]
+    if objectives == nil then
+        local result = C_QuestLog.GetQuestObjectives(questID)
+        if issecretvalue(result) or type(result) ~= "table" then
+            questObjectiveTypeCache[questID] = false
+            return nil
+        end
+        objectives = {}
+        for index, objective in ipairs(result) do
+            local text, objectiveType
+            if not issecretvalue(objective) and objective then
+                text, objectiveType = objective.text, objective.type
+                if issecretvalue(text) then text = nil end
+                if issecretvalue(objectiveType) then objectiveType = nil end
+                if type(text) ~= "string" then text = nil end
+                if type(objectiveType) ~= "string" then objectiveType = nil end
+            end
+            objectives[index] = { text = text, type = objectiveType }
+        end
+        questObjectiveTypeCache[questID] = objectives
+    elseif objectives == false then
+        return nil
+    end
+
+    local matchCount, matchedType, unreadableText = 0, nil, false
+    for _, objective in ipairs(objectives) do
+        if not objective.text then
+            unreadableText = true
+        elseif objective.text == tooltipText then
+            matchCount = matchCount + 1
+            matchedType = objective.type
+        end
+    end
+    if unreadableText or matchCount ~= 1 then return nil end
+    if matchedType == "monster" or matchedType == "item" then return matchedType end
+end
 -- Is this unit one of the local player's active quest objectives with work remaining? Read
 -- from the tooltip's structured data: a QuestObjective line carries `completed` plus
 -- numFulfilled/numRequired, a QuestTitle line the quest id, so completion needs no
 -- progress-string parsing. Ownership goes through the player's own quest log (only their
 -- quests answer C_QuestLog.IsOnQuest), so a group member's objective is ignored. Every
 -- structured value is possibly secret and issecretvalue-checked before use. Cached per unit;
--- cleared on QUEST_LOG_UPDATE and plate removal.
-local function IsQuestMob(unit)
-    if not (C_TooltipInfo and Enum and Enum.TooltipDataLineType) then return false end
-    local cached = questMobCache[unit]
-    if cached ~= nil then return cached end
+-- cleared on QUEST_LOG_UPDATE, plate removal and zone changes.
+local IsQuestMob
+do
+    -- The settings both caches were built under (ScanState); a call under other settings
+    -- wipes them first, so a cache never answers for settings it was not built with.
+    local built, builtType
+    -- 1 while the Quest Objective Text element is on (the scan reads the objective text).
+    -- In instanced content, plus 2 while a consumer may show the result there (the Quest
+    -- Indicator, the quest mob health colour or the Quest Objective Text, each with its Show
+    -- In Instances), else plus 4 (no scan: every unit reads as no quest mob). Open world: 0 / 1.
+    local function ScanState()
+        local st = (ns.NP_GetQuestTextSlot() ~= "none") and 1 or 0
+        if InRealInstancedContent() then
+            local ok = (ns.NP_ShowInInstances("quest")
+                    and (ns.NP_QuestIconOn() or (p and p.questMobColorEnabled) == true))
+                or (st == 1 and ns.NP_ShowInInstances("questtext"))
+            st = st + (ok and 2 or 4)
+        end
+        return st
+    end
+    IsQuestMob = function(unit)
+        if not (C_TooltipInfo and Enum and Enum.TooltipDataLineType) then return false end
+        local st = ScanState()
+        local typeOn = p and p.showQuestObjectiveTypeIcon == true or false
+        if st ~= built or typeOn ~= builtType then
+            wipe(questMobCache)
+            wipe(ns._questObjText)
+            if typeOn then
+                wipe(questObjectiveTypeCache)
+                wipe(ns._questObjType)
+            end
+            built = st
+            builtType = typeOn
+        end
+        local cached = questMobCache[unit]
+        if cached ~= nil then return cached end
 
-    -- Open-world only, unless the indicator's "Show In Instances" opt-in lifts it.
-    if InRealInstancedContent() then
-        local show = p and p.classificationShowInInstances
-        if show == nil then show = defaults.classificationShowInInstances end
-        if not show then
+        -- Instanced content with no consumer that shows the result there: no scan.
+        if st >= 4 then
             questMobCache[unit] = false
             return false
         end
-    end
 
-    local info = C_TooltipInfo.GetUnit(unit)
-    if not (info and info.lines) then
-        questMobCache[unit] = false
-        return false
-    end
+        local info = C_TooltipInfo.GetUnit(unit)
+        if not (info and info.lines) then
+            questMobCache[unit] = false
+            return false
+        end
 
-    local LT = Enum.TooltipDataLineType
-    local onQuest = C_QuestLog and C_QuestLog.IsOnQuest
-    local wantText = (p and p.replaceQuestIconWithObjective == true) or false
-    local questID  -- id carried by the most recent QuestTitle line
-    local isQuest, objText = false, nil
+        local LT = Enum.TooltipDataLineType
+        local onQuest = C_QuestLog and C_QuestLog.IsOnQuest
+        local wantText = (st % 2) == 1
+        local wantType = wantText and typeOn
+        if wantType then ns._questObjType[unit] = nil end
+        local questID  -- id carried by the most recent QuestTitle line
+        local isQuest, objText = false, nil
 
-    for _, line in ipairs(info.lines) do
-        local kind = line.type
-        if kind == LT.QuestTitle then
-            local id = line.id
-            if id and not (issecretvalue and issecretvalue(id)) then
-                questID = id
-            else
-                questID = nil
-            end
-        elseif kind == LT.QuestObjective then
-            local done = line.completed
-            -- An incomplete objective the player is actually on: their quest log scopes out a
-            -- group member's objectives. Fail open when the id is unreadable so a real quest
-            -- mob is never silently skipped.
-            if not (issecretvalue and issecretvalue(done)) and done == false
-               and (not questID or not onQuest or onQuest(questID)) then
-                isQuest = true
-                if wantText then
-                    local have, need = line.numFulfilled, line.numRequired
-                    if have and need
-                       and not (issecretvalue and (issecretvalue(have) or issecretvalue(need))) then
-                        -- Percent-style objectives (area progress bars)
-                        -- degenerate to 0/1 in the structured fields; the
-                        -- real progress lives only in the line text. Show
-                        -- the extracted percent when readable, else the
-                        -- count (real 0/1 kill objectives keep their count).
-                        local lt = line.leftText
-                        local pct
-                        if lt and not (issecretvalue and issecretvalue(lt))
-                           and type(lt) == "string" then
-                            pct = lt:match("(%d+)%s*%%")
+        for _, line in ipairs(info.lines) do
+            local kind = line.type
+            if kind == LT.QuestTitle then
+                local id = line.id
+                if id and not (issecretvalue and issecretvalue(id)) then
+                    questID = id
+                else
+                    questID = nil
+                end
+            elseif kind == LT.QuestObjective then
+                local done = line.completed
+                -- An incomplete objective the player is actually on: their quest log scopes out
+                -- a group member's objectives. Fail open when the id is unreadable so a real
+                -- quest mob is never silently skipped.
+                if not (issecretvalue and issecretvalue(done)) and done == false then
+                    local onQuestResult = true
+                    if questID and onQuest then onQuestResult = onQuest(questID) end
+                    if onQuestResult then
+                        isQuest = true
+                        if wantText then
+                            local have, need = line.numFulfilled, line.numRequired
+                            if have and need
+                               and not (issecretvalue and (issecretvalue(have) or issecretvalue(need))) then
+                                -- Percent-style objectives (area progress bars)
+                                -- degenerate to 0/1 in the structured fields; the
+                                -- real progress lives only in the line text. Show
+                                -- the extracted percent when readable, else the
+                                -- count (real 0/1 kill objectives keep their count).
+                                local lt = line.leftText
+                                local pct
+                                if lt and not (issecretvalue and issecretvalue(lt))
+                                   and type(lt) == "string" then
+                                    pct = lt:match("(%d+)%s*%%")
+                                end
+                                objText = pct and (pct .. "%") or (have .. "/" .. need)
+                                if wantType and objText and questID and onQuest and issecretvalue
+                                    and not issecretvalue(onQuestResult) and onQuestResult == true then
+                                    ns._questObjType[unit] = ResolveQuestObjectiveType(questID, lt, onQuestResult)
+                                end
+                            end
                         end
-                        objText = pct and (pct .. "%") or (have .. "/" .. need)
+                        break
                     end
                 end
-                break
             end
         end
-    end
 
-    questMobCache[unit] = isQuest
-    if wantText then
-        ns._questObjText[unit] = isQuest and objText or nil
+        questMobCache[unit] = isQuest
+        if wantText then
+            ns._questObjText[unit] = isQuest and objText or nil
+        end
+        return isQuest
     end
-    return isQuest
 end
 ns.IsQuestMob = IsQuestMob
 
--- Thin reader for the icon-replace feature. Returns a clean digit string or nil.
+-- The Quest Objective Text element's reader. Returns a clean "have/need" or "N%" string, or
+-- nil (no readable count or percent).
 function ns.GetQuestObjectiveText(unit)
     return ns._questObjText[unit]
 end
+function ns.GetQuestObjectiveType(unit)
+    return ns._questObjType[unit]
+end
+function ns.InvalidateQuestObjectiveTypeCache()
+    if not ns._questObjectiveTypeEnabled then return end
+    wipe(questObjectiveTypeCache)
+    wipe(ns._questObjType)
+end
 
--- Live refresh for the options toggle. Wiping BOTH caches is required: IsQuestMob short-circuits
--- on questMobCache[unit] ~= nil, so a unit cached while OFF never gets objective text extracted.
+-- Live refresh for the quest options (the Rare/Quest and Quest Objective Text boxes, Show In
+-- Instances, Text Size). Wiping BOTH caches is required: IsQuestMob short-circuits on
+-- questMobCache[unit] ~= nil, so a unit cached without its objective text never gets it.
 function ns.RefreshQuestObjective()
     wipe(questMobCache)
     wipe(ns._questObjText)
+    ns._questObjectiveTypeEnabled = p and p.showQuestObjectiveTypeIcon == true or false
+    ns.InvalidateQuestObjectiveTypeCache()
     for _, plate in pairs(ns.plates) do
         if plate.UpdateClassification then
             plate:UpdateClassification()
@@ -400,6 +564,7 @@ ns._questDirty = false
 questCacheWatcher:SetScript("OnEvent", function()
     wipe(questMobCache)
     wipe(ns._questObjText)
+    ns.InvalidateQuestObjectiveTypeCache()
     if not ns._questDirty then
         ns._questDirty = true
         C_Timer.After(0.5, function()
@@ -415,11 +580,19 @@ end)
 local function _C(key)
     return (p and p[key]) or defaults[key]
 end
--- Neutral health-bar color: enemyInCombat tint while in combat, else neutral color. Shared by
--- every precedence step resolving to "neutral" (step 5, neutral+mini carve-out 7b, dungeon 10d).
+-- Neutral health-bar color: the enemy fallback's color while in combat (All Enemies while
+-- Simple Coloring When Not In M+ applies outside 5-man dungeons, as step 11 picks it, else
+-- Enemies), else the neutral color. Shared by every precedence step resolving to "neutral"
+-- (step 5, neutral+mini carve-out 7b, dungeon 10d).
 local function ResolveNeutralColor(unit)
     if UnitAffectingCombat(unit) then
-        local c = _C("enemyInCombat")
+        local key = "enemyInCombat"
+        if not ns._inDungeon then
+            local simple = p and p.owBasicColoring
+            if simple == nil then simple = defaults.owBasicColoring end
+            if simple then key = "owBasicColor" end
+        end
+        local c = _C(key)
         return c.r, c.g, c.b
     end
     local c = _C("neutral")
@@ -459,25 +632,37 @@ ns._npSlotLevelFS = {}  -- plate font string keys painted in level mode
 ns._npSlotLevelCK = {}  -- parallel: the owning slot's colour key (unreadable-level fallback)
 -- Materialized with the class flags: the font string key each bottom slot owns
 -- (false = none, or a later slot rewrites that shared font string), whether
--- either owns one (the cast show / hide re-anchor runs only then), and the slot
--- showing Target of Target (false = none; its UNIT_TARGET registration follows
--- it) plus whether that slot is in class mode. _npToTUnits caches "<unit>target".
+-- either owns one (the cast show / hide re-anchor runs only then), the same for
+-- the top corner slots (their re-anchor follows the class power push with the
+-- name's), and the slot showing Target of Target (false = none; its UNIT_TARGET
+-- registration follows it) plus whether that slot is in class mode. _npToTUnits
+-- caches "<unit>target". _npCustomTgt: a custom text reads [target] (UNIT_TARGET
+-- follows it too). _npTgtTexts: either is shown, the one gate of every target-text
+-- trigger.
 ns._npBottomFS = { false, false }
 ns._npBottomUsed = false
+ns._npTopCornerFS = { false, false }
+ns._npTopCornerUsed = false
 ns._npToTSlot = false
 ns._npToTClass = false
 ns._npToTColorKey = nil
 ns._npToTUnits = {}
+ns._npCustomTgt = false
+ns._npTgtTexts = false
 do
-    -- The order ApplyHealthTextAppearance lays the slots out in (bar slots, then top):
-    -- the last slot writing a shared font string owns it.
+    -- The order ApplyHealthTextAppearance lays the slots out in (the HP_BAR_SLOTS
+    -- entries, then Top): the last slot writing a shared font string owns it.
+    -- Indexes 4, 5 are the bottom corners, 6, 7 the top corners.
     local SLOTS = { "textSlotRight", "textSlotLeft", "textSlotCenter",
-        "textSlotBottomLeft", "textSlotBottomRight", "textSlotTop" }
+        "textSlotBottomLeft", "textSlotBottomRight", "textSlotTopLeft", "textSlotTopRight",
+        "textSlotTop" }
     local owner, ownerSlot, lastIdx = {}, {}, {}
     local COLOR_KEY = {}  -- slot -> its colour key (prebuilt for UpdateToT and the painter)
     for i = 1, #SLOTS do COLOR_KEY[SLOTS[i]] = SLOTS[i] .. "Color" end
-    -- The plate font string key an element renders on (nil for None).
-    function ns.NP_ElementFSKey(el)
+    -- The plate font string key an element renders on (nil for None). slot: the slot
+    -- showing it, which picks a custom text's own font string.
+    function ns.NP_ElementFSKey(el, slot)
+        if el == "custom" then return slot and ns.NP_CustomFSKey[slot] end
         if ns.IsNameElement(el) then return "name" end
         if el == "level" then return "levelText" end
         if el == "targetOfTarget" then return "totText" end
@@ -496,13 +681,19 @@ do
         wipe(lastIdx)
         ns._npToTSlot = false
         ns._npToTClass = false
-        local B = ns._npBottomFS
+        ns._npCustomTgt = false
+        local B, T = ns._npBottomFS, ns._npTopCornerFS
         -- The name is placed in FindNameSlot's slot (the first holding one), the
         -- other shared font strings by the last slot writing them.
         local nameSlot = ns.FindNameSlot()
         for i = 1, #SLOTS do
             local s = SLOTS[i]
-            local key = ns.NP_ElementFSKey(GetTextSlot(s))
+            local el = GetTextSlot(s)
+            local key = ns.NP_ElementFSKey(el, s)
+            if el == "custom" and not ns._npCustomTgt then
+                local parsed = ns.NP_CustomParse(s)
+                ns._npCustomTgt = (parsed and parsed.reads.tgt) or false
+            end
             if key == "totText" then
                 -- Painted by UpdateToT from the target's class, never the plate unit's.
                 ns._npToTSlot = s
@@ -513,6 +704,7 @@ do
             end
             if key then lastIdx[key] = i end
             if i == 4 or i == 5 then B[i - 3] = key or false end
+            if i == 6 or i == 7 then T[i - 5] = key or false end
         end
         for b = 1, 2 do
             if B[b] == "name" then
@@ -520,9 +712,16 @@ do
             elseif B[b] and lastIdx[B[b]] ~= b + 3 then
                 B[b] = false
             end
+            if T[b] == "name" then
+                if nameSlot ~= SLOTS[b + 5] then T[b] = false end
+            elseif T[b] and lastIdx[T[b]] ~= b + 5 then
+                T[b] = false
+            end
         end
         ns._npToTColorKey = ns._npToTSlot and COLOR_KEY[ns._npToTSlot] or nil
+        ns._npTgtTexts = (ns._npToTSlot or ns._npCustomTgt) and true or false
         ns._npBottomUsed = (B[1] or B[2]) and true or false
+        ns._npTopCornerUsed = (T[1] or T[2]) and true or false
         for key, mode in pairs(owner) do
             if mode == "class" then
                 L[#L + 1] = key
@@ -550,7 +749,8 @@ end
 -- slot colours are written statically. Returns true while the name's slot is in either
 -- mode. An inline colour escape in the text (a Level | Name part colour) still wins over
 -- it. skipName leaves the name alone (Threat Colors "Text" holds it) and drops its memo
--- entry, so the first call without it repaints the name.
+-- entry, so the first call without it repaints the name. A custom text's font string
+-- is missing until the plate's next appearance pass builds it: skipped until then.
 function ns.NP_PaintSlotClassColors(plate, unit, skipName)
     local m = plate._scMemo
     if not m then m = {}; plate._scMemo = m end
@@ -581,7 +781,7 @@ function ns.NP_PaintSlotClassColors(plate, unit, skipName)
                     local e = m[key]
                     if e then e[1] = nil end
                     if not (skipName and key == "name") then
-                        plate[key]:SetTextColor(sr, sg, sb, 1)
+                        local fs = plate[key]; if fs then fs:SetTextColor(sr, sg, sb, 1) end
                     end
                 end
             end
@@ -605,7 +805,7 @@ function ns.NP_PaintSlotClassColors(plate, unit, skipName)
                     e[1] = nil
                 elseif e[1] ~= r or e[2] ~= g or e[3] ~= b then
                     e[1], e[2], e[3] = r, g, b
-                    plate[key]:SetTextColor(r, g, b, 1)
+                    local fs = plate[key]; if fs then fs:SetTextColor(r, g, b, 1) end
                 end
             end
         end
@@ -624,11 +824,11 @@ function ns.NP_PaintSlotClassColors(plate, unit, skipName)
                     e[1] = false
                     local ck = ns._npSlotLevelCK[i]
                     local c = (p and p[ck]) or defaults[ck]
-                    plate[key]:SetTextColor(c.r, c.g, c.b, 1)
+                    local fs = plate[key]; if fs then fs:SetTextColor(c.r, c.g, c.b, 1) end
                 end
             elseif e[1] ~= r or e[2] ~= g or e[3] ~= b then
                 e[1], e[2], e[3] = r, g, b
-                plate[key]:SetTextColor(r, g, b, 1)
+                local fs = plate[key]; if fs then fs:SetTextColor(r, g, b, 1) end
             end
         end
     end
@@ -669,7 +869,11 @@ end
 -- must hand them to setters only and never cache or compare them. status: the threat
 -- situation this pass already read (false = no threat data), or nil to read it here; the
 -- nil test reads the type tag only, since the situation read can be secret.
+-- ns._threatOkA: 1 while nothing is wrong, 0 on bad threat (a non-tank with or
+-- near aggro, a tank without or losing it), or the off-tank fold's secret answer;
+-- the debuff colors give way on the border and name channels by it.
 function ns.ResolveThreatColor(unit, status)
+    ns._threatOkA = 1
     if not ns._npThreatColorsOn then return end
     if type(status) == "nil" then status = UnitThreatSituation("player", unit) end
     if not status then return end
@@ -678,9 +882,11 @@ function ns.ResolveThreatColor(unit, status)
         -- Solo with no pet out the player always has aggro: no signal (ThreatShared).
         if not ThreatShared() then return end
         if status >= 3 then
+            ns._threatOkA = 0
             local c = _C("dpsHasAggro")
             return c.r, c.g, c.b, false
         elseif status >= 2 then
+            ns._threatOkA = 0
             local c = _C("dpsNearAggro")
             return c.r, c.g, c.b, false
         end
@@ -710,6 +916,7 @@ function ns.ResolveThreatColor(unit, status)
         return
     end
     if status >= 2 then
+        ns._threatOkA = 0
         local c = _C("tankLosingAggro")
         return c.r, c.g, c.b, false
     end
@@ -730,12 +937,14 @@ function ns.ResolveThreatColor(unit, status)
     end
     if otE and roleSecret then
         local otc = _C("offTankAggro")
-        local folded, fr, fg, fb = ns.ComputeOffTankFold(unit, base.r, base.g, base.b, otc.r, otc.g, otc.b)
+        local folded, fr, fg, fb, fa = ns.ComputeOffTankFold(unit, base.r, base.g, base.b, otc.r, otc.g, otc.b)
         -- Secret when an isTanking read was: those components reach setters only. A
         -- plain fold goes through the caller's memos like any other colour.
         if folded then
+            ns._threatOkA = fa
             return fr, fg, fb, (issecretvalue(fr) or issecretvalue(fg) or issecretvalue(fb))
         end
+        ns._threatOkA = 0
         return base.r, base.g, base.b, false
     end
     if targetRole == "TANK" then
@@ -745,9 +954,11 @@ function ns.ResolveThreatColor(unit, status)
         local c = _C("offTankAggro")
         return c.r, c.g, c.b, false
     end
+    ns._threatOkA = 0
     return base.r, base.g, base.b, false
 end
-local function GetReactionColor(unit)
+-- castSeen: the plate's Color Casting Enemies memory (plate._castSeen).
+local function GetReactionColor(unit, castSeen)
     -- Per-call marker read SYNCHRONOUSLY by UpdateHealthColor right after this
     -- returns: true only when this resolution landed on the non-tank Near
     -- Aggro color, so the near-aggro glow rides the exact same decision.
@@ -765,14 +976,22 @@ local function GetReactionColor(unit)
     -- (false = no threat data), which UpdateHealthColor hands to ns.ResolveThreatColor
     -- instead of a second UnitThreatSituation read.
     ns._reactionThreatStatus = nil
+    -- Same idiom: true when this resolution landed on bad threat (a non-tank with or
+    -- near aggro, a tank without or losing it), where the debuff colors give way.
+    ns._reactionBadThreat = false
+    -- Same idiom: the mob-type tier Color Casting Enemies may tint, nil when it may not.
+    -- ns._reactionCastLit (plainly in combat, for Modify Out of Combat) is set with it.
+    ns._reactionCastTier = nil
     local db = p or defaults
     -- 1. Tapped always highest
     if UnitIsTapDenied(unit) then
         local c = _C("tapped")
         return c.r, c.g, c.b
     end
-    -- 2. Quest mob second highest
-    if db.questMobColorEnabled and IsQuestMob(unit) then
+    -- 2. Quest mob second highest (in instanced content only while the Quest Indicator's
+    -- Show In Instances is on)
+    if db.questMobColorEnabled and (not InRealInstancedContent() or ns.NP_ShowInInstances("quest"))
+        and IsQuestMob(unit) then
         local qc = db.questMobColor or defaults.questMobColor
         return qc.r, qc.g, qc.b
     end
@@ -808,10 +1027,12 @@ local function GetReactionColor(unit)
                 -- Only in a group or with a pet out (solo without one, the player always has aggro)
                 if threatShared then
                 if status >= 3 then
+                    ns._reactionBadThreat = true
                     local c = _C("dpsHasAggro")
                     return c.r, c.g, c.b
                 elseif status >= 2 then
                     ns._reactionNearAggro = true
+                    ns._reactionBadThreat = true
                     local c = _C("dpsNearAggro")
                     return c.r, c.g, c.b
                 end
@@ -830,6 +1051,7 @@ local function GetReactionColor(unit)
                 if otE == nil then otE = defaults.offTankAggroEnabled end
                 if otE then ns._reactionOffTankFold = true end
                 if status < 3 and status >= 2 then
+                    ns._reactionBadThreat = true
                     local c = _C("tankLosingAggro")
                     return c.r, c.g, c.b
                 elseif status < 3 then
@@ -857,6 +1079,7 @@ local function GetReactionColor(unit)
                         if otE then ns._reactionOffTankFold = true end
                     end
                     if targetRole ~= "TANK" then
+                        ns._reactionBadThreat = true
                         local c = _C("tankNoAggro")
                         return c.r, c.g, c.b
                     end
@@ -900,16 +1123,25 @@ local function GetReactionColor(unit)
         end
     end
     -- 5. Neutral (colored as an enemy while in combat with them). OUTSIDE dungeons keeps its
-    -- high priority; IN dungeons deferred to just above the enemy fallback (step 10d) so
-    -- mob-type/threat colors win on neutral dungeon units and neutral becomes near-last resort.
+    -- high priority while it carries no health-bar threat data; IN dungeons, and with that
+    -- data anywhere, deferred to just above the enemy fallback (step 10d) so mob-type/threat
+    -- colors win on it and neutral becomes the near-last resort.
     local reaction = UnitReaction(unit, "player")
     local isNeutral = (reaction and reaction == 4)
         or (UnitCanAttack("player", unit) and not UnitIsEnemy(unit, "player"))
-    if isNeutral and not ns._inDungeon then
+    if isNeutral and not ns._inDungeon and not isThreatUnit then
         return ResolveNeutralColor(unit)
     end
     -- 6. Enemy player class colors
     if UnitIsPlayer(unit) and UnitCanAttack("player", unit) then
+        -- Enemy Players Use Enemy Color (opt-in): the step 11 fallback color, skipping the
+        -- mob-type steps so a mana user is not painted Spell Casters.
+        if db.enemyPlayerEnemyColor then
+            local simple = db.owBasicColoring
+            if simple == nil then simple = defaults.owBasicColoring end
+            local c = _C((simple and not ns._inDungeon) and "owBasicColor" or "enemyInCombat")
+            return MaybeDarken(c.r, c.g, c.b, UnitAffectingCombat(unit))
+        end
         local _, class = UnitClass(unit)
         -- A secret class token (identity-restricted, i.e. instanced PvP) cannot key a
         -- plain color table, but C_ClassColor accepts it and returns a color that may only
@@ -933,8 +1165,10 @@ local function GetReactionColor(unit)
     local classification = UnitClassification(unit)
     -- Simple Coloring When Not In M+ (inline cog on Enemy Types): outside 5-man dungeons, collapse the
     -- mob-type colors (Mini Enemies, Spell Casters, Mini-Bosses, Bosses) into flat owBasicColor
-    -- at the enemy fallback (step 11). Neutral unaffected (already returned at step 5 outside
-    -- dungeons). Same dungeon gate as Mini Coloring M+ Only (ns._inDungeon).
+    -- at the enemy fallback (step 11). Neutral keeps its own color out of combat (it returns at
+    -- step 5 outside dungeons, or at 10d, above the fallback, while it carries health-bar threat
+    -- data) and takes owBasicColor in combat (ResolveNeutralColor). Same dungeon gate as Mini
+    -- Coloring M+ Only (ns._inDungeon).
     local owBasic = false
     if not ns._inDungeon then
         owBasic = defaults.owBasicColoring
@@ -982,6 +1216,19 @@ local function GetReactionColor(unit)
     -- Spell Caster color instead of Bosses. Mirrors the mutual exclusivity boss/mini-boss
     -- already have with each other.
     local _isCaster = not owBasic and not _isBossUnit and UnitHasPowerType(unit, Enum.PowerType.Mana)
+    -- Color Casting Enemies (opt-in): a mob that has cast gets its tier here, where the
+    -- mob-type steps start, so its tints cover what Spell Casters would; the threat
+    -- overrides and neutral returns below clear it again. Mobs painted Spell Casters keep
+    -- it (a mini-boss with mana is painted Mini-Boss, step 7, so it can be tinted).
+    -- castSeen is never set for players (ns.NP_NoteCastKind).
+    if castSeen and db.castingEnemyColors and not owBasic and (_isMiniBoss or not _isCaster) then
+        if _isBossUnit then ns._reactionCastTier = "Boss"
+        elseif _isMiniBoss then ns._reactionCastTier = "MiniBoss"
+        elseif classification == "elite" or classification == "rareelite"
+            or classification == "worldboss" then ns._reactionCastTier = "Elite"
+        else ns._reactionCastTier = "Normal" end
+        ns._reactionCastLit = not (issecretvalue and issecretvalue(inCombat)) and inCombat == true
+    end
     -- DPS/healer No Aggro override state (mirrors tank has-aggro overrides at 6b). Each
     -- override independently promotes the No Aggro color above one mob-type step (mini-boss 7,
     -- caster 8). Active only for a non-tank without aggro in a group or with a pet out
@@ -1002,6 +1249,7 @@ local function GetReactionColor(unit)
         local ovr = defaults.tankHasAggroOverrideMobType
         if db.tankHasAggroOverrideMobType ~= nil then ovr = db.tankHasAggroOverrideMobType end
         if hae and ovr then
+            ns._reactionCastTier = nil
             local c = _C("tankHasAggro")
             return c.r, c.g, c.b
         end
@@ -1015,6 +1263,7 @@ local function GetReactionColor(unit)
             local ovr = defaults.dpsNoAggroOverrideMiniBoss
             if db.dpsNoAggroOverrideMiniBoss ~= nil then ovr = db.dpsNoAggroOverrideMiniBoss end
             if ovr then
+                ns._reactionCastTier = nil
                 local c = _C("dpsNoAggro")
                 return c.r, c.g, c.b
             end
@@ -1030,13 +1279,14 @@ local function GetReactionColor(unit)
        and (classification == "normal" or classification == "minus" or classification == "trivial") then
         local thae = defaults.tankHasAggroEnabled
         if db.tankHasAggroEnabled ~= nil then thae = db.tankHasAggroEnabled end
-        -- Neutral + mini-enemy: neutral coloring wins over the trash color, EXCEPT for a tank
-        -- holding aggro with Tank Has Aggro enabled -- that viewer falls through so step 9
-        -- paints the has-aggro color; otherwise in-combat neutral blocks threat coloring and
-        -- neutral mobs stay enemy-red for tanks. Other viewers: neutral beats trash/DPS
-        -- carve-out/Caster (7b sits above step 8). Non-trash neutral units defer to 10d.
-        local tankAggroPending = isThreatUnit and _isTankRole and threatStatus >= 3 and thae
-        if isNeutral and not tankAggroPending then return ResolveNeutralColor(unit) end
+        -- Neutral + mini-enemy: neutral coloring wins over the trash color while the unit
+        -- carries no health-bar threat data (out of combat, or threat colors off). In combat
+        -- with them on it falls through like a hostile unit, so the threat and Mini Enemies
+        -- colors reach neutral trash too. Non-trash neutral units defer to 10d.
+        if isNeutral and not isThreatUnit then
+            ns._reactionCastTier = nil
+            return ResolveNeutralColor(unit)
+        end
         if not (_isTankRole and thae) then
             -- DPS "No Aggro" still wins over the promoted Mini Enemies color, so a DPS/healer
             -- without aggro sees the warning on trash. Scoped to this trash branch so Caster
@@ -1045,6 +1295,7 @@ local function GetReactionColor(unit)
                 local dpsNA = defaults.dpsNoAggroEnabled
                 if db.dpsNoAggroEnabled ~= nil then dpsNA = db.dpsNoAggroEnabled end
                 if dpsNA then
+                    ns._reactionCastTier = nil
                     local c = _C("dpsNoAggro")
                     return c.r, c.g, c.b
                 end
@@ -1078,6 +1329,7 @@ local function GetReactionColor(unit)
             local ovrBoss = defaults.tankHasAggroOverrideBoss
             if db.tankHasAggroOverrideBoss ~= nil then ovrBoss = db.tankHasAggroOverrideBoss end
             if ovrBoss or not _isBossUnit then
+                ns._reactionCastTier = nil
                 local c = _C("tankHasAggro")
                 return c.r, c.g, c.b
             end
@@ -1096,6 +1348,7 @@ local function GetReactionColor(unit)
             local ovrBoss = defaults.dpsNoAggroOverrideBoss
             if db.dpsNoAggroOverrideBoss ~= nil then ovrBoss = db.dpsNoAggroOverrideBoss end
             if ovrBoss or not _isBossUnit then
+                ns._reactionCastTier = nil
                 local c = _C("dpsNoAggro")
                 return c.r, c.g, c.b
             end
@@ -1119,9 +1372,11 @@ local function GetReactionColor(unit)
         local c = (p and p.miniEnemy) or _C("enemyInCombat")
         return MaybeDarken(c.r, c.g, c.b, inCombat)
     end
-    -- 10d. Neutral, deferred (dungeons only -- step 5 skipped it there): a neutral unit
-    -- matching no mob-type/threat color lands here, just above the generic enemy fallback.
+    -- 10d. Neutral, deferred (in dungeons, where step 5 skips it, and anywhere while it carries
+    -- health-bar threat data): a neutral unit matching no mob-type/threat color lands here,
+    -- just above the generic enemy fallback.
     if isNeutral then
+        ns._reactionCastTier = nil
         return ResolveNeutralColor(unit)
     end
     -- 11. Fallback: enemy in/out of combat. With Simple Coloring When Not In M+ active, every mob-type

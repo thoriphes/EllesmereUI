@@ -14,6 +14,7 @@ I.broken = true
 
 local pairs, type = pairs, type
 local UnitIsUnit, UnitCanAttack = UnitIsUnit, UnitCanAttack
+local UnitAffectingCombat = UnitAffectingCombat
 local C_NamePlate = C_NamePlate
 local NamePlateConstants, Enum = NamePlateConstants, Enum
 
@@ -34,6 +35,13 @@ I.profileSetters[#I.profileSetters + 1] = function(v) p = v end
 ns._ntAlpha = 1   -- cached 0..1 from the profile; 1 = inert
 ns._ntKeepFocus = true   -- cached "Keep Focus Full Opacity" (default on)
 ns._oorAlpha = 1  -- cached out-of-range alpha; 1 = inert
+-- Out of Combat Opacity: plates of mobs not in combat fade to outOfCombatAlpha (0-100).
+-- 100 = OFF. Target and kept focus are exempt.
+ns._oocAlpha = 1
+-- Full Opacity While Casting: a casting plate skips the Non-Target fade (Out of Combat and
+-- out-of-range still apply). Important-only gates it on the cast's possibly SECRET important flag.
+ns._ntCastFull = false
+ns._ntCastImportantOnly = false
 
 -- Applies the correct root alpha to ONE plate. Value-guarded via _ntCurAlpha so redundant
 -- SetAlpha calls are skipped and pooled frames reset cheaply (nil = never faded).
@@ -48,7 +56,33 @@ function ns.NT_Apply(plate)
        and not UnitIsUnit(unit, "player") then
         a = nt
     end
-    a = a * (plate._oorCurAlpha or 1)
+    -- Out of Combat and out-of-range fades, which casting never lifts.
+    local rest = plate._oorCurAlpha or 1
+    local ooc = ns._oocAlpha
+    if ooc < 1 and not UnitAffectingCombat(unit) and not UnitIsUnit(unit, "target")
+       and not (ns._ntKeepFocus and UnitIsUnit(unit, "focus")) then
+        rest = rest * ooc
+    end
+    if a < 1 and ns._ntCastFull and ns._castingPlates[plate] then
+        if ns._ntCastImportantOnly then
+            -- The flag may be SECRET, so the write is change-checked on its numeric
+            -- inputs; NotifyCastStarted drops them when a new cast brings a new flag.
+            local lo = a * rest
+            if plate._ntCurAlpha ~= -1 or plate._ntBoolHi ~= rest or plate._ntBoolLo ~= lo then
+                local imp = plate._castImportant
+                if type(imp) == "nil" then imp = false end
+                -- Never a plain number: the next numeric apply always writes.
+                plate._ntCurAlpha = -1
+                plate._ntBoolHi, plate._ntBoolLo = rest, lo
+                -- A SECRET flag makes the plate root's alpha secret for the session: never
+                -- compare its GetAlpha() or a child's GetEffectiveAlpha().
+                plate:SetAlphaFromBoolean(imp, rest, lo)
+            end
+            return
+        end
+        a = 1
+    end
+    a = a * rest
     if (plate._ntCurAlpha or 1) ~= a then
         plate._ntCurAlpha = a
         plate:SetAlpha(a)
@@ -68,6 +102,22 @@ function ns.NT_RefreshSetting()
     if v < 0 then v = 0 elseif v > 100 then v = 100 end
     ns._ntAlpha = v / 100
     ns._ntKeepFocus = not (p and p.nonTargetKeepFocus == false)
+    ns._ntCastFull = (p and p.nonTargetCastFull) == true
+    ns._ntCastImportantOnly = (p and p.nonTargetCastImportantOnly) == true
+    local wasOn = ns._oocAlpha < 1
+    v = tonumber(p and p.outOfCombatAlpha) or 100
+    if v < 0 then v = 0 elseif v > 100 then v = 100 end
+    ns._oocAlpha = v / 100
+    local on = ns._oocAlpha < 1
+    if on ~= wasOn then
+        for _, plate in pairs(ns.plates) do
+            if not on then
+                plate:UnregisterEvent("UNIT_FLAGS")
+            elseif plate.unit then
+                plate:RegisterUnitEvent("UNIT_FLAGS", plate.unit)
+            end
+        end
+    end
     ns.NT_ApplyAll()
 end
 
@@ -190,6 +240,10 @@ local _castColorTicker
 local function NotifyCastStarted(plate)
     if plate then
         ns._castingPlates[plate] = true
+        if ns._ntCastFull and ns._ntAlpha < 1 then
+            plate._ntBoolHi = nil
+            ns.NT_Apply(plate)
+        end
         -- Arm the 10Hz cast-timer ticker (engine-slept between fires; self-stops at cast end)
         -- and paint ONCE synchronously, or the ticker's first fire alone leaves text blank 0.1s.
         if plate.cast and plate.cast._timerTicker then
@@ -215,7 +269,10 @@ local function NotifyCastStarted(plate)
     end
 end
 local function NotifyCastEnded(plate)
-    if plate then ns._castingPlates[plate] = nil end
+    if plate then
+        ns._castingPlates[plate] = nil
+        if ns._ntCastFull and ns._ntAlpha < 1 then ns.NT_Apply(plate) end
+    end
     activeCastCount = activeCastCount - 1
     if activeCastCount <= 0 then
         activeCastCount = 0
@@ -235,13 +292,32 @@ end
 ns._cachedTargetPlate = nil
 ns._cachedFocusPlate  = nil
 
--- Value (1/0) of the class-colour CVar for the friendly player names Blizzard draws.
--- Name-only mode follows Class Colored Health Bar (its White / Class swatches). In
--- full-plate mode Blizzard draws only the protected instance plates, and Class
--- Colored Names turns it on as well so those names match ours.
+-- Name Color: whether friendly players' names take the class colour in a style
+-- (nameOnly: Name Only, else the health bar plates). friendlyNameColorMode is
+-- "class" or "custom"; while it is unset each style reads a key of its own, Name
+-- Only the Class Colored Health Bar key (classColorFriendly) and the health bar
+-- plates Class Colored Names (friendlyNameClassColor).
+function ns.FriendlyNameClass(db, nameOnly)
+    local mode = db and db.friendlyNameColorMode
+    if mode == "class" then return true end
+    if mode == "custom" then return false end
+    if nameOnly then return not db or db.classColorFriendly ~= false end
+    return db ~= nil and db.friendlyNameClassColor == true
+end
+
+-- Value (1/0) of the class-colour CVar for the friendly player names Blizzard draws
+-- (Name Only's names, and the protected instance plates of the health bar style):
+-- the Name Color pick. While that is unset: on with Class Colored Health Bar, and in
+-- the health bar style with Class Colored Names as well, so those names match ours.
 function ns.FriendlyNameClassCVar(db)
-    local on = db.classColorFriendly ~= false
-        or (db.friendlyNameOnly == false and db.friendlyNameClassColor == true)
+    local mode = db.friendlyNameColorMode
+    local on
+    if mode == "class" or mode == "custom" then
+        on = mode == "class"
+    else
+        on = db.classColorFriendly ~= false
+            or (db.friendlyNameOnly == false and db.friendlyNameClassColor == true)
+    end
     return on and 1 or 0
 end
 
@@ -266,7 +342,7 @@ local function SetupAuraCVars()
         local showPlayers = (db.showFriendlyPlayers ~= false)
         local showNPCs = (db.showFriendlyNPCs == true)
         -- Friendly player CVars are written ONLY while EUI manages friendly player nameplates;
-        -- with "Show EUI Friendly Player Nameplates" off we relinquish them entirely to
+        -- under the Blizzard Default Friendly Nameplate Style we relinquish them entirely to
         -- Blizzard's own settings. Friendly NPC and enemy pet CVars are always managed.
         if showPlayers then
             EllesmereUI.SetCVar("nameplateShowOnlyNameForFriendlyPlayerUnits", nameOnly and 1 or 0, "EllesmereUINameplates")
@@ -290,7 +366,10 @@ local function SetupAuraCVars()
             EllesmereUI.SetCVar("ShowClassColorInFriendlyNameplate", (db.classColorFriendly ~= false) and 1 or 0, "EllesmereUINameplates")
         end
         EllesmereUI.SetCVar("ShowClassColorInNameplate", 1, "EllesmereUINameplates")
-        EllesmereUI.SetCVar("nameplateSize", 3, "EllesmereUINameplates")
+        -- Blizzard Nameplate Size (the Friendly Nameplate Settings cog): Blizzard reads it at load, so a change applies on reload.
+        local npSize = tonumber(db.nameplateSize) or 3
+        if npSize < 1 or npSize > 5 then npSize = 3 end
+        EllesmereUI.SetCVar("nameplateSize", math.floor(npSize + 0.5), "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateShowAll", 1, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateMinScale", 1, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateOverlapH", 1, "EllesmereUINameplates")
@@ -301,7 +380,8 @@ local function SetupAuraCVars()
         EllesmereUI.SetCVar("nameplateMaxAlphaDistance", 40, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateMinAlpha", 0.6, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateMinAlphaDistance", -100000, "EllesmereUINameplates")
-        EllesmereUI.SetCVar("nameplateMaxDistance", 60, "EllesmereUINameplates")
+        -- Forever caps this cvar at 45; a higher value shortens its plate range
+        EllesmereUI.SetCVar("nameplateMaxDistance", EllesmereUI.IS_FOREVER and 45 or 60, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateMaxScale", 1, "EllesmereUINameplates")
         -- Neutralize Blizzard's selected-target scaling: the EUI plate is a child of the base
         -- nameplate, so Blizzard's scaling shows through our own SetScale (min/max pinned to 1
@@ -323,17 +403,9 @@ local function SetupAuraCVars()
     end
     -- Apply stacking state via the Midnight bitfield CVar.
     ns.RefreshStackingMotion()
+    -- One sizing path: the hitbox pass.
     local function ApplyNamePlateClickArea()
-        if InCombatLockdown() then return end
-        local db = p or defaults
-        local sx = (db.hitboxScaleX or 100) / 100
-        if C_NamePlate and C_NamePlate.SetNamePlateSize then
-            C_NamePlate.SetNamePlateSize(GetHealthBarWidth() * sx, ns.NP_HitboxHeight(db))
-        end
-        if C_NamePlateManager and C_NamePlateManager.SetNamePlateHitTestInsets and Enum and Enum.NamePlateType then
-            C_NamePlateManager.SetNamePlateHitTestInsets(Enum.NamePlateType.Enemy, -10000, -10000, -10000, -10000)
-            C_NamePlateManager.SetNamePlateHitTestInsets(Enum.NamePlateType.Friendly, -10000, -10000, -10000, -10000)
-        end
+        ns.RefreshHitboxSize()
     end
     ApplyNamePlateClickArea()
     -- Prevent Blizzard resetting nameplate sizes on display changes (jitter).

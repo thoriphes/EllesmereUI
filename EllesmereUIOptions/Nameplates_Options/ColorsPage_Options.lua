@@ -1,10 +1,8 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
 --  Nameplates_Options\ColorsPage_Options.lua
---  Nameplates options: the Colors page (BuildColorsPage) and the mini preview
---  bars of its color rows (MakeColorPreviewBar, built lazily through
---  LazyColorPreviewBar in EUI_Nameplates_Options.lua). Definitions only; the
---  shared helpers come from ns._NPO_OptEnv.
+--  Nameplates options: the Colors page (BuildColorsPage). Definitions only;
+--  the shared helpers come from ns._NPO_OptEnv.
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUINameplates"]
 if not ns then return end  -- module disabled: no options page
@@ -198,6 +196,10 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         if cell.kind == "combo" then return EllesmereUI.Lf("%1$d. Combo", cell.n) end
         return EllesmereUI.Lf("%1$d. Debuff", cell.n)
     end
+    local function MissingOf(cell)
+        local e = Read(cell.class)[cell.n]
+        return e ~= nil and e.missing == true
+    end
     local function FullLabel(cell)
         if cell.kind == "combo" then
             return EllesmereUI.Lf("%1$s Combo %2$d", NAME[cell.class], cell.n)
@@ -208,15 +210,30 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         local e = Read(cell.class)[cell.n]
         return e and e.spell or 0
     end
-    -- A spell another debuff of the class already holds: picking it again
-    -- would only duplicate that row, so its menu item is greyed with the
-    -- reason and Custom Spell... refuses it (the arrows move a debuff).
+    -- A spell another debuff of the class already holds in the same state:
+    -- picking it again would only duplicate that row, so its menu item is greyed
+    -- with the reason and Custom Spell... refuses it (the arrows move a debuff).
     local IN_USE = "Already in use. Use the arrows to reorder."
-    local function HeldElsewhere(cell, id)
-        for n, e in ipairs((Read(cell.class))) do
-            if n ~= cell.n and e.spell == id then return true end
+    local function HeldElsewhere(cell, id, missing, singles)
+        if missing == nil then missing = MissingOf(cell) end
+        for n, e in ipairs(singles or Read(cell.class)) do
+            if n ~= cell.n and e.spell == id and (e.missing == true) == missing then return true end
         end
         return false
+    end
+    -- Whether MAX_MISSING other rows already color a chosen debuff while it is
+    -- missing (the plates draw no more). above: only rows higher in the list
+    -- count, as the plates keep the first MAX_MISSING.
+    local MISSING_FULL = EllesmereUI.Lf("Up to %1$d debuffs can be Missing.", DC.MAX_MISSING)
+    local function MissingFull(cell, singles, above)
+        local ids, n = {}, 0
+        for i, e in ipairs(singles or Read(cell.class)) do
+            if above and i >= cell.n then break end
+            if i ~= cell.n and e.missing and e.spell > 0 and not ids[e.spell] then
+                ids[e.spell], n = true, n + 1
+            end
+        end
+        return n >= DC.MAX_MISSING
     end
     local function ComboSpells(cell)
         local _, combos = Read(cell.class)
@@ -232,6 +249,12 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         if not e or e.spell == id then return end
         e.spell = id
         Write(cell.class, singles, combos, rgn)
+        EllesmereUI:RefreshPage()
+    end
+    local function SetMissing(cell, missing)
+        local singles, combos = Read(cell.class)
+        singles[cell.n].missing = missing or nil
+        Write(cell.class, singles, combos, cell.rgn)
         EllesmereUI:RefreshPage()
     end
     local function Move(cell, dir)
@@ -278,13 +301,14 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
     end
 
     -- Debuff Coloring: a pure view over debuffColorsEnabled (off = None) and
-    -- debuffColorsBorder (on = Color Border, else Color Nameplate). Color
-    -- Border's cog (Extra Border Size) shows only over a Basic or Custom Solid
-    -- border; a textured custom border is recolored as it is. Both checks
-    -- follow the runtime's border reading (BorderSpec in the module).
+    -- the module's mode (DC.Mode: Texture Nameplate and Color Name in
+    -- debuffColorsMode, else debuffColorsBorder picks Color Border or Color
+    -- Nameplate). Color Border's cog (Extra Border Size) shows only over a
+    -- Basic or Custom Solid border; a textured custom border is recolored as it
+    -- is. Both checks follow the runtime's border reading (BorderSpec in the module).
     local function Mode()
         if Off() then return "none" end
-        return Get("debuffColorsBorder") == true and "border" or "nameplate"
+        return DC.Mode(Get)
     end
     local function NoBorder()
         if EllesmereUI.BlizzStyle.Get("nameplates") then return true end
@@ -310,19 +334,25 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
     _, h = W:SectionHeader(parent, "DEBUFF BASED NAMEPLATE COLORING", y); y = y - h
     modeRow, h = W:DualRow(parent, y,
         { type="dropdown", text="Debuff Coloring",
-          values={ none = "None", nameplate = "Color Nameplate", border = "Color Border" },
-          order={ "none", "nameplate", "border" },
+          values={ none = "None", nameplate = "Color Nameplate", texture = "Texture Nameplate",
+                   border = "Color Border", name = "Color Name" },
+          order={ "none", "nameplate", "texture", "border", "name" },
           disabledValues=function(key)
               if key == "border" and NoBorder() then return "This option requires a Border to be selected" end
+              if key == "name" and not ns.FindNameSlot() then return "This option requires the enemy name to be shown" end
               return false
           end,
           getValue=Mode,
           setValue=EllesmereUI.SectionToggleSetValue(function(v)
-              ns.db.profile.debuffColorsEnabled = v ~= "none"
-              if v ~= "none" then ns.db.profile.debuffColorsBorder = v == "border" end
+              local db = ns.db.profile
+              db.debuffColorsEnabled = v ~= "none"
+              if v ~= "none" then
+                  db.debuffColorsBorder = v == "border"
+                  db.debuffColorsMode = (v == "texture" or v == "name") and v or nil
+              end
               ns.DebuffColors_Refresh()
           end),
-          tooltip="Colors enemy health bars, or their borders, while the chosen debuffs are on them." },
+          tooltip="Colors enemy health bars, their borders or their names while the chosen debuffs are on them." },
         { type="toggle", text="Only My Debuffs",
           getValue=function() return Get("debuffColorsPlayerOnly") ~= false end,
           setValue=function(v)
@@ -351,6 +381,21 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         local function ShowCog() cog:SetShown(StripBorder()) end
         ShowCog()
         EllesmereUI.RegisterWidgetRefresh(ShowCog)
+    end
+
+    -- Texture Nameplate's texture, the row below while it is picked (unset reads
+    -- the health bar's own).
+    if Mode() == "texture" then
+        local env = ns._NPO_OptEnv
+        _, h = W:DualRow(parent, y,
+            { type="dropdown", text="Texture", values=env.hbtValues, order=env.hbtOrder,
+              tooltip="The texture the debuff color is drawn in.",
+              getValue=function() return Get("debuffColorsTexture") or Get("healthBarTexture") or "none" end,
+              setValue=function(v)
+                  ns.db.profile.debuffColorsTexture = v
+                  Apply()
+              end },
+            EllesmereUI.BlankRowCfg()); y = y - h
     end
 
     -- Section gate: the rows below exist only while Debuff Coloring is on (the
@@ -407,6 +452,15 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
 
     local SINGLE_TIP = "Higher in the list wins when several are up."
     local COMBO_TIP = "Combos win over single debuffs; higher in the list wins."
+    local STATE_ORDER = { "applied", "missing" }
+    local STATE_VALUES = { applied = "Applied", missing = "Missing", _menuOpts = {
+        onItemHover = function(key, item)
+            if key == "missing" then
+                EllesmereUI.ShowWidgetTooltip(item, EllesmereUI.L("Colors enemies you fight without this debuff."))
+            end
+        end,
+        onItemLeave = function() EllesmereUI.HideWidgetTooltip() end,
+    } }
 
     -- A debuff: its spell menu (Remove, Custom Spell..., the class's presets,
     -- then its custom spells) with its color inline. The custom tail follows
@@ -456,6 +510,10 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
                         EllesmereUI.PrintError(EllesmereUI.L("Already in use. Use the arrows to reorder."))
                         return
                     end
+                    if MissingOf(cell) and MissingFull(cell, nil, SpellOf(cell) > 0) then
+                        EllesmereUI.PrintError(MISSING_FULL)
+                        return
+                    end
                     SetSpell(cell, value, cell.rgn)
                 end,
             })
@@ -487,13 +545,35 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
                 if id then SetSpell(cell, id) end
             end,
             -- Never the row's own spell (a list saved with a duplicate keeps
-            -- its label lit).
+            -- its label lit). A Missing row past MAX_MISSING shows why it colors
+            -- nothing; an unchosen one may not take a spell once the rest are full.
             disabledValues=function(key)
-                local id = tonumber(key)
-                if id and id ~= SpellOf(cell) and HeldElsewhere(cell, id) then return IN_USE end
-                return false
+                local id, singles = tonumber(key), Read(cell.class)
+                local e = singles[cell.n]
+                if not id or (e and e.spell == id) then return false end
+                local missing = e ~= nil and e.missing == true
+                if HeldElsewhere(cell, id, missing, singles) then return IN_USE end
+                return missing and MissingFull(cell, singles, e.spell > 0) and MISSING_FULL or false
             end,
             tooltip=SINGLE_TIP }
+    end
+    -- Applied / Missing, beside the spell menu; a state a same-spell row holds is
+    -- greyed, and Missing once MAX_MISSING rows use it.
+    local function StateDropdown(rgn, cell)
+        local dd = EllesmereUI.BuildDropdownControl(rgn, 90, rgn:GetFrameLevel() + 3, STATE_VALUES, STATE_ORDER,
+            function() return MissingOf(cell) and "missing" or "applied" end,
+            function(v) SetMissing(cell, v == "missing") end,
+            function(key)
+                local singles, missing = Read(cell.class), key == "missing"
+                local e = singles[cell.n]
+                if not e or missing == (e.missing == true) then return false end
+                if missing and MissingFull(cell, singles) then return MISSING_FULL end
+                return e.spell > 0 and HeldElsewhere(cell, e.spell, missing, singles)
+                    and "Another row already uses this debuff this way." or false
+            end)
+        PP.Point(dd, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = dd
+        EllesmereUI.RegisterWidgetRefresh(dd._refreshLabel)
     end
     local function SingleChrome(rgn, cell)
         ReorderArrows(rgn, cell)
@@ -505,6 +585,7 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
         end
         Sync()
         EllesmereUI.RegisterWidgetRefresh(Sync)
+        StateDropdown(rgn, cell)
         EllesmereUI.BuildInlineSwatches(rgn, { {
             tooltip = "Debuff Color",
             getValue = function()
@@ -807,440 +888,10 @@ function ns.NP_BuildDebuffColorsOptions(parent, y)
     return y
 end
 
--- Mini preview bar builder for color swatches. type: "health"/"cast"/"castLocked". colorKey: DB key for the bar color (read live). parentRow: frame to attach to. anchorFrame: optional override anchor (e.g. DualRow half-region).
-local function MakeColorPreviewBar(parentRow, colorType, colorKey, anchorFrame)
-    local env = ns._NPO_OptEnv
-    local DB, DBVal, defaults, GetFocusLetterAnchor = env.DB, env.DBVal, env.defaults, env.GetFocusLetterAnchor
-    local GetNPOptOutline, NextCastFill, NextCastIcon, PP = env.GetNPOptOutline, env.NextCastFill, env.NextCastIcon, env.PP
-    local SetPVFont = env.SetPVFont
-    local MEDIA = "Interface\\AddOns\\EllesmereUINameplates\\Media\\"
-    local isHalf = anchorFrame and true or false
-    local BAR_W = isHalf and 161 or 180
-    local BAR_H = 20
-    local SWATCH_SZ = 24
-    local SWATCH_GAP = isHalf and 27 or 52
-    local fontPath = (EllesmereUI.GetFontPath("nameplates")) or DBVal("font")
-    local anchor = anchorFrame or parentRow
-
-    local container = CreateFrame("Frame", nil, parentRow)
-    PP.Size(container, BAR_W + 2, BAR_H + 2)  -- +2 for border
-    -- Position: to the left of the swatch (swatch is at RIGHT -SIDE_PAD, 24px wide)
-    PP.Point(container, "RIGHT", anchor, "RIGHT", -(20 + SWATCH_SZ + SWATCH_GAP), 0)
-    container:SetFrameLevel(parentRow:GetFrameLevel() + 2)
-
-    -- Simple 1px solid border using the user's nameplate border color; two-point anchoring for pixel-perfect rendering inside the scroll frame.
-    local function MakePreviewBorder(parent)
-        local bc = (DB() and DB().borderColor) or defaults.borderColor
-        local edges = {}
-        local function mkE()
-            local t = parent:CreateTexture(nil, "OVERLAY", nil, 7)
-            t:SetColorTexture(bc.r, bc.g, bc.b, 1)
-            edges[#edges + 1] = t
-            return t
-        end
-        local t = mkE(); t:SetPoint("TOPLEFT"); t:SetPoint("TOPRIGHT"); t:SetHeight(1)
-        local b = mkE(); b:SetPoint("BOTTOMLEFT"); b:SetPoint("BOTTOMRIGHT"); b:SetHeight(1)
-        local l = mkE(); l:SetPoint("TOPLEFT", t, "BOTTOMLEFT"); l:SetPoint("BOTTOMLEFT", b, "TOPLEFT"); l:SetWidth(1)
-        local r = mkE(); r:SetPoint("TOPRIGHT", t, "BOTTOMRIGHT"); r:SetPoint("BOTTOMRIGHT", b, "TOPRIGHT"); r:SetWidth(1)
-        return edges
-    end
-
-    if colorType == "health" then
-        -- Health bar preview: random fill 60-75%, colored by the swatch color
-        local FAKE_MAX_HP = 10000
-        local healthPct = math.floor(60 + math.random() * 15)
-        local healthVal = math.floor(FAKE_MAX_HP * healthPct / 100)
-
-        local health = CreateFrame("StatusBar", nil, container)
-        health:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
-        health:SetMinMaxValues(0, 100)
-        health:SetValue(healthPct)
-        health:SetAllPoints()
-
-        local bg = health:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        bg:SetColorTexture(0.20, 0.20, 0.20, 1.0)
-
-        -- 1px solid border on a dedicated frame ABOVE the health StatusBar (child frames cover parent textures); parented to container, not health, so it stays full opacity when the bar dims via SetDisabled.
-        local brdFrame = CreateFrame("Frame", nil, container)
-        brdFrame:SetAllPoints()
-        brdFrame:SetFrameLevel(health:GetFrameLevel() + 2)
-        local brdEdges = MakePreviewBorder(brdFrame)
-        container._brdEdges = brdEdges
-        container._health = health  -- exposed for proxy color override / dimming
-
-        -- Always create both FontStrings (shown/hidden dynamically), parented to a text frame ABOVE the overlay clips so focus texture never covers the health numbers.
-        local textFrame = CreateFrame("Frame", nil, health)
-        textFrame:SetAllPoints()
-        textFrame:SetFrameLevel(health:GetFrameLevel() + 3)
-
-        local pctFS = textFrame:CreateFontString(nil, "OVERLAY")
-        local initHpSz = 10
-        SetPVFont(pctFS, fontPath, initHpSz, GetNPOptOutline())
-        pctFS:Hide()
-
-        local numFS = textFrame:CreateFontString(nil, "OVERLAY")
-        SetPVFont(numFS, fontPath, initHpSz, GetNPOptOutline())
-        numFS:Hide()
-
-        -- Full refresh: re-reads DB settings, repositions, updates text & values
-        local function RefreshHealthText()
-            local hpFS = 10
-            -- Use the largest text slot size (capped at 13 for mini bars)
-            for _, sk in ipairs({"textSlotRight", "textSlotLeft", "textSlotCenter"}) do
-                local el = DBVal(sk) or defaults[sk]
-                if el and el ~= "none" and not ns.IsNameElement(el) then
-                    hpFS = math.min(DBVal(sk .. "Size") or defaults[sk .. "Size"] or 10, 13)
-                    break
-                end
-            end
-            local curFont = (EllesmereUI.GetFontPath("nameplates")) or DBVal("font")
-            local curOutline = GetNPOptOutline()
-
-            -- Hide both FontStrings first
-            SetPVFont(pctFS, curFont, hpFS, curOutline)
-            pctFS:ClearAllPoints()
-            pctFS:Hide()
-            SetPVFont(numFS, curFont, hpFS, curOutline)
-            numFS:ClearAllPoints()
-            numFS:Hide()
-
-            -- Bar slots: show health text based on slot assignments
-            local barSlots = {
-                { key = "textSlotRight",  anchor = "RIGHT",  xOff = -2 },
-                { key = "textSlotLeft",   anchor = "LEFT",   xOff = 2 },
-                { key = "textSlotCenter", anchor = "CENTER", xOff = 0 },
-            }
-            for _, slot in ipairs(barSlots) do
-                local element = DBVal(slot.key) or defaults[slot.key]
-                local sc = (DB() and DB()[slot.key .. "Color"]) or defaults[slot.key .. "Color"]
-                -- This bar stands for a hostile NPC at the player's level: Hostility /
-                -- Class shows the Hostile name colour, Level Difficulty that level's
-                -- colour, as the plate would.
-                local mode = ns.NP_SlotColorMode(slot.key, DB())
-                if mode == "class" then
-                    sc = (DB() and DB().enemyNameHostileColor) or defaults.hostile
-                elseif mode == "level" then
-                    local r, g, b = ns.NP_UnitLevelColor("player")
-                    if r then sc = { r = r, g = g, b = b } end
-                end
-                if element == "healthPercent" or element == "healthPercentNoSign" then
-                    pctFS:SetTextColor(sc.r, sc.g, sc.b, 1)
-                    pctFS:SetText(element == "healthPercentNoSign" and tostring(healthPct) or (healthPct .. "%"))
-                    pctFS:SetPoint(slot.anchor, health, slot.anchor, slot.xOff, 0)
-                    pctFS:Show()
-                elseif element == "healthNumber" then
-                    numFS:SetTextColor(sc.r, sc.g, sc.b, 1)
-                    local valStr = tostring(healthVal):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
-                    numFS:SetText(valStr)
-                    numFS:SetPoint(slot.anchor, health, slot.anchor, slot.xOff, 0)
-                    numFS:Show()
-                elseif ns.IsComboHealthText(element) then
-                    local valStr = tostring(healthVal):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
-                    pctFS:SetTextColor(sc.r, sc.g, sc.b, 1)
-                    local maxStr = tostring(FAKE_MAX_HP):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
-                    ns.SetCombinedHealthText(pctFS, element, healthPct .. "%", valStr, maxStr)
-                    pctFS:SetPoint(slot.anchor, health, slot.anchor, slot.xOff, 0)
-                    pctFS:Show()
-                end
-            end
-        end
-
-        -- Run initial layout
-        RefreshHealthText()
-
-        -- Color the bar from the swatch's DB value
-        local c = (DB() and DB()[colorKey]) or defaults[colorKey]
-        health:SetStatusBarColor(c.r, c.g, c.b, 1)
-
-        -- Focus overlay on the focus preview bar: clip frames for non-overlapping fixed-size textures
-        local overlayFillClip, overlayFillTex, overlayBgClip, overlayBgTex
-
-        -- Helper: create a clipped overlay frame+texture pair for the focus bar
-        local function MakeOverlayClip(tlAnchor, tlRelPoint, brAnchor, brRelPoint, sublayer)
-            local clip = CreateFrame("Frame", nil, health)
-            clip:SetClipsChildren(true)
-            -- Full bar height (top/bottom from the bar) with horizontal edges from the passed fill/health anchors, matching the live nameplate overlay (same full-height stripes).
-            clip:SetPoint("TOP", health, "TOP", 0, 0)
-            clip:SetPoint("BOTTOM", health, "BOTTOM", 0, 0)
-            clip:SetPoint("LEFT", tlAnchor, tlRelPoint, 0, 0)
-            clip:SetPoint("RIGHT", brAnchor, brRelPoint, 0, 0)
-            clip:SetFrameLevel(health:GetFrameLevel() + 1)
-            local tex = clip:CreateTexture(nil, "ARTWORK", nil, sublayer)
-            tex:SetPoint("TOPLEFT", health, "TOPLEFT", 0, 0)
-            tex:SetPoint("BOTTOMLEFT", health, "BOTTOMLEFT", 0, 0)
-            tex:SetWidth(BAR_W)
-            return clip, tex
-        end
-
-        local _overlayTexKey   = (colorKey == "target") and "targetOverlayTexture"  or "focusOverlayTexture"
-        local _overlayAlphaKey = (colorKey == "target") and "targetOverlayAlpha"   or "focusOverlayAlpha"
-        local _overlayColorKey = (colorKey == "target") and "targetOverlayColor"   or "focusOverlayColor"
-        local _overlayFullBgKey = (colorKey == "target") and "targetOverlayFullBgAlpha" or "focusOverlayFullBgAlpha"
-        -- Empty-portion (bg) opacity: full when "Full alpha on empty part of bar" is on, else dimmed to 30% (matches live plates).
-        local function _overlayBgAlpha(oAlpha)
-            local full = DBVal(_overlayFullBgKey)
-            if full == nil then full = defaults[_overlayFullBgKey] end
-            if full then return oAlpha end
-            return oAlpha * 0.3
-        end
-        if colorKey == "focus" or colorKey == "target" then
-            local tex = DBVal(_overlayTexKey) or defaults[_overlayTexKey]
-            if tex ~= "none" then
-                local fillRef = health:GetStatusBarTexture()
-                local oAlpha = DBVal(_overlayAlphaKey) or defaults[_overlayAlphaKey]
-                local oc = (DB() and DB()[_overlayColorKey]) or defaults[_overlayColorKey]
-                overlayFillClip, overlayFillTex = MakeOverlayClip(fillRef, "TOPLEFT", fillRef, "BOTTOMRIGHT", 2)
-                overlayFillTex:SetTexture(ns.ResolveOverlayTexPath and ns.ResolveOverlayTexPath(tex) or (MEDIA .. tex .. ".png"))
-                overlayFillTex:SetAlpha(oAlpha)
-                overlayFillTex:SetVertexColor(oc.r, oc.g, oc.b)
-                overlayBgClip, overlayBgTex = MakeOverlayClip(fillRef, "TOPRIGHT", health, "BOTTOMRIGHT", 1)
-                overlayBgTex:SetTexture(ns.ResolveOverlayTexPath and ns.ResolveOverlayTexPath(tex) or (MEDIA .. tex .. ".png"))
-                overlayBgTex:SetAlpha(_overlayBgAlpha(oAlpha))
-                overlayBgTex:SetVertexColor(oc.r, oc.g, oc.b)
-            end
-        end
-
-        local focusLetterFS
-        local function RefreshFocusLetter()
-            if colorKey ~= "focus" then return end
-            if DBVal("focusLetterEnabled") ~= true then
-                if focusLetterFS then focusLetterFS:Hide() end
-                return
-            end
-            if not focusLetterFS then
-                focusLetterFS = textFrame:CreateFontString(nil, "OVERLAY")
-                focusLetterFS:SetJustifyH("CENTER")
-                focusLetterFS:SetJustifyV("MIDDLE")
-            end
-            local size = DBVal("focusLetterSize") or defaults.focusLetterSize
-            local anchor = GetFocusLetterAnchor()
-            local x = DBVal("focusLetterX") or defaults.focusLetterX
-            local y = DBVal("focusLetterY") or defaults.focusLetterY
-            local curFont = (EllesmereUI.GetFontPath("nameplates")) or DBVal("font")
-            SetPVFont(focusLetterFS, curFont, size, GetNPOptOutline())
-            focusLetterFS:SetText("F")
-            focusLetterFS:ClearAllPoints()
-            focusLetterFS:SetPoint(anchor, health, anchor, x, y)
-            focusLetterFS:SetTextColor(1, 1, 1, 1)
-            focusLetterFS:Show()
-        end
-        RefreshFocusLetter()
-
-        -- Live update hook: re-color when swatch changes
-        container.UpdateColor = function()
-            local cc = (DB() and DB()[colorKey]) or defaults[colorKey]
-            health:SetStatusBarColor(cc.r, cc.g, cc.b, 1)
-        end
-        -- Live update hook: refresh overlay texture from DB
-        container.UpdateOverlay = function()
-            if colorKey ~= "focus" and colorKey ~= "target" then return end
-            local tex = DBVal(_overlayTexKey) or defaults[_overlayTexKey]
-            if tex == "none" then
-                if overlayFillClip then overlayFillClip:Hide() end
-                if overlayBgClip then overlayBgClip:Hide() end
-            else
-                local fillRef = health:GetStatusBarTexture()
-                local oAlpha = DBVal(_overlayAlphaKey) or defaults[_overlayAlphaKey]
-                local oc = (DB() and DB()[_overlayColorKey]) or defaults[_overlayColorKey]
-                if not overlayFillClip then
-                    overlayFillClip, overlayFillTex = MakeOverlayClip(fillRef, "TOPLEFT", fillRef, "BOTTOMRIGHT", 2)
-                end
-                overlayFillTex:SetTexture(ns.ResolveOverlayTexPath and ns.ResolveOverlayTexPath(tex) or (MEDIA .. tex .. ".png"))
-                overlayFillTex:SetAlpha(oAlpha)
-                overlayFillTex:SetVertexColor(oc.r, oc.g, oc.b)
-                overlayFillClip:Show()
-                if not overlayBgClip then
-                    overlayBgClip, overlayBgTex = MakeOverlayClip(fillRef, "TOPRIGHT", health, "BOTTOMRIGHT", 1)
-                end
-                overlayBgTex:SetTexture(ns.ResolveOverlayTexPath and ns.ResolveOverlayTexPath(tex) or (MEDIA .. tex .. ".png"))
-                overlayBgTex:SetAlpha(_overlayBgAlpha(oAlpha))
-                overlayBgTex:SetVertexColor(oc.r, oc.g, oc.b)
-                overlayBgClip:Show()
-            end
-            RefreshFocusLetter()
-        end
-        container.Randomize = function()
-            healthPct = math.floor(60 + math.random() * 15)
-            healthVal = math.floor(FAKE_MAX_HP * healthPct / 100)
-            health:SetValue(healthPct)
-            RefreshHealthText()
-        end
-        -- Exposed so cache-restore / refresh-all can update text from current DB
-        container.RefreshHealthText = RefreshHealthText
-        container.RefreshBorderStyle = function() end  -- no style toggle needed for 1px solid
-        container.RefreshBorderColor = function()
-            local bc = (DB() and DB().borderColor) or defaults.borderColor
-            for _, tex in ipairs(container._brdEdges) do
-                tex:SetColorTexture(bc.r, bc.g, bc.b, 1)
-            end
-        end
-
-    elseif colorType == "cast" or colorType == "castLocked" then
-        PP.Size(container, BAR_W + 2, BAR_H + 2)
-
-        local cast = CreateFrame("StatusBar", nil, container)
-        cast:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
-        cast:SetMinMaxValues(0, 1)
-        cast:SetValue(NextCastFill())
-        cast:SetAllPoints()
-
-        local castBG = cast:CreateTexture(nil, "BACKGROUND")
-        castBG:SetAllPoints()
-        castBG:SetColorTexture(0.20, 0.20, 0.20, 0.9)
-
-
-        local spark = cast:CreateTexture(nil, "OVERLAY", nil, 1)
-        spark:SetTexture(MEDIA .. "cast_spark.tga")
-        spark:SetSize(8, BAR_H)
-        spark:SetPoint("CENTER", cast:GetStatusBarTexture(), "RIGHT", 0, 0)
-        spark:SetBlendMode("ADD")
-        -- Show Spark (Cast Color cog): default on; explicit false hides it.
-        spark:SetShown(DBVal("castBarSparkEnabled") ~= false)
-
-        -- Cast icon frame (to the left) no border for Colors tab previews
-        local iconFrame = CreateFrame("Frame", nil, cast)
-        iconFrame:SetSize(BAR_H + 2, BAR_H + 2)
-        iconFrame:SetPoint("RIGHT", cast, "LEFT", 0, 0)
-        iconFrame:SetFrameLevel(cast:GetFrameLevel() + 1)
-        local icon = iconFrame:CreateTexture(nil, "ARTWORK")
-        icon:SetAllPoints()
-        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        icon:SetTexture(NextCastIcon())
-
-        -- Cast text
-        local cns = math.min(DBVal("castNameSize") or defaults.castNameSize, 13)
-        local cts = math.min(DBVal("castTargetSize") or defaults.castTargetSize, 13)
-        local cnc = (DB() and DB().castNameColor) or defaults.castNameColor
-
-        local dbRef = DB()
-        local colShowTimer = defaults.showCastTimer
-        if dbRef and dbRef.showCastTimer ~= nil then colShowTimer = dbRef.showCastTimer end
-        local colCtmSz = math.min((dbRef and dbRef.castTimerSize) or defaults.castTimerSize, 13)
-        local colCtmC = (dbRef and dbRef.castTimerColor) or defaults.castTimerColor
-        local colNameSide   = (dbRef and dbRef.castNameSide)   or defaults.castNameSide
-        local colTargetSide = (dbRef and dbRef.castTargetSide) or defaults.castTargetSide
-        local colTimerSide  = (dbRef and dbRef.castTimerSide)  or defaults.castTimerSide
-        local colCombine = dbRef and dbRef.castCombineNameTarget == true
-        local colTimerW = colCtmSz * 2.2
-        -- Per-element cast text truncation (% of bar width + wrap), mirroring runtime.
-        local colNameW = BAR_W * ((dbRef and dbRef.castNameWidthPct) or defaults.castNameWidthPct) / 100
-        local colTgtW  = BAR_W * ((dbRef and dbRef.castTargetWidthPct) or defaults.castTargetWidthPct) / 100
-        local colNameWrap = (dbRef and dbRef.castNameWrap) == true
-        local colTgtWrap  = (dbRef and dbRef.castTargetWrap) == true
-
-        -- Spell name
-        local nameFS = cast:CreateFontString(nil, "OVERLAY")
-        SetPVFont(nameFS, fontPath, cns, GetNPOptOutline())
-        nameFS:SetWordWrap(colNameWrap)
-        nameFS:SetMaxLines(colNameWrap and 2 or 1)
-        nameFS:SetText(EllesmereUI.L("Spell Name"))
-        nameFS:SetTextColor(cnc.r, cnc.g, cnc.b, 1)
-        if colNameSide == "none" then
-            nameFS:Hide()
-        else
-            local pt, xb, jh = ns.GetCastTextAnchor(colNameSide, colShowTimer and colTimerSide == colNameSide, colTimerW, false)
-            nameFS:SetWidth(colCombine and (BAR_W * 0.80) or colNameW)
-            nameFS:SetJustifyH(jh)
-            nameFS:SetPoint(pt, cast, pt, xb, 0)
-        end
-
-        -- Cast timer (side only "left"/"right"; visibility via showCastTimer)
-        local timerFS = cast:CreateFontString(nil, "OVERLAY")
-        SetPVFont(timerFS, fontPath, colCtmSz, GetNPOptOutline())
-        timerFS:SetWordWrap(false)
-        timerFS:SetMaxLines(1)
-        timerFS:SetTextColor(colCtmC.r, colCtmC.g, colCtmC.b, 1)
-        timerFS:SetText("2.3")
-        if colShowTimer then
-            local tpt, txb, tjh = ns.GetCastTextAnchor(colTimerSide, false, colTimerW, true)
-            timerFS:SetWidth(colTimerW)
-            timerFS:SetJustifyH(tjh)
-            timerFS:SetPoint(tpt, cast, tpt, txb, 0)
-        else
-            timerFS:Hide()
-        end
-
-        -- Spell target
-        local targetFS = cast:CreateFontString(nil, "OVERLAY")
-        SetPVFont(targetFS, fontPath, cts, GetNPOptOutline())
-        targetFS:SetWordWrap(colTgtWrap)
-        targetFS:SetNonSpaceWrap(false)
-        targetFS:SetMaxLines(colTgtWrap and 2 or 1)
-        local colTargetText = isHalf and (UnitName("player") or EllesmereUI.L("Target")) or (UnitName("player") or EllesmereUI.L("Spell Target"))
-        targetFS:SetText(colTargetText)
-        local useClassColor = defaults.castTargetClassColor
-        if dbRef and dbRef.castTargetClassColor ~= nil then useClassColor = dbRef.castTargetClassColor end
-        local colTargetHex
-        if useClassColor then
-            local _, pClass = UnitClass("player")
-            local c = pClass and RAID_CLASS_COLORS and RAID_CLASS_COLORS[pClass]
-            if c then
-                targetFS:SetTextColor(c.r, c.g, c.b, 1)
-                colTargetHex = (c.GenerateHexColor and c:GenerateHexColor()) or c.colorStr or "ffffffff"
-            else
-                targetFS:SetTextColor(1, 1, 1, 1)
-                colTargetHex = "ffffffff"
-            end
-        else
-            local ctc = (dbRef and dbRef.castTargetColor) or defaults.castTargetColor
-            targetFS:SetTextColor(ctc.r, ctc.g, ctc.b, 1)
-            colTargetHex = string.format("ff%02x%02x%02x",
-                math.floor(ctc.r * 255 + 0.5), math.floor(ctc.g * 255 + 0.5), math.floor(ctc.b * 255 + 0.5))
-        end
-        if colCombine then
-            nameFS:SetFormattedText("%s - |c" .. colTargetHex .. "%s|r",
-                EllesmereUI.L("Spell Name"), colTargetText)
-        end
-        if colCombine or colTargetSide == "none" then
-            targetFS:Hide()
-        else
-            local pt, xb, jh = ns.GetCastTextAnchor(colTargetSide, colShowTimer and colTimerSide == colTargetSide, colTimerW, false)
-            targetFS:SetWidth(colTgtW)
-            targetFS:SetJustifyH(jh)
-            targetFS:SetPoint(pt, cast, pt, xb, 0)
-        end
-
-        -- Shield for uninterruptible
-        if colorType == "castLocked" then
-            local shieldH = BAR_H * 0.75
-            local shieldW = shieldH * (29 / 35)
-            local shieldFrame = CreateFrame("Frame", nil, cast)
-            shieldFrame:SetSize(shieldW, shieldH)
-            shieldFrame:SetPoint("CENTER", cast, "LEFT", 0, 0)
-            shieldFrame:SetFrameLevel(cast:GetFrameLevel() + 10)
-            local shield = shieldFrame:CreateTexture(nil, "OVERLAY")
-            shield:SetAllPoints()
-            shield:SetTexture(MEDIA .. "shield.png")
-        end
-
-        -- Color the bar
-        local c = (DB() and DB()[colorKey]) or defaults[colorKey]
-        cast:SetStatusBarColor(c.r, c.g, c.b, 1)
-
-        -- Shift container left to account for cast icon hanging outside
-        container:ClearAllPoints()
-        PP.Point(container, "RIGHT", anchor, "RIGHT", -(20 + SWATCH_SZ + SWATCH_GAP), 0)
-
-        container.UpdateColor = function()
-            local cc = (DB() and DB()[colorKey]) or defaults[colorKey]
-            cast:SetStatusBarColor(cc.r, cc.g, cc.b, 1)
-        end
-        container.Randomize = function()
-            cast:SetValue(NextCastFill())
-            icon:SetTexture(NextCastIcon())
-        end
-        container.RefreshBorderStyle = function() end
-        container.RefreshBorderColor = function() end
-    end
-
-    return container
-end
-
 local function BuildColorsPage(pageName, parent, yOffset)
     local env = ns._NPO_OptEnv
-    local _colorPagePreviews, DB, DBColor, DBVal = env._colorPagePreviews, env.DB, env.DBColor, env.DBVal
-    local defaults, optState, pairs, PP = env.defaults, env.optState, env.pairs, env.PP
+    local DB, DBColor, DBVal, defaults = env.DB, env.DBColor, env.DBVal, env.defaults
+    local pairs, PP = env.pairs, env.PP
     local RefreshAllPlates, SECTION_ENEMY, SECTION_THREAT, THREAT_PCT_POSITION_ORDER = env.RefreshAllPlates, env.SECTION_ENEMY, env.SECTION_THREAT, env.THREAT_PCT_POSITION_ORDER
     local THREAT_PCT_POSITIONS = env.THREAT_PCT_POSITIONS
     local W = EllesmereUI.Widgets
@@ -1252,11 +903,6 @@ local function BuildColorsPage(pageName, parent, yOffset)
 
     -- Enable per-row center divider for the dual-column layout (same as Display tab)
     parent._showRowDivider = true
-
-    -- Track all mini previews for border style refresh
-    _G._EUI_ColorPreviews = {}
-
-    -- LazyColorPreviewBar and _colorPagePreviews live at init scope (shared between Display and Colors pages).
 
     -----------------------------------------------------------------------
     --  ENEMY COLORS
@@ -1323,6 +969,7 @@ local function BuildColorsPage(pageName, parent, yOffset)
             local db = DB()
             if OOCOn() ~= on then db.darkenEnemiesOOC = on end
             if on and OOCRecolorOn() ~= (v == "color") then db.darkenOOCRecolor = (v == "color") end
+            if ns.NP_CastTintsDirty then ns.NP_CastTintsDirty() end
             for _, plate in pairs(ns.plates) do
                 plate:UpdateHealthColor()
             end
@@ -1342,6 +989,7 @@ local function BuildColorsPage(pageName, parent, yOffset)
               end,
               setValue = function(r, g, b)
                 DB().darkenOOCColor = { r = r, g = g, b = b }
+                if ns.NP_CastTintsDirty then ns.NP_CastTintsDirty() end
                 for _, plate in pairs(ns.plates) do
                     plate:UpdateHealthColor()
                 end
@@ -1459,6 +1107,69 @@ local function BuildColorsPage(pageName, parent, yOffset)
                   end },
             },
         })
+    end
+
+    -- Color Casting Enemies | Enemy Players Use Enemy Color
+    local castingRow
+    castingRow, h = W:DualRow(parent, y,
+        { type="toggle", text="Color Casting Enemies",
+          getValue=function() return DBVal("castingEnemyColors") == true end,
+          setValue=function(v)
+            DB().castingEnemyColors = v
+            RefreshAllPlates()
+            EllesmereUI:RefreshPage()
+          end,
+          tooltip="Enemies not colored as Spell Casters take the Interruptible Caster or Uninterruptible Caster color once they cast a spell that can or cannot be interrupted." },
+        { type="toggle", text="Enemy Players Use Enemy Color",
+          getValue=function() return DBVal("enemyPlayerEnemyColor") == true end,
+          setValue=function(v)
+            DB().enemyPlayerEnemyColor = v
+            RefreshAllPlates()
+          end,
+          tooltip="Enemy players take the Enemies color instead of their class color." });  y = y - h
+
+    -- Inline cog with the mob types each applies to, then the Interruptible / Uninterruptible swatches.
+    if not EllesmereUI._prebuilding then
+        local rgn = castingRow._leftRegion
+        local isCastingOff = function() return DBVal("castingEnemyColors") ~= true end
+        local typeItems = {
+            { key="Normal",   label="Normal / Trivial", fixed=true },
+            { key="Elite",    label="Elite",            fixed=true },
+            { key="MiniBoss", label="Mini-Bosses",      fixed=true },
+            { key="Boss",     label="Bosses",           fixed=true },
+        }
+        local function TypeRow(label, prefix)
+            -- hint replaces the widget's "Drag to Reorder": every row is fixed.
+            return { type="reordercheck", label=label, ddWidth=170, items=typeItems, hint="Enemy Types",
+              get=function(key) return DBVal(prefix .. key) end,
+              set=function(key, v)
+                DB()[prefix .. key] = v
+                RefreshAllPlates()
+              end }
+        end
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Casting Enemies",
+            disabled = isCastingOff,
+            disabledTooltip = "Color Casting Enemies",
+            rows = {
+                TypeRow("Interruptible Applies To", "castingInt"),
+                TypeRow("Uninterruptible Applies To", "castingUnint"),
+            },
+        })
+        EllesmereUI.BuildInlineSwatches(rgn, {
+            { tooltip = "Interruptible Caster",
+              getValue = function() return DBColor("castingIntColor") end,
+              setValue = function(r, g, b)
+                DB().castingIntColor = { r = r, g = g, b = b }
+                RefreshAllPlates()
+              end },
+            { tooltip = "Uninterruptible Caster",
+              getValue = function() return DBColor("castingUnintColor") end,
+              setValue = function(r, g, b)
+                DB().castingUnintColor = { r = r, g = g, b = b }
+                RefreshAllPlates()
+              end },
+        }, { disabled = isCastingOff, disabledTooltip = "Color Casting Enemies" })
     end
 
     _, h = W:Spacer(parent, y, 20);  y = y - h
@@ -1624,7 +1335,7 @@ local function BuildColorsPage(pageName, parent, yOffset)
         })
     end
 
-    -- Inline "No Aggro" color swatch next to the DPS toggle
+    -- Inline cog next to the DPS toggle, then the "No Aggro" color swatch left of it
     if not EllesmereUI._prebuilding then
         local rgn = nonTankRow._rightRegion
         local dpsNoAggroColorGet = function() return DBColor("dpsNoAggro") end
@@ -1632,13 +1343,9 @@ local function BuildColorsPage(pageName, parent, yOffset)
             DB().dpsNoAggro = { r = r, g = g, b = b }
             RefreshAllPlates()
         end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, dpsNoAggroColorGet, dpsNoAggroColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rgn._control, "LEFT", -12, 0)
-        LockThreatSwatch(swatch, updateSwatch, isDpsNoAggroDisabled, 'DPS: Show Special "No Aggro" Color')
 
         -- Inline cog: independent "Override Mini-Boss colors" / "Override Caster colors" / "Override Boss colors" toggles promote the DPS No Aggro color above that single mob-type color (kept separate for contrast); dimmed while off.
         EllesmereUI.BuildInlineCog(rgn, {
-            chain = false, anchorTo = swatch,
             disabled = function() return threatNever() or isDpsNoAggroDisabled() or isThreatHealthOff() end,
             disabledTooltip = function()
                 if threatNever() then return "Show Threat Colors" end
@@ -1670,6 +1377,10 @@ local function BuildColorsPage(pageName, parent, yOffset)
                   set=function(v) DB().dpsNoAggroOverrideBoss = v; RefreshAllPlates() end },
             },
         })
+        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, dpsNoAggroColorGet, dpsNoAggroColorSet, nil, 20)
+        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        LockThreatSwatch(swatch, updateSwatch, isDpsNoAggroDisabled, 'DPS: Show Special "No Aggro" Color')
     end
 
     -- Row 3: Classic Tank Aggro (left) ---- Tank: Show Special "Has Aggro" Color (right)
@@ -1715,7 +1426,7 @@ local function BuildColorsPage(pageName, parent, yOffset)
         LockThreatSwatch(swatch, updateSwatch, isClassicTankAggroDisabled, "Classic Tank Aggro")
     end
 
-    -- Inline "Has Aggro" color swatch next to the tank Has Aggro toggle
+    -- Inline cog next to the tank Has Aggro toggle, then the "Has Aggro" color swatch left of it
     if not EllesmereUI._prebuilding then
         local rgn = tankAggroRow._rightRegion
         local tankAggroColorGet = function() return DBColor("tankHasAggro") end
@@ -1723,13 +1434,9 @@ local function BuildColorsPage(pageName, parent, yOffset)
             DB().tankHasAggro = { r = r, g = g, b = b }
             RefreshAllPlates()
         end
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, tankAggroColorGet, tankAggroColorSet, nil, 20)
-        PP.Point(swatch, "RIGHT", rgn._control, "LEFT", -12, 0)
-        LockThreatSwatch(swatch, updateSwatch, isTankHasAggroDisabled, 'Tank: Show Special "Has Aggro" Color')
 
         -- Inline cog "Override Mini-Boss and Caster colors" promotes the tank has-aggro color above the mini-boss/caster priority steps; dimmed while Has Aggro is off.
         EllesmereUI.BuildInlineCog(rgn, {
-            chain = false, anchorTo = swatch,
             disabled = function() return threatNever() or isTankHasAggroDisabled() or isThreatHealthOff() end,
             disabledTooltip = function()
                 if threatNever() then return "Show Threat Colors" end
@@ -1754,6 +1461,10 @@ local function BuildColorsPage(pageName, parent, yOffset)
                   set=function(v) DB().tankHasAggroOverrideBoss = v; RefreshAllPlates() end },
             },
         })
+        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, tankAggroColorGet, tankAggroColorSet, nil, 20)
+        PP.Point(swatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        LockThreatSwatch(swatch, updateSwatch, isTankHasAggroDisabled, 'Tank: Show Special "Has Aggro" Color')
     end
 
     -- Show Threat On: which parts of the plate carry the threat colors above. Border and
@@ -1885,10 +1596,7 @@ local function BuildColorsPage(pageName, parent, yOffset)
             end)
         PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
         rgn._control = cbDD
-        cbDD:HookScript("OnEnter", function()
-            EllesmereUI.ShowWidgetTooltip(cbDD, "Chooses which parts of the nameplate show the threat colors; with Health Bar off, the bar keeps its Enemy Types color.")
-        end)
-        cbDD:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        cbDD._ttText = "Chooses which parts of the nameplate show the threat colors; with Health Bar off, the bar keeps its Enemy Types color."
         EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
         -- The checkbox dropdown has no disabled state of its own: grey it and block
         -- clicks while Show Threat Colors is Never; the placeholder's disabled overlay
@@ -1906,33 +1614,8 @@ local function BuildColorsPage(pageName, parent, yOffset)
 
     y = ns.NP_BuildDebuffColorsOptions(parent, y)
 
-    -- Build a refresh-all function for page cache restore
-    optState._colorPreviewRefreshAll = function()
-        for _, prev in ipairs(_G._EUI_ColorPreviews) do
-            if prev.UpdateColor then prev.UpdateColor() end
-            if prev.UpdateOverlay then prev.UpdateOverlay() end
-            if prev.RefreshBorderColor then prev.RefreshBorderColor() end
-            if prev.RefreshHealthText then prev.RefreshHealthText() end
-        end
-        for _, prev in ipairs(_colorPagePreviews) do
-            if prev.UpdateColor then prev.UpdateColor() end
-            if prev.UpdateOverlay then prev.UpdateOverlay() end
-            if prev.RefreshBorderColor then prev.RefreshBorderColor() end
-            if prev.RefreshHealthText then prev.RefreshHealthText() end
-        end
-    end
-    for _, prev in ipairs(_colorPagePreviews) do
-        if prev.UpdateColor then
-            EllesmereUI.RegisterWidgetRefresh(prev.UpdateColor)
-        end
-        if prev.UpdateOverlay then
-            EllesmereUI.RegisterWidgetRefresh(prev.UpdateOverlay)
-        end
-    end
-
     return math.abs(y)
 end
 
 -- Used by EUI_Nameplates_Options.lua
-ns.NPO_MakeColorPreviewBar = MakeColorPreviewBar
 ns.NPO_BuildColorsPage = BuildColorsPage

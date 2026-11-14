@@ -168,7 +168,8 @@ end
 
 local function QueryPartyKeys()
     if not LibKeystone then return end
-    if IsInGroup() then LibKeystone.Request("PARTY") end
+    -- A party of your own: PARTY from a Dungeon Finder group alone only brings back "You aren't in a party."
+    if IsInGroup(LE_PARTY_CATEGORY_HOME) then LibKeystone.Request("PARTY") end
     LibKeystone.Request("GUILD")
 end
 
@@ -198,11 +199,17 @@ local function ResolveOutline()
     return (EUI.GetFontOutlineFlag("extras")) or ""
 end
 
-local function MakeLabel(parent, size, _, r, g, b, a)
+-- family: a text that shows a player's name takes the font as a font family,
+-- which draws the scripts the font lacks
+local function MakeLabel(parent, size, _, r, g, b, a, family)
     local fs = parent:CreateFontString(nil, "OVERLAY")
     local flags = ResolveOutline()
-    EllesmereUI.PrimeFontShadow(fs, flags == "")
-    fs:SetFont(ResolveFont(), size, flags)
+    if family then
+        EllesmereUI.SetFontFamily(fs, ResolveFont(), size, flags, flags == "")
+    else
+        EllesmereUI.PrimeFontShadow(fs, flags == "")
+        fs:SetFont(ResolveFont(), size, flags)
+    end
     if r then fs:SetTextColor(r, g or 1, b or 1, a or 1) end
     return fs
 end
@@ -328,7 +335,7 @@ local function AcquireRow(i)
         alt:SetAllPoints()
     end
 
-    r._nameFS = MakeLabel(r, 11, nil, 1, 1, 1, 0.85)
+    r._nameFS = MakeLabel(r, 11, nil, 1, 1, 1, 0.85, true)
     r._nameFS:SetPoint("LEFT", 2, 0); r._nameFS:SetWidth(80); r._nameFS:SetJustifyH("LEFT")
     r._nameFS:SetWordWrap(false)
 
@@ -404,7 +411,7 @@ local function ApplyRowFontSize(r)
     local sz = GetTextSize()
     local font = ResolveFont()
     local flags = ResolveOutline()
-    r._nameFS:SetFont(font, sz, flags)
+    EllesmereUI.SetFontFamily(r._nameFS, font, sz, flags, flags == "")
     r._ratingFS:SetFont(font, sz - 1, flags)
     r._dungeonFS:SetFont(font, sz, flags)
     r._levelFS:SetFont(font, sz, flags)

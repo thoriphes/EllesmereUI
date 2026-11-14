@@ -228,7 +228,7 @@ BuildPopup = function()
         if cdInfo and cdInfo.duration and cdInfo.duration > 0 then
             EUI.ShowWidgetTooltip(self, "Teleport on Cooldown")
         elseif EUI.ShowWidgetTooltip then
-            EUI.ShowWidgetTooltip(self, "Teleport to " .. (pendingName or "dungeon"))
+            EUI.ShowWidgetTooltip(self, EUI.Lf("Teleport to %s", pendingName or EUI.L("dungeon")))
         end
     end)
     secureBtn:SetScript("OnLeave", function()
@@ -381,12 +381,6 @@ _G._EUI_RefreshTeleportPrompt = function()
     if not popup then return end
     popup:SetScale(TeleCfg().scale or 1.05)
     ApplyDisableVisibility()
-end
-
--- Immediate hide hook used by the options toggle when disabling the feature.
-_G._EUI_HideTeleportPrompt = function()
-    ClearPending()
-    HidePrompt()
 end
 
 -------------------------------------------------------------------------------

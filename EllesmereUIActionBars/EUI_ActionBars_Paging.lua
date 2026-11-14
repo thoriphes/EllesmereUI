@@ -11,6 +11,7 @@ local _, ns = ...
 local _G = _G
 local ipairs, pairs = ipairs, pairs
 local InCombatLockdown = InCombatLockdown
+local RegisterAttributeDriver, UnregisterAttributeDriver = RegisterAttributeDriver, UnregisterAttributeDriver
 local EFD = ns.EFD
 
 local EAB, EAB_VTABLE = ns.EAB, ns.EAB_VTABLE
@@ -39,64 +40,94 @@ EAB_VTABLE.PAGING_STATES = {
         { id = "help",  macro = "[help]",      label = "Friendly Target" },
         { id = "harm",  macro = "[harm]",      label = "Hostile Target" },
     },
-    class = {
-        DRUID = {
-            { id = "prowl",   macro = "[bonusbar:1,stealth]", label = "Prowl" },
-            { id = "cat",     macro = "[bonusbar:1]",         label = "Cat Form" },
-            { id = "bear",    macro = "[bonusbar:3]",         label = "Bear Form" },
-            { id = "moonkin", macro = "[bonusbar:4]",         label = "Moonkin Form" },
-        },
-        ROGUE = {
-            { id = "stealth", macro = "[bonusbar:1]", label = "Stealth" },
-        },
-        WARRIOR = {
-            { id = "battle",    macro = "[bonusbar:1]", label = "Battle Stance" },
-            { id = "defensive", macro = "[bonusbar:2]", label = "Defensive Stance" },
-        },
-        EVOKER = {
-            { id = "soar", macro = "[bonusbar:1]", label = "Soar" },
-        },
-    },
+    -- Shared with the CDM's Stance Bar hide (EllesmereUI_VisibilityRules.lua).
+    class = EllesmereUI.CLASS_PAGING_STATES,
 }
--- A form pages only where the client gives it a bonus bar: on WoW Forever
--- Berserker Stance has one (3) and Moonkin Form none, on retail the other way
--- round. Tree of Life has none on either client, so it is not listed.
-if EllesmereUI.IS_FOREVER == true then
-    local states = EAB_VTABLE.PAGING_STATES.class
-    table.insert(states.WARRIOR, { id = "berserker", macro = "[bonusbar:3]", label = "Berserker Stance" })
-    for i = #states.DRUID, 1, -1 do
-        if states.DRUID[i].id == "moonkin" then table.remove(states.DRUID, i) end
-    end
+
+-- The five modifier and target states, each with its group: Modifier Paging
+-- (shift, ctrl, alt; the bar's modifierPaging) and Target Paging (help, harm;
+-- its targetPaging). A group's false switches its states off without clearing
+-- them. The bar's modTargetPaging false switches both groups off whatever they
+-- say, wherever it is set (a Spec or Conditional Override may still pin it);
+-- the options clear it when a group is ticked under it. With nothing set the
+-- states apply whenever one holds a page.
+EAB_VTABLE.MOD_TARGET_PAGING = {
+    shift = "modifier", ctrl = "modifier", alt = "modifier",
+    help = "target", harm = "target",
+}
+local PAGING_GROUP_KEY = { modifier = "modifierPaging", target = "targetPaging" }
+
+-- True while the bar's group ("modifier" or "target") is switched off.
+function EAB_VTABLE.PagingGroupOff(bs, group)
+    if not bs then return false end
+    if bs.modTargetPaging == false then return true end
+    return bs[PAGING_GROUP_KEY[group]] == false
 end
 
--- Modifier/Target Paging (the bar's modTargetPaging): false switches the five
--- modifier and target states off without clearing them; never set, they apply
--- whenever one holds a page, as they always did.
-EAB_VTABLE.MOD_TARGET_PAGING = { shift = true, ctrl = true, alt = true, help = true, harm = true }
-
 -- True when the bar has paging of the player's own that applies: a state
--- outside the five, or one of the five while Modifier/Target Paging is not off.
+-- outside the five, or one of the five while its group is not off.
 function EAB_VTABLE.HasCustomPaging(bs)
     local p = bs and bs.paging
     if not p or next(p) == nil then return false end
-    if bs.modTargetPaging ~= false then return true end
+    local offMod = EAB_VTABLE.PagingGroupOff(bs, "modifier")
+    local offTarget = EAB_VTABLE.PagingGroupOff(bs, "target")
+    if not (offMod or offTarget) then return true end
     local mt = EAB_VTABLE.MOD_TARGET_PAGING
     for id in pairs(p) do
-        if not mt[id] then return true end
+        local g = mt[id]
+        if not g or (g == "modifier" and not offMod) or (g == "target" and not offTarget) then
+            return true
+        end
     end
     return false
 end
 
 -- Auto-paging opt-outs for MainBar. Returns noForm, noSky: suppress implicit bonusbar
 -- swaps for forms/stealth/stance (bonusbar 1-4) and skyriding (bonusbar 5). Does NOT
--- cover vehicle/override/possess -- those replace abilities outright, so suppressing
--- them would leave no way to use the vehicle. Only ever true for MainBar, the only bar
--- the engine drives off bonusbar and the only one with these toggles.
+-- cover vehicle/override/possess or a temporary transformation's bar -- those replace
+-- abilities outright, so suppressing them would leave no way to use them. Only ever
+-- true for MainBar, the only bar the engine drives off bonusbar and the only one with
+-- these toggles. WoW Forever has no skyriding and its options offer no Skyriding
+-- Paging, so a saved disableSkyridingPaging reads as unset there.
 function EAB_VTABLE.GetAutoPagingOptOuts(barKey)
     if barKey ~= "MainBar" then return false, false end
     local bs = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars.MainBar
     if not bs then return false, false end
-    return bs.disableFormPaging and true or false, bs.disableSkyridingPaging and true or false
+    local noSky = bs.disableSkyridingPaging and not EllesmereUI.IS_FOREVER
+    return bs.disableFormPaging and true or false, noSky and true or false
+end
+
+-- WoW Forever druid forms by their spot on the stance bar. Casting the form
+-- you are in (a powershift) drops the form and takes it back within a
+-- moment, and the client then reports the form again but not its bonus bar:
+-- every [bonusbar:N] clause stays false until the next real form change, so
+-- a bar paged by them alone sits on the caster page (Blizzard's own bar
+-- does). A [form:i] clause per form, listed after the bonus bar clauses,
+-- holds the form's page meanwhile and decides nothing while the bonus bar
+-- reads right. Spell -> the paging state it stands for: of the druid forms
+-- there, only Cat (bonus bar 1) and Bear and Dire Bear (3) have a bonus bar.
+-- Cat takes its clause only out of stealth: a prowling cat keeps the page
+-- its own bonus bar gives it.
+local FOREVER_FORM_STATE = { [768] = "cat", [5487] = "bear", [9634] = "bear" }
+local FOREVER_FORM_PAGE = { cat = 7, bear = 9 }
+local FOREVER_DRUID = EllesmereUI.IS_FOREVER == true and select(2, UnitClass("player")) == "DRUID"
+
+-- The clauses ("[form:1] 9; [form:3,nostealth] 7") or nil with none. A form
+-- takes the page picked for its state in pagingConfig, else its own page
+-- when useDefaults is set.
+local function ForeverFormClauses(pagingConfig, useDefaults)
+    if not FOREVER_DRUID then return nil end
+    local out
+    for i = 1, GetNumShapeshiftForms() do
+        local _, _, _, spellID = GetShapeshiftFormInfo(i)
+        local state = spellID and not issecretvalue(spellID) and FOREVER_FORM_STATE[spellID]
+        local page = state and ((pagingConfig and pagingConfig[state]) or (useDefaults and FOREVER_FORM_PAGE[state]))
+        if page then
+            local clause = (state == "cat" and "[form:%d,nostealth] %s" or "[form:%d] %s"):format(i, tostring(page))
+            out = out and (out .. "; " .. clause) or clause
+        end
+    end
+    return out
 end
 
 function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
@@ -105,7 +136,8 @@ function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
     local _, class = UnitClass("player")
     local noForm, noSky = EAB_VTABLE.GetAutoPagingOptOuts(barKey)
     local bs = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars[barKey]
-    local noModTarget = bs and bs.modTargetPaging == false
+    local noModifier = EAB_VTABLE.PagingGroupOff(bs, "modifier")
+    local noTarget = EAB_VTABLE.PagingGroupOff(bs, "target")
     local parts = {}
     if barKey == "MainBar" then
         if EAB_VTABLE.GetOverrideBarIndex then
@@ -114,8 +146,11 @@ function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
         if EAB_VTABLE.GetVehicleBarIndex then
             parts[#parts + 1] = "[vehicleui][possessbar] " .. EAB_VTABLE.GetVehicleBarIndex()
         end
+        if EAB_VTABLE.GetTempShapeshiftBarIndex then
+            parts[#parts + 1] = "[shapeshift] " .. EAB_VTABLE.GetTempShapeshiftBarIndex()
+        end
     end
-    if not noModTarget then
+    if not noModifier then
         for _, state in ipairs(PG.modifier) do
             local page = pagingConfig[state.id]
             if page then
@@ -151,6 +186,10 @@ function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
     if barKey == "MainBar" and not noForm and EllesmereUI.IS_FOREVER then
         parts[#parts + 1] = "[bonusbar:1] 7; [bonusbar:2] 8; [bonusbar:3] 9; [bonusbar:4] 10"
     end
+    -- The druid form clauses (see ForeverFormClauses): a form's picked page,
+    -- or on bar 1 its own page unless Form Paging is off.
+    local formClauses = ForeverFormClauses(pagingConfig, barKey == "MainBar" and not noForm)
+    if formClauses then parts[#parts + 1] = formClauses end
     -- Manual pages come before the skyriding clause: the engine only consults
     -- the bonus bar while Blizzard's page is 1 (ActionBarController_UpdateAll),
     -- so [bonusbar:5] listed first pinned the bar to the skyriding page and
@@ -168,7 +207,7 @@ function EAB_VTABLE.BuildPagingConditions(barKey, pagingConfig, defaultPage)
     end
     -- Target conditions come after bonusbar/bar so dragonriding and manual
     -- page switches take priority over target-based switching.
-    if PG.target and not noModTarget then
+    if PG.target and not noTarget then
         for _, state in ipairs(PG.target) do
             local page = pagingConfig[state.id]
             if page then
@@ -189,13 +228,18 @@ local function GetClassPagingConditions()
     local noForm, noSky = EAB_VTABLE.GetAutoPagingOptOuts("MainBar")
     local conditions = ""
 
-    -- Override bar (soft vehicle/quest abilities) and possess bar: remap bar
-    -- 1 to those slots so our buttons stay visible and keybinds work.
+    -- Override bar (soft vehicle/quest abilities), possess bar and a temporary
+    -- transformation's bar ([shapeshift], e.g. a quest that turns you into a
+    -- creature): remap bar 1 to those slots so our buttons stay visible and
+    -- keybinds work, in Blizzard's own order (ActionBarController_UpdateAll).
     if EAB_VTABLE.GetOverrideBarIndex then
         conditions = conditions .. "[overridebar] " .. EAB_VTABLE.GetOverrideBarIndex() .. "; "
     end
     if EAB_VTABLE.GetVehicleBarIndex then
         conditions = conditions .. "[vehicleui][possessbar] " .. EAB_VTABLE.GetVehicleBarIndex() .. "; "
+    end
+    if EAB_VTABLE.GetTempShapeshiftBarIndex then
+        conditions = conditions .. "[shapeshift] " .. EAB_VTABLE.GetTempShapeshiftBarIndex() .. "; "
     end
 
     -- Manual page switching (pages 2-6): [bar:N] responds to the internal page set by
@@ -217,6 +261,9 @@ local function GetClassPagingConditions()
             -- class (vanilla warrior stances, druid forms, rogue stealth): page 6 + offset.
             -- Mirror it exactly so ACTIONBUTTONn and the icon agree in every stance.
             conditions = conditions .. "[bonusbar:1] 7; [bonusbar:2] 8; [bonusbar:3] 9; [bonusbar:4] 10; "
+            -- The druid form clauses (see ForeverFormClauses).
+            local formClauses = ForeverFormClauses(nil, true)
+            if formClauses then conditions = conditions .. formClauses .. "; " end
         elseif class == "DRUID" then
             conditions = conditions .. "[bonusbar:1,stealth] 7; [bonusbar:1] 7; [bonusbar:3] 9; [bonusbar:4] 10; "
         elseif class == "ROGUE" then
@@ -268,7 +315,7 @@ function ns.GetPagingSkipMask()
     for barKey, page in pairs(EAB_VTABLE.BAR_KEY_TO_PAGE) do
         if barKey ~= "MainBar" and page >= 1 and page <= NUM_AB_PAGES then
             local settings = bars[barKey]
-            if settings and settings.enabled ~= false and not settings.alwaysHidden then
+            if settings and settings.enabled ~= false and not EAB.VisibilityCompat.IsNever(settings) then
                 skip[page] = true
             end
         end
@@ -401,31 +448,20 @@ local function SetupPagingFrame()
     f._downBtn = downBtn
     InitPagingQuickKeybindButton(downBtn, "UI-HUD-ActionBar-PageDownArrow-Mouseover")
 
-    -- Update page text and handle combat visibility / vehicle state
+    -- Update page text and vehicle state. Combat visibility is the bar's own:
+    -- the frame is parented to MainBar, whose visibility driver shows and
+    -- hides it in combat (a Show or Hide here would also fight the paged
+    -- driver in LayoutPagingFrame).
     f:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
     f:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
     f:RegisterEvent("UPDATE_OVERRIDE_ACTIONBAR")
     f:RegisterEvent("UPDATE_VEHICLE_ACTIONBAR")
-    f:RegisterEvent("PLAYER_REGEN_DISABLED")
-    f:RegisterEvent("PLAYER_REGEN_ENABLED")
     f:SetScript("OnEvent", function(_, event)
         if event == "UPDATE_OVERRIDE_ACTIONBAR" or event == "UPDATE_VEHICLE_ACTIONBAR" then
             LayoutPagingFrame()
             -- Trigger page sync; the Queue callback early-returns in combat,
             -- so the sync only runs out of combat.
             EAB_VTABLE.MainBarPageSync.Queue()
-            return
-        end
-        if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
-            local s = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars and EAB.db.profile.bars["MainBar"]
-            if s and not InCombatLockdown() then
-                local inCombat = (event == "PLAYER_REGEN_DISABLED")
-                if s.combatShowEnabled then
-                    if inCombat then f:Show() else f:Hide() end
-                elseif s.combatHideEnabled then
-                    if inCombat then f:Hide() else f:Show() end
-                end
-            end
             return
         end
         local page = EAB_VTABLE.GetActionBarPage()
@@ -454,15 +490,35 @@ function ns.AB_PagingArrowMetrics(btnH)
     return arrow, math.max(10, math.floor(arrow * 0.7)), 2, 4
 end
 
+-- Paging Arrows set to While Paged: a secure driver shows the
+-- arrows while bar 1 is on a page the player paged to. [bar:N] follows only
+-- that manual page (the paging keys and arrows), never the bonus bar a form,
+-- stealth or skyriding pages bar 1 by, so those never bring the arrows up.
+-- Hidden while a vehicle, override, possess or temporary shapeshift bar takes
+-- the bar's place, as the always-shown arrows are. The manager applies its
+-- verdict on every pass, so nothing else shows or hides the frame meanwhile.
+local PAGED_VIS = "[overridebar][vehicleui][possessbar][shapeshift] hide; [bar:1] hide; show"
+local function SetPagedDriver(f, on)
+    if on then
+        if not f._pagedVis then
+            f._pagedVis = true
+            RegisterAttributeDriver(f, "state-visibility", PAGED_VIS)
+        end
+    elseif f._pagedVis then
+        f._pagedVis = nil
+        UnregisterAttributeDriver(f, "state-visibility")
+    end
+end
+
 LayoutPagingFrame = function()
     local f = _pagingFrame
     if not f then return end
     if InCombatLockdown() then return end
     local mainFrame = barFrames and barFrames["MainBar"]
-    if not mainFrame then f:Hide(); return end
+    if not mainFrame then SetPagedDriver(f, false); f:Hide(); return end
 
     local s = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars and EAB.db.profile.bars["MainBar"]
-    if not s then f:Hide(); return end
+    if not s then SetPagedDriver(f, false); f:Hide(); return end
 
     -- Parenting to MainBar makes it inherit secure show/hide + mouseover-fade
     -- alpha automatically, including in combat. Reparenting secure children is
@@ -478,16 +534,24 @@ LayoutPagingFrame = function()
     local lvl = (mainFrame:GetFrameLevel() or 1) + 1 + (caps and caps.lvl or 4)
     if f:GetFrameLevel() ~= lvl then f:SetFrameLevel(lvl) end
 
-    if s.alwaysHidden or s.enabled == false or not s.showPagingArrows then
+    -- Paging Arrows: always shown. Off: shown only while paged (Show While
+    -- Paged, on unless turned off), through the paged driver above.
+    local always = s.showPagingArrows
+    local whilePaged = not always and s.pagingArrowsWhilePaged ~= false
+    if EAB.VisibilityCompat.IsNever(s) or s.enabled == false or not (always or whilePaged) then
+        SetPagedDriver(f, false)
         f:Hide()
         return
     end
 
-    -- Hide during vehicle/override (paging doesn't apply)
-    local overridePage = mainFrame:GetAttribute("state-overridepage") or 0
-    if overridePage > 0 then
-        f:Hide()
-        return
+    if always then
+        SetPagedDriver(f, false)
+        -- Hide during vehicle/override (paging doesn't apply)
+        local overridePage = mainFrame:GetAttribute("state-overridepage") or 0
+        if overridePage > 0 then
+            f:Hide()
+            return
+        end
     end
 
     local isVertical = (s.orientation == "vertical")
@@ -531,7 +595,11 @@ LayoutPagingFrame = function()
         f._downBtn:SetPoint("BOTTOM", f, "BOTTOM", 0, 0)
     end
 
-    f:Show()
+    if whilePaged then
+        SetPagedDriver(f, true)
+    else
+        f:Show()
+    end
 end
 ns.LayoutPagingFrame = LayoutPagingFrame
 
@@ -659,6 +727,31 @@ end
 function ns._eabBuildPageChildSnippet(baseIndex)
     return ("local page = tonumber(message) or 1; local slot = %d + (page - 1) * 12; self:SetAttribute('action', slot)\n"):format(baseIndex)
         .. ns._eabPageVisSnippet .. ns._eabEmpowerSnippet
+end
+
+-- The druid form clauses follow the stance bar: a form learned, or the list
+-- arriving after the bars were built, rebuilds the paging drivers (out of
+-- combat; RebuildBarPaging leaves a bar alone whose conditions did not move).
+-- Registered for a WoW Forever druid only.
+if FOREVER_DRUID then
+    local lastForms
+    local function RebuildFormPaging()
+        if InCombatLockdown() then
+            ns.CombatQueue.Defer("FormPaging", RebuildFormPaging)
+            return
+        end
+        local forms = ForeverFormClauses(nil, true) or ""
+        if forms == lastForms then return end
+        lastForms = forms
+        if not ns.RebuildBarPaging then return end
+        for barKey in pairs(barFrames) do
+            ns.RebuildBarPaging(barKey, true)
+        end
+    end
+    local formWatcher = CreateFrame("Frame")
+    formWatcher:RegisterEvent("UPDATE_SHAPESHIFT_FORMS")
+    formWatcher:RegisterEvent("PLAYER_ENTERING_WORLD")
+    formWatcher:SetScript("OnEvent", RebuildFormPaging)
 end
 
 -- Entry points the files after this one re-import by name.

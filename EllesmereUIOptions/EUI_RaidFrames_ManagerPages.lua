@@ -1,4 +1,4 @@
-﻿if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -- EUI_RaidFrames_ManagerPages.lua
 -- 12.1 redesigned manager options: the Debuff Manager page (sidebar of
 -- tiles with the undeletable Base Icons tile first) plus the Buff Manager v2
@@ -29,7 +29,7 @@ local POS_ORDER = EllesmereUI.POSITION_GRID_ORDER
 local GROW_VALUES = EllesmereUI.GROW_DIR_VALUES_FULL
 local GROW_ORDER = EllesmereUI.GROW_DIR_ORDER_FULL
 
-local CAT_VALUES = { boss = "Boss", role = "Role", priority = "Important",
+local CAT_VALUES = { boss = "Boss", role = "Boss Role", priority = "Important",
     cc = "Crowd Control", raid = "Raid", raidcombat = "Raid In Combat", dispel = "Dispellable",
     nonplayer = "Non-Player" }
 local CAT_ORDER = { "nonplayer", "priority", "boss", "role", "cc", "raid", "raidcombat", "dispel" }
@@ -74,6 +74,81 @@ local dmSpecSel = "allspecs"
 local dmInhSel = nil
 
 local function L(s) return EllesmereUI.L(s) or s end
+
+-- The managers share the unit-frame aura border controls and size/offset helpers.
+function ns.RFO_AuraBorderSettings(parent, y, W, get, set, apply, disabled, dispel)
+    local function Val(k, fallback)
+        local v = get(k); if v ~= nil then return v end; return fallback
+    end
+    local values, order = EllesmereUI.GetBorderTextureDropdown()
+    local row, h = W:DualRow(parent, y,
+        { type="dropdown", text="Border Style", values=values, order=order,
+          disabled=disabled, disabledTooltip="Hide Icons", requireState="disabled",
+          getValue=function() return Val("Texture", "solid") end,
+          setValue=function(v)
+              local color = EllesmereUI.GetBorderStyleSelectDefaults(v)
+              set("Texture", v)
+              set("TextureOffset", nil); set("TextureOffsetY", nil)
+              set("TextureShiftX", nil); set("TextureShiftY", nil)
+              set("Color", color)
+              local size = EllesmereUI.GetBorderDefaultSize("unitframes", v)
+              if size then set("Size", size) end
+              set("SizePx", false)
+              apply(); EllesmereUI:RefreshPage(true)
+          end },
+        EllesmereUI.BorderPxSliderCfg({ trackWidth=120,
+          disabled=disabled, disabledTooltip="Hide Icons", requireState="disabled",
+          getStep=function() return Val("Size", 1) end,
+          setStep=function(v) set("Size", v) end,
+          getTex=function() return Val("Texture", "solid") end,
+          getPx=function() return get("SizePx") end,
+          setPx=function(v) set("SizePx", v) end, apply=apply })); y = y - h
+    if not EllesmereUI._prebuilding then
+        local rgn = row._rightRegion
+        local swatch, refresh = EllesmereUI.BuildColorSwatch(rgn, row:GetFrameLevel() + 3,
+            function()
+                local c = Val("Color", {})
+                return c.r or 0, c.g or 0, c.b or 0, c.a or 1
+            end,
+            function(r, g, b, a) set("Color", { r=r, g=g, b=b, a=a }); apply() end, true, 20)
+        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        EllesmereUI.RegisterWidgetRefresh(refresh)
+    end
+    local tex = Val("Texture", "solid")
+    if tex ~= "solid" and tex ~= "" and not EllesmereUI._prebuilding then
+        local rows = {}
+        for i, axis in ipairs({ "X", "Y" }) do
+            rows[#rows + 1] = { type="slider", label="Shift " .. axis, min=-10, max=10, step=1,
+                get=function()
+                    local v = get("TextureShift" .. axis); if v ~= nil then return v end
+                    local _, _, sx, sy = EllesmereUI.GetBorderDefaults("unitframes", Val("Texture", "solid"), Val("Size", 1))
+                    return i == 1 and sx or sy
+                end,
+                set=function(v) set("TextureShift" .. axis, v); apply() end }
+        end
+        local offX, offY = EllesmereUI.BorderOffsetCogRows({ addonKey="unitframes",
+            getTex=function() return Val("Texture", "solid") end,
+            getStep=function() return Val("Size", 1) end,
+            getSizeKey=function() return Val("Size", 1) end,
+            getPx=function() return get("SizePx") end,
+            getX=function() return get("TextureOffset") end,
+            setX=function(v) set("TextureOffset", v) end,
+            getY=function() return get("TextureOffsetY") end,
+            setY=function(v) set("TextureOffsetY", v) end, apply=apply })
+        rows[#rows + 1] = offX
+        rows[#rows + 1] = offY
+        if dispel then
+            rows[#rows + 1] = { type="toggle", label="Textured Dispel Ring",
+                get=function() return Val("DispelTextured", false) end,
+                set=function(v) set("DispelTextured", v); apply() end }
+        end
+        EllesmereUI.BuildInlineCog(row._leftRegion, {
+            title="Border Options", rows=rows, disabled=disabled,
+            disabledTooltip="Hide Icons", requireState="disabled" })
+    end
+    return y
+end
 
 -- Stable random preview swipe seeds (fraction remaining, 0.2-0.9), keyed by preview
 -- slot index -- generated once and reused so refreshes never reshuffle the frozen swipe
@@ -187,8 +262,8 @@ local TILE_FILTER_ITEMS = {
       tooltip = "Loss-of-control debuffs." },
     { key = "boss", label = "Boss Debuffs",
       tooltip = "Debuffs applied by boss encounters." },
-    { key = "role", label = "Role Debuffs",
-      tooltip = "Debuffs flagged as relevant to your role." },
+    { key = "role", label = "Boss Role Debuffs",
+      tooltip = "Debuffs from enemies that Blizzard labels as relevant to your role." },
     { key = "raid", label = "Raid",
       tooltip = "Blizzard's curated raid-frame debuff set." },
     { key = "raidcombat", label = "Raid In Combat",
@@ -231,7 +306,7 @@ local function BuildFilterCBDropdown(rgn, claim, dm)
             DmApply()
         end,
         nil, 12)
-    PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+    EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
     rgn._control = cbDD
     rgn._lastInline = nil
 end
@@ -256,8 +331,8 @@ local TILE_LANE_ITEMS = {
       tooltip = "Loss-of-control debuffs." },
     { key = "boss", label = "Boss Debuffs", dual = true,
       tooltip = "Debuffs applied by boss encounters." },
-    { key = "role", label = "Role Debuffs", dual = true,
-      tooltip = "Debuffs flagged as relevant to your role." },
+    { key = "role", label = "Boss Role Debuffs", dual = true,
+      tooltip = "Debuffs from enemies that Blizzard labels as relevant to your role." },
     { key = "raid", label = "Raid", dual = true,
       tooltip = "Blizzard's curated raid-frame debuff set." },
     { key = "raidcombat", label = "Raid In Combat", dual = true,
@@ -431,7 +506,7 @@ local function BuildTileFiltersDD(rgn, t, dm)
         { separatorFn = function()
             return ns.DM_TileMatchOn(t) and " & " or ", "
         end })
-    PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+    EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
     rgn._control = cbDD
     rgn._lastInline = nil
     if cbRefresh then EllesmereUI.RegisterWidgetRefresh(cbRefresh) end
@@ -661,8 +736,8 @@ local function BuildBaseDetailDM(frame, fontPath)
               tooltip = "Loss-of-control debuffs. When shown, these lead the row and carry the CC glow." },
             { key = "boss", label = "Boss Debuffs", dual = true, showLockedFn = AllOn,
               tooltip = "Debuffs applied by boss encounters." },
-            { key = "role", label = "Role Debuffs", dual = true, showLockedFn = AllOn,
-              tooltip = "Debuffs flagged as relevant to your role." },
+            { key = "role", label = "Boss Role Debuffs", dual = true, showLockedFn = AllOn,
+              tooltip = "Debuffs from enemies that Blizzard labels as relevant to your role." },
             { key = "raid", label = "Raid", dual = true, showLockedFn = AllOn,
               tooltip = "Blizzard's curated raid-frame debuff set." },
             { key = "raidcombat", label = "Raid In Combat", dual = true, showLockedFn = AllOn,
@@ -841,7 +916,7 @@ local function BuildBaseDetailDM(frame, fontPath)
             { separatorFn = function()
                 return (dm.match == "all" and not AllOn()) and " & " or ", "
             end })
-        PPl.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+        EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
         rgn._control = cbDD
         rgn._lastInline = nil
         if cbRefresh then EllesmereUI.RegisterWidgetRefresh(cbRefresh) end
@@ -889,7 +964,6 @@ local function BuildBaseDetailDM(frame, fontPath)
     do
         local rgn = posRow2._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
             title = "Position Offset",
             rows = {
                 { type = "slider", label = "Offset X", min = -50, max = 50, step = 1,
@@ -902,7 +976,7 @@ local function BuildBaseDetailDM(frame, fontPath)
         })
     end
 
-    -- Row: Icons Per Row (end of CORE). The key predates this UI (its row
+    -- Row: Icons Per Row | Spacing. The key predates this UI (its row
     -- died with the Auras tab): >= 2 wraps -- rows for horizontal growth,
     -- COLUMNS for vertical (12.1 flow axis) -- with the stored
     -- debuffWrapDirection convention deciding the stack side.
@@ -911,7 +985,9 @@ local function BuildBaseDetailDM(frame, fontPath)
           tooltip = "Wraps into a new row (or column for vertical growth) after this many icons; below 2 keeps one continuous run.",
           getValue = function() return p.debuffPerRow or 5 end,
           setValue = function(v) p.debuffPerRow = v; DmApply() end },
-        { type = "label", text = "" }); sy = sy - hh
+        { type = "slider", pixel = true, text = "Spacing", min = -1, max = 10, step = 1, trackWidth = 120,
+          getValue = function() return p.debuffSpacing or 1 end,
+          setValue = function(v) p.debuffSpacing = v; DmApply() end }); sy = sy - hh
 
     -- Display: the legacy debuff style keys (retired Auras tab), which the
     -- base grid and icon tiles read directly. CC glow settings are
@@ -919,31 +995,11 @@ local function BuildBaseDetailDM(frame, fontPath)
     -- sync from these keys unless an old party override exists.
     _, hh = W:SectionHeader(frame, "DISPLAY", sy); sy = sy - hh
 
-    -- Row: Border (+ swatch) | Spacing
-    local bRow
-    bRow, hh = W:DualRow(frame, sy,
-        { type = "slider", text = "Border", min = 0, max = 4, step = 1, trackWidth = 120,
-          getValue = function() return p.debuffBorderSize or 1 end,
-          setValue = function(v) p.debuffBorderSize = v; DmApply() end },
-        { type = "slider", pixel = true, text = "Spacing", min = -1, max = 10, step = 1, trackWidth = 120,
-          getValue = function() return p.debuffSpacing or 1 end,
-          setValue = function(v) p.debuffSpacing = v; DmApply() end }); sy = sy - hh
-    do
-        local rgn = bRow._leftRegion
-        local swatch = EllesmereUI.BuildColorSwatch(rgn, bRow:GetFrameLevel() + 3,
-            function()
-                local c = p.debuffBorderColor or { r = 0, g = 0, b = 0 }
-                return c.r or 0, c.g or 0, c.b or 0, 1
-            end,
-            function(r, g, b)
-                p.debuffBorderColor = { r = r, g = g, b = b }
-                DmApply()
-            end, false, 20)
-        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-    end
+    sy = ns.RFO_AuraBorderSettings(frame, sy, W,
+        function(k) return p["debuffBorder" .. k] end,
+        function(k, v) p["debuffBorder" .. k] = v end, DmApply, nil, true)
 
-    -- Row: Show Duration Text (+ swatch + cog) | Show Stacks (+ swatch + cog)
+    -- Row: Show Duration Text (+ cog + swatch) | Show Stacks (+ cog + swatch)
     local dtRow
     dtRow, hh = W:DualRow(frame, sy,
         { type = "toggle", text = "Show Duration Text",
@@ -954,20 +1010,7 @@ local function BuildBaseDetailDM(frame, fontPath)
           setValue = function(v) p.debuffShowStacks = v; DmApply() end }); sy = sy - hh
     do
         local rgn = dtRow._leftRegion
-        local swatch = EllesmereUI.BuildColorSwatch(rgn, dtRow:GetFrameLevel() + 3,
-            function()
-                local c = p.debuffDurTextColor or { r = 1, g = 1, b = 1 }
-                return c.r or 1, c.g or 1, c.b or 1, 1
-            end,
-            function(r, g, b)
-                p.debuffDurTextColor = { r = r, g = g, b = b }
-                DmApply()
-            end, false, 20)
-        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-
         EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             title = "Duration Text",
             rows = {
                 { type = "slider", label = "Text Size", min = 6, max = 26, step = 1,
@@ -981,23 +1024,22 @@ local function BuildBaseDetailDM(frame, fontPath)
                   set = function(v) p.debuffDurTextOffsetY = v; DmApply() end },
             },
         })
-    end
-    do
-        local rgn = dtRow._rightRegion
+
         local swatch = EllesmereUI.BuildColorSwatch(rgn, dtRow:GetFrameLevel() + 3,
             function()
-                local c = p.debuffStacksTextColor or { r = 1, g = 1, b = 1 }
+                local c = p.debuffDurTextColor or { r = 1, g = 1, b = 1 }
                 return c.r or 1, c.g or 1, c.b or 1, 1
             end,
             function(r, g, b)
-                p.debuffStacksTextColor = { r = r, g = g, b = b }
+                p.debuffDurTextColor = { r = r, g = g, b = b }
                 DmApply()
             end, false, 20)
         swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
         rgn._lastInline = swatch
-
+    end
+    do
+        local rgn = dtRow._rightRegion
         EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             title = "Stacks Text",
             rows = {
                 { type = "slider", label = "Text Size", min = 6, max = 26, step = 1,
@@ -1011,6 +1053,18 @@ local function BuildBaseDetailDM(frame, fontPath)
                   set = function(v) p.debuffStacksOffsetY = v; DmApply() end },
             },
         })
+
+        local swatch = EllesmereUI.BuildColorSwatch(rgn, dtRow:GetFrameLevel() + 3,
+            function()
+                local c = p.debuffStacksTextColor or { r = 1, g = 1, b = 1 }
+                return c.r or 1, c.g or 1, c.b or 1, 1
+            end,
+            function(r, g, b)
+                p.debuffStacksTextColor = { r = r, g = g, b = b }
+                DmApply()
+            end, false, 20)
+        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
     end
 
     -- Row: Tooltips | Show Duration Swipe. The swipe toggle was not in
@@ -1092,9 +1146,9 @@ local function BuildTileDetail(frame, fontPath, t)
         -- (nil = inherit; getters show the effective value).
         local p = DmProfile() or {}
         local dm = DmTable() or {}
-        local PP = EllesmereUI.PP or EllesmereUI.PanelPP
         local function TEff(key, baseKey, default)
             local v = t[key]
+            if key == "borderSizePx" and v == nil and (t.borderSize ~= nil or t.borderTexture ~= nil) then return false end
             if v == nil then v = p[baseKey] end
             if v == nil then v = default end
             return v
@@ -1161,7 +1215,6 @@ local function BuildTileDetail(frame, fontPath, t)
         do
             local rgn = posRow2._leftRegion
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON,
                 title = "Position Offset",
                 rows = {
                     { type = "slider", label = "Offset X", min = -50, max = 50, step = 1,
@@ -1174,7 +1227,7 @@ local function BuildTileDetail(frame, fontPath, t)
             })
         end
 
-        -- Row: Icons Per Row (end of CORE). Tile-local key, no base
+        -- Row: Icons Per Row | Spacing. Tile-local key, no base
         -- inheritance: >= 2 wraps the tile's run -- rows for horizontal
         -- growth, COLUMNS for vertical -- stacking away from the anchored
         -- edge (position rule).
@@ -1183,35 +1236,17 @@ local function BuildTileDetail(frame, fontPath, t)
               tooltip = "Wraps into a new row (or column for vertical growth) after this many icons; below 2 keeps one continuous run.",
               getValue = function() return t.iconsPerRow or 0 end,
               setValue = function(v) TSet("iconsPerRow", v) end },
-            { type = "label", text = "" }); sy = sy - hh
-
-        _, hh = W:SectionHeader(frame, "DISPLAY", sy); sy = sy - hh
-
-        -- Row: Border (+ swatch) | Spacing
-        local bRow
-        bRow, hh = W:DualRow(frame, sy,
-            { type = "slider", text = "Border", min = 0, max = 4, step = 1, trackWidth = 120,
-              getValue = function() return TEff("borderSize", "debuffBorderSize", 1) end,
-              setValue = function(v) TSet("borderSize", v) end },
             { type = "slider", pixel = true, text = "Spacing", min = -1, max = 10, step = 1, trackWidth = 120,
               getValue = function() return t.spacing or 1 end,
               setValue = function(v) TSet("spacing", v) end }); sy = sy - hh
-        do
-            local rgn = bRow._leftRegion
-            local swatch = EllesmereUI.BuildColorSwatch(rgn, bRow:GetFrameLevel() + 3,
-                function()
-                    local c = t.borderColor or p.debuffBorderColor or { r = 0, g = 0, b = 0 }
-                    return c.r or 0, c.g or 0, c.b or 0, 1
-                end,
-                function(r, g, b)
-                    t.borderColor = { r = r, g = g, b = b }
-                    DmApply()
-                end, false, 20)
-            swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-            rgn._lastInline = swatch
-        end
 
-        -- Row: Show Duration Text (+ swatch + cog) | Show Stacks (+ swatch + cog)
+        _, hh = W:SectionHeader(frame, "DISPLAY", sy); sy = sy - hh
+
+        sy = ns.RFO_AuraBorderSettings(frame, sy, W,
+            function(k) return TEff("border" .. k, "debuffBorder" .. k) end,
+            function(k, v) t["border" .. k] = v end, DmApply, nil, true)
+
+        -- Row: Show Duration Text (+ cog + swatch) | Show Stacks (+ cog + swatch)
         local dtRow
         dtRow, hh = W:DualRow(frame, sy,
             { type = "toggle", text = "Show Duration Text",
@@ -1222,20 +1257,7 @@ local function BuildTileDetail(frame, fontPath, t)
               setValue = function(v) TSet("showStacks", v and true or false) end }); sy = sy - hh
         do
             local rgn = dtRow._leftRegion
-            local swatch = EllesmereUI.BuildColorSwatch(rgn, dtRow:GetFrameLevel() + 3,
-                function()
-                    local c = t.durTextColor or p.debuffDurTextColor or { r = 1, g = 1, b = 1 }
-                    return c.r or 1, c.g or 1, c.b or 1, 1
-                end,
-                function(r, g, b)
-                    t.durTextColor = { r = r, g = g, b = b }
-                    DmApply()
-                end, false, 20)
-            swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-            rgn._lastInline = swatch
-
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Duration Text",
                 rows = {
                     { type = "slider", label = "Text Size", min = 6, max = 26, step = 1,
@@ -1249,23 +1271,22 @@ local function BuildTileDetail(frame, fontPath, t)
                       set = function(v) TSet("durTextOffsetY", v) end },
                 },
             })
-        end
-        do
-            local rgn = dtRow._rightRegion
+
             local swatch = EllesmereUI.BuildColorSwatch(rgn, dtRow:GetFrameLevel() + 3,
                 function()
-                    local c = t.stacksTextColor or p.debuffStacksTextColor or { r = 1, g = 1, b = 1 }
+                    local c = t.durTextColor or p.debuffDurTextColor or { r = 1, g = 1, b = 1 }
                     return c.r or 1, c.g or 1, c.b or 1, 1
                 end,
                 function(r, g, b)
-                    t.stacksTextColor = { r = r, g = g, b = b }
+                    t.durTextColor = { r = r, g = g, b = b }
                     DmApply()
                 end, false, 20)
             swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
             rgn._lastInline = swatch
-
+        end
+        do
+            local rgn = dtRow._rightRegion
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Stacks Text",
                 rows = {
                     { type = "slider", label = "Text Size", min = 6, max = 26, step = 1,
@@ -1279,6 +1300,18 @@ local function BuildTileDetail(frame, fontPath, t)
                       set = function(v) TSet("stacksOffsetY", v) end },
                 },
             })
+
+            local swatch = EllesmereUI.BuildColorSwatch(rgn, dtRow:GetFrameLevel() + 3,
+                function()
+                    local c = t.stacksTextColor or p.debuffStacksTextColor or { r = 1, g = 1, b = 1 }
+                    return c.r or 1, c.g or 1, c.b or 1, 1
+                end,
+                function(r, g, b)
+                    t.stacksTextColor = { r = r, g = g, b = b }
+                    DmApply()
+                end, false, 20)
+            swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+            rgn._lastInline = swatch
         end
 
         -- Row: Tooltips | Show Duration Swipe (base pane parity)
@@ -1373,7 +1406,6 @@ local function BuildTileDetail(frame, fontPath, t)
         do
             local rgn = coreRow._rightRegion
             EllesmereUI.BuildInlineCog(rgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON,
                 title = "Position Offset",
                 rows = {
                     { type = "slider", label = "Offset X", min = -50, max = 50, step = 1,
@@ -1772,16 +1804,7 @@ function ns.DMP_RefreshPreview()
                 fr._tex:SetTexCoord(z, 1 - z, z, 1 - z)
             end
             fr:SetAlpha(cfg.alpha)
-            if fr._borderFrame and PP then
-                local bsz = sv.debuffBorderSize or 1
-                if bsz > 0 then
-                    local bc = sv.debuffBorderColor or { r = 0, g = 0, b = 0 }
-                    PP.UpdateBorder(fr._borderFrame, bsz, bc.r or 0, bc.g or 0, bc.b or 0, 1)
-                    fr._borderFrame:Show()
-                else
-                    fr._borderFrame:Hide()
-                end
-            end
+            ns.RFC_PreviewAuraBorder(fr, fr._borderFrame, sv, "debuffBorder")
             local cd = fr._cooldown
             if cd then
                 local wantSwipe = sv.debuffShowSwipe ~= false
@@ -2343,6 +2366,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
         local addBg = addBtn:CreateTexture(nil, "BACKGROUND")
         addBg:SetAllPoints()
         addBg:SetColorTexture(accentColor.r, accentColor.g, accentColor.b, 0.8)
+        EllesmereUI.RoundBody(addBtn, addBg)
 
         local addLabel = addBtn:CreateFontString(nil, "OVERLAY")
         -- Drop shadow via the shadow FontObject, primed BEFORE SetFont
@@ -2387,7 +2411,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
                 local bg = popup:CreateTexture(nil, "BACKGROUND")
                 bg:SetAllPoints()
                 bg:SetColorTexture(0.067, 0.067, 0.067, 0.95)
-                EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.2, PP)
+                EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.2, bg)
 
                 -- Pending filter picks for the new tile (wiped on hide)
                 popup._dmFilters = {}
@@ -2493,6 +2517,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
                 local cBg = cBtn:CreateTexture(nil, "BACKGROUND")
                 cBg:SetAllPoints()
                 cBg:SetColorTexture(accentColor.r, accentColor.g, accentColor.b, 0.8)
+                EllesmereUI.RoundBody(cBtn, cBg)
                 local cTx = cBtn:CreateFontString(nil, "OVERLAY")
                 cTx:SetPoint("CENTER")
                 cTx:SetFont(fontPath, 12, "")
@@ -2557,6 +2582,9 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
         tileY = tileY - ADD_BTN_PAD - ADD_BTN_H - ADD_BTN_PAD
     end
 
+    -- Override list (BM parity; builder lives in the Buff Manager file).
+    tileY = ns.BM_BuildOverrideList(sidebarChild, tileY, sidebarW, fontPath, "dm")
+
     sidebarChild:SetHeight(max(10, math.abs(tileY)))
 
     -------------------------------------------------------------------
@@ -2597,7 +2625,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
         eyeTex:SetAllPoints()
         eyeTex:SetTexture(ns._dmAllVisible and EYE_INVIS or EYE_VIS)
-        eyeBtn:SetAlpha(0.4)
+        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
 
         eyeBtn:SetScript("OnClick", function()
             ns._dmAllVisible = not ns._dmAllVisible
@@ -2605,11 +2633,11 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
             if ns.DMP_RefreshPreview then ns.DMP_RefreshPreview() end
         end)
         eyeBtn:SetScript("OnEnter", function(self)
-            self:SetAlpha(0.7)
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
             EllesmereUI.ShowWidgetTooltip(self, "Toggle All Indicators")
         end)
         eyeBtn:SetScript("OnLeave", function(self)
-            self:SetAlpha(0.4)
+            EllesmereUI.SetGlyphAlpha(self, 0.4)
             EllesmereUI.HideWidgetTooltip()
         end)
     end
@@ -2922,7 +2950,7 @@ function ns.BMP_ShowFilterEditor(show, hide)
     popup:EnableMouse(true)
     local popBg = EllesmereUI.SolidTex(popup, "BACKGROUND", 0.077, 0.068, 0.058, 1)
     popBg:SetAllPoints()
-    EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15)
+    EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
     local ppScale = EllesmereUI.GetPopupScale() or 1
     popup:SetScale(ppScale)
 
@@ -3022,7 +3050,8 @@ function ns.BMP_ShowFilterEditor(show, hide)
     side:SetFrameLevel(popup:GetFrameLevel() + 1)
     local sideBg = EllesmereUI.SolidTex(side, "BACKGROUND", 0, 0, 0, 0.35)
     sideBg:SetAllPoints()
-    EllesmereUI.MakeBorder(side, 1, 1, 1, 0.10)
+    -- Flush with the popup's bottom-right corner: same shape, rows clipped to it.
+    EllesmereUI.MakeRoundedBorder(side, 1, 1, 1, 0.10, sideBg, nil, true)
 
     -- Sidebar content scrolls when it outgrows the popup (standard smooth
     -- scroll + thin custom bar; bar shows only on overflow).
@@ -3296,7 +3325,9 @@ function ns.BMP_ShowFilterEditor(show, hide)
             cancelText = EllesmereUI.L("Cancel"),
             onConfirm = function(text)
                 local id = tonumber(text or "")
-                if id and ns.BM2_AddCustomSpell(sel.id, id) then
+                -- Typed: the ID tracks that aura alone (a Search Spells
+                -- pick above keeps the buff's other versions).
+                if id and ns.BM2_AddCustomSpell(sel.id, id, true) then
                     Apply()
                     Rebuild()
                 end
@@ -3361,11 +3392,12 @@ function ns.BMP_ShowFilterEditor(show, hide)
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
         boxBg:SetAllPoints()
         boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
-        local boxBrd = EllesmereUI.MakeBorder(box, 0.4, 0.4, 0.4, 0.6)
+        local boxBrd = EllesmereUI.MakeRoundedBorder(box, 0.4, 0.4, 0.4, 0.6, boxBg)
         local chk = box:CreateTexture(nil, "ARTWORK")
         chk:SetPoint("TOPLEFT", box, "TOPLEFT", 2, -2)
         chk:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -2, 2)
         chk:SetColorTexture(eg.r, eg.g, eg.b, 1)
+        EllesmereUI.RoundBody(box, chk, 2)
         local on = sel.spells[id] and true or false
         local ico = srow:CreateTexture(nil, "ARTWORK")
         ico:SetSize(22, 22)
@@ -3561,14 +3593,15 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
                 EllesmereUI:RefreshPage()
             end,
             nil, 12)
-        PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+        EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
         rgn._control = cbDD
         rgn._lastInline = nil
         EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
     end
 
     -- RIGHT: Extra Spells searchable checkbox dropdown; "Custom Spell ID"
-    -- rides the menu as a pinned top action above the search bar.
+    -- rides the menu as a pinned top action above the search bar
+    -- (ns.BM2_SpellIdAction).
     do
         local rgn = row._rightRegion
         if rgn._control then rgn._control:Hide() end
@@ -3578,23 +3611,25 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
             for i = 1, #sp do if sp[i] == id then return true end end
             return false
         end
-        local function ShowCustomIdPopup()
-            EllesmereUI:ShowInputPopup({
-                title = EllesmereUI.L("Add Spell ID"),
-                message = EllesmereUI.L("Enter the spell ID to track on this indicator."),
-                confirmText = EllesmereUI.L("Add"),
-                cancelText = EllesmereUI.L("Cancel"),
-                onConfirm = function(text)
-                    local id = tonumber(text or "")
-                    if id and id > 0 and not HasDirect(id) then
-                        ind.spells = ind.spells or {}
-                        ind.spells[#ind.spells + 1] = id
-                        if ns.ReloadFrames then ns.ReloadFrames() end
-                        EllesmereUI:RefreshPage(true)
-                    end
-                end,
-            })
-        end
+        -- A typed ID tracks that aura alone, not the rest of its curated
+        -- family; typing one already picked from Presets narrows it the same
+        -- way. (WoW Forever writes no mark: a typed rank stands for every
+        -- rank, and one that came with a profile stays as it is.)
+        local idAction = ns.BM2_SpellIdAction(function(id)
+            local ex = ind.exactSpells
+            local was = ex and ex[id]
+            local added = not HasDirect(id)
+            if added then
+                ind.spells = ind.spells or {}
+                ind.spells[#ind.spells + 1] = id
+            end
+            ns.BM2_SetSpellExact(ind, id, true)
+            ex = ind.exactSpells
+            if added or (ex and ex[id]) ~= was then
+                if ns.ReloadFrames then ns.ReloadFrames() end
+                EllesmereUI:RefreshPage(true)
+            end
+        end)
         -- Universe = curated preset primaries (name-sorted) plus any custom
         -- ids already on the indicator that fall outside it.
         -- Two groups: "Selected" = everything currently assigned (universe
@@ -3647,9 +3682,7 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
             end
             table.sort(selected, ByLabel)
             table.sort(rest, ByLabel)
-            local items = {
-                { isTopAction = true, label = "Custom Spell ID", onClick = ShowCustomIdPopup },
-            }
+            local items = { idAction }
             if #selected > 0 then
                 items[#items + 1] = { isHeader = true, label = "Selected" }
                 for i = 1, #selected do items[#items + 1] = selected[i] end
@@ -3670,11 +3703,14 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
                     for i = #ind.spells, 1, -1 do
                         if ind.spells[i] == k then table.remove(ind.spells, i) end
                     end
+                    -- The typed mark leaves with the entry: a later pick from
+                    -- Presets keeps the curated family.
+                    ns.BM2_SetSpellExact(ind, k, false)
                 end
                 if ns.ReloadFrames then ns.ReloadFrames() end
             end,
             nil, 10, true)
-        PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+        EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
         rgn._control = cbDD
         rgn._lastInline = nil
         EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
@@ -3702,7 +3738,13 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
         setValue = function(v)
             if v == "raid" or v == "party" then ind.showIn = v else ind.showIn = nil end
             if ns.BM2_Invalidate then ns.BM2_Invalidate() end
-            if ns.ReloadFrames then ns.ReloadFrames() end
+            -- Frames and preview: the preview shows the indicator only on the
+            -- side of its Raid / Party switch that renders it.
+            if ns._bmReloadAndUpdate then
+                ns._bmReloadAndUpdate()
+            elseif ns.ReloadFrames then
+                ns.ReloadFrames()
+            end
         end }
 
     -- CUSTOM ORDER (icon/square indicators, beside Show In): opt-in fixed

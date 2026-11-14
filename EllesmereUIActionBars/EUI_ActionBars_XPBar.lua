@@ -578,7 +578,7 @@ function ns.AB_DataBarDividers(holder, w, h, orient, s)
         end
     end
     -- An XP bar frame art style: the ticks sit inside its rails.
-    local fit = holder == dataBarFrames.XPBar and ns.XPArtFit(s)
+    local fit = holder._isXP and ns.XPArtFit(s)
     if fit then
         e = e + fit.tickInset * PP.mult
     end
@@ -755,9 +755,9 @@ function EllesmereUI._GetXPBarStyle()
 end
 
 -- A Blizz Default <-> EllesmereUI swap flips that switch live through
--- ns.SetUseBlizzardDataBars; the frame art applies live. Returns true while
--- our bars are wanted but were never built (a reload builds them), so the
--- caller can offer the reload.
+-- ns.SetUseBlizzardDataBars; the frame art applies live. Returns true when the
+-- swap needs a reload (our bars wanted but never built, or Blizzard's bars
+-- back after their events were dropped), so the caller can offer it.
 function EllesmereUI._SetXPBarStyle(style)
     local p = EAB.db and EAB.db.profile
     if not p then return false end
@@ -823,7 +823,7 @@ ns.AbbreviateLargeNumbers = (EllesmereUI.IS_FOREVER and EllesmereUI.ForeverAbbre
 --                      next load
 --    the minute clock  a ticker while the bar shows, for the time items
 --  The session clock, the rate and the saved level time live per character in
---  EllesmereUIDB.xpBarChars[guid] (built the first time an item needs it;
+--  the character roster, EllesmereUI.CharData("xpBar") (built the first time an item needs it;
 --  never exported). A text is set only when its string changed.
 -------------------------------------------------------------------------------
 -- The positions: the first text's point placed on the bar's point (inside:
@@ -935,7 +935,6 @@ ns.XPTextRested = XPTextRested
 -- Parse scratch for the layout pass.
 local xpScratch = {}
 
-local xpPlayerGUID   -- the store key, read once
 local xpLoginAt      -- GetTime() at this session's login (nil after a /reload)
 -- Time this level, once known: the level and the seconds played at it as of
 -- xpLvlStamp (a GetTime()). Kept for the rest of the UI session (GetTime()
@@ -965,40 +964,15 @@ local function FmtPct(v)
 end
 
 -- A duration: 3d 4h, 1h 24m, 22m.
-local function FmtDur(sec)
-    local m = floor((sec > 0 and sec or 0) / 60)
-    local h = floor(m / 60)
-    if h >= 24 then
-        local d = floor(h / 24)
-        return format(EllesmereUI.L("%dd %dh"), d, h - d * 24)
-    elseif h > 0 then
-        return format(EllesmereUI.L("%dh %dm"), h, m - h * 60)
-    end
-    return format(EllesmereUI.L("%dm"), m)
-end
+local FmtDur = EllesmereUI.FormatDuration
 
--- This character's entry in EllesmereUIDB.xpBarChars (create: build it, and
--- the store, when missing). nil while the player's GUID cannot be read.
+-- This character's XP bar entry in the roster (create: build it when
+-- missing). nil while the player's GUID cannot be read.
 local function XPCharEntry(create)
-    local db = EllesmereUIDB
-    if type(db) ~= "table" then return nil end
-    if not xpPlayerGUID then
-        local g = UnitGUID("player")
-        if not g or (issecretvalue and issecretvalue(g)) then return nil end
-        xpPlayerGUID = g
-    end
-    local all = db.xpBarChars
-    if type(all) ~= "table" then
-        if not create then return nil end
-        all = {}
-        db.xpBarChars = all
-    end
-    local e = all[xpPlayerGUID]
-    if type(e) ~= "table" then
-        if not create then return nil end
-        e = { sStart = xpLoginAt or GetTime() }
-        all[xpPlayerGUID] = e
-    end
+    local e = EllesmereUI.CharData("xpBar")
+    if e or not create then return e end
+    e = EllesmereUI.CharData("xpBar", true)
+    if e then e.sStart = xpLoginAt or GetTime() end
     return e
 end
 
@@ -1315,8 +1289,18 @@ end
 local function XPBarCanShow(s)
     local p = EAB.db and EAB.db.profile
     if not (p and s) or p.useBlizzardDataBars then return false end
-    if s.enabled == false or s.alwaysHidden or s.barVisibility == "never" then return false end
+    if s.enabled == false or EAB.VisibilityCompat.IsNever(s) then return false end
     return not ns.XPBarAtMaxLevel() and not (IsXPUserDisabled and IsXPUserDisabled())
+end
+
+-- The time played this level, as of now: stored, then shown.
+local function XPSetLevelTime(levelTime)
+    xpLvl, xpLvlBase, xpLvlStamp = UnitLevel("player"), levelTime, GetTime()
+    local frame = dataBarFrames.XPBar
+    if frame then
+        XPSyncLevelEvents(frame)
+        if frame:IsVisible() then XPRepaint(frame, "nc") end
+    end
 end
 
 -- /played, at most once per session: while Time This Level is in use and
@@ -1330,7 +1314,8 @@ local function XPRequestPlayed(frame)
     if xpLvlBase and xpLvl == UnitLevel("player") then return end
     if ns.XPBarAtMaxLevel() or (IsXPUserDisabled and IsXPUserDisabled()) then return end
     xpLvlAsked = true
-    if RequestTimePlayed then RequestTimePlayed() end
+    local _, levelTime = EllesmereUI.RequestTimePlayed()
+    if levelTime then XPSetLevelTime(levelTime) end
 end
 
 -- PLAYER_LEVEL_UP (the bar's own event frame): the new level starts at no
@@ -1483,6 +1468,9 @@ function ns.XPBarTextSlots(frame, s)
         end
     end
     frame._xpAny = (recs ~= nil and #recs > 0)
+    -- The options preview stops at its layout: what follows arms the live
+    -- bar's trackers, which are one per module (the clock, quest events).
+    if frame._preview then return end
 
     -- Wanted (the contents in use) vs armed (wanted and the bar can show):
     -- nothing is tracked, stored or requested for a bar that never shows.
@@ -1573,12 +1561,7 @@ xpTextEv:SetScript("OnEvent", function(self, event, arg1, arg2)
     if event == "TIME_PLAYED_MSG" then
         -- arg2: the time played this level, as of now.
         if type(arg2) ~= "number" then return end
-        xpLvl, xpLvlBase, xpLvlStamp = UnitLevel("player"), arg2, GetTime()
-        local frame = dataBarFrames.XPBar
-        if frame then
-            XPSyncLevelEvents(frame)
-            if frame:IsVisible() then XPRepaint(frame, "nc") end
-        end
+        XPSetLevelTime(arg2)
     elseif event == "PLAYER_LOGOUT" then
         -- Also fires on /reload, before SavedVariables are written.
         if xpLvlBase then
@@ -1595,6 +1578,48 @@ xpTextEv:SetScript("OnEvent", function(self, event, arg1, arg2)
 end)
 xpTextEv:RegisterEvent("PLAYER_ENTERING_WORLD")
 
+-- The fill at these values: the bar's value and Smart Ticks, a gradient (Fill
+-- Style) or the flat colour, which overwrites a gradient painted before it,
+-- the rested overlay and the Quest XP Overlay. UpdateXPBar paints the live bar
+-- with the player's XP; the options preview paints its own frame with sample
+-- values. On ns.
+function ns.PaintXPFill(frame, s, cur, mx, rested)
+    local bar = frame._bar
+    bar:SetMinMaxValues(0, mx)
+    bar:SetValue(cur)
+    ns.ApplyDataBarSmartTicks(frame)
+
+    local gradDir, gsr, gsg, gsb, gsa, ger, geg, geb, gea = ns.XPBarGradient(s)
+    local flat = not gradDir
+    if gradDir then
+        XPPaintGradient(bar, gradDir, gsr, gsg, gsb, gsa, ger, geg, geb, gea)
+    elseif bar._xpGrad then
+        bar._xpGrad.on = nil
+    end
+
+    local restedBar = frame._restedBar
+    if rested > 0 then
+        if flat then
+            bar:SetStatusBarColor(ns.ResolveDataBarColor(s, XP_BAR_COLORS.xpRested.r, XP_BAR_COLORS.xpRested.g, XP_BAR_COLORS.xpRested.b))
+        end
+        restedBar:SetMinMaxValues(0, mx)
+        restedBar:SetValue(min(cur + rested, mx))
+        -- Rested Color (the XP Bar tab), else the dark blue at half opacity.
+        local rc = s.restedColor or XP_BAR_COLORS.xpRestedBG
+        restedBar:SetStatusBarColor(rc.r, rc.g, rc.b, rc.a or 0.5)
+        restedBar:Show()
+    else
+        if flat then
+            bar:SetStatusBarColor(ns.ResolveDataBarColor(s, XP_BAR_COLORS.xpNoRest.r, XP_BAR_COLORS.xpNoRest.g, XP_BAR_COLORS.xpNoRest.b))
+        end
+        restedBar:Hide()
+    end
+    XPPaintQuestOverlay(frame, cur, mx)
+end
+
+-- The texts, for the options preview (filter nil: every one).
+ns.PaintXPText = XPPaintText
+
 -- levelUp: called from PLAYER_LEVEL_UP, whose values can be half updated.
 local function UpdateXPBar(levelUp)
     -- XP per Hour counts the XP gained while the bar's visibility hides it
@@ -1609,8 +1634,6 @@ local function UpdateXPBar(levelUp)
 
     local frame, s = EAB_VTABLE.ExtraBars.BeginManagedDataBarUpdate("XPBar")
     if not frame then return end
-
-    local bar = frame._bar
 
     -- Hide at max level (or XP disabled)
     if ns.XPBarAtMaxLevel() or (IsXPUserDisabled and IsXPUserDisabled()) then
@@ -1634,39 +1657,7 @@ local function UpdateXPBar(levelUp)
         frame._lastXP, frame._lastXPLevel = currentXP, level
     end
 
-    bar:SetMinMaxValues(0, maxXP)
-    bar:SetValue(currentXP)
-    ns.ApplyDataBarSmartTicks(frame)
-
-    -- The fill: a gradient (Fill Style) or the flat colour, which overwrites a
-    -- gradient painted before it.
-    local gradDir, gsr, gsg, gsb, gsa, ger, geg, geb, gea = ns.XPBarGradient(s)
-    local flat = not gradDir
-    if gradDir then
-        XPPaintGradient(bar, gradDir, gsr, gsg, gsb, gsa, ger, geg, geb, gea)
-    elseif bar._xpGrad then
-        bar._xpGrad.on = nil
-    end
-
-    -- Rested XP overlay
-    local restedBar = frame._restedBar
-    if restedXP > 0 then
-        if flat then
-            bar:SetStatusBarColor(ns.ResolveDataBarColor(s, XP_BAR_COLORS.xpRested.r, XP_BAR_COLORS.xpRested.g, XP_BAR_COLORS.xpRested.b))
-        end
-        restedBar:SetMinMaxValues(0, maxXP)
-        restedBar:SetValue(min(currentXP + restedXP, maxXP))
-        -- Rested Color (the XP Bar tab), else the dark blue at half opacity.
-        local rc = s.restedColor or XP_BAR_COLORS.xpRestedBG
-        restedBar:SetStatusBarColor(rc.r, rc.g, rc.b, rc.a or 0.5)
-        restedBar:Show()
-    else
-        if flat then
-            bar:SetStatusBarColor(ns.ResolveDataBarColor(s, XP_BAR_COLORS.xpNoRest.r, XP_BAR_COLORS.xpNoRest.g, XP_BAR_COLORS.xpNoRest.b))
-        end
-        restedBar:Hide()
-    end
-    XPPaintQuestOverlay(frame, currentXP, maxXP)
+    ns.PaintXPFill(frame, s, currentXP, maxXP, restedXP)
 
     -- The texts (Center's "classic" is the bar's original text), only when an
     -- input changed: the XP values, a layout pass or a rate gain
@@ -1681,14 +1672,12 @@ local function UpdateXPBar(levelUp)
     EAB_VTABLE.ExtraBars.FinishManagedDataBarUpdate("XPBar", frame, s)
 end
 
--- Called by CreateManagedDataBarFrames (EUI_ActionBars_DataBars.lua) when the
--- data bars are built at enable.
-function ns.CreateXPBar()
-    local holder = CreateDataBarFrame("XPBar", UpdateXPBar)
-    holder:SetPoint("TOP", UIParent, "TOP", 0, -100)
-
-    -- Rested XP overlay bar (behind main bar)
-    local restedBar = CreateFrame("StatusBar", "EllesmereEAB_XPBar_Rested", holder)
+-- The XP bar's frame: the data bar frame plus its rested overlay bar (behind
+-- the main bar). parent: the options preview's frame (CreateDataBarFrame),
+-- nil the live bar. On ns.
+function ns.CreateXPBarFrame(updateFunc, parent)
+    local holder = CreateDataBarFrame("XPBar", updateFunc, parent)
+    local restedBar = CreateFrame("StatusBar", not parent and "EllesmereEAB_XPBar_Rested" or nil, holder)
     restedBar:SetStatusBarTexture("Interface\\BUTTONS\\WHITE8X8")
     local PP = EllesmereUI and EllesmereUI.PP
     if PP then
@@ -1702,6 +1691,14 @@ function ns.CreateXPBar()
     restedBar:GetStatusBarTexture():SetDrawLayer("ARTWORK", 1)
     restedBar:Hide()
     holder._restedBar = restedBar
+    return holder
+end
+
+-- Called by CreateManagedDataBarFrames (EUI_ActionBars_DataBars.lua) when the
+-- data bars are built at enable.
+function ns.CreateXPBar()
+    local holder = ns.CreateXPBarFrame(UpdateXPBar)
+    holder:SetPoint("TOP", UIParent, "TOP", 0, -100)
 
     -- Tooltip. Click Through suppresses it: on a mouseover bar the holder keeps mouse
     -- motion only so the hover fade can see the cursor.

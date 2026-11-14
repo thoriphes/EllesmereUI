@@ -8,12 +8,7 @@ local skinned = false
 local issecretvalue = issecretvalue or function() return false end
 
 -- External weak-keyed lookup table for frame state (prevents tainting Blizzard frames)
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -- The Character Sheet card's style: "blizzard" for Blizz Default, else "eui"
 -- (EllesmereUI and Modern skin the sheet alike). Account-wide, swapped with
@@ -611,6 +606,13 @@ local function PreSkinCharacterSheet()
         mouseOverlay:SetScript("OnHide", function(self)
             dragMode = nil
             self:SetScript("OnUpdate", nil)
+        end)
+
+        -- SetUnit loads asynchronously and the widget drops its camera while hidden; recentre once the model is in.
+        myModel:SetScript("OnModelLoaded", function(self)
+            self:RefreshCamera()
+            self:SetPortraitZoom(zoomLevel)
+            self:SetPosition(0, 0, 0)
         end)
 
         mouseOverlay:SetScript("OnMouseWheel", function(_, delta)
@@ -1942,8 +1944,9 @@ local function SkinCharacterSheet()
         return 0
     end
 
-    -- Crest maximum values (per season) -- season 2 Mistcrests. Fallback only:
-    -- GetCrestMaxValue prefers the API's live seasonal max.
+    -- SEASON UPDATE: the crest currency ids and their caps (season 2 Mistcrests),
+    -- with the Crests stat rows below. Fallback only: GetCrestMaxValue prefers
+    -- the API's live seasonal max.
     local crestMaxValues = {
         [3446] = 400,  -- Myth
         [3445] = 400,  -- Hero
@@ -2113,6 +2116,7 @@ local function SkinCharacterSheet()
                 title = "Crests",
                 colorKey = "Crests",
                 color = GetCategoryColor("Crests"),
+                -- SEASON UPDATE: the season's crest currency ids, highest tier first.
                 stats = {
                     { name = "Myth", showCrestKey = "Myth", func = function() return GetCrestValue(3446) end, format = "%d", currencyID = 3446 },
                     { name = "Hero", showCrestKey = "Hero", func = function() return GetCrestValue(3445) end, format = "%d", currencyID = 3445 },

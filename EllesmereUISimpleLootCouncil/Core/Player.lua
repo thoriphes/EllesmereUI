@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
+
 
 
 
@@ -9,8 +10,6 @@ local T = addon.Locale.Text
 
 local Player = {}
 addon.Player = Player
-
-local issecretvalue = issecretvalue
 
 
 
@@ -35,18 +34,16 @@ local SEED_RETRY = 30
 
 
 
-local function IsSecret(...)
-    if not issecretvalue then return false end
-    for i = 1, select("#", ...) do
-        if issecretvalue((select(i, ...))) then return true end
-    end
-    return false
+local IsSecret = addon.IsSecret
+
+
+
+if addon.EDITION == "eui" and EllesmereUI then
+    Player.IS_FOREVER = EllesmereUI.IS_FOREVER == true
+else
+    local interface = GetBuildInfo and select(4, GetBuildInfo())
+    Player.IS_FOREVER = type(interface) == "number" and interface < 20000
 end
-
-
-
-local interface = GetBuildInfo and select(4, GetBuildInfo())
-Player.IS_FOREVER = type(interface) == "number" and interface < 20000
 addon.IsForever = Player.IS_FOREVER
 
 
@@ -60,6 +57,71 @@ local function UnitNameParts(name, second)
     return name, second
 end
 Player.UnitNameParts = UnitNameParts
+
+
+
+local UNIT_BASES = {
+    player = true, target = true, focus = true, pet = true, mouseover = true, vehicle = true,
+    npc = true, none = true, questnpc = true, softenemy = true, softfriend = true,
+    softinteract = true, anyenemy = true, anyfriend = true, anyinteract = true,
+}
+local tokenMemo = { n = 0, of = {} }
+
+local function IsUnitToken(short)
+    if type(short) ~= "string" or short == "" or IsSecret(short) then return false end
+    local known = tokenMemo.of[short]
+    if known ~= nil then return known end
+    local token = false
+    if not short:find("[^A-Za-z0-9]") then
+        local base = short:lower()
+        if base:find("[0-9]") then
+            token = true
+        else
+            while base ~= "" do
+                if UNIT_BASES[base] then token = true break end
+                local cut = base:match("^(.+)target$") or base:match("^(.+)pet$")
+                if not cut then break end
+                base = cut
+            end
+        end
+    end
+    if tokenMemo.n >= 512 then tokenMemo.of, tokenMemo.n = {}, 0 end
+    tokenMemo.of[short] = token
+    tokenMemo.n = tokenMemo.n + 1
+    return token
+end
+Player.IsUnitToken = IsUnitToken
+
+local function GroupUnitNamed(short)
+    if type(short) ~= "string" or short == "" or IsSecret(short) then return nil end
+    if IsInRaid() then
+        for i = 1, GetNumGroupMembers() do
+            local name = GetRaidRosterInfo(i)
+            if name and not IsSecret(name) and name == short then return "raid" .. i end
+        end
+        return nil
+    end
+    local count = IsInGroup() and GetNumGroupMembers() or 1
+    for i = 0, count - 1 do
+        local unit = i == 0 and "player" or ("party" .. i)
+        local name, realm = UnitName(unit)
+        if name and not IsSecret(name, realm) and UnitIsPlayer(unit) then
+            local joined = Player.IS_FOREVER and (UnitNameParts(name, realm)) or nil
+            if name == short and (realm == nil or realm == "") or joined == short then
+                return unit
+            end
+        end
+    end
+    return nil
+end
+Player.GroupUnitNamed = GroupUnitNamed
+
+local function NamedUnit(short)
+    if type(short) ~= "string" or short == "" then return nil end
+    if IsUnitToken(short) then return GroupUnitNamed(short) end
+    if UnitExists(short) then return short end
+    return nil
+end
 
 
 
@@ -181,14 +243,20 @@ end
 
 
 
+local issued = setmetatable({}, { __mode = "k" })
+
+
+
 local function NilPlayer(hint)
-    return {
+    local record = {
         guid = nil,
         name = hint or "?",
         fullName = hint or "?",
         unresolved = true,
         nobody = hint == nil or nil,
     }
+    issued[record] = true
+    return record
 end
 
 local function BuildRecord(guid)
@@ -207,7 +275,7 @@ local function BuildRecord(guid)
         return nil
     end
 
-    return {
+    local record = {
         guid = guid,
         name = name,
         realm = (realm ~= "" and realm) or ownRealm,
@@ -217,6 +285,8 @@ local function BuildRecord(guid)
         cachedAt = time(),
         shape = RECORD_SHAPE,
     }
+    issued[record] = true
+    return record
 end
 
 
@@ -236,8 +306,11 @@ function Player:Get(input)
     end
 
 
+
     if type(input) == "table" then
-        if input.guid or input.unresolved then return input end
+        if issued[input] or (type(input.guid) == "string" and cache[input.guid] == input) then
+            return input
+        end
         return NilPlayer()
     end
 
@@ -280,8 +353,9 @@ function Player:Get(input)
 
 
     local short = Player.IS_FOREVER and self:WhisperTarget(input) or Ambiguate(input, "none")
-    if UnitExists(short) then
-        local guid = UnitGUID(short)
+    local unit = NamedUnit(short)
+    if unit then
+        local guid = UnitGUID(unit)
         if guid and not IsSecret(guid) then
             return self:Get(guid)
         end
@@ -301,6 +375,27 @@ function Player:Get(input)
         addon.Log:D("Player", "could not resolve", input)
     end
     return NilPlayer(input)
+end
+
+
+
+function Player:Peek(input)
+    if type(input) ~= "string" or input == "" or IsSecret(input) then return nil end
+    if LooksLikeGUID(input) then return cache[NormaliseGUID(input)] end
+
+    local short = Player.IS_FOREVER and self:WhisperTarget(input) or Ambiguate(input, "none")
+    local unit = NamedUnit(short)
+    if unit then
+        local guid = UnitGUID(unit)
+        if guid and not IsSecret(guid) then
+            local record = self:Get(guid)
+            if record.guid then return record end
+        end
+    end
+
+    local wantedKey = NameKey(input)
+    local guid = wantedKey and byName[wantedKey] or byBare[addon.Locale.Fold(input)]
+    return guid and cache[guid] or nil
 end
 
 
@@ -325,6 +420,7 @@ function Player:Remember(guid, fullName, classFile, className)
         shape = RECORD_SHAPE,
         seeded = time(),
     }
+    issued[record] = true
     cache[record.guid] = record
     IndexRecord(record)
     return record
@@ -341,6 +437,12 @@ end
 function Player:WhisperTarget(name)
     if not Player.IS_FOREVER or type(name) ~= "string" or IsSecret(name) then return name end
     return name:match("^%s*([^%-]-)%s*%-") or name
+end
+
+
+function Player:DisplayName(name)
+    if not Player.IS_FOREVER or self:IsGUID(name) then return name end
+    return self:WhisperTarget(name)
 end
 
 
@@ -492,6 +594,69 @@ end
 
 function Player:IsSelf(input)
     return self:IsSame(input, UnitGUID("player"))
+end
+
+
+local function SelfStamp() return UnitGUID and UnitGUID("player") or nil end
+Player.SelfStamp = SelfStamp
+
+
+
+function Player:OwnsStamp(stamp, legacy)
+    local me = SelfStamp()
+    if not me then return true end
+    if stamp == nil then return legacy and true or false end
+    return stamp == me
+end
+
+
+
+local function SlotStore(db, key, me)
+    local store = db[key]
+    if type(store) ~= "table" then return nil end
+    for k in pairs(store) do
+        if type(k) ~= "string" or not k:find("^Player%-") then
+            store = { [me] = store }
+            db[key] = store
+            break
+        end
+    end
+    return store
+end
+
+function Player:OwnSlot(db, key)
+    if type(db) ~= "table" then return nil end
+    local me = SelfStamp()
+    if not me then return db[key] end
+    local store = SlotStore(db, key, me)
+    return store and store[me]
+end
+
+
+function Player:SetOwnSlot(db, key, value)
+    if type(db) ~= "table" then return end
+    local me = SelfStamp()
+    if not me then
+        db[key] = value
+        return
+    end
+    local store = SlotStore(db, key, me)
+    if not store then
+        store = {}
+        db[key] = store
+    end
+    store[me] = (type(value) ~= "table" or next(value) ~= nil) and value or nil
+end
+
+
+function Player:PruneSlots(db, key, stale)
+    local me = SelfStamp()
+    if type(db) ~= "table" or not me then return end
+    local store = SlotStore(db, key, me)
+    if not store then return end
+    for guid, value in pairs(store) do
+        if guid ~= me and stale(value) then store[guid] = nil end
+    end
 end
 
 

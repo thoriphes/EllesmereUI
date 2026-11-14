@@ -6,7 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  animations, combat fade, low-resource alerts, class-colored bars
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.SetFrameScale and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Call Totem Bar scales its Edit Mode system through the parent's SetFrameScale)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.SetFrameScale and EllesmereUI._Pool and EllesmereUI.AbsorbGlow and EllesmereUI.SetCraftBatch and EllesmereUI.FitCastName and EllesmereUI.CleanCastName and EllesmereUI.AbbreviateValue and EllesmereUI.PadModeOn and EllesmereUI.TalentConditionsHold and EllesmereUI.CastChromeGeom) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Call Totem Bar scales its Edit Mode system through the parent's SetFrameScale, the health bar's absorb glow line is the parent's AbsorbGlow, every player cast start runs the parent's SetCraftBatch, Show Full Spell Name is the parent's FitCastName, the cast name drops the quest-object " - No Text" through its CleanCastName, and the health text formats through the parent's AbbreviateValue, and the gamepad cast bar hide follows its PadModeOn, and the WoW Forever swing timer's talent conditions read its TalentConditionsHold, and the stock cast bar art seats from its CastChromeGeom)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 local ERB = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 ns.ERB = ERB
@@ -49,6 +49,24 @@ local function SetRBFont(fs, font, size) EllesmereUI.ApplyModuleFont(fs, font, s
 -- Shared with EUI_ResourceBars_SwingTimer.lua (same font lane as the cast bar text).
 ns.GetRBFont = GetRBFont
 ns.SetRBFont = SetRBFont
+
+-- "Hide at Zero" test for the class resource text: the leading number, so "0",
+-- "0%", "0.0" and "0/5" are zero and "0.5" or "10/5" are not. Blank and secret
+-- text pass through.
+function ns.ERB_TextIsZero(text)
+    if text == nil or (issecretvalue and issecretvalue(text)) then return false end
+    if type(text) == "number" then return text == 0 end
+    if type(text) ~= "string" or text == "" then return false end
+    return tonumber(text:match("^%s*%-?%d+%.?%d*")) == 0
+end
+
+-- A secret count (Insanity and other power bars read secret) goes through
+-- TruncateWhenZero, which blanks it at zero engine-side. Returns ok, display;
+-- not ok when the call fails, and the caller shows the raw value.
+function ns.ERB_TruncateSecretZero(v)
+    if not (C_StringUtil and C_StringUtil.TruncateWhenZero) then return false end
+    return pcall(C_StringUtil.TruncateWhenZero, v)
+end
 
 -- Cast-bar text side anchoring (mirrors nameplate/unit-frame cast text). Spell text
 -- and duration share one line; duration reserves a slot on its side and pushes spell
@@ -169,7 +187,9 @@ local CHANNEL_TICK_DATA = {
 -- ticks every second, none at the cast (ticks = 3). Penance channels for 2s and
 -- fires a bolt at the cast and every second after (ticks = 2), as on retail;
 -- the cast bar shows the damage or heal channel the cast triggers, so each rank
--- lists both, plus its channeled cast spell.
+-- lists both, plus its channeled cast spell. The Warlock's channels tick once
+-- per interval, none at the cast, so ticks = length / interval (the client's
+-- spell data), for every rank a Warlock learns.
 if EllesmereUI.IS_FOREVER then
     for _, id in ipairs({ 15407, 17311, 17312, 17313, 17314, 18807 }) do
         CHANNEL_TICK_DATA[id] = { ticks = 3 }                      -- Mind Flay
@@ -181,6 +201,19 @@ if EllesmereUI.IS_FOREVER then
         1316994, 1316992, 1316995,                                 -- rank 4
     }) do
         CHANNEL_TICK_DATA[id] = { ticks = 2 }                      -- Penance
+    end
+    -- Warlock: the rank IDs by tick count.
+    local WARLOCK_TICKS = {
+        [5]  = { 689, 699, 709, 7651, 11699, 11700,                -- Drain Life (5s / 1s)
+                 1120, 8288, 8289, 11675,                          -- Drain Soul (15s / 3s)
+                 5138, 6226, 11703, 11704 },                       -- Drain Mana (5s / 1s)
+        [15] = { 403677, 403685, 403686, 403687, 403688, 403689,   -- Drain Life, 15s version
+                 1949, 11683, 11684 },                             -- Hellfire (15s / 1s)
+        [4]  = { 5740, 6219, 11677, 11678 },                       -- Rain of Fire (8s / 2s)
+        [6]  = { 1316697 },                                        -- Wrack (6s / 1s)
+    }
+    for n, ids in pairs(WARLOCK_TICKS) do
+        for _, id in ipairs(ids) do CHANNEL_TICK_DATA[id] = { ticks = n } end
     end
 end
 
@@ -362,9 +395,11 @@ local function GetPrimaryPowerType()
     if classFile == "DRUID" then
         local pp = ERB.db and ERB.db.profile and ERB.db.profile.primary
         local ov = pp and pp.powerTypeOverride
-        if ovSpec and ov and ov[ovSpec] then
+        local o = ovSpec and ov and ov[ovSpec]
+        if o == "mana" then return PT.MANA end            -- Balance "Mana": every form
+        if o then
             if spec == 1 then return PT.LUNAR_POWER end  -- Balance alt: Astral Power
-            return PT.MANA                                -- Feral/Guardian alt: Mana
+            return PT.MANA                                -- Feral/Guardian/Restoration alt: Mana
         end
         if form == 1 then return PT.ENERGY end
         if form == 5 then return PT.RAGE end
@@ -644,7 +679,7 @@ end
 -- (a file that holds the only copy of a name assigns its local directly).
 -- broken: true while an EUI_ResourceBars_*.lua file loads; a file that
 -- fails leaves it set, and the files behind it return at their first lines.
-ns._internals = {
+EllesmereUI.NewInternals(ns, "_internals", {
     CHANNEL_TICK_DATA = CHANNEL_TICK_DATA, CLASS_COLORS = CLASS_COLORS, DARK_BG_A = DARK_BG_A,
     DARK_FILL_A = DARK_FILL_A, EBON_MIGHT_DURATION = EBON_MIGHT_DURATION,
     EBON_MIGHT_SPELL_ID = EBON_MIGHT_SPELL_ID, ERB = ERB, FRENZIED_REGEN = FRENZIED_REGEN,
@@ -662,10 +697,7 @@ ns._internals = {
     cachedPrimarySetters = {}, cachedSecondarySetters = {}, ebonMightExpirySetters = {},
     UpdateCastBarSetters = {}, UpdateGCDBarSetters = {}, stageThresholdsSetters = {},
     essenceNextTickSetters = {}, essenceLastCountSetters = {}, essenceTickDurSetters = {},
-    broken = false,
-}
--- Set<Name> hands a new value to every copy registered in <name>Setters.
-for setter, listName in pairs({
+}, {
     SetIronfurBaseDur = "ironfurBaseDurSetters", SetIronfurGoEUntil = "ironfurGoEUntilSetters",
     SetMainFrame = "mainFrameSetters", SetHealthBar = "healthBarSetters",
     SetPrimaryBar = "primaryBarSetters", SetSecondaryFrame = "secondaryFrameSetters",
@@ -678,14 +710,4 @@ for setter, listName in pairs({
     SetEssenceNextTick = "essenceNextTickSetters",
     SetEssenceLastCount = "essenceLastCountSetters",
     SetEssenceTickDur = "essenceTickDurSetters",
-}) do
-    local list = ns._internals[listName]
-    ns._internals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
-end
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._internals, { __index = function(_, k)
-    error("ns._internals has no entry " .. tostring(k), 2)
-end })
+})

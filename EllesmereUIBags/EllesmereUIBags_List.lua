@@ -206,6 +206,7 @@ function ns.CreateListRow(host)
     if InCombatLockdown() then return nil end
     local slotParent = CreateFrame("Frame", nil, host)
     local btn = CreateFrame("ItemButton", nil, slotParent, "ContainerFrameItemButtonTemplate")
+    ns.PinItemButton(btn, host)
     btn:SetAllPoints(slotParent)
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     btn:RegisterForDrag("LeftButton")
@@ -226,7 +227,7 @@ function ns.CreateListRow(host)
     -- as on the grid slots: here it covers the row's icon.
     local ov = CreateFrame("Frame", nil, btn)
     ov:SetAllPoints(btn._lvIcon)
-    ov:SetFrameLevel((btn.Cooldown and btn.Cooldown:GetFrameLevel() or btn:GetFrameLevel()) + 2)
+    ov:SetFrameLevel(btn:GetFrameLevel() + 3)
     btn._textOverlay = ov
     btn._cells = {}
     local list = _hostRows[host]
@@ -285,7 +286,9 @@ end
 local function SetRoundIcon(btn, round)
     if (btn._lvRound or false) == round then return end
     btn._lvRound = round
+    local slotMask = btn._textOverlay._fvIconMask
     if round then
+        if slotMask then btn._lvIcon:RemoveMaskTexture(slotMask) end
         if not btn._lvMask then
             btn._lvMask = btn:CreateMaskTexture()
             btn._lvMask:SetTexture(ROUND_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
@@ -295,6 +298,7 @@ local function SetRoundIcon(btn, round)
         if btn.Cooldown then btn.Cooldown:SetSwipeTexture(ROUND_MASK) end
     else
         btn._lvIcon:RemoveMaskTexture(btn._lvMask)
+        if slotMask then btn._lvIcon:AddMaskTexture(slotMask) end
         if btn.Cooldown then btn.Cooldown:SetSwipeTexture("Interface\\Buttons\\WHITE8X8") end
     end
 end
@@ -302,18 +306,26 @@ end
 -- Collapsed sections, keyed by category _defaultName, "junk", or
 -- "<section key>/<subtype>" for sub-sections. Saved in the profile.
 -- Shift-click on a top-level section collapses or expands all of them.
+-- A virtual category's ("Virtual:...") state lasts the session: nothing of it is saved.
+local _virtualCollapsed = {}
+local function IsCollapsed(key)
+    return _virtualCollapsed[key] or (BP().bagListCollapsed or _emptyP)[key] == true
+end
+local function SetCollapsed(set, key, v)
+    if key:find("^Virtual:") then _virtualCollapsed[key] = v else set[key] = v end
+end
 local function ToggleCollapsed(self)
     local p = BP()
     local set = p.bagListCollapsed
     if not set then set = {}; p.bagListCollapsed = set end
     if IsShiftKeyDown() and not self._sub then
-        local collapse = not set[self._key] or nil
+        local collapse = not IsCollapsed(self._key) or nil
         for i = 1, _sectionsUsed do
             local s = _sections[i]
-            if not s._sub then set[s._key] = collapse end
+            if not s._sub then SetCollapsed(set, s._key, collapse) end
         end
     else
-        set[self._key] = not set[self._key] or nil
+        SetCollapsed(set, self._key, not IsCollapsed(self._key) or nil)
     end
     Refresh()
 end
@@ -624,6 +636,9 @@ local function GetOrCreateHeaderBtn(bar, id)
     return b
 end
 
+-- the column bar for a window, nil before its first list refresh
+function ns.ListHeaderBar(host) return _hdrBars[host] end
+
 -- One column header bar per host frame (bags, bank). Returns its height.
 function ns.UpdateListHeaderBar(host, cols, leftX, topY, startX, noSort)
     local bar = _hdrBars[host]
@@ -701,7 +716,9 @@ end
 -------------------------------------------------------------------------------
 --  Render
 -------------------------------------------------------------------------------
-local function RenderRow(btn, data, cols, rowW, x, y, stripe)
+-- dim: a pinned item in a OneBag / MultiBag bag section while Dim Items in
+-- OneBag/MultiBag is on (the grid's search-miss alpha).
+local function RenderRow(btn, data, cols, rowW, x, y, stripe, dim)
     -- Bags and bank share the column tables at their own row widths: a bank
     -- batch painted after a bags refresh re-lays them out for its width.
     if rowW ~= _lastRowW then LayoutColumns(rowW) end
@@ -713,6 +730,7 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
     btn:SetID(data.slot)
     parent:Show()
     btn:Show()
+    btn:SetAlpha(dim and 0.2 or 1)
     btn._stripe:SetShown(stripe and BP().bagListHideStripes ~= true)
 
     local info = data.info
@@ -743,13 +761,15 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
             end
             icon:Show()
             -- Quality Item Border: square icons only
-            if not round and BP().bagQualityBorder ~= false then
-                local ov = btn._textOverlay
-                if not ov._brdT then ns.CreateInsetBorder(ov) end
+            local ov = btn._textOverlay
+            if not round and (BP().bagQualityBorder ~= false or ns.BagsForever()) then
+                if not (ov._brdT or ov._fvSlotBorder) then ns.CreateInsetBorder(ov, true, icon) end
                 local r, g, b = ns.QualityBorderColor(q)
                 ns.SetInsetBorderColor(ov, r, g, b, 1)
-            elseif btn._textOverlay._brdT then
-                ns.SetInsetBorderColor(btn._textOverlay, 0, 0, 0, 0)
+                if ov._fvSlotBorder then ns.SetForeverSlotQuestBorder(ov, data._isQuest, data._isQuestStarter) end
+            elseif ov._brdT or ov._fvSlotBorder then
+                ns.SetInsetBorderColor(ov, 0, 0, 0, 0)
+                if ov._fvQuestBorder then ov._fvQuestBorder:Hide() end
             end
         else
             local fs = GetCell(btn, id)
@@ -808,6 +828,13 @@ function ns.ListPaintJunk(btn, info)
         and (q == 0 or EUI_CategoryManager:IsJunk(info.itemID, q))) or false)
 end
 
+-- Re-pins each host's rows (the bags and the bank) after its level moved (ns.PinItemPool)
+function ns.ResyncListRowLevels()
+    for host, rows in pairs(_hostRows) do
+        ns.PinItemPool(rows, host, "_rowPinLevel")
+    end
+end
+
 -- Empty bag slot row (OneBag / MultiBag); clicking or dropping an item
 -- places it in that slot.
 local function RenderEmptyRow(btn, cols, d, rowW, x, y, stripe)
@@ -820,6 +847,7 @@ local function RenderEmptyRow(btn, cols, d, rowW, x, y, stripe)
     btn:SetID(d.slot)
     parent:Show()
     btn:Show()
+    btn:SetAlpha(1)
     btn._stripe:SetShown(stripe and BP().bagListHideStripes ~= true)
     btn._lvIcon:Hide()
     for _, fs in pairs(btn._cells) do fs:Hide() end
@@ -856,7 +884,7 @@ local function PlaceSection(key, label, count, x, y, w, sub)
     s._label:SetText(label)
     s._count:SetText(count)
     s._key, s._sub = key, sub
-    local collapsed = (BP().bagListCollapsed or _emptyP)[key] == true
+    local collapsed = IsCollapsed(key) and true or false
     -- Arrow points right when collapsed, down when open
     s._arrow:SetRotation(collapsed and math.pi or math.pi / 2)
     if s._clearBtn then
@@ -884,6 +912,9 @@ function ns.RenderListView(items, opts)
     -- Bucket: section key (category index, "pinned" or "junk") -> sub label -> items.
     -- Slot views key sections by bag ID (0-5), or "main" for OneBag's bags 0-4.
     local slotView = opts.slotView
+    -- A virtual view (EUI_CategoryManager:RegisterVirtualView): sections by its
+    -- groups. Its collapse flags last the session ("Virtual:" keys).
+    local view = opts.view
     -- One Junk section: the Junk category (under its own name) while the Junk
     -- Marker is on, else every grey item
     local junkOn = EUI_CategoryManager:IsJunkMarkerEnabled()
@@ -933,16 +964,31 @@ function ns.RenderListView(items, opts)
         local cat = ci and cats[ci]
         if d.info and d.itemLink then
             StampItem(d)
-            if pinnedSet and ns.IsItemPinned(pinnedSet, d.itemLink, d.info.itemID) then
+            -- In a view, Refresh has marked (_vgPin, _vgRec) the items the Pinned and
+            -- Recent sections repeat
+            if pinnedSet and (not view or d._vgPin) and ns.IsItemPinned(pinnedSet, d.itemLink, d.info.itemID) then
                 Add("pinned", "", d)
             end
-            if recentSet and recentSet[d.info.itemID] and not d._pinnedOnly then
+            if recentSet and (not view or d._vgRec) and recentSet[d.info.itemID] and not d._pinnedOnly then
                 Add("recent", "", d)
             end
             if opts.recentOnly then
                 Add("recent", "", d)
             elseif slotView then
                 Add(BagKey(d.bag), "", d)
+            elseif view then
+                -- a virtual view: the group's position, "Other" (0) after the groups, and
+                -- our own Junk section for what the provider is never offered. As in All
+                -- Items the item is in its section too, except a pinned one hidden in its
+                -- category
+                if not d._vgOnly then
+                    if d._vgJunk then
+                        Add("junk", "", d)
+                    else
+                        local vg = d._vg
+                        Add((vg and vg > 0) and vg or (#view.groups + 1), "", d)
+                    end
+                end
             elseif cat and not (opts.allItems and d._pinnedOnly)
                 and not hidden[cat._defaultName] and not (cat.groupName and hidden[cat.groupName]) then
                 local key = (junkOn and cat.isJunk or (not junkOn and d._lvQuality == 0)) and "junk" or ci
@@ -969,8 +1015,11 @@ function ns.RenderListView(items, opts)
             sl[#sl + 1] = d
         end
     end
-    -- Pinned first, category (or bag) order, Junk last
-    local RANK = { pinned = -2, recent = -1, main = 0, junk = math.huge }
+    -- Pinned first, category (or bag) order, Junk after the last saved category
+    -- (virtual categories follow it, as in the grid and the sidebar); in a virtual
+    -- view Junk follows the view's last section
+    local RANK = { pinned = -2, recent = -1, main = 0,
+        junk = view and (#view.groups + 2) or (EUI_CategoryManager:GetSavedCount() + 0.5) }
     table.sort(order, function(a, b)
         return (RANK[a.key] or a.key) < (RANK[b.key] or b.key)
     end)
@@ -997,6 +1046,10 @@ function ns.RenderListView(items, opts)
         if b.key == "junk" then label, secKey = junkLabel, "junk"
         elseif b.key == "pinned" then label, secKey = pinnedLabel, "pinned"
         elseif b.key == "recent" then label, secKey = recentLabel, "recent"
+        elseif view then
+            -- a group's section, or "Other" (the position after the last group)
+            local g = view.groups[b.key]
+            label, secKey = g and g.name or view.otherName, g and g.key or view.otherKey
         elseif b.key == "main" then
             local total = 0
             for bag = 0, 4 do
@@ -1032,7 +1085,8 @@ function ns.RenderListView(items, opts)
                     _rowsUsed = _rowsUsed + 1
                     btn:GetParent():SetParent(child)
                     if d.info then
-                        RenderRow(btn, d, cols, rowW, x, y, i % 2 == 0)
+                        RenderRow(btn, d, cols, rowW, x, y, i % 2 == 0,
+                            d._pinDim and b.key ~= "pinned" and b.key ~= "recent")
                     else
                         RenderEmptyRow(btn, cols, d, rowW, x, y, i % 2 == 0)
                     end

@@ -15,7 +15,6 @@ local _, module = ...
 -- it at call time.
 local POOL = EllesmereUI._Pool
 
-local GAP = 2
 local FADE_IN = 0.35
 local FADE_OUT = 0.8
 local SLIDE = 24 -- px a new row glides in from the left
@@ -23,22 +22,26 @@ local CALLOUT_GAP = 6 -- Icon Tray: space between the name row and the tiles
 local MONEY_ICON = "Interface\\Icons\\INV_Misc_Coin_02"
 local REP_ICON = "Interface\\Icons\\INV_Misc_Note_02"
 local SKILL_ICON = "Interface\\Icons\\INV_Misc_Book_08"
+local UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local RATE_FLOOR = 60 -- seconds: the shortest session the hourly rate divides by
 local RATE_TICK = 60 -- seconds between repaints of the hourly rate
 
 -- Settings live in EllesmereUIDB.lootFeed; unset keys read these.
 local DEFAULTS = {
     enabled = false,
-    items = true, money = true, reputation = true, currency = true, skills = true,
+    items = true, money = true, reputation = true, currency = true, skills = true, rolls = false,
+    history = false, historyMax = 200,
     minQuality = 0, showIlvl = true, showPrice = true,
     tracker = false, auctionPrices = false,
     -- BOX: bordered rows, BAR: accent bar on a fading background, TRAY: icon
     -- tiles with a name row, TOAST: framed plates.
     style = "BAR",
-    width = 300, rowHeight = 36, maxRows = 6, duration = 5, grow = "UP",
+    width = 300, rowHeight = 36, spacing = 2, maxRows = 6, duration = 5, grow = "UP",
     textSize = 13, barWidth = 3,
-    bgR = 0.05, bgG = 0.05, bgB = 0.05, bgA = 0.3,
+    bgTexture = "none", bgR = 0.05, bgG = 0.05, bgB = 0.05, bgA = 0.3,
     borderSize = 1, borderR = 0, borderG = 0, borderB = 0, qualityBorder = true,
+    -- An unset borderTexture keeps the original pixel borders.
+    borderBehind = false, separator = false,
 }
 local F = module.Feature("lootFeed", DEFAULTS,
     { point = "BOTTOMRIGHT", relPoint = "BOTTOMRIGHT", x = -320, y = 260 })
@@ -102,7 +105,7 @@ end
 
 -- Toast plates draw a frame 1 px outside the row, so they need more space.
 local function Gap()
-    return Get("style") == "TOAST" and GAP + 2 or GAP
+    return Get("spacing") + (Get("style") == "TOAST" and 2 or 0)
 end
 
 -- Space the pinned tracker row takes at the anchor end of the feed.
@@ -113,8 +116,9 @@ end
 
 -- Icon Tray: tiles per line and lines needed for n tiles.
 local function TrayGrid(n)
-    local step = Get("rowHeight") + GAP
-    local cols = math.max(1, math.floor((Get("width") + GAP) / step))
+    local gap = Get("spacing")
+    local step = Get("rowHeight") + gap
+    local cols = math.max(1, math.floor((Get("width") + gap) / step))
     return cols, math.ceil(n / cols)
 end
 
@@ -125,7 +129,8 @@ local function AnchorHeight(n)
     n = n or Get("maxRows")
     if Get("style") == "TRAY" then
         local _, lines = TrayGrid(n)
-        return pin + h + CALLOUT_GAP + lines * (h + GAP) - GAP
+        local gap = Get("spacing")
+        return pin + h + CALLOUT_GAP + lines * (h + gap) - gap
     end
     local gap = Gap()
     return pin + n * (h + gap) - gap
@@ -140,10 +145,22 @@ end
 -- Gradient end colours, refilled for each paint (SetGradient copies them).
 local gradFrom, gradTo = CreateColor(0, 0, 0, 0), CreateColor(0, 0, 0, 0)
 
+local backgroundTextures
+local function SetBackgroundTexture(tex)
+    local key = Get("bgTexture")
+    if key == "none" then
+        tex:SetColorTexture(1, 1, 1, 1)
+        return
+    end
+    if not backgroundTextures then backgroundTextures = EllesmereUI.BuildBarTextureTables() end
+    tex:SetTexture(EllesmereUI.ResolveTexturePath(backgroundTextures, key, "Interface\\Buttons\\WHITE8x8"))
+    tex:SetVertexColor(1, 1, 1, 1)
+end
+
 -- Solid, or a two-colour fade to transparent (BAR).
 local function PaintBackground(tex, fade)
     local r, g, b, a = Get("bgR"), Get("bgG"), Get("bgB"), Get("bgA")
-    tex:SetColorTexture(1, 1, 1, 1)
+    SetBackgroundTexture(tex)
     gradFrom:SetRGBA(r, g, b, a)
     gradTo:SetRGBA(r, g, b, fade and 0 or a)
     tex:SetGradient("HORIZONTAL", gradFrom, gradTo)
@@ -192,6 +209,70 @@ local function RowStyle(r)
     return r.pinned and style == "TRAY" and "BAR" or style
 end
 
+local function LayoutSeparator(sep)
+    EllesmereUI.PlaceBorderDividerV(sep.tex, sep, sep.right, true, sep.key, sep.size, sep.px, sep:GetEffectiveScale())
+end
+
+local function StyleSeparator(r, style, size, tex, px)
+    local sep = r.separator
+    local callout = style == "CALLOUT"
+    if (style ~= "BOX" and not callout) or not Get("separator") or size <= 0
+            or (callout and Get("barWidth") <= 0) or not EllesmereUI.GetBorderCompanion(tex, "sepV") then
+        if sep then sep:Hide(); EllesmereUI.RegisterPxReapply(sep, nil) end
+        return
+    end
+    if not sep then
+        sep = CreateFrame("Frame", nil, r)
+        sep.tex = sep:CreateTexture(nil, "OVERLAY")
+        r.separator = sep
+    end
+    sep:ClearAllPoints()
+    sep:SetAllPoints(callout and r.bar or r.icon)
+    sep:SetFrameLevel(r:GetFrameLevel() + 3)
+    sep.key, sep.size, sep.px, sep.right = tex, size, px, callout
+    sep.tex:SetVertexColor(RowColor(r.data, false))
+    LayoutSeparator(sep)
+    sep:Show()
+    EllesmereUI.RegisterPxReapply(sep, px and LayoutSeparator or nil)
+end
+
+local function StyleBorder(r, style)
+    local PP = EllesmereUI.PP
+    local size, tex, host = Get("borderSize"), Get("borderTexture"), r.lootBorder
+    local px = tex and EllesmereUI.BorderPx(Get("borderSizePx"), size, tex)
+    -- The white Pixels artwork takes the item's quality colour without a baked-in tint.
+    if tex == "pixels-textured" and r.data.border and Get("qualityBorder") then tex = "pixels" end
+    if Get("separator") or r.separator then StyleSeparator(r, style, size, tex, px) end
+    if size <= 0 or ((style == "BAR" or style == "CALLOUT") and not tex) then
+        PP.HideBorder(r)
+        if host then EllesmereUI.HideBorderStyle(host); host:Hide() end
+        return
+    end
+    local br, bg, bb
+    if style == "TOAST" then
+        br, bg, bb = TOAST_GOLD[1], TOAST_GOLD[2], TOAST_GOLD[3]
+    else
+        br, bg, bb = RowColor(r.data, false)
+    end
+    if not tex or style == "TOAST" then
+        if host then EllesmereUI.HideBorderStyle(host); host:Hide() end
+        PP.UpdateBorder(r, size, br, bg, bb, 1)
+        PP.ShowBorder(r)
+        return
+    end
+    PP.HideBorder(r)
+    if not host then
+        host = CreateFrame("Frame", nil, r)
+        r.lootBorder = host
+    end
+    host:ClearAllPoints()
+    host:SetAllPoints(style == "BAR" and r.icon or r)
+    host:SetFrameLevel(Get("borderBehind") and math.max(0, r:GetFrameLevel() - 1) or r:GetFrameLevel() + 1)
+    EllesmereUI.ApplyBorderStyle(host, size, br, bg, bb, 1, tex,
+        Get("borderTextureOffset"), Get("borderTextureOffsetY"), Get("borderTextureShiftX"), Get("borderTextureShiftY"),
+        nil, nil, nil, px)
+end
+
 local function StyleRow(r)
     local h, size, style = Get("rowHeight"), Get("textSize"), RowStyle(r)
     local tray, bar, toast = style == "TRAY", style == "BAR", style == "TOAST"
@@ -212,17 +293,17 @@ local function StyleRow(r)
         r.icon:SetSize(h, h)
         r.icon:SetPoint("LEFT")
     end
-    -- Icon frame: 1 px black (BAR) or 2 px quality colour (TOAST, set by Fill).
+    -- Legacy BAR icon: 1 px black; TOAST: 2 px quality colour (set by Fill).
     local edge = toast and 2 or 1
     r.iconBg:ClearAllPoints()
     r.iconBg:SetPoint("TOPLEFT", r.icon, "TOPLEFT", -edge, edge)
     r.iconBg:SetPoint("BOTTOMRIGHT", r.icon, "BOTTOMRIGHT", edge, -edge)
     if bar then r.iconBg:SetColorTexture(0, 0, 0, 1) end
-    r.iconBg:SetShown(bar or toast)
+    r.iconBg:SetShown((bar and not Get("borderTexture")) or toast)
     if toast then
         ToastChrome(r):SetShown(Get("borderSize") > 0)
         local a = Get("bgA")
-        r.bg:SetColorTexture(1, 1, 1, 1)
+        SetBackgroundTexture(r.bg)
         gradFrom:SetRGBA(TOAST_BOTTOM[1], TOAST_BOTTOM[2], TOAST_BOTTOM[3], a)
         gradTo:SetRGBA(TOAST_TOP[1], TOAST_TOP[2], TOAST_TOP[3], a)
         r.bg:SetGradient("VERTICAL", gradFrom, gradTo)
@@ -280,7 +361,8 @@ local function ShowCallout(set)
     c:ClearAllPoints()
     if Get("grow") == "UP" then
         local _, lines = TrayGrid(#set.rows)
-        c:SetPoint("BOTTOMRIGHT", set.frame, "BOTTOMRIGHT", 0, pin + lines * (h + GAP) - GAP + CALLOUT_GAP)
+        local gap = Get("spacing")
+        c:SetPoint("BOTTOMRIGHT", set.frame, "BOTTOMRIGHT", 0, pin + lines * (h + gap) - gap + CALLOUT_GAP)
     else
         c:SetPoint("TOPRIGHT", set.frame, "TOPRIGHT", 0, -pin)
     end
@@ -288,6 +370,10 @@ local function ShowCallout(set)
     c.bar:SetWidth(math.max(bw, 1))
     c.bar:SetShown(bw > 0)
     c.bar:SetColorTexture(RowColor(d, true))
+    if Get("borderTexture") or c.lootBorder then
+        c.data = d
+        StyleBorder(c, "CALLOUT")
+    end
     StyleFont(c.name, size)
     StyleFont(c.value, size)
     StyleFont(c.sub, size - 2)
@@ -319,7 +405,7 @@ local function Layout(set)
     local frame = set.frame
     local up = Get("grow") == "UP"
     local tray = Get("style") == "TRAY"
-    local step = Get("rowHeight") + (tray and GAP or Gap())
+    local step = Get("rowHeight") + (tray and Get("spacing") or Gap())
     local cols = TrayGrid(1)
     local below = Get("rowHeight") + CALLOUT_GAP -- grow Down: tiles start under the name row
     local pin = Pin() -- the rows start past the tracker row
@@ -356,7 +442,7 @@ local function Release(r)
     r.show:Stop()
     r.fade:Stop()
     r:Hide()
-    r.key, r.data = nil, nil
+    r.key, r.data, r.entry, r.history = nil, nil, nil, nil
     pool[#pool + 1] = r
     Layout()
 end
@@ -365,7 +451,7 @@ end
 -- end starts it) or hovered (leaving starts it).
 -- Preview rows never fade.
 local function ArmFade(r)
-    if r.preview or r.show:IsPlaying() then return end
+    if r.preview or r.history or r.show:IsPlaying() then return end
     r.fade:Stop()
     r:SetAlpha(1)
     if not r:IsMouseOver() then r.fade:Play() end
@@ -458,7 +544,7 @@ end
 -- border (quality colour, optional). Box rows keep their one-line form
 -- (flat) and show no quest line.
 local function Fill(r)
-    local d, PP, style = r.data, EllesmereUI.PP, RowStyle(r)
+    local d, style = r.data, RowStyle(r)
     local text, sub, value = d.text, d.sub or d.questSub, d.value
     if style == "BOX" then
         sub = not d.flat and d.sub or nil
@@ -487,19 +573,7 @@ local function Fill(r)
             r.iconBg:SetColorTexture(TOAST_EDGE[1], TOAST_EDGE[2], TOAST_EDGE[3], 1)
         end
     end
-    local size = Get("borderSize")
-    if size > 0 and style ~= "BAR" then
-        local br, bg, bb
-        if style == "TOAST" then
-            br, bg, bb = TOAST_GOLD[1], TOAST_GOLD[2], TOAST_GOLD[3]
-        else
-            br, bg, bb = RowColor(d, false)
-        end
-        PP.UpdateBorder(r, size, br, bg, bb, 1)
-        PP.ShowBorder(r)
-    else
-        PP.HideBorder(r)
-    end
+    StyleBorder(r, style)
 end
 
 local function FindRow(key)
@@ -519,21 +593,165 @@ local function Total(key, amount)
     return amount + (r and r.data.amount or 0)
 end
 
+-------------------------------------------------------------------------------
+--  Loot History: every live row is kept per character, newest first. Shift and
+--  the mouse wheel over the feed step back through it; letting go of Shift
+--  returns to the live feed.
+-------------------------------------------------------------------------------
+local ENTRY_KEYS = { "icon", "text", "sub", "questSub", "value", "link", "amount", "badge", "flat" }
+local sampling  -- Show Samples is drawing: its rows are not kept
+local scroll, missed = 0, 0 -- the newest history row shown (0: live), rows kept while looking back
+local historyList
+
+-- Kept in the character roster (lootFeedHistory), outside the settings and never exported.
+local function History()
+    if not historyList then
+        historyList = EllesmereUI.CharData("lootFeedHistory", true)
+        if not historyList then return {} end -- GUID unread: a throwaway, not cached
+    end
+    return historyList
+end
+
+local function Trim(list)
+    for i = #list, Get("historyMax") + 1, -1 do list[i] = nil end
+end
+
+local function NewEntry()
+    local list = History()
+    local e = {}
+    table.insert(list, 1, e)
+    Trim(list)
+    return e
+end
+
+-- Saved variables keep plain values only: the quality color becomes its rgb.
+local function Store(e, key, data)
+    for _, k in ipairs(ENTRY_KEYS) do e[k] = data[k] end
+    local b = data.border
+    e.border = b and { r = b.r, g = b.g, b = b.b } or nil
+    e.key = key
+end
+
+local function ShowCounter()
+    if not anchor then return end
+    local c = anchor.counter
+    if not c then
+        c = anchor:CreateFontString(nil, "OVERLAY")
+        anchor.counter = c
+    end
+    c:SetShown(scroll > 0)
+    if scroll == 0 then return end
+    StyleFont(c, Get("textSize"))
+    c:ClearAllPoints()
+    if Get("grow") == "UP" then
+        c:SetPoint("BOTTOMRIGHT", anchor, "TOPRIGHT", 0, 2)
+    else
+        c:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -2)
+    end
+    c:SetText(scroll .. " / " .. #History())
+end
+
+local Push, OnWheel
+
+-- The furthest back a view starts and still fills every row.
+local function LastStart()
+    return math.max(1, #History() - Get("maxRows") + 1)
+end
+
+local function ShowHistory()
+    while active[1] do Release(active[1]) end
+    local list = History()
+    for i = scroll, math.min(#list, scroll + Get("maxRows") - 1) do
+        local r = table.remove(pool) or NewRow()
+        StyleRow(r)
+        r.history, r.key, r.data = true, "history:" .. i, list[i]
+        r:EnableMouseWheel(true)
+        r:SetScript("OnMouseWheel", OnWheel)
+        Fill(r)
+        r.show:Stop()
+        r.fade:Stop()
+        r:SetAlpha(1)
+        r:Show()
+        active[#active + 1] = r
+    end
+    Layout()
+    ShowCounter()
+end
+
+-- Back to the live feed, with what was looted meanwhile as fresh rows.
+local function LeaveHistory()
+    if scroll == 0 then return end
+    local n = math.min(missed, Get("maxRows"))
+    scroll, missed = 0, 0
+    while active[1] do Release(active[1]) end
+    ShowCounter()
+    local list = History()
+    for i = n, 1, -1 do
+        if list[i] then Push(list[i].key, list[i], list[i]) end
+    end
+end
+
+OnWheel = function(_, delta)
+    if not IsShiftKeyDown() then return end
+    if #History() == 0 then return end
+    local to = math.max(0, math.min(LastStart(), scroll + (delta > 0 and 1 or -1)))
+    if to == scroll then return end
+    if to == 0 then return LeaveHistory() end
+    scroll = to
+    ShowHistory()
+end
+
+-- The wheel is caught only while Shift is down, so it never takes the camera zoom.
+-- Only a change of that state touches the frames: Ctrl and Alt fire the same event.
+local wheelOn
+local function ArmWheel(f, on)
+    f:EnableMouseWheel(on)
+    f:SetScript("OnMouseWheel", OnWheel)
+end
+
+local function CatchWheel(on)
+    if not anchor or on == wheelOn then return end
+    wheelOn = on
+    ArmWheel(anchor, on)
+    for _, r in ipairs(active) do ArmWheel(r, on) end
+    for _, r in ipairs(pool) do ArmWheel(r, on) end
+end
+
 -- Shows data under key: the row already showing key is refilled, moved to the
 -- front and its fade restarted; otherwise a row is taken (the oldest one when
--- all maxRows are in use) and fades in.
-local function Push(key, data)
+-- all maxRows are in use) and fades in. entry: the history row it shows again.
+Push = function(key, data, entry)
+    local keep = Get("history") and not sampling
+    if keep and scroll > 0 then
+        Store(NewEntry(), key, data)
+        scroll, missed = math.min(scroll + 1, LastStart()), missed + 1
+        ShowCounter()
+        return
+    end
     local r = FindRow(key)
     local fresh = not r
     if r then
         Unlist(r)
     else
         while #active >= Get("maxRows") do Release(active[#active]) end
-        r = table.remove(pool) or NewRow()
+        r = table.remove(pool)
+        if not r then
+            -- A row made while Shift is held takes the wheel like the rows before it.
+            r = NewRow()
+            if wheelOn then ArmWheel(r, true) end
+        end
         StyleRow(r)
     end
     table.insert(active, 1, r)
     r.key, r.data = key, data
+    if keep then
+        if entry then
+            r.entry = entry
+        else
+            r.entry = r.entry or NewEntry()
+            Store(r.entry, key, data)
+        end
+    end
     Fill(r)
     Layout()
     if fresh then
@@ -615,15 +833,7 @@ local function Earn(kind, copper)
     SyncClock()
 end
 
--- What Auctionator last saw the item listed for, when that addon is loaded
--- and has a price.
-local function AuctionPrice(link)
-    local api = Auctionator and Auctionator.API and Auctionator.API.v1
-    local get = api and api.GetAuctionPriceByItemLink
-    if not get then return end
-    local ok, price = pcall(get, "EllesmereUI", link)
-    if ok and type(price) == "number" and price > 0 then return price end
-end
+local AuctionPrice = module.AuctionPrice
 
 -- What one of the item counts for: nothing for a quest-bound item, the vendor
 -- price for one that binds when picked up (it cannot be auctioned) and for
@@ -741,6 +951,22 @@ local function UpdateSummary()
     SyncClock()
 end
 
+-- fn to run later as the kind of row its caller is drawing now: a Show Samples
+-- row stays a sample (not kept) when the client loads its item afterwards.
+local function AsDrawn(fn)
+    local sample = sampling
+    return function()
+        local was = sampling
+        sampling = sample
+        local ok, err = pcall(fn)
+        sampling = was
+        if not ok then error(err, 0) end
+    end
+end
+
+-- Group loot by item name: links from the loot history, and the roll behind each of your wins.
+local rollLinks, wins = {}, {}
+
 -- looted: a real loot line (not a preview sample). earned: one the tracker
 -- counts (looted or won, not bought or a quest reward), even when item rows
 -- are off or the item is below Minimum Quality.
@@ -750,10 +976,12 @@ local function ShowItem(link, count, retried, looted, earned)
         -- Not cached yet: try again once the client has it. Only once: the
         -- client also calls back when the item fails to load.
         if not retried then
-            Item:CreateFromItemLink(link):ContinueOnItemLoad(function() ShowItem(link, count, true, looted, earned) end)
+            Item:CreateFromItemLink(link):ContinueOnItemLoad(AsDrawn(function() ShowItem(link, count, true, looted, earned) end))
         end
         return
     end
+    local won = looted and wins[name]
+    if won then wins[name] = nil end
     local each -- what one counts for, priced only when the tracker or the row needs it
     if looted then
         if earned and Get("tracker") then
@@ -774,6 +1002,10 @@ local function ShowItem(link, count, retried, looted, earned)
         if ilvl and ilvl > 0 then sub = EllesmereUI.Lf("ilvl: %d", ilvl) end
     elseif classID == Enum.ItemClass.Questitem and ITEM_BIND_QUEST then
         questSub = "|cffffd100" .. ITEM_BIND_QUEST .. "|r"
+    end
+    if won then
+        won = EllesmereUI.Lf("Won: %s", won)
+        sub = sub and (won .. "  " .. sub) or won
     end
     -- The row shows the tracker's price; the plain vendor one with Use Auctionator Prices off.
     local value
@@ -850,22 +1082,100 @@ end
 
 -- Own loot only: the *_SELF lines, the multiple-item formats (link and count)
 -- first, since the single-item ones match their lines too. The flag: the
--- tracker counts it (a pushed item, bought or a quest reward, shows but is no
--- gain).
+-- tracker counts it (a pushed item, bought or a quest reward, and a crafted one
+-- show but are no gain).
 local ITEM_KEYS = {
     { "LOOT_ITEM_SELF_MULTIPLE", true }, { "LOOT_ITEM_SELF", true },
     { "LOOT_ITEM_PUSHED_SELF_MULTIPLE", false }, { "LOOT_ITEM_PUSHED_SELF", false },
     { "LOOT_ITEM_BONUS_ROLL_SELF_MULTIPLE", true }, { "LOOT_ITEM_BONUS_ROLL_SELF", true },
+    { "LOOT_ITEM_CREATED_SELF_MULTIPLE", false }, { "LOOT_ITEM_CREATED_SELF", false },
 }
+
+-- Forever sends some loot lines, like fishing and crafting, with a plain [Name] instead of a link.
+local function ItemString(text)
+    if text:find("|Hitem:", 1, true) then return text end
+    local name = text:match("^%[(.-)%]$")
+    if not name then return end
+    if rollLinks[name] then return rollLinks[name] end
+    local id = C_Item.GetItemInfoInstant(name)
+    return id and "item:" .. id
+end
 
 local function OnLoot(text)
     for _, k in ipairs(ITEM_KEYS) do
-        local link, count = Match(k[1], text)
-        if link then
-            if link:find("|Hitem:", 1, true) then ShowItem(link, tonumber(count) or 1, nil, true, k[2]) end
+        local item, count = Match(k[1], text)
+        if item then
+            local link = ItemString(item)
+            if link then ShowItem(link, tonumber(count) or 1, nil, true, k[2]) end
             return
         end
     end
+end
+
+-- The game's own words for each Enum.EncounterLootDropRollState, English when it lacks one.
+local ROLL_LABELS = {
+    NeedMainSpec = { "NEED", "Need" }, NeedOffSpec = { "NEED", "Need" },
+    Transmog = { "TRANSMOGRIFY", "Transmog" }, Greed = { "GREED", "Greed" },
+}
+
+local function RollText(info)
+    local roll = info and Plain(info.roll, "number")
+    if not roll then return end
+    local state = Plain(info.state, "number")
+    for key, value in pairs(Enum.EncounterLootDropRollState or {}) do
+        local label = value == state and ROLL_LABELS[key]
+        if label then return (_G[label[1]] or label[2]) .. " " .. roll end
+    end
+    return tostring(roll)
+end
+
+-- A nil winner means everyone passed.
+local function ShowRoll(key, link, itemName, winner, class, roll, retried)
+    local name, quality, icon, _
+    if link then
+        name, _, quality, _, _, _, _, _, _, icon = C_Item.GetItemInfo(link)
+        if not name and not retried then
+            Item:CreateFromItemLink(link):ContinueOnItemLoad(AsDrawn(function()
+                ShowRoll(key, link, itemName, winner, class, roll, true)
+            end))
+            return
+        end
+    end
+    local color = ITEM_QUALITY_COLORS[quality or 1] or ITEM_QUALITY_COLORS[1]
+    local item = color.hex .. (name or itemName or "?") .. "|r"
+    local text
+    if winner then
+        -- The suite's class colour (custom class colours included); an unknown class stays uncoloured.
+        local cc = class and RAID_CLASS_COLORS[class] and EllesmereUI.GetClassColor(class)
+        if cc then winner = EllesmereUI.HexColor(cc.r, cc.g, cc.b) .. winner .. "|r" end
+        text = EllesmereUI.Lf("%s won %s", winner, item)
+    else
+        text = EllesmereUI.Lf("Everyone passed on %s", item)
+    end
+    Emit(key, { icon = icon or UNKNOWN_ICON, text = text, sub = roll, border = color, link = link,
+        flat = roll and (text .. " (" .. roll .. ")") or text, badge = roll and roll:match("%d+") })
+end
+
+-- The history updates a drop on every pick; it is shown once, when it has a winner or everyone passed.
+local shownDrops = {}
+local function OnDrop(encounterID, lootListID)
+    local key = "roll:" .. encounterID .. ":" .. lootListID
+    if shownDrops[key] then return end
+    local drop = C_LootHistory.GetSortedInfoForDrop(encounterID, lootListID)
+    local winner = drop and drop.winner
+    if not (winner or (drop and drop.allPassed == true)) then return end
+    shownDrops[key] = true
+    local raw = Plain(drop.itemHyperlink, "string")
+    local name = raw and raw:match("%[(.-)%]")
+    local link = raw and raw:find("|Hitem:", 1, true) and raw or nil
+    if link and name then rollLinks[name] = link end
+    local roll = RollText(winner)
+    if winner and winner.isSelf == true then
+        if name and roll then wins[name] = roll end
+        return
+    end
+    ShowRoll(key, link, name, winner and Plain(winner.playerName, "string"),
+        winner and Plain(winner.playerClass, "string"), roll)
 end
 
 -- Money lines spell out each coin with the client's own "%d Gold" etc.
@@ -910,6 +1220,14 @@ local function OnEvent(_, event, ...)
         local id, _, change = ...
         id, change = Plain(id, "number"), Plain(change, "number")
         if id and change and change > 0 then ShowCurrency(id, change) end
+    elseif event == "LOOT_HISTORY_UPDATE_DROP" then
+        local encounterID, lootListID = ...
+        encounterID, lootListID = Plain(encounterID, "number"), Plain(lootListID, "number")
+        if encounterID and lootListID then OnDrop(encounterID, lootListID) end
+    elseif event == "MODIFIER_STATE_CHANGED" then
+        local shift = IsShiftKeyDown()
+        CatchWheel(shift)
+        if not shift then LeaveHistory() end
     end
 end
 
@@ -947,6 +1265,9 @@ end
 
 local function Apply()
     if events then events:UnregisterAllEvents() end
+    historyList = nil
+    LeaveHistory()
+    CatchWheel(false)
     if not Enabled() then
         ClearRows()
         if summary then summary:Hide() end
@@ -962,16 +1283,28 @@ local function Apply()
         if Get(chat.setting) or (chat.tracked and Get("tracker")) then events:RegisterEvent(event) end
     end
     if Get("currency") then events:RegisterEvent("CURRENCY_DISPLAY_UPDATE") end
+    if Get("rolls") and C_LootHistory then events:RegisterEvent("LOOT_HISTORY_UPDATE_DROP") end
+    if Get("history") then
+        Trim(History())
+        events:RegisterEvent("MODIFIER_STATE_CHANGED")
+    end
 end
 
 -- A sample of every enabled source: the player's capital for reputation and
 -- classic items of three qualities (item id / count pairs). The rows fade like
 -- real ones.
 local PREVIEW_ITEMS = { 19019, 1, 4306, 5, 14047, 12 }
+local function PreviewRoll()
+    local _, link = C_Item.GetItemInfo(PREVIEW_ITEMS[1])
+    if link then ShowRoll("roll:preview", link, nil, "Thrall", "SHAMAN", (GREED or "Greed") .. " 87") end
+end
+
 local function Preview()
     if not Enabled() then return end
     CreateAnchor()
+    LeaveHistory()
     ClearRows()
+    sampling = true
     if Get("skills") then ShowSkill(EllesmereUI.L("Swords"), 42) end
     if Get("reputation") then
         local capital = C_Reputation.GetFactionDataByID(UnitFactionGroup("player") == "Horde" and 76 or 72)
@@ -981,6 +1314,8 @@ local function Preview()
     if Get("items") then
         for i = 1, #PREVIEW_ITEMS, 2 do ShowItem("item:" .. PREVIEW_ITEMS[i], PREVIEW_ITEMS[i + 1]) end
     end
+    if Get("rolls") then PreviewRoll() end
+    sampling = nil
 end
 
 -------------------------------------------------------------------------------
@@ -1001,6 +1336,7 @@ local requested = {} -- preview items asked of the client, once each
 local function PreviewSamples()
     local list, items = {}, Get("items")
     collect = list
+    if Get("rolls") then PreviewRoll() end
     if items then
         for i = 1, #PREVIEW_ITEMS, 2 do
             local link = "item:" .. PREVIEW_ITEMS[i]
@@ -1015,7 +1351,7 @@ local function PreviewSamples()
     if Get("skills") then ShowSkill(EllesmereUI.L("Swords"), 42) end
     collect = nil
     -- Asked for once the samples are in: the callback can run right away.
-    if items then
+    if items or Get("rolls") then
         for i = 1, #PREVIEW_ITEMS, 2 do
             local id = PREVIEW_ITEMS[i]
             if not requested[id] and not C_Item.GetItemInfo(id) then

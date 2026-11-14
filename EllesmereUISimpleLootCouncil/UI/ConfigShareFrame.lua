@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
+
 
 
 SimpleLootCouncil = SimpleLootCouncil or {}
@@ -22,7 +23,7 @@ local OFFER_W = 440
 local LINE_H, LINE2_H = 18, 34
 
 local function Print(text)
-    print(addon.Log.CHAT_PREFIX.accent .. text)
+    addon.Chat.Print(text)
 end
 
 
@@ -229,6 +230,12 @@ local function OfferPrompt(offer)
 end
 
 
+
+local function Plain(text)
+    return (tostring(text):gsub("||?", "||"))
+end
+
+
 local function OfferDetail(offer)
     local out = {}
     if offer.council then
@@ -236,30 +243,38 @@ local function OfferDetail(offer)
         local names = {}
         for i, member in ipairs(offer.council.members) do
             if i > 8 then break end
-            names[#names + 1] = Ambiguate(member.name, "none")
+            names[#names + 1] = Plain(Ambiguate(member.name, "none"))
         end
         out[#out + 1] = { addon.Locale.Format(addon.Locale.Plural{
             one = "Loot council: %d player - %s", other = "Loot council: %d players - %s",
         }, n, n, n > 0 and table.concat(names, ", ") or T["nobody"]), LINE2_H }
         local ranks = offer.council.ranks
+        local guild = addon.RaidTeam and addon.RaidTeam:GetGuildName()
         if #ranks > 0 then
-            local guild = addon.RaidTeam and addon.RaidTeam:GetGuildName()
             if guild and guild == offer.council.guild then
+                local shown = {}
+                for i, rank in ipairs(ranks) do shown[i] = Plain(rank) end
                 out[#out + 1] = { addon.Locale.Format(T["Guild ranks: %s"],
-                    table.concat(ranks, ", ")), LINE2_H }
+                    table.concat(shown, ", ")), LINE2_H }
             else
                 out[#out + 1] = { T["Their guild ranks are left out: they belong to another guild."], LINE_H }
             end
+        elseif guild and guild == offer.council.guild
+            and #addon.Council:GetConfiguredRanks() > 0 then
+            out[#out + 1] = { T["They sent no guild ranks: Accept also clears the guild ranks on your loot council."],
+                LINE2_H, S.color.warn }
         end
     end
     if offer.responses then
         local names = {}
-        for _, entry in ipairs(offer.responses) do names[#names + 1] = entry.text end
+        for _, entry in ipairs(offer.responses) do names[#names + 1] = Plain(entry.text) end
         out[#out + 1] = { addon.Locale.Format(T["Response buttons: %s"],
             table.concat(names, ", ")), LINE2_H }
     end
     return out
 end
+
+Panel.OfferDetail = OfferDetail
 
 local function BuildOffer()
     offerFrame = S.Window("SimpleLootCouncilConfigOfferFrame", "configOffer", OFFER_W, 240,
@@ -341,6 +356,11 @@ function Panel:RefreshOffer()
     for index, entry in ipairs(detail) do
         local line = OfferLine(index)
         line:SetText(entry[1])
+        if entry[3] then
+            line:SetTextColor(S.Unpack(entry[3]))
+        else
+            line:SetTextColor(S.fontSmall:GetTextColor())
+        end
         line:ClearAllPoints()
         P.Point(line, "TOPLEFT", content, "TOPLEFT", 0, -y)
         P.Size(line, width, entry[2])

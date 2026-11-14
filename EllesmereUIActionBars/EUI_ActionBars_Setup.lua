@@ -211,7 +211,7 @@ function EAB:FinishSetup()
                     local py = pos and pos.y or 0
                     tinsert(barFrameData, { key = key, w = frameW, h = frameH,
                         point = point, relPoint = relPoint, x = px, y = py,
-                        hidden = (s and (s.alwaysHidden or s.enabled == false)) and true or false })
+                        hidden = (s and (EAB.VisibilityCompat.IsNever(s) or s.enabled == false)) and true or false })
 
                     for i, btnData in pairs(btnLayout) do
                         local btn = buttons[i]
@@ -324,12 +324,14 @@ function EAB:FinishSetup()
     -- of the bar build nor starves the modules behind it. If a pull starts
     -- in the one-frame gap, both callees bail and re-arm on regen -- the
     -- same contract the combat path already lives on.
+    -- loginBuilt: the login loading screen's restore pass (PLAYER_ENTERING_WORLD
+    -- below) only checks the signature after this build instead of forcing another.
     if InCombatLockdown() then
-        UpdateKeybinds()
+        if UpdateKeybinds() then _bindState.loginBuilt = true end
         EAB:RebuildVisToggleBindings()
     else
         C_Timer_After(0, function()
-            UpdateKeybinds()
+            if UpdateKeybinds() then _bindState.loginBuilt = true end
             EAB:RebuildVisToggleBindings()
         end)
     end
@@ -436,7 +438,7 @@ function EAB:FinishSetup()
                 if not info.isStance and not info.isPetBar then
                     local s = EAB.db.profile.bars[info.key]
                     local frame = barFrames[info.key]
-                    if s and frame and not s.alwaysHidden
+                    if s and frame and not EAB.VisibilityCompat.IsNever(s)
                        and not (EAB._padHide and s.gamepadHideBar == true) then
                         local vis = s.barVisibility or "always"
                         -- Any visibility option at all counts: a bar the player cannot
@@ -584,11 +586,9 @@ function EAB:FinishSetup()
     end)
 
     -- When a spell flyout closes, fade out any bars that were kept visible by it.
-    -- Not under WoW Forever's Gamepad interface style, which shows and hides
-    -- the flyout from secure code (the flyout skin stands down there too).
     do
         local flyFrame = GetEABFlyout():GetFrame()
-        if flyFrame and not EllesmereUI.PadGamepadUI() then
+        if flyFrame then
             flyFrame:HookScript("OnHide", function()
                 if _quickKeybindState.open then return end
                 for key, state in pairs(hoverStates) do
@@ -631,7 +631,7 @@ function EAB:FinishSetup()
                         -- same reason), which would fix a clamped spot in place.
                         local s = bars[key]
                         local gd = (s and s.growDirection or "up"):upper()
-                        if key == "StanceBar" or gd == "CENTER" or ai.refFor == gd then
+                        if ai.mode == "POINT" or key == "StanceBar" or gd == "CENTER" or ai.refFor == gd then
                             reapply(key)
                         end
                     end
@@ -789,7 +789,7 @@ function EAB:FinishSetup()
                     for _, info in ipairs(BAR_CONFIG) do
                         local s = EAB.db.profile.bars[info.key]
                         if s and s.dragShow and s.enabled ~= false
-                           and (s.barVisibility == "never" or s.alwaysHidden)
+                           and EAB.VisibilityCompat.IsNever(s)
                            and not (EAB._visOverride and EAB._visOverride[info.key]) then
                             EAB._visOverride = EAB._visOverride or {}
                             EAB._visOverride[info.key] = "always"
@@ -869,7 +869,15 @@ function EAB:FinishSetup()
             -- INTO combat (die, release, run back in while the raid still fights)
             -- needs this or empower slots sit on native bindings (Press-and-Tap
             -- behaviour) until the next reload.
-            _bindState.sigValid = false
+            -- The one exception is the login loading screen right after the login
+            -- build (loginBuilt): nothing can have cleared the bindings since (the
+            -- housing clear invalidates the signature itself), so only the signature
+            -- check runs, which still rebuilds on any change.
+            if _bindState.loginBuilt then
+                _bindState.loginBuilt = nil
+            else
+                _bindState.sigValid = false
+            end
             UpdateKeybinds()
         end)
         -- Re-evaluate visibility options (visOnlyInstances, visHideHousing,
@@ -1158,6 +1166,12 @@ function EAB:FinishSetup()
             if nForms ~= _gridState.spellsForms then
                 _gridState.spellsForms = nForms
                 LayoutBar("StanceBar")
+                -- A newly learned form's button was parked while its slot had no
+                -- form, statehidden set: LayoutBar shows it again but leaves that
+                -- mark, and Blizzard's stance bar update on the next form change
+                -- (its UpdateShownButtons, run on the reused StanceButtons) hides
+                -- every button still carrying it. The AlwaysShow pass owns it.
+                self:ApplyAlwaysShowButtons("StanceBar")
                 self:RefreshRuntimeVisibility() -- re-eval stance bar show/hide
             end
             -- Content-signature gate: SPELLS_CHANGED also fires mid-combat on
@@ -1290,6 +1304,13 @@ function EAB:FinishSetup()
     -- [pet] driver keeps visibility correct engine-side -- and the show edge
     -- reconciles with one full pass (ns._eabPetReconcile).
     local _petPendingKind = nil  -- nil | "cd" | "full"
+    -- Set by PET_ATTACK_STOP, cleared by PET_ATTACK_START, a summon or
+    -- dismissal and a loading screen. GetPetActionInfo can still report the
+    -- attack when the stop fires, which kept the Attack button flashing after
+    -- the pet stopped, so the stop turns it off. Only the stop overrides: a pet
+    -- that stops with no stop event (sent back with Follow) is read from
+    -- GetPetActionInfo, as Blizzard's bar reads it.
+    local petAttackStopped = false
     local PetBarDeferred
     PetBarDeferred = function()
         local kind = _petPendingKind
@@ -1378,6 +1399,7 @@ function EAB:FinishSetup()
                         -- to call during combat lockdown.
                         local ct = btn:GetCheckedTexture()
                         local ctA = EAB:GetCheckedAlpha("PetBar")
+                        if isActive and petAttackStopped and IsPetAttackAction(i) then isActive = false end
                         if isActive then
                             if IsPetAttackAction(i) then
                                 btn:StartFlash()
@@ -1420,8 +1442,42 @@ function EAB:FinishSetup()
                 end
                 return
             end
-            if PetActionBar and PetActionBar.Update then
-                PetActionBar:Update()
+            -- Blizzard's bar update paints the pet buttons, and with no pet bar
+            -- it also hides its own bar. That hide runs Edit Mode's bottom bar
+            -- stack pass from here, which on WoW Forever writes the snap fields
+            -- of the stacked bars (MainActionBar to the micro menu) under our
+            -- taint: Blizzard's next stack pass reads them and is blocked in
+            -- combat, and every pass after it writes them tainted again. So it
+            -- runs only while a pet bar is out; with none the buttons are
+            -- emptied here, as its update would leave them.
+            if PetHasActionBar() then
+                if PetActionBar and PetActionBar.Update then
+                    PetActionBar:Update()
+                end
+            else
+                for i = 1, NUM_PET_ACTION_SLOTS do
+                    local btn = _G["PetActionButton" .. i]
+                    if btn then
+                        btn.icon:Hide()
+                        if btn.AutoCastOverlay then btn.AutoCastOverlay:Hide() end
+                        btn:StopFlash()
+                        btn:SetChecked(false)
+                        if btn.cooldown then
+                            local start, duration, enable = GetPetActionCooldown(i)
+                            CooldownFrame_Set(btn.cooldown, start, duration, enable)
+                        end
+                    end
+                end
+            end
+            -- Blizzard's update reads GetPetActionInfo too: the stop wins.
+            if petAttackStopped then
+                for i = 1, NUM_PET_ACTION_SLOTS do
+                    local btn = IsPetAttackAction(i) and _G["PetActionButton" .. i]
+                    if btn then
+                        btn:SetChecked(false)
+                        btn:StopFlash()
+                    end
+                end
             end
             -- Layout only when the populated-slot SHAPE changed (summon,
             -- dismiss, swap): re-laying the whole bar per aura/usable event
@@ -1449,7 +1505,7 @@ function EAB:FinishSetup()
             -- Gamepad): RefreshRuntimeVisibility registered that string (an
             -- override keeps the [pet] term), and a plain rebuild here would
             -- stomp it on the reveal's own reconcile pass.
-            if petInfo and petFrame and petS and not petS.alwaysHidden
+            if petInfo and petFrame and petS and not EAB.VisibilityCompat.IsNever(petS)
                and not (self._visOverride and self._visOverride.PetBar)
                and not (self._padHide and petS.gamepadHideBar == true) then
                 RegisterAttributeDriver(petFrame, "state-visibility", BuildVisibilityString(petInfo, petS))
@@ -1457,6 +1513,10 @@ function EAB:FinishSetup()
         end
     end
     local function UpdatePetBar(_, event)
+        -- Kept while the bar is hidden too, for its show edge's pass.
+        if event == "PET_ATTACK_STOP" then petAttackStopped = true
+        elseif event == "PET_ATTACK_START" or event == "UNIT_PET" or event == "PET_UI_UPDATE"
+            or event == "PLAYER_ENTERING_WORLD" then petAttackStopped = false end
         -- Hidden pet bar: skip entirely. The [pet] visibility driver
         -- evaluates engine-side regardless, and the show edge runs a full
         -- reconcile pass, so nothing here can be missed.
@@ -1508,14 +1568,28 @@ function EAB:FinishSetup()
         -- form classes, so nothing can stay stale while visible.
         local sf = barFrames["StanceBar"]
         if sf and not sf:IsVisible() then return end
+        -- WoW Forever's Gamepad interface style: Blizzard's login and loading
+        -- screen pass (ActionBarController_UpdateAll) returns before its
+        -- StanceBar:Update() unless the mouse and keyboard bars are on, so the
+        -- reused StanceButtons get no icon until a form changes. Paint the
+        -- icons here as its UpdateState does, never on the cooldown event.
+        local paintIcons = event ~= "UPDATE_SHAPESHIFT_COOLDOWN" and EllesmereUI.PadGamepadUI()
         local numForms = GetNumShapeshiftForms()
         for i = 1, numForms do
             local btn = _G["StanceButton" .. i]
             if btn then
                 -- Clicks toggle the checked state optimistically; reconcile it
                 -- from the actual form even when the cooldown has not changed.
-                local _, isActive = GetShapeshiftFormInfo(i)
+                local texture, isActive, isCastable = GetShapeshiftFormInfo(i)
                 btn:SetChecked(isActive)
+                local icon = paintIcons and btn.icon
+                if icon then
+                    icon:SetTexture(texture)
+                    if not (issecretvalue and issecretvalue(isCastable)) then
+                        local c = isCastable and 1 or 0.4
+                        icon:SetVertexColor(c, c, c)
+                    end
+                end
             end
             if btn and btn.cooldown then
                 local start, duration, enable = GetShapeshiftFormCooldown(i)

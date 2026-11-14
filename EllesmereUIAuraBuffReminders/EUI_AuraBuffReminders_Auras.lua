@@ -18,9 +18,6 @@ local AURA_SCAN_LIMIT, EABR, GetSpecID = I.AURA_SCAN_LIMIT, I.EABR, I.GetSpecID
 local InCombat, isSecret, NON_SECRET_SPELL_IDS = I.InCombat, I.isSecret, I.NON_SECRET_SPELL_IDS
 local SpellName = I.SpellName
 
-local db
-I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
-
 -------------------------------------------------------------------------------
 --  Pre-combat aura snapshot
 -------------------------------------------------------------------------------
@@ -42,17 +39,12 @@ if EABR.IsRuntimeNonSecret(20707) then NON_SECRET_SPELL_IDS[20707] = true end
 
 local function SnapshotPlayerAuras()
     wipe(_preCombatAuraCache)
-    if EABR.FOREVER then
-        -- WoW Forever: only the custom spell IDs read this snapshot in combat;
-        -- with none tracked there is nothing to scan, and the retail whitelist
-        -- below is dead there either way.
-        local fo = db and db.profile.forever
-        if not (fo and fo.customIDs and fo.customIDs[1]) then return end
-    else
-        for id in pairs(NON_SECRET_SPELL_IDS) do
-            local result = C_UnitAuras.GetPlayerAuraBySpellID(id)
-            _preCombatAuraCache[id] = (result ~= nil)
-        end
+    -- WoW Forever reads nothing from it: its own section shows nothing in
+    -- combat, and its Raid Buffs read the live auras.
+    if EABR.FOREVER then return end
+    for id in pairs(NON_SECRET_SPELL_IDS) do
+        local result = C_UnitAuras.GetPlayerAuraBySpellID(id)
+        _preCombatAuraCache[id] = (result ~= nil)
     end
     -- Also snapshots non-whitelisted auras (e.g. Devotion Aura) going secret when a
     -- partymate combats first. 12.1: index scan hard-errors under restrictions (M+/raid) even OOC; whitelisted lookups still work, extras skipped.
@@ -361,21 +353,25 @@ local _snapScratch = {}  -- reused for SnapshotOwnOnRaidBuffs
 SnapshotOwnOnRaidBuffs = function()
     wipe(_preCombatOwnOnRaidCache)
     for _, id in ipairs(_ownOnRaidIDs) do
-        local found = false
-        _snapScratch[1] = id
-        if _unitHasBuffFromPlayer("player", _snapScratch) then found = true end
-        if not found then
-            if IsInRaid() then
-                for i = 1, GetNumGroupMembers() do
-                    if _unitHasBuffFromPlayer("raid"..i, _snapScratch) then found = true; break end
-                end
-            elseif IsInGroup() then
-                for i = 1, GetNumSubgroupMembers() do
-                    if _unitHasBuffFromPlayer("party"..i, _snapScratch) then found = true; break end
+        -- Secret right now (Blistering Scales in a key): no lookup can see it,
+        -- so leave the entry nil (unknown, suppressed) instead of a false miss.
+        if EABR.IsRuntimeNonSecret(id) then
+            local found = false
+            _snapScratch[1] = id
+            if _unitHasBuffFromPlayer("player", _snapScratch) then found = true end
+            if not found then
+                if IsInRaid() then
+                    for i = 1, GetNumGroupMembers() do
+                        if _unitHasBuffFromPlayer("raid"..i, _snapScratch) then found = true; break end
+                    end
+                elseif IsInGroup() then
+                    for i = 1, GetNumSubgroupMembers() do
+                        if _unitHasBuffFromPlayer("party"..i, _snapScratch) then found = true; break end
+                    end
                 end
             end
+            _preCombatOwnOnRaidCache[id] = found
         end
-        _preCombatOwnOnRaidCache[id] = found
     end
 end
 
@@ -799,9 +795,8 @@ local BUFF_BENEFICIARIES = {
 -- WoW Forever: Intellect serves every mana user (hunters included) and Battle
 -- Shout raises melee attack power only (a hunter shoots with ranged).
 if EABR.FOREVER then
-    BUFF_BENEFICIARIES.intellect = {
-        DRUID = true, HUNTER = true, MAGE = true, PALADIN = true, PRIEST = true, SHAMAN = true, WARLOCK = true,
-    }
+    -- The shared Intellect family's list (the Raid Frames Missing Buffs reads it too).
+    BUFF_BENEFICIARIES.intellect = EllesmereUI.FOREVER_BUFF_FAMILIES.ai.beneficiaries
     BUFF_BENEFICIARIES.attackPower = {
         DRUID = true, PALADIN = true, ROGUE = true, SHAMAN = true, WARRIOR = true,
     }

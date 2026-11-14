@@ -137,7 +137,7 @@ local function CreatePreviewFrame(index, party)
     forwardBar:SetPoint("BOTTOMLEFT", health:GetStatusBarTexture(), "BOTTOMRIGHT", 0, 0)
     forwardBar:SetWidth(health:GetWidth())
     forwardBar:SetHeight(health:GetHeight())
-    -- Match backfill: absorb above heal absorb/heal pred and max health.
+    -- Match backfill (the heal prediction draws over it at this level, as live).
     forwardBar:SetFrameLevel(health:GetFrameLevel() + 3)
     forwardBar:SetMinMaxValues(0, 100)
     forwardBar:Hide()
@@ -216,7 +216,7 @@ local function CreatePreviewFrame(index, party)
         hp:SetPoint("BOTTOMLEFT", health:GetStatusBarTexture(), "BOTTOMRIGHT", 0, 0)
         hp:SetWidth(health:GetWidth())
         hp:SetHeight(health:GetHeight())
-        hp:SetFrameLevel(health:GetFrameLevel() + 1)
+        hp:SetFrameLevel(health:GetFrameLevel() + 3)  -- over the absorb, as live
         hp:SetMinMaxValues(0, 100)
         hp:Hide()
         f._healPredBar = hp
@@ -225,7 +225,7 @@ local function CreatePreviewFrame(index, party)
     -- Reduced max health bar (preview): black bg + red striped overlay on right side
     do
         local rmh = CreateFrame("StatusBar", nil, health)
-        rmh:SetStatusBarTexture("Interface\\AddOns\\EllesmereUIRaidFrames\\Media\\striped-maxhp.png")
+        rmh:SetStatusBarTexture(EllesmereUI.MAX_HEALTH_STRIPES_TEX)
         local rmhFill = rmh:GetStatusBarTexture()
         if rmhFill then
             rmhFill:SetDrawLayer("ARTWORK", 3)
@@ -430,7 +430,7 @@ local function CreatePreviewFrame(index, party)
     -- Dispel border
     local dispelBdrFrame = CreateFrame("Frame", nil, f)
     dispelBdrFrame:SetAllPoints(health)
-    dispelBdrFrame:SetFrameLevel(f:GetFrameLevel() + 10)
+    dispelBdrFrame:SetFrameLevel(f:GetFrameLevel() + ns.LVL_RAISE - 1)
     dispelBdrFrame:Hide()
     if PP then PP.CreateBorder(dispelBdrFrame, 0.2, 0.6, 1, 1, 2) end
 
@@ -479,40 +479,8 @@ local function CreatePreviewFrame(index, party)
     local textCarrier = CreateFrame("Frame", nil, f)
     textCarrier:SetAllPoints(health)
     textCarrier:SetFrameLevel(f:GetFrameLevel() + ns.LVL_TEXT)
-
-    -- Name text (anchoring done by ApplyPreviewData on every refresh)
-    local nameFS = textCarrier:CreateFontString(nil, "OVERLAY")
-    ApplyFont(nameFS, s.nameSize or 10)
-    nameFS:SetJustifyH("CENTER")
-    nameFS:SetWordWrap(false)
-    nameFS:SetPoint("CENTER", health, "CENTER", 0, 0)
-
-    -- Health text
-    local healthFS = textCarrier:CreateFontString(nil, "OVERLAY")
-    ApplyFont(healthFS, s.healthTextSize or 9)
-    healthFS:SetJustifyH("CENTER")
-    healthFS:SetPoint("CENTER", health, "CENTER", 0, 0)
-    healthFS:SetTextColor(1, 1, 1, 0.9)
-
-    -- Power text (anchored, sized, coloured and shown by ApplyPreviewData)
-    local powerFS = textCarrier:CreateFontString(nil, "OVERLAY")
-    ApplyFont(powerFS, s.powerTextSize or 8)
-    powerFS:SetWordWrap(false)
-    powerFS:SetTextColor(1, 1, 1, 0.9)
-    powerFS:Hide()
-
-    -- Level text on its own spot (anchored, sized, coloured and shown by ApplyPreviewData)
-    local levelFS = textCarrier:CreateFontString(nil, "OVERLAY")
-    ApplyFont(levelFS, s.levelTextSize or 10)
-    levelFS:SetWordWrap(false)
-    levelFS:Hide()
-
-    -- Heal absorb text (preview)
-    local healAbsorbFS = textCarrier:CreateFontString(nil, "OVERLAY")
-    ApplyFont(healAbsorbFS, s.healAbsorbTextSize or 9)
-    healAbsorbFS:SetWordWrap(false)
-    healAbsorbFS:SetJustifyH("CENTER")
-    healAbsorbFS:SetPoint("CENTER", health, "CENTER", 0, 0)
+    -- The texts are built on it by ApplyPreviewData (ns.RF_TextPreview).
+    f.textCarrier = textCarrier
 
     -- Status text (DEAD / OFFLINE / AFK)
     local statusFS = textCarrier:CreateFontString(nil, "OVERLAY")
@@ -577,14 +545,9 @@ local function CreatePreviewFrame(index, party)
     f._dispelIconTex = dispelIconTex
     f._raidMarker = raidMarker
     f._readyCheck = readyCheck
-    f._nameText = nameFS
     f._topNameBar = tnb
     f._topNameBarBg = tnbBg
     f._topNameBarText = tnbText
-    f._healthText = healthFS
-    f._powerText = powerFS
-    f._levelText = levelFS
-    f._healAbsorbText = healAbsorbFS
     f._statusText = statusFS
     f._roleIcon = roleIcon
     f._leaderIcon = leaderIcon

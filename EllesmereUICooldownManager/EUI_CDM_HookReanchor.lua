@@ -24,6 +24,7 @@ local IsRouteMapBuilt, ResolveCDIDToBar = I.IsRouteMapBuilt, I.ResolveCDIDToBar
 local ResolveFrameSpellID, ResolveSpellSettings = I.ResolveFrameSpellID, I.ResolveSpellSettings
 local IsFrameIncluded, CategorizeFrame = I.IsFrameIncluded, I.CategorizeFrame
 local DecorateFrame, _trinketFrames = I.DecorateFrame, I._trinketFrames
+local WatchParkedIcon = I.WatchParkedIcon
 local _trinketItemCache, ApplySpellDesaturation = I._trinketItemCache, I.ApplySpellDesaturation
 local GetOrCreateTrinketFrame = I.GetOrCreateTrinketFrame
 local UpdateTrinketCooldown, UpdateTrinketFrame = I.UpdateTrinketCooldown, I.UpdateTrinketFrame
@@ -531,14 +532,43 @@ local function CollectAndReanchor()
                                 local eqInfo = cdID and C_CooldownViewer
                                     and C_CooldownViewer.GetCooldownViewerCooldownInfo
                                     and C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
-                                -- Consumable categories pin inert too (field-probed
-                                -- 2026-08-14: potions/healthstones = 4/30), EXCEPT
-                                -- 1711 = the racial category, the one category-row
-                                -- class that must stay managed (settings/Remove/
-                                -- routing). Unknown future categories fail safe:
-                                -- inert render, unmanaged.
-                                if eqInfo and (eqInfo.equipSlot
-                                    or (eqInfo.spellCategoryID and eqInfo.spellCategoryID ~= 1711)) then
+                                -- Blizzard's own potion / healthstone row (Combat
+                                -- Potion, Health Potion, Healthstone, Demonic
+                                -- Healthstone: spell categories 4 / 30 / 1711 / 2566,
+                                -- Blizzard's own table): claimed under the EUI item
+                                -- preset's key, so it takes the preset's slot and
+                                -- settings, and the preset's own frame stands down
+                                -- while it is live (Phase 3). The key is the row's
+                                -- one stable identity: its raw info has no spell,
+                                -- and its live frame reports the LAST USED item's
+                                -- spell only after a use. The old inert pin left the
+                                -- potion rows without a slot or settings, and 1711,
+                                -- taken for the racial category, let the healthstone
+                                -- row flip between inert and the stone's spell at
+                                -- its first use.
+                                local nativeKey, racialRow = ns.NativeItemKeyFor(eqInfo, frame)
+                                if nativeKey then
+                                    if not cdFrames[barKey] then cdFrames[barKey] = {} end
+                                    local frames = cdFrames[barKey]
+                                    frames[#frames + 1] = frame
+                                    local fc = FC(frame)
+                                    fc.barKey = barKey
+                                    fc.spellID = nativeKey
+                                    fc.isHostedBuff = nil
+                                    ns._ClaimNativeHealthstone(frame, cdID)
+                                    -- A pooled frame may carry the spell identity of
+                                    -- its last occupant: none of it describes an item
+                                    -- row (the claim set and the settings identity
+                                    -- set read these).
+                                    fc.baseSpellID, fc.resolvedSid, fc.overrideSid = nil, nil, nil
+                                    fc.linkedSpellIDs, fc.cachedCdID = nil, nil
+                                -- Equipment rows and every other category row pin
+                                -- inert, except a category row whose live frame
+                                -- resolves a racial: that one stays managed below
+                                -- (settings/Remove/routing). Unknown future
+                                -- categories fail safe: inert render, unmanaged.
+                                elseif eqInfo and (eqInfo.equipSlot
+                                    or (eqInfo.spellCategoryID and not racialRow)) then
                                     if not cdFrames[barKey] then cdFrames[barKey] = {} end
                                     local frames = cdFrames[barKey]
                                     frames[#frames + 1] = frame
@@ -1294,6 +1324,37 @@ local function CollectAndReanchor()
                             -- <= -100, so -sid would otherwise be taken as an itemID and
                             -- fed to GetItemCooldown, which errors outside int32 range
                             -- (cd-claim markers are -(CD_CLAIM_MARKER_BASE + cooldownID)).
+                            -- One exception: a custom buff spell ID (the Add Buff menu's
+                            -- Custom Spell ID) for which no hosted Blizzard frame or
+                            -- placeholder reached this bar has nothing to divert, so an
+                            -- aura icon of ours draws it (EUI_CDM_AuraIcons.lua). Only
+                            -- hosted-buff frames count: the same spell's COOLDOWN frame
+                            -- here is the other form, so the global claim set (cooldowns
+                            -- and linked ids included) cannot decide it.
+                            local hSid = ns.HostedBuffMarkerToSpell and ns.HostedBuffMarkerToSpell(sid)
+                            if hSid and sd and sd.customSpellIDs and sd.customSpellIDs[hSid]
+                               and ns.CDM_AuraIconForBuff then
+                                local ovr = _FindOverride and _FindOverride(hSid)
+                                local base = C_Spell and C_Spell.GetBaseSpell and C_Spell.GetBaseSpell(hSid)
+                                local claimed = false
+                                for fi = 1, #frames do
+                                    local hfc = _ecmeFC[frames[fi]]
+                                    local hs = hfc and hfc.isHostedBuff and hfc.spellID
+                                    if hs and (hs == hSid or hs == ovr or hs == base) then
+                                        claimed = true
+                                        break
+                                    end
+                                end
+                                local af = not claimed and ns.CDM_AuraIconForBuff(barKey, hSid)
+                                if af then
+                                    frames[#frames + 1] = af
+                                    local fc = FC(af)
+                                    fc.barKey = barKey; fc.spellID = hSid
+                                    -- Ranked by its marker slot and resolved as the
+                                    -- hosted buff it is.
+                                    fc.isHostedBuff = true
+                                end
+                            end
                         elseif sid and ns.SlotIDFromKey(sid) and _globalClaimSet[sid] then
                             -- Native-first, injection-fallback (the racial rule
                             -- below, applied to equipment): Blizzard's own cooldown
@@ -1348,8 +1409,16 @@ local function CollectAndReanchor()
                             local itemID = -sid
                             -- Skip when a slot entry on this bar already shows this
                             -- exact item (see slotEquippedItems above); the orphan
-                            -- sweep hides any frame from a previous pass.
-                            local f = not (slotEquippedItems and slotEquippedItems[itemID])
+                            -- sweep hides any frame from a previous pass. Skip too
+                            -- while Blizzard's own row for the item renders in this
+                            -- slot (claimed under this key in Phase 1, so in the
+                            -- claim set): one icon per item, Blizzard's. An entry the
+                            -- reseed listed for such a row (sd.nativeItems) is that
+                            -- row's slot alone: with the row gone it shows nothing,
+                            -- never the preset's own icon.
+                            local nativeOnly = sd and sd.nativeItems and sd.nativeItems[sid]
+                            local f = not _globalClaimSet[sid] and not nativeOnly
+                                and not (slotEquippedItems and slotEquippedItems[itemID])
                                 and not ns._HealthstoneHiddenByPact(itemID)
                                 and GetOrCreateItemPresetFrame(barKey, itemID)
                             if f then
@@ -1417,7 +1486,15 @@ local function CollectAndReanchor()
                                 local base = C_Spell.GetBaseSpell(sid)
                                 if base and base > 0 and _globalClaimSet[base] then hasClaim = true end
                             end
-                            if not hasClaim then
+                            -- An entry an aura icon of ours draws (EUI_CDM_AuraIcons.lua:
+                            -- the WoW Forever Seals stand-in), native-first like a racial.
+                            local auraF = not hasClaim and ns.CDM_AuraIconFor
+                                and ns.CDM_AuraIconFor(barKey, sid)
+                            if auraF then
+                                frames[#frames + 1] = auraF
+                                local fc = FC(auraF)
+                                fc.barKey = barKey; fc.spellID = sid
+                            elseif not hasClaim then
                                 local isRacial = ns._myRacialsSet and ns._myRacialsSet[sid]
                                 local isCustomSpell = sd and sd.customSpellIDs and sd.customSpellIDs[sid]
                                 -- Keep saved placement, but do not inject an unlearned talent.
@@ -2167,6 +2244,10 @@ local function CollectAndReanchor()
                 frame:ClearAllPoints()
                 frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -10000, 10000)
                 if efd then efd._parkGuard = nil end
+                -- A frame never claimed has no SetPoint hook of DecorateFrame's:
+                -- give it the park's own, or Blizzard's next layout leaves it in
+                -- the viewer's grid, catching hover there.
+                WatchParkedIcon(frame)
                 if frame.Cooldown and frame.Cooldown.SetDrawSwipe then
                     frame.Cooldown:SetDrawSwipe(false)
                 end
@@ -2202,6 +2283,12 @@ local function CollectAndReanchor()
             pf:Hide()
         end
     end
+    -- Our aura icons level their slots on the frames this pass placed
+    -- (EUI_CDM_AuraIcons.lua).
+    if ns.CDM_AuraIconsPlaced then ns.CDM_AuraIconsPlaced() end
+    -- WoW Forever: buff icons Blizzard draws without a timer
+    -- (EUI_CDM_ForeverLinkedAura.lua).
+    if ns.CDM_LinkedAuraPlaced then ns.CDM_LinkedAuraPlaced() end
 
     if not ns._initialReanchorDone then ns._initialReanchorDone = true end
 
@@ -2238,7 +2325,11 @@ local function CollectAndReanchor()
         -- and on Blizzard settings-panel close (in-place layout edits). Keyed
         -- by spec + active Blizzard layout id: a spell tracked only on a
         -- layout switched to later in the session must still get its pass.
-        if ns.ReseedAssignedSpellsFromLiveIcons and prof
+        -- Never before Blizzard has loaded its saved layouts (ns._cdmDataLoaded):
+        -- until then its viewers show the class defaults, and a default spell or
+        -- racial written into a bar here keeps that bar over the player's own
+        -- layout. The data-loaded wake queues the reanchor that runs it.
+        if ns.ReseedAssignedSpellsFromLiveIcons and prof and ns._cdmDataLoaded
            and prof._barFilterModelV6 and not prof._importGhostMode then
             ns._reseededSpecsSession = ns._reseededSpecsSession or {}
             local layoutID = ns.GetActiveCDMLayoutID and ns.GetActiveCDMLayoutID()
@@ -2314,6 +2405,10 @@ local function CollectAndReanchor()
             if EllesmereUI.ScheduleSettleReapply then
                 EllesmereUI.ScheduleSettleReapply()
             end
+            -- A repopulate queued through EllesmereUI.RequestCDMRepopulate: this
+            -- is the settled point for the live spec, and outside the reanchor,
+            -- which the repopulate's own rebuild runs again.
+            if ns.RunQueuedRepopulate then ns.RunQueuedRepopulate() end
         end)
     else
         -- Routine reanchor (icon churn, mob death, etc.) -- still clear

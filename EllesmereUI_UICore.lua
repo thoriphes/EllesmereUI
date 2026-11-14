@@ -34,11 +34,17 @@ local BTN_TXT_HA = EllesmereUI.BTN_TXT_HA
 -- colours = { bg_r,bg_g,bg_b,bg_a, bg_hr,bg_hg,bg_hb,bg_ha,
 --             brd_r,brd_g,brd_b,brd_a, brd_hr,brd_hg,brd_hb,brd_ha,
 --             txt_r,txt_g,txt_b,txt_a, txt_hr,txt_hg,txt_hb,txt_ha }
-local function MakeStyledButton(btn, text, fontSize, colours, onClick)
+-- square (optional): the square outline, for a window that is square by design.
+local function MakeStyledButton(btn, text, fontSize, colours, onClick, square)
     local c = colours
     local bg  = SolidTex(btn, "BACKGROUND", c[1], c[2], c[3], c[4])
     bg:SetAllPoints()
-    local brd = MakeBorder(btn, c[9], c[10], c[11], c[12], PP)
+    local brd
+    if square then
+        brd = MakeBorder(btn, c[9], c[10], c[11], c[12], PP)
+    else
+        brd = EllesmereUI.MakeRoundedBorder(btn, c[9], c[10], c[11], c[12], bg)
+    end
     local lbl = MakeFont(btn, fontSize, nil, c[17], c[18], c[19])
     -- The resting alpha lives in the text colour, as the hover scripts below set it
     -- (a region alpha on top would multiply with it after the first hover).
@@ -87,9 +93,9 @@ EllesmereUI.RB_COLOURS       = RB_COLOURS
 -- opts: width, height (nil = fit the content: textTop, the text, gap, the
 -- button and btnBottom), text (already translated, so the call site keeps its
 -- literal key for the locale extractor),
--- onOkay, arrow ("top", the default: the box sits below its target; "left":
--- the box sits right of it), arrowOffset (px along that edge from its
--- centre), pp (default PanelPP), strata (default FULLSCREEN_DIALOG; false
+-- onOkay, arrow ("top", the default: the box sits below its target; "bottom":
+-- the box sits above it; "left": the box sits right of it), arrowOffset (px
+-- along that edge from its centre), pp (default PanelPP), strata (default FULLSCREEN_DIALOG; false
 -- keeps the parent's), level (default 200), font (a path; default the panel
 -- font), fontFlags (with font; default none), fontSize (12), textTop (17),
 -- textInset (30), spacing (6), gap (12, text to button with a fitted height),
@@ -138,6 +144,10 @@ function EllesmereUI.BuildTipCallout(parent, opts)
         clip:SetSize(TIP_ARROW, TIP_ARROW * 2)
         clip:SetPoint("RIGHT", tip, "LEFT", 1, off)
         holder:SetPoint("CENTER", clip, "RIGHT", 0, 0)
+    elseif opts.arrow == "bottom" then
+        clip:SetSize(TIP_ARROW * 2, TIP_ARROW)
+        clip:SetPoint("TOP", tip, "BOTTOM", off, 1)
+        holder:SetPoint("CENTER", clip, "TOP", 0, 0)
     else
         clip:SetSize(TIP_ARROW * 2, TIP_ARROW)
         clip:SetPoint("BOTTOM", tip, "TOP", off, -1)
@@ -230,7 +240,11 @@ local function GetTooltipFrame()
         bg:SetAllPoints()
         tooltipFrame.bg = bg
         MakeBorder(tooltipFrame, 1, 1, 1, 0.15, PP)
-        tooltipFrame.text = MakeFont(tooltipFrame, 10, nil, 1, 1, 1, 0.80)
+        -- The panel font as a font family: the tooltip also shows friends' names
+        -- and notes, whose scripts the panel font may lack.
+        tooltipFrame.text = tooltipFrame:CreateFontString(nil, "OVERLAY")
+        EllesmereUI.SetFontFamily(tooltipFrame.text, EllesmereUI.EXPRESSWAY, 10, "", false)
+        tooltipFrame.text:SetTextColor(1, 1, 1, 0.80)
         tooltipFrame.text:SetPoint("TOPLEFT", 8, -8)
         tooltipFrame.text:SetPoint("TOPRIGHT", -8, -8)
         tooltipFrame.text:SetWordWrap(true)
@@ -436,7 +450,7 @@ end
 local function ResolveThemeColor(theme)
     theme = EllesmereUI._ResolveFactionTheme(theme)
     if theme == "Class Colored" then
-        local clr = EllesmereUI.CLASS_COLOR_MAP[EllesmereUI._playerClass]
+        local clr = EllesmereUI.GetRawClassColor(EllesmereUI._playerClass)
         if clr then return clr.r, clr.g, clr.b end
         return EllesmereUI.DEFAULT_ACCENT_R, EllesmereUI.DEFAULT_ACCENT_G, EllesmereUI.DEFAULT_ACCENT_B
     elseif theme == "Custom Color" then
@@ -556,7 +570,7 @@ function EllesmereUI.ResolveProfileAccent(profileData)
     local acc = profileData and profileData.euiAccent
     -- 1) per-profile
     if acc and acc.useClass then
-        local c = EllesmereUI.CLASS_COLOR_MAP[EllesmereUI._playerClass]
+        local c = EllesmereUI.GetRawClassColor(EllesmereUI._playerClass)
         if c then return true, c.r, c.g, c.b end
     end
     if acc and acc.custom then
@@ -565,7 +579,7 @@ function EllesmereUI.ResolveProfileAccent(profileData)
     end
     -- 2) frozen global root -- ONLY when the profile has no explicit euiAccent. An explicit per-profile opt-out (useClass=false, no custom yet) must NOT fall through to the global class color; it drops to the global custom/theme terminal below, matching the displayed Custom swatch state.
     if (not acc) and EllesmereUIDB and EllesmereUIDB.useClassAccentColor then
-        local c = EllesmereUI.CLASS_COLOR_MAP[EllesmereUI._playerClass]
+        local c = EllesmereUI.GetRawClassColor(EllesmereUI._playerClass)
         if c then return true, c.r, c.g, c.b end
     end
     local gca = EllesmereUIDB and EllesmereUIDB.customAccentColor
@@ -588,7 +602,7 @@ end
 
 --- Class color for the current player
 EllesmereUI.GetPlayerClassColor = function()
-    local clr = EllesmereUI.CLASS_COLOR_MAP[EllesmereUI._playerClass]
+    local clr = EllesmereUI.GetRawClassColor(EllesmereUI._playerClass)
     if clr then return clr.r, clr.g, clr.b end
     return EllesmereUI.DEFAULT_ACCENT_R, EllesmereUI.DEFAULT_ACCENT_G, EllesmereUI.DEFAULT_ACCENT_B
 end
@@ -622,6 +636,7 @@ end
 --                        setValue(v) the whole number, floored at min (or 1)
 --    icon = texture      a cropped 16px icon before the label
 --    noLoc = true        the label as given (no L())
+--    desc = "..."        a small grey line under the label (as given, no L())
 --  opts (optional): below = true hangs the menu off `anchor`'s bottom-left edge
 --  instead of the cursor (the dropdown placement of the options widgets);
 --  minWidth widens the menu to the anchor's width so it reads as a dropdown.
@@ -897,6 +912,48 @@ local function CtxBox(row, fontPath, outline)
     return box
 end
 
+-- the x on a row with onRemove: its own button, so the row's click still picks
+local function CtxRemove(row)
+    local rm = row._rm
+    if not rm then
+        rm = CreateFrame("Button", nil, row)
+        rm:SetSize(16, 16)
+        rm:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+        rm:SetFrameLevel(row:GetFrameLevel() + 2)
+        rm.icon = rm:CreateTexture(nil, "OVERLAY")
+        rm.icon:SetAllPoints()
+        rm.icon:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-close.png")
+        rm.icon:SetAlpha(0.45)
+        -- the row stays lit under its x, and the menu closing takes the x's tip with it
+        rm:SetScript("OnEnter", function(self)
+            self.icon:SetAlpha(1)
+            local r = self:GetParent()
+            CtxPaint(r, true)
+            local tip = r._item.removeTip
+            if tip then
+                CtxRoot(r._panel)._tip = true
+                EllesmereUI.ShowWidgetTooltip(self, tip)
+            end
+        end)
+        rm:SetScript("OnLeave", function(self)
+            self.icon:SetAlpha(0.45)
+            local r = self:GetParent()
+            CtxRoot(r._panel)._tip = nil
+            EllesmereUI.HideWidgetTooltip()
+            CtxPaint(r, r._item.isActive)
+        end)
+        rm:SetScript("OnClick", function(self)
+            local r = self:GetParent()
+            local fn = r._item.onRemove
+            EllesmereUI.HideWidgetTooltip()
+            CtxRoot(r._panel):Hide()
+            fn()
+        end)
+        row._rm = rm
+    end
+    return rm
+end
+
 local function CtxIcon(row)
     local icon = row._icon
     if not icon then
@@ -906,6 +963,18 @@ local function CtxIcon(row)
         row._icon = icon
     end
     return icon
+end
+
+-- the small line under a label, made on first need
+local function CtxDesc(row)
+    local d = row._desc
+    if not d then
+        d = row:CreateFontString(nil, "OVERLAY")
+        d:SetJustifyH("LEFT")
+        d:SetWordWrap(false)
+        row._desc = d
+    end
+    return d
 end
 
 local function CtxLayout(panel, items, minW, fontKey)
@@ -939,7 +1008,15 @@ local function CtxLayout(panel, items, minW, fontKey)
         if type(item) == "table" then
             mfs:SetText(item.noLoc and item.text or L(item.text or ""))
             local w = mfs:GetStringWidth() or 0
+            if item.onRemove then w = w + 20 end
             if w > widest then widest = w end
+            if item.desc then
+                mfs:SetFont(fontPath, size - 2, outline)
+                mfs:SetText(item.desc)
+                w = mfs:GetStringWidth() or 0
+                if w > widest then widest = w end
+                mfs:SetFont(fontPath, size, outline)
+            end
             if item.icon then iconW = 22 end
         end
     end
@@ -969,9 +1046,13 @@ local function CtxLayout(panel, items, minW, fontKey)
         if row._arrow then row._arrow:Hide() end
         if row._box then row._box:Hide() end
         if row._icon then row._icon:Hide() end
+        if row._rm then row._rm:Hide() end
+        if row._desc then row._desc:Hide() end
+        local desc = type(item) == "table" and item.desc
         -- The label starts past the item's icon.
-        lbl:SetPoint("LEFT", row, "LEFT", look.left + ((type(item) == "table" and item.icon) and 22 or 0), 0)
-        local h = look.rowH
+        lbl:SetPoint("LEFT", row, "LEFT", look.left + ((type(item) == "table" and item.icon) and 22 or 0), desc and 6 or 0)
+        lbl:SetPoint("RIGHT", row, "RIGHT", look.right, desc and 6 or 0)
+        local h = desc and look.rowH + 10 or look.rowH
         if item == "---" then
             h = look.sepH
             row._item, row._disabled = nil, true
@@ -981,6 +1062,15 @@ local function CtxLayout(panel, items, minW, fontKey)
         else
             row._item = item
             lbl:SetText(item.noLoc and item.text or L(item.text or ""))
+            if desc then
+                local d = CtxDesc(row)
+                d:SetFont(fontPath, size - 2, outline)
+                d:SetPoint("TOPLEFT", lbl, "BOTTOMLEFT", 0, -3)
+                d:SetPoint("RIGHT", row, "RIGHT", look.right, 0)
+                d:SetText(desc)
+                d:SetTextColor(1, 1, 1, (item.isDisabled and item.isDisabled()) and 0.25 or 0.5)
+                d:Show()
+            end
             if item.icon then
                 local ic = CtxIcon(row)
                 ic:SetPoint("LEFT", row, "LEFT", look.left, 0)
@@ -1008,6 +1098,7 @@ local function CtxLayout(panel, items, minW, fontKey)
                 else
                     CtxPaint(row, item.isActive)
                 end
+                if item.onRemove and not disabled then CtxRemove(row):Show() end
             end
         end
         row:SetSize(width - pad * 2, h)
@@ -1116,7 +1207,8 @@ end
 --      EllesmereUI.WithSurname(UnitName(unit))
 --  Retail gets the first value back unchanged. A secret name (protected
 --  content) comes back as is, first name only: it cannot be inspected or
---  joined. Your own surname follows Blizzard's show-surname preference.
+--  joined. Your own surname follows Blizzard's show-surname preference unless
+--  ignorePreference is set.
 --  Joined names are cached per name pair, so repaints build no strings.
 -------------------------------------------------------------------------------
 do
@@ -1125,12 +1217,12 @@ do
         and Constants.CharacterNameSeparatorConsts.CHARACTERNAME_SURNAME_SEPARATOR or " "
     local joined = {}   -- [name][surname] = the display string
 
-    function EllesmereUI.WithSurname(name, surname)
+    function EllesmereUI.WithSurname(name, surname, ignorePreference)
         if not IS_FOREVER then return name end
         if issecretvalue(name) or issecretvalue(surname) then return name end
         if type(name) ~= "string" or type(surname) ~= "string" or surname == "" then return name end
         local PI = C_PlayerInfo
-        if PI and PI.ShouldDisplaySurname and not PI.ShouldDisplaySurname() then
+        if not ignorePreference and PI and PI.ShouldDisplaySurname and not PI.ShouldDisplaySurname() then
             local myName, mySurname = (UnitNameUnmodified or UnitName)("player")
             if name == myName and surname == mySurname then return name end
         end
@@ -1146,28 +1238,85 @@ do
         return full
     end
 
-    -- Name Format (WoW Forever only; nil on retail, where no caller runs):
-    --     EllesmereUI.ForeverShortName(name, mode)
-    -- mode "first" keeps the name's first word, "last" its last; any other
-    -- mode (nil = First and Last) returns it unchanged, as does a one-word,
-    -- secret or non-string name. Words split at spaces and at the surname
-    -- separator. Short forms are cached per mode and name, so repaints build
-    -- no strings; a mode's cache is wiped once it holds 256 names.
-    if IS_FOREVER then
-        local short = { first = {}, last = {} }   -- [mode][name] = short form
-        local count = { first = 0, last = 0 }
+    -- True for your own unit on WoW Forever while Blizzard's "My Surname" (UnitSurnameOwn)
+    -- is off, when your name is your first name alone: the [name:last] and [target:last]
+    -- tags show nothing for it, so "[name:first] [name:last]" reads as the first name.
+    function EllesmereUI.OwnSurnameHidden(unit)
+        if not IS_FOREVER or not unit then return false end
+        local PI = C_PlayerInfo
+        if not (PI and PI.ShouldDisplaySurname) or PI.ShouldDisplaySurname() then return false end
+        local isMe = UnitIsUnit(unit, "player")
+        if issecretvalue(isMe) then return false end
+        return isMe == true
+    end
+
+    -- Name Format, on every client:
+    --     EllesmereUI.ShortName(name, mode)
+    -- "first" / "last" keep one word, "abbr" turns every word but the last into
+    -- an initial ("Illidan Stormrage" -> "I. Stormrage") and a number (a
+    -- Character Count) keeps that many characters. Any other mode, nil and
+    -- "full" included, keeps the whole name, as does a secret or non-string
+    -- name. Words split at spaces and at the surname separator. Each mode caches
+    -- 256 names, so repaints build no strings.
+    --     EllesmereUI.IsNameFormat(mode)
+    -- True for a mode that changes names (a module keys its own per-mode
+    -- tables on these).
+    --     EllesmereUI.Utf8Prefix(text, n)
+    -- The first n characters of a plain string, or the string itself when it
+    -- has n or fewer.
+    do
+        local floor = math.floor
+        local short = { first = {}, last = {}, abbr = {} }   -- [mode][name] = short form
+        local count = { first = 0, last = 0, abbr = 0 }
         local sepPat = (SEP ~= " " and SEP ~= "") and SEP:gsub("%W", "%%%0") or nil
 
-        function EllesmereUI.ForeverShortName(name, mode)
+        local function Utf8Prefix(text, n)
+            local bytes, i, chars = #text, 1, 0
+            while i <= bytes do
+                if chars == n then return text:sub(1, i - 1) end
+                local b = text:byte(i)
+                i = i + ((b < 128 and 1) or (b < 224 and 2) or (b < 240 and 3) or 4)
+                chars = chars + 1
+            end
+            return text
+        end
+        EllesmereUI.Utf8Prefix = Utf8Prefix
+
+        local function IsCount(mode)
+            return type(mode) == "number" and mode >= 1 and mode == floor(mode)
+        end
+        function EllesmereUI.IsNameFormat(mode)
+            return short[mode] ~= nil or IsCount(mode)
+        end
+
+        function EllesmereUI.ShortName(name, mode)
+            if issecretvalue(name) or type(name) ~= "string" then return name end
             local cache = short[mode]
-            if not cache or issecretvalue(name) or type(name) ~= "string" then return name end
+            if not cache then
+                -- A Character Count gets its cache on first use.
+                if not IsCount(mode) then return name end
+                cache = {}
+                short[mode], count[mode] = cache, 0
+            end
             local s = cache[name]
             if s then return s end
             local words = sepPat and name:gsub(sepPat, " ") or name
             if mode == "first" then
                 s = words:match("^%s*(%S+)")
-            else
+            elseif mode == "last" then
                 s = words:match("(%S+)%s*$")
+            elseif mode == "abbr" then
+                local parts = {}
+                for word in words:gmatch("%S+") do parts[#parts + 1] = word end
+                if #parts >= 2 then
+                    for i = 1, #parts - 1 do
+                        parts[i] = Utf8Prefix(parts[i], 1) .. "."
+                    end
+                    s = table.concat(parts, " ")
+                end
+            else
+                -- No trailing space where the cut lands between two words.
+                s = Utf8Prefix(words, mode):match("^(.-)%s*$")
             end
             s = s or name
             if count[mode] >= 256 then wipe(cache); count[mode] = 0 end
@@ -1176,21 +1325,98 @@ do
             return s
         end
 
-        -- The Name Format choices of every options row that sets one:
-        --     EllesmereUI.NAME_FORMAT_VALUES / EllesmereUI.NAME_FORMAT_ORDER
-        -- "full" (First and Last) is the unset default, saved as nil (Raid
-        -- Frames saves "full"). "mixed" is display-only, for a row over several
-        -- settings that differ: the order leaves it out, so it is never offered.
-        --     EllesmereUI.NameFormatCogRow(get, set)
-        -- A settings-cog dropdown row for one Name Format: get() returns the
-        -- saved value ("first", "last" or nil) and set(v) receives the same.
-        local VALUES = { first = "First Name", last = "Last Name", full = "First and Last", mixed = "Mixed" }
-        local ORDER = { "first", "last", "full" }
-        EllesmereUI.NAME_FORMAT_VALUES, EllesmereUI.NAME_FORMAT_ORDER = VALUES, ORDER
-        function EllesmereUI.NameFormatCogRow(get, set)
-            return { type = "dropdown", label = "Name Format", values = VALUES, order = ORDER,
-                get = function() return get() or "full" end,
-                set = function(v) set((v ~= "full") and v or nil) end }
+        -- The Name Format a unit's name takes:
+        --     mode = EllesmereUI.UnitNameFormat(mode, unit)
+        -- WoW Forever: First Name and Last Name part a character's name from
+        -- its surname, so they shape players' names only; a mob's, an NPC's or
+        -- a pet's name stays whole ("Rot Hide Gnoll" never reads "Rot"). Any
+        -- other mode, and a nil unit (an options preview), comes back as given.
+        -- Retail returns every mode as given: its player names are one word,
+        -- so there these two modes only ever shorten other names.
+        function EllesmereUI.UnitNameFormat(mode, unit)
+            if IS_FOREVER and unit and (mode == "first" or mode == "last") then
+                local isPlayer = UnitIsPlayer(unit)
+                if issecretvalue(isPlayer) or not isPlayer then return nil end
+            end
+            return mode
+        end
+
+        -- The Name Format choices, for every dropdown that sets one:
+        --     values, order, getValue, setValue = EllesmereUI.NameFormatMenu(get, set, opts)
+        -- get() returns the saved value; set(v) receives "first", "last",
+        -- "full", "abbr" or a number. The Character Count entry opens a number
+        -- popup and saves the number, which the dropdown then reads as "N
+        -- Characters". A pick goes through setValue. opts (optional): onSaved
+        -- runs after a count is saved, for a control the page refresh does not
+        -- reach; enemies, for a text that can show enemy names, warns on retail
+        -- that the game keeps those whole in restricted content (a popup after
+        -- a pick, a red line in the count popup). Options pages only.
+        --     EllesmereUI.NameFormatCogRow(get, set, opts)
+        -- A settings-cog dropdown row over the same; "full" arrives as nil.
+        -- opts.label replaces the row's "Name Format", opts.tooltip shows on
+        -- its dropdown.
+        local LABELS = { first = "First Name", last = "Last Name", full = "Full Name", abbr = "Abbreviated" }
+        local ORDER = { "full", "first", "last", "abbr", "custom" }
+        local MAX_COUNT = 99
+        -- Wide enough for "Character Count" and its pencil on one line.
+        local MENU_W = 160
+        -- A saved count's label, made when a dropdown reads it.
+        local COUNT_LABEL = { __index = function(_, k)
+            if IsCount(k) then return EllesmereUI.Lf("%1$d Characters", k) end
+        end }
+        local function ParseCount(text)
+            local n = tonumber(text)
+            if n and n <= MAX_COUNT and IsCount(n) then return n end
+        end
+        local function EnemyNote()
+            return EllesmereUI.L("Enemies' names will still show their full names in restricted content (M+/Raid).")
+        end
+        function EllesmereUI.NameFormatMenu(get, set, opts)
+            local onSaved = opts and opts.onSaved
+            local warn = opts and opts.enemies and not EllesmereUI.IS_FOREVER
+            local function Edit()
+                local cur = get()
+                EllesmereUI:ShowInputPopup({
+                    title = EllesmereUI.L("Character Count"),
+                    message = EllesmereUI.L("Names show at most this many characters."),
+                    redWarning = warn and EnemyNote() or nil,
+                    placeholder = "1 - " .. MAX_COUNT,
+                    initialText = IsCount(cur) and tostring(cur) or "",
+                    numeric = true,
+                    maxLetters = #tostring(MAX_COUNT),
+                    validate = function(text)
+                        if not ParseCount(text) then
+                            return EllesmereUI.Lf("Enter a number from %1$d to %2$d.", 1, MAX_COUNT)
+                        end
+                    end,
+                    onConfirm = function(text)
+                        local n = ParseCount(text)
+                        if not n then return end
+                        set(n)
+                        if onSaved then onSaved() end
+                        EllesmereUI:RefreshPage()
+                    end,
+                })
+            end
+            local function SetValue(v)
+                local old = get()
+                set(v)
+                if warn and v ~= "full" and v ~= old then
+                    EllesmereUI:ShowConfirmPopup({ title = "Name Format", message = EnemyNote(),
+                        confirmText = "Okay", hideCancel = true })
+                end
+            end
+            local values = EllesmereUI.TextTags.MenuValues(LABELS, Edit,
+                { text = "Character Count", selected = function() return IsCount(get()) end })
+            return setmetatable(values, COUNT_LABEL), ORDER, function() return get() or "full" end, SetValue
+        end
+        EllesmereUI.NAME_FORMAT_MENU_W = MENU_W
+        function EllesmereUI.NameFormatCogRow(get, set, opts)
+            local values, order, getValue, setValue = EllesmereUI.NameFormatMenu(get,
+                function(v) set((v ~= "full") and v or nil) end, opts)
+            return { type = "dropdown", label = opts and opts.label or "Name Format",
+                tooltip = opts and opts.tooltip, values = values, order = order,
+                ddWidth = MENU_W, get = getValue, set = setValue }
         end
     end
 end
@@ -1261,7 +1487,9 @@ end -- IS_FOREVER
 --    PadInUse()             PadCP() or PadNative(): the controller signal
 --    PadConnected()         gamepad support is on and a controller is
 --                           connected (not the last input: no mouse flicker)
---    WatchPad(owner, fn)    fn(padOn) once per burst of PadConnected() edges
+--    PadModeOn()            what the controller hides follow: WoW Forever's
+--                           Gamepad interface style, elsewhere PadConnected()
+--    WatchPad(owner, fn)    fn(padOn) once per burst of PadModeOn() edges
 --    UnwatchPad(owner)      stop following; the last one drops the events
 --    PadGamepadUI()         WoW Forever's Gamepad interface style is on
 --    RaiseGamePadCursor()   gamepad pointer on at a user-requested open
@@ -1304,11 +1532,25 @@ do
     end
 
     -- Forever's Gamepad interface style replaces the free pointer with D-pad
-    -- navigation; read live (no event), false on retail.
+    -- navigation; read live (no event), false on retail. It gates what a
+    -- controller cannot drive. A hook of ours on a Blizzard frame is no reason
+    -- to stand down under it (the style's navigation runs its entry points
+    -- securely and calls frame callbacks through securecallfunction), but a
+    -- Blizzard menu whose owner drives a gamepad binding group is never opened
+    -- from addon code there (the Minimap's tracking button).
     local function PadGamepadUI()
         if not IS_FOREVER then return false end
         local style, types = C_InputInterfaceStyle, Enum.InputDeviceInterfaceType
         return style ~= nil and types ~= nil and style.GetCurrentStyle() == types.Gamepad
+    end
+
+    -- What the controller hides (Global Settings > Gamepad) follow. On WoW
+    -- Forever its Gamepad interface style: Blizzard's own gamepad bars and cast
+    -- bar show only under it, so a controller left connected during keyboard and
+    -- mouse play hides nothing. Elsewhere a connected controller.
+    local function PadModeOn()
+        if IS_FOREVER then return PadGamepadUI() end
+        return PadConnected()
     end
 
     EllesmereUI.PadCP        = PadCP
@@ -1316,17 +1558,25 @@ do
     EllesmereUI.PadInUse     = PadInUse
     EllesmereUI.PadConnected = PadConnected
     EllesmereUI.PadGamepadUI = PadGamepadUI
+    EllesmereUI.PadModeOn    = PadModeOn
 
-    -- Following PadConnected(): one shared watcher for every feature that hides
+    -- Following PadModeOn(): one shared watcher for every feature that hides
     -- or shows something with the controller. Its frame is built at the first
-    -- WatchPad and holds GAME_PAD_CONNECTED / GAME_PAD_DISCONNECTED and the
-    -- GamePadEnable CVAR_UPDATE only while at least one watcher exists. Edges
-    -- come in bursts (a reconnect is DISCONNECTED then CONNECTED, a second pad
-    -- adds its own, the CVar can land beside them), so a burst arms ONE flush
-    -- next frame that reads PadConnected() once and calls every watcher's
-    -- fn(padOn). WatchPad never calls fn itself: the caller reads
-    -- PadConnected() when it starts watching. Watching again replaces fn.
+    -- WatchPad and holds its events only while at least one watcher exists:
+    -- GAME_PAD_CONNECTED / GAME_PAD_DISCONNECTED and the GamePadEnable
+    -- CVAR_UPDATE, or on WoW Forever the interface style's
+    -- INPUT_DEVICE_INTERFACE_TRANSITION (the style reads right one frame later,
+    -- when the flush runs). Edges come in bursts (a reconnect is DISCONNECTED
+    -- then CONNECTED, a second pad adds its own, the CVar can land beside them),
+    -- so a burst arms ONE flush next frame that reads PadModeOn() once and calls
+    -- every watcher's fn(padOn). WatchPad never calls fn itself: the caller
+    -- reads PadModeOn() when it starts watching. Watching again replaces fn.
     do
+        -- The style transition, where the client knows it (an unknown event
+        -- name errors at registration).
+        local STYLE_EVENT = IS_FOREVER and not (C_EventUtils and C_EventUtils.IsEventValid
+            and not C_EventUtils.IsEventValid("INPUT_DEVICE_INTERFACE_TRANSITION"))
+            and "INPUT_DEVICE_INTERFACE_TRANSITION" or nil
         local watchers, watchFrame, flushArmed, flushOwners
 
         local function FlushPad()
@@ -1338,7 +1588,7 @@ do
                 n = n + 1
                 flushOwners[n] = owner
             end
-            local on = PadConnected()
+            local on = PadModeOn()
             -- One failing watcher must not stop the rest (or strand the
             -- snapshot slots): report it and carry on.
             for i = 1, n do
@@ -1367,9 +1617,13 @@ do
                 watchFrame:SetScript("OnEvent", OnPadEdge)
             end
             if next(watchers) == nil then
-                watchFrame:RegisterEvent("GAME_PAD_CONNECTED")
-                watchFrame:RegisterEvent("GAME_PAD_DISCONNECTED")
-                watchFrame:RegisterEvent("CVAR_UPDATE")
+                if IS_FOREVER then
+                    if STYLE_EVENT then watchFrame:RegisterEvent(STYLE_EVENT) end
+                else
+                    watchFrame:RegisterEvent("GAME_PAD_CONNECTED")
+                    watchFrame:RegisterEvent("GAME_PAD_DISCONNECTED")
+                    watchFrame:RegisterEvent("CVAR_UPDATE")
+                end
             end
             watchers[owner] = fn
         end
@@ -1417,6 +1671,21 @@ do
         if f:IsProtected() and InCombatLockdown() then return end
         if v == nil then v = true end
         f:SetAttribute(attr, v)
+    end
+
+    -- A hand-built modal popup of ours (a named dimmer over its panel) joins the
+    -- controller cursor and answers controller Back from its first open with a
+    -- controller in use; until then nothing is registered or hooked. The panel
+    -- stays a blocker without being a cursor stop, closeBtn is what the
+    -- controller's cancel button presses, and onEscape (nil = hide the dimmer) is
+    -- what Back runs. Call it just before the dimmer's Show (the Cooldown
+    -- Manager's popups, the Talent Conditions picker).
+    function EllesmereUI.PadPopupOpen(dimmer, panel, closeBtn, onEscape)
+        if dimmer._padReg or not EllesmereUI.PadInUse() then return end
+        dimmer._padReg = true
+        EllesmereUI.PadHint(panel, "nodepass")
+        if closeBtn then panel.CloseButton = closeBtn end
+        EllesmereUI.RegisterEscapeClose(dimmer, { padOnly = true, onEscape = onEscape })
     end
 
     function EllesmereUI.PadCursorShown()

@@ -244,6 +244,7 @@ function ERB:ApplyAll()
     if ns.MigrateLegacyAnchorTo then ns.MigrateLegacyAnchorTo() end
     if ns.AS_Apply then ns.AS_Apply() end
     if ns.ST_Apply then ns.ST_Apply() end
+    if ns.MT_Apply then ns.MT_Apply() end
     if ns.CT_Apply then ns.CT_Apply() end
 
     -- Custom conditionals report their edges through the shared dispatcher; nothing
@@ -361,6 +362,7 @@ end
 local function OnEvent(self, event, ...)
     if event == "UNIT_HEALTH" then
         UpdateHealthBar()
+        if healthBar and healthBar._missLive then ns.ERB_MissingPaint(healthBar) end
         -- Stagger is based on health, so update secondary resource too
         if cachedSecondary and cachedSecondary.power == "BREWMASTER_STAGGER" then
             UpdateSecondaryResource()
@@ -378,10 +380,23 @@ local function OnEvent(self, event, ...)
             if not tok or issecretvalue(powerToken) or powerToken == tok then
                 UpdatePrimaryBar()
             end
+            if primaryBar then
+                if primaryBar._missLive then
+                    local mtok = POWER_ENUM_TO_KEY[primaryBar._missPower]
+                    if not mtok or issecretvalue(powerToken) or powerToken == mtok then
+                        ns.ERB_MissingPaint(primaryBar)
+                    end
+                end
+                local mh = primaryBar._missHost
+                if mh and mh._missLive and (issecretvalue(powerToken) or powerToken == "MANA") then
+                    ns.ERB_MissingPaint(mh)
+                end
+            end
             UpdateSecondaryResource()
         end
     elseif event == "UNIT_MAXHEALTH" or event == "UNIT_MAX_HEALTH_MODIFIERS_CHANGED" then
         UpdateHealthBar()
+        if healthBar and healthBar._missLive then ns.ERB_MissingPaint(healthBar) end
         -- Two-step max-health landing (max first, value after): one next-frame
         -- re-read settles torn numbers (canonical story: UF engine RESETTLE_EVENTS).
         if not self._erbHpResettle then
@@ -432,6 +447,11 @@ local function OnEvent(self, event, ...)
             UpdateVisibility()
         end
         UpdatePrimaryBar()
+        if primaryBar then
+            if primaryBar._missLive then ns.ERB_MissingPaint(primaryBar) end
+            local mh = primaryBar._missHost
+            if mh and mh._missLive then ns.ERB_MissingPaint(mh) end
+        end
         UpdateSecondaryResource()
     elseif event == "RUNE_POWER_UPDATE" then
         UpdateSecondaryResource()
@@ -500,6 +520,9 @@ local function OnEvent(self, event, ...)
         -- coalesce the heavy rebuild via a debounce so a burst of node events
         -- rebuilds once, not once per event.
         ns.InvalidateThresholdCaches()
+        -- WoW Forever swing timer: its talent conditions read fresh (the file
+        -- exists only on that client).
+        if ns.ST_TalentChanged then ns.ST_TalentChanged() end
         ns.ScheduleTalentApply()
     elseif event == "UPDATE_SHAPESHIFT_FORM" then
         SetCachedPrimary(GetPrimaryPowerType())
@@ -545,6 +568,9 @@ local function OnEvent(self, event, ...)
         IP.hashEndTime = 0
     elseif event == "PLAYER_ENTERING_WORLD" then
         C_Timer.After(0.5, function()
+            -- WoW Forever swing timer: a talent read the login apply made before
+            -- the talent data was in is read again by this apply.
+            if ns.ST_TalentChanged then ns.ST_TalentChanged() end
             ERB:ApplyAll()
             RegisterUnlockElements()
             -- ApplyAll just cached the power type off a spec that may not have
@@ -562,7 +588,13 @@ local function OnEvent(self, event, ...)
         local unit = ...
         if unit == "player" and castBarFrame and castBarFrame._casting then
             local name, _, _, startTimeMS, endTimeMS = UnitCastingInfo("player")
-            if name then
+            if name and castBarFrame._craftMerge then
+                -- Merged craft batch: shift the batch end by the pushback.
+                local tail = castBarFrame._endTime - castBarFrame._craftCastEnd
+                castBarFrame._craftCastEnd = endTimeMS / 1000
+                castBarFrame._endTime = castBarFrame._craftCastEnd + tail
+                ns.ApplyCastTimer("craft")
+            elseif name then
                 castBarFrame._startTime = startTimeMS / 1000
                 castBarFrame._endTime = endTimeMS / 1000
                 castBarFrame._totalDurSuffix = " / " .. format("%.1f", (endTimeMS - startTimeMS) / 1000)

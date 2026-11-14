@@ -33,6 +33,8 @@ local FLASHLIGHT_ICON = "Interface\\AddOns\\EllesmereUI\\media\\icons\\flashligh
 local HOVER_ICON      = "Interface\\AddOns\\EllesmereUI\\media\\icons\\hover.png"
 local DARK_OVERLAY_ICON = "Interface\\AddOns\\EllesmereUI\\media\\icons\\dark-overlay.png"
 local COORD_ICON      = "Interface\\AddOns\\EllesmereUI\\media\\icons\\coordinates.png"
+local INFO_ICON       = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-info.png"
+local INFO_ICON_SZ    = 20
 local BANNER_TEX      = "Interface\\AddOns\\EllesmereUI\\media\\eui-unlocked-banner-2.png"
 
 local HUD_ON_ALPHA  = 0.60
@@ -95,18 +97,45 @@ local function CreateHUD(parent)
     local iconSz = 28
     local BANNER_VIS_H = 58
     local iconCenterY = -(BANNER_VIS_H / 2) + 1  -- -28px from top (centered + 1px up)
+    -- Toggle chains, centre-relative: the inner edges beside the logo and the
+    -- gaps between toggles (left chain, then the right chain's two). The element
+    -- filter lays the bar out again from these (UM.hudFrame._hudLayout).
+    local UP_LEFT, UP_RIGHT = -80 + iconSz / 2, 76 - iconSz / 2
+    local GAP_L, GAP_R1, GAP_R2 = 20, 7, 2
+
+    -- Tooltip for a bar control (also the element filter's, EUI_UnlockMode_Filter.lua): below
+    -- the bar, its top 37px under the controls' centre line whatever the control's height.
+    -- It starts at the control's left edge and grows right, unless at its widest (250, the
+    -- shared tooltip's cap) it would reach the logo, which the banner (level 900) draws over
+    -- it, or the screen's right edge; then it ends at the control's right edge instead.
+    -- Skipped while the first-open tip callout covers that spot.
+    local LOGO_HALF_W = 53  -- the logo's art half width (columns 519-622 of the banner)
+    function UM.ShowBarTip(owner, tip, justify)
+        if UM.unlockTipFrame and UM.unlockTipFrame:IsShown() then return end
+        local hud = UM.hudFrame
+        local toUI = owner:GetEffectiveScale() / UIParent:GetEffectiveScale()
+        local hudCX = hud:GetCenter()
+        local limit = UIParent:GetRight()
+        if owner:GetCenter() < hudCX then limit = (hudCX - LOGO_HALF_W) * toUI end
+        local side = (owner:GetLeft() * toUI + 250 > limit) and "RIGHT" or "LEFT"
+        EllesmereUI.ShowWidgetTooltip(owner, tip, { anchorPoint = "TOP" .. side, anchorTo = "BOTTOM" .. side,
+            anchorY = -(37 - owner:GetHeight() / 2) * hud:GetScale(), justify = justify })
+    end
+    local ShowToggleTip = UM.ShowBarTip
 
     -- Helper: shared hover/click behavior for icon+label wrapper buttons
-    local function SetupToggleBtn(wrapper, iconTex, labelFS, getState, setState)
+    local function SetupToggleBtn(wrapper, iconTex, labelFS, getState, setState, tip)
         wrapper:SetScript("OnClick", function() setState() end)
-        wrapper:SetScript("OnEnter", function()
+        wrapper:SetScript("OnEnter", function(self)
             iconTex:SetAlpha(0.9)
             labelFS:SetTextColor(1, 1, 1, 0.9)
+            ShowToggleTip(self, tip)
         end)
         wrapper:SetScript("OnLeave", function()
             local a = getState() and HUD_ON_ALPHA or HUD_OFF_ALPHA
             iconTex:SetAlpha(a)
             labelFS:SetTextColor(1, 1, 1, a)
+            EllesmereUI.HideWidgetTooltip()
         end)
     end
 
@@ -115,7 +144,7 @@ local function CreateHUD(parent)
     ---------------------------------------------------------------
     local gridBtn = CreateFrame("Button", nil, UM.hudFrame)
     -- Size will be set after label is created to encompass icon + gap + label
-    gridBtn:SetPoint("RIGHT", UM.hudFrame, "TOP", -80 + iconSz / 2, iconCenterY)
+    gridBtn:SetPoint("RIGHT", UM.hudFrame, "TOP", UP_LEFT, iconCenterY)
 
     local gridTex = gridBtn:CreateTexture(nil, "OVERLAY")
     gridTex:SetSize(iconSz, iconSz)
@@ -153,14 +182,16 @@ local function CreateHUD(parent)
             end
         end
     end)
-    gridBtn:SetScript("OnEnter", function()
+    gridBtn:SetScript("OnEnter", function(self)
         gridTex:SetAlpha(0.9)
         gridLabel:SetTextColor(1, 1, 1, 0.9)
+        ShowToggleTip(self, EllesmereUI.L("Shows a grid to line elements up. Click to switch between dimmed, bright and off."))
     end)
     gridBtn:SetScript("OnLeave", function()
         local a = GridHudAlpha()
         gridTex:SetAlpha(a)
         gridLabel:SetTextColor(1, 1, 1, a)
+        EllesmereUI.HideWidgetTooltip()
     end)
     UM.hudFrame._gridBtn = gridBtn
 
@@ -168,7 +199,7 @@ local function CreateHUD(parent)
     --  Dark Overlays toggle (left of grid): label LEFT of icon
     ---------------------------------------------------------------
     local darkOverlayBtn = CreateFrame("Button", nil, UM.hudFrame)
-    darkOverlayBtn:SetPoint("RIGHT", gridBtn, "LEFT", -20, 0)
+    darkOverlayBtn:SetPoint("RIGHT", gridBtn, "LEFT", -GAP_L, 0)
 
     local darkOverlayTex = darkOverlayBtn:CreateTexture(nil, "OVERLAY")
     darkOverlayTex:SetSize(iconSz, iconSz)
@@ -196,14 +227,15 @@ local function CreateHUD(parent)
             darkOverlayLabel:SetTextColor(1, 1, 1, UM.darkOverlaysEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
             darkOverlayLabel:SetText(UM.darkOverlaysEnabled and EllesmereUI.L("Dark Overlays\nEnabled") or EllesmereUI.L("Dark Overlays\nDisabled"))
             ApplyDarkOverlays()
-        end)
+        end,
+        EllesmereUI.L("Gives every element a dark background with its name. Turn it off to see the real elements underneath."))
     UM.hudFrame._darkOverlayBtn = darkOverlayBtn
 
     ---------------------------------------------------------------
     --  Flashlight toggle (left of grid): label LEFT of icon
     ---------------------------------------------------------------
     local flashBtn = CreateFrame("Button", nil, UM.hudFrame)
-    flashBtn:SetPoint("RIGHT", darkOverlayBtn, "LEFT", -20, 0)
+    flashBtn:SetPoint("RIGHT", darkOverlayBtn, "LEFT", -GAP_L, 0)
 
     local flashTex = flashBtn:CreateTexture(nil, "OVERLAY")
     flashTex:SetSize(iconSz, iconSz)
@@ -230,14 +262,15 @@ local function CreateHUD(parent)
             flashTex:SetAlpha(UM.flashlightEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
             flashLabel:SetTextColor(1, 1, 1, UM.flashlightEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
             flashLabel:SetText(UM.flashlightEnabled and EllesmereUI.L("Cursor Light\nEnabled") or EllesmereUI.L("Cursor Light\nDisabled"))
-        end)
+        end,
+        EllesmereUI.L("Lights up the grid lines around the cursor. Needs the grid lines to be on."))
     UM.hudFrame._flashBtn = flashBtn
 
     ---------------------------------------------------------------
     --  Magnet/Snap toggle (right of center): label RIGHT of icon
     ---------------------------------------------------------------
     local magnetBtn = CreateFrame("Button", nil, UM.hudFrame)
-    magnetBtn:SetPoint("LEFT", UM.hudFrame, "TOP", 76 - iconSz / 2, iconCenterY)
+    magnetBtn:SetPoint("LEFT", UM.hudFrame, "TOP", UP_RIGHT, iconCenterY)
 
     local magnetTex = magnetBtn:CreateTexture(nil, "OVERLAY")
     magnetTex:SetSize(iconSz, iconSz)
@@ -269,14 +302,15 @@ local function CreateHUD(parent)
             for _, m in pairs(movers) do
                 if m._refreshSnapDD then m._refreshSnapDD() end
             end
-        end)
+        end,
+        EllesmereUI.L("Dragged elements snap to the edges and centers of the closest element."))
     UM.hudFrame._magnetBtn = magnetBtn
 
     ---------------------------------------------------------------
     --  Coordinates toggle (right of snap): label RIGHT of icon
     ---------------------------------------------------------------
     local coordBtn = CreateFrame("Button", nil, UM.hudFrame)
-    coordBtn:SetPoint("LEFT", magnetBtn, "RIGHT", 7, 0)
+    coordBtn:SetPoint("LEFT", magnetBtn, "RIGHT", GAP_R1, 0)
 
     local coordTex = coordBtn:CreateTexture(nil, "OVERLAY")
     coordTex:SetSize(iconSz, iconSz)
@@ -316,14 +350,15 @@ local function CreateHUD(parent)
                     end
                 end
             end
-        end)
+        end,
+        EllesmereUI.L("Always shows every element's position, not only while it is hovered, dragged or selected."))
     UM.hudFrame._coordBtn = coordBtn
 
     ---------------------------------------------------------------
     --  Hover toggle (right of coords): label RIGHT of icon
     ---------------------------------------------------------------
     local hoverBtn = CreateFrame("Button", nil, UM.hudFrame)
-    hoverBtn:SetPoint("LEFT", coordBtn, "RIGHT", 2, 0)
+    hoverBtn:SetPoint("LEFT", coordBtn, "RIGHT", GAP_R2, 0)
 
     local hoverTex = hoverBtn:CreateTexture(nil, "OVERLAY")
     hoverTex:SetSize(iconSz, iconSz)
@@ -350,8 +385,49 @@ local function CreateHUD(parent)
             hoverTex:SetAlpha(hoverBarEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
             hoverLabel:SetTextColor(1, 1, 1, hoverBarEnabled and HUD_ON_ALPHA or HUD_OFF_ALPHA)
             hoverLabel:SetText(hoverBarEnabled and EllesmereUI.L("Hover Top Bar\nEnabled") or EllesmereUI.L("Hover Top Bar\nDisabled"))
-        end)
+        end,
+        EllesmereUI.L("Hides this bar until the cursor reaches it at the top of the screen, except over an element. Hold Shift to hide it any time."))
     UM.hudFrame._hoverBtn = hoverBtn
+
+    ---------------------------------------------------------------
+    --  Controls help (right of hover): hovering the info icon lists the
+    --  mouse and keyboard controls, the keys in the accent colour.
+    ---------------------------------------------------------------
+    local infoBtn = CreateFrame("Button", nil, UM.hudFrame)
+    infoBtn:SetSize(INFO_ICON_SZ, max(iconSz, 24))
+    infoBtn:SetPoint("LEFT", hoverBtn, "RIGHT", GAP_R2, 0)
+    do
+        local tex = infoBtn:CreateTexture(nil, "OVERLAY")
+        tex:SetSize(INFO_ICON_SZ, INFO_ICON_SZ)
+        tex:SetPoint("CENTER")
+        tex:SetTexture(INFO_ICON)
+        tex:SetAlpha(HUD_ON_ALPHA)
+        infoBtn:SetScript("OnEnter", function(self)
+            tex:SetAlpha(0.9)
+            local c = EllesmereUI.HexColor(GetAccent())
+            local function Line(key, what) return c .. key .. "|r: " .. what end
+            local lines = {
+                Line(EllesmereUI.L("Shift + Drag"), EllesmereUI.L("Move it on one axis only.")),
+                Line(EllesmereUI.L("Arrow Keys"), EllesmereUI.L("Move the selected element 1px.")),
+                Line(EllesmereUI.L("Shift + Arrow Keys"), EllesmereUI.L("Move it 100px.")),
+                Line(EllesmereUI.L("Right Click"), EllesmereUI.L("Open the element's settings.")),
+                Line(EllesmereUI.L("Shift + Right Click"), EllesmereUI.L("Hide the element's overlay temporarily.")),
+                Line(EllesmereUI.L("Hold Shift"), EllesmereUI.L("Hide this bar.")),
+            }
+            -- The Overlap Cycling key, by the dropdown's own label; none while it is disabled.
+            local method = EllesmereUI.GetUnlockOverlapMethod()
+            local overlap = method ~= "disabled" and EllesmereUI.UNLOCK_OVERLAP_LABELS[method]
+            if overlap then
+                lines[#lines + 1] = Line(EllesmereUI.L(overlap), EllesmereUI.L("Cycle through overlapping elements."))
+            end
+            UM.ShowBarTip(self, table.concat(lines, "\n"), "LEFT")
+        end)
+        infoBtn:SetScript("OnLeave", function()
+            tex:SetAlpha(HUD_ON_ALPHA)
+            EllesmereUI.HideWidgetTooltip()
+        end)
+    end
+    UM.hudFrame._infoBtn = infoBtn
 
     ---------------------------------------------------------------
     --  Exit (left) and Save & Exit (right) buttons
@@ -364,38 +440,63 @@ local function CreateHUD(parent)
     local BTN_FONT = 10
     local btnCenterY = iconCenterY  -- same vertical center as icons
     local CHAIN_GAP = 15  -- minimum clearance from the icon-toggle chain
+    local EDGE_IN = 85    -- default inset of Exit / Save & Exit from the banner edges
 
     -- Outer edges of the left (grid/darkOverlay/flash) and right
-    -- (magnet/coord/hover) toggle chains, center-relative -- re-derives the
-    -- same offsets used to anchor them above, so keep these in sync with
-    -- those SetPoint calls if the chain spacing ever changes.
-    local flashLeftEdge = (-80 + iconSz / 2) - gridBtn:GetWidth() - 20 - darkOverlayBtn:GetWidth() - 20 - flashBtn:GetWidth()
-    local hoverRightEdge = (76 - iconSz / 2) + magnetBtn:GetWidth() + 7 + coordBtn:GetWidth() + 2 + hoverBtn:GetWidth()
+    -- (magnet/coord/hover) toggle chains, center-relative, from the same
+    -- numbers that anchor them above.
+    local flashLeftEdge = UP_LEFT - gridBtn:GetWidth() - GAP_L - darkOverlayBtn:GetWidth() - GAP_L - flashBtn:GetWidth()
+    local hoverRightEdge = UP_RIGHT + magnetBtn:GetWidth() + GAP_R1 + coordBtn:GetWidth() + GAP_R2 + hoverBtn:GetWidth()
+        + GAP_R2 + infoBtn:GetWidth()
 
     -- Exit button (left side, 85px from left edge by default)
     local exitBtn = CreateFrame("Button", nil, UM.hudFrame)
     local EXIT_BTN_W = 60
     exitBtn:SetSize(EXIT_BTN_W, BTN_H)
-    local exitLeftEdge = min(-BANNER_PX_W / 2 + 85, flashLeftEdge - CHAIN_GAP - EXIT_BTN_W)
+    local exitLeftEdge = min(-BANNER_PX_W / 2 + EDGE_IN, flashLeftEdge - CHAIN_GAP - EXIT_BTN_W)
     exitBtn:SetPoint("LEFT", UM.hudFrame, "TOPLEFT", exitLeftEdge + BANNER_PX_W / 2, btnCenterY)
-    EllesmereUI.MakeStyledButton(exitBtn, "Exit", BTN_FONT,
+    local _, exitBrd = EllesmereUI.MakeStyledButton(exitBtn, "Exit", BTN_FONT,
         EllesmereUI.RB_COLOURS, function() ns.RequestClose(false) end)
+    -- Wrapped, not hooked: the bar's mouse cut calls GetScript("OnLeave") to drop the tooltip.
+    do
+        local enter, leave = exitBtn:GetScript("OnEnter"), exitBtn:GetScript("OnLeave")
+        exitBtn:SetScript("OnEnter", function(self)
+            enter(self)
+            UM.ShowBarTip(self, EllesmereUI.L("Leaves Unlock Mode. With unsaved changes, it asks whether to save them first."))
+        end)
+        exitBtn:SetScript("OnLeave", function(self)
+            leave(self)
+            EllesmereUI.HideWidgetTooltip()
+        end)
+    end
     UM.hudFrame._exitBtn = exitBtn
+
+    -- The rounded outlines take their whole-pixel seat as the bar shows, still above
+    -- the screen at an offset that need not be whole pixels: they re-seat once it
+    -- lands and after a banner scale change.
+    UM.hudFrame._outlines = { exitBrd }
+    function UM.hudFrame._refitOutlines()
+        if not UM.hudFrame:IsVisible() then return end
+        local list = UM.hudFrame._outlines
+        for i = 1, #list do list[i]:Fit() end
+    end
 
     -- Save & Exit button (right side, 50px from right edge, green "Done" style)
     do
         local btn = CreateFrame("Button", nil, UM.hudFrame)
         local SAVE_BTN_W = 90
         btn:SetSize(SAVE_BTN_W, BTN_H)
-        local saveRightEdge = max(BANNER_PX_W / 2 - 85, hoverRightEdge + CHAIN_GAP + SAVE_BTN_W)
+        local saveRightEdge = max(BANNER_PX_W / 2 - EDGE_IN, hoverRightEdge + CHAIN_GAP + SAVE_BTN_W)
         btn:SetPoint("RIGHT", UM.hudFrame, "TOPRIGHT", saveRightEdge - BANNER_PX_W / 2, btnCenterY)
         btn:SetFrameLevel(UM.hudFrame:GetFrameLevel() + 2)
 
         local eg = EllesmereUI.ELLESMERE_GREEN or { r = 12/255, g = 210/255, b = 157/255 }
-        EllesmereUI.MakeBorder(btn, eg.r, eg.g, eg.b, 0.7)
         local bg = btn:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
+        local outlines = UM.hudFrame._outlines
+        local saveBrd = EllesmereUI.MakeRoundedBorder(btn, eg.r, eg.g, eg.b, 0.7, bg)
+        outlines[#outlines + 1] = saveBrd
 
         local lbl = btn:CreateFontString(nil, "OVERLAY")
         lbl:SetFont(FONT_PATH, BTN_FONT, "OUTLINE, SLUG")
@@ -418,9 +519,20 @@ local function CreateHUD(parent)
             end
             Apply(progress)
         end
-        btn:SetScript("OnEnter", function(self) target = 1; self:SetScript("OnUpdate", OnUpdate) end)
-        btn:SetScript("OnLeave", function(self) target = 0; self:SetScript("OnUpdate", OnUpdate) end)
+        btn:SetScript("OnEnter", function(self)
+            target = 1; self:SetScript("OnUpdate", OnUpdate)
+            UM.ShowBarTip(self, EllesmereUI.L("Saves the new positions and leaves Unlock Mode."))
+        end)
+        btn:SetScript("OnLeave", function(self)
+            target = 0; self:SetScript("OnUpdate", OnUpdate)
+            EllesmereUI.HideWidgetTooltip()
+        end)
         btn:SetScript("OnClick", function() ns.RequestClose(true) end)
+        -- The bar outlives a session: its outline and label follow an accent change.
+        EllesmereUI.RegAccent({ type = "callback", fn = function(r, g, b)
+            saveBrd:SetColor(r, g, b, 0.7)
+            Apply(progress)
+        end })
         UM.hudFrame._saveBtn = btn
     end
 
@@ -438,6 +550,10 @@ local function CreateHUD(parent)
         local NORMAL_A = 0.50
         local HOVER_A  = 0.90
         local FONT_SZ  = 26
+        local SCALE_BTN_SZ, SCALE_BTN_GAP = 30, 10  -- the - and + buttons, outside Exit / Save & Exit
+        -- The largest scale the screen fits (the element filter's screen fit), nil = none:
+        -- + greys where the next step would pass it.
+        local scaleCap
 
         -- Load saved banner scale
         local bannerUserScale = 1.0
@@ -455,10 +571,10 @@ local function CreateHUD(parent)
         local function RefreshScaleBtns()
             local atMin = bannerUserScale <= SCALE_MIN + 0.001
             local atMax = bannerUserScale >= SCALE_MAX - 0.001
+                or (scaleCap ~= nil and bannerUserScale + SCALE_STEP > scaleCap + 0.001)
             if atMin then
                 minusBtn._shadow:SetTextColor(DISABLED_R, DISABLED_G, DISABLED_B, NORMAL_A * 0.6)
                 minusBtn._label:SetTextColor(DISABLED_R, DISABLED_G, DISABLED_B, NORMAL_A)
-                minusBtn:EnableMouse(true)  -- still catch hover for tooltip
                 minusBtn._isDisabled = true
             else
                 minusBtn._shadow:SetTextColor(0, 0, 0, NORMAL_A)
@@ -468,23 +584,27 @@ local function CreateHUD(parent)
             if atMax then
                 plusBtn._shadow:SetTextColor(DISABLED_R, DISABLED_G, DISABLED_B, NORMAL_A * 0.6)
                 plusBtn._label:SetTextColor(DISABLED_R, DISABLED_G, DISABLED_B, NORMAL_A)
-                plusBtn:EnableMouse(true)
                 plusBtn._isDisabled = true
             else
                 plusBtn._shadow:SetTextColor(0, 0, 0, NORMAL_A)
                 plusBtn._label:SetTextColor(NORMAL_R, NORMAL_G, NORMAL_B, NORMAL_A)
                 plusBtn._isDisabled = false
             end
+            -- A click under the cursor: the open tooltip follows the new state and bar scale.
+            local owner = EllesmereUI._WidgetTooltipOwner()
+            if owner and (owner == minusBtn or owner == plusBtn) then owner:GetScript("OnEnter")(owner) end
         end
 
-        local function ApplyBannerScale(newScale)
+        -- noSave: the filter's screen fit (EUI_UnlockMode_Filter.lua) keeps the saved choice.
+        local function ApplyBannerScale(newScale, noSave)
             newScale = max(SCALE_MIN, min(SCALE_MAX, newScale))
             bannerUserScale = newScale
-            if EllesmereUIDB then EllesmereUIDB.unlockBannerScale = newScale end
+            if EllesmereUIDB and not noSave then EllesmereUIDB.unlockBannerScale = newScale end
             UM.hudFrame:SetScale(uiScale * newScale)
             -- Keep flush with top of screen
             UM.hudFrame:ClearAllPoints()
             UM.hudFrame:SetPoint("TOP", UIParent, "TOP", 0, 0)
+            UM.hudFrame._refitOutlines()
             -- Resize hover zone to match new scale
             if UM.hudFrame._hoverZone then
                 UM.hudFrame._hoverZone:SetHeight(60 * uiScale * newScale)
@@ -493,9 +613,9 @@ local function CreateHUD(parent)
         end
 
         -- Helper: create a text button with drop shadow
-        local function MakeScaleBtn(text, anchorPoint, anchorTo, anchorRel, xOff, yOff)
+        local function MakeScaleBtn(text, anchorPoint, anchorTo, anchorRel, xOff, yOff, tip, tipDisabled)
             local btn = CreateFrame("Button", nil, UM.hudFrame)
-            btn:SetSize(30, 30)
+            btn:SetSize(SCALE_BTN_SZ, SCALE_BTN_SZ)
             btn:SetPoint(anchorPoint, anchorTo, anchorRel, xOff, yOff)
             btn:SetFrameLevel(UM.hudFrame:GetFrameLevel() + 3)
 
@@ -518,11 +638,13 @@ local function CreateHUD(parent)
             btn._isDisabled = false
 
             btn:SetScript("OnEnter", function(self)
+                UM.ShowBarTip(self, self._isDisabled and tipDisabled or tip)
                 if self._isDisabled then return end
                 self._shadow:SetTextColor(0, 0, 0, HOVER_A)
                 self._label:SetTextColor(HOVER_R, HOVER_G, HOVER_B, HOVER_A)
             end)
             btn:SetScript("OnLeave", function(self)
+                EllesmereUI.HideWidgetTooltip()
                 if self._isDisabled then return end
                 self._shadow:SetTextColor(0, 0, 0, NORMAL_A)
                 self._label:SetTextColor(NORMAL_R, NORMAL_G, NORMAL_B, NORMAL_A)
@@ -532,14 +654,19 @@ local function CreateHUD(parent)
         end
 
         -- Minus button (10px left of the Exit button, outer side)
-        minusBtn = MakeScaleBtn("\226\128\147", "RIGHT", exitBtn, "LEFT", -10, 0)
+        minusBtn = MakeScaleBtn("\226\128\147", "RIGHT", exitBtn, "LEFT", -SCALE_BTN_GAP, 0,
+            EllesmereUI.L("Makes this bar smaller."), EllesmereUI.L("Already at the smallest size."))
         minusBtn:SetScript("OnClick", function(self)
             if self._isDisabled then return end
             ApplyBannerScale(bannerUserScale - SCALE_STEP)
         end)
 
         -- Plus button (10px right of the Save & Exit button, outer side)
-        plusBtn = MakeScaleBtn("+", "LEFT", UM.hudFrame._saveBtn, "RIGHT", 10, 0)
+        plusBtn = MakeScaleBtn("+", "LEFT", UM.hudFrame._saveBtn, "RIGHT", SCALE_BTN_GAP, 0,
+            EllesmereUI.L("Makes this bar bigger."), function()
+                if bannerUserScale < SCALE_MAX - 0.001 then return EllesmereUI.L("Already at the largest size that fits the screen.") end
+                return EllesmereUI.L("Already at the largest size.")
+            end)
         plusBtn:SetScript("OnClick", function(self)
             if self._isDisabled then return end
             ApplyBannerScale(bannerUserScale + SCALE_STEP)
@@ -548,13 +675,25 @@ local function CreateHUD(parent)
         UM.hudFrame._minusBtn = minusBtn
         UM.hudFrame._plusBtn = plusBtn
         UM.hudFrame._applyBannerScale = ApplyBannerScale
+        UM.hudFrame._setScaleCap = function(cap) scaleCap = cap; RefreshScaleBtns() end
+        -- The bar's own numbers for the element filter's layout (EUI_UnlockMode_Filter.lua).
+        UM.hudFrame._hudLayout = {
+            upLeft = UP_LEFT, upRight = UP_RIGHT, gapL = GAP_L, gapR1 = GAP_R1, gapR2 = GAP_R2,
+            clear = CHAIN_GAP, edgeIn = EDGE_IN, scaleBtnReach = SCALE_BTN_GAP + SCALE_BTN_SZ,
+            scaleMin = SCALE_MIN, scaleMax = SCALE_MAX, scaleStep = SCALE_STEP,
+        }
 
         RefreshScaleBtns()
     end
 
+    -- Element filter right of the logo, the banner widened for it (EUI_UnlockMode_Filter.lua)
+    if UM.BuildFilter then UM.BuildFilter(UM.hudFrame, iconCenterY) end
+
     ---------------------------------------------------------------
     --  Hover-bar logic: when hoverBarEnabled, the banner + all children fade out
-    --  unless the cursor is in a 1144x60 zone at the top of the screen. Fade = 0.5s.
+    --  unless the cursor is in the bar's own footprint (its width, the top 60 of
+    --  the screen). An unlock element under the cursor or being dragged keeps it
+    --  out; once shown, the bar's own controls win. Fade = 0.5s.
     --  Holding Shift fades the bar out in ANY mode so elements beneath it can
     --  be seen and clicked; releasing Shift brings it straight back.
     ---------------------------------------------------------------
@@ -575,30 +714,65 @@ local function CreateHUD(parent)
     hoverZone:Hide()
     UM.hudFrame._hoverZone = hoverZone
 
-    -- Every mouse-interactive banner child. Mouse is cut while Shift-hidden so
-    -- the invisible buttons can't eat clicks meant for elements under the bar.
+    -- Every mouse-interactive banner child. Mouse is cut while Shift-hidden or
+    -- hover-hidden so the invisible buttons can't eat clicks meant for elements
+    -- under the bar.
     local hudMouseKids = {
         UM.hudFrame._gridBtn, UM.hudFrame._darkOverlayBtn, UM.hudFrame._flashBtn,
         UM.hudFrame._magnetBtn, UM.hudFrame._coordBtn, UM.hudFrame._hoverBtn,
         UM.hudFrame._exitBtn, UM.hudFrame._saveBtn, UM.hudFrame._minusBtn, UM.hudFrame._plusBtn,
+        UM.hudFrame._filterBox, UM.hudFrame._filterIcon, UM.hudFrame._filterClear,
+        UM.hudFrame._infoBtn,
     }
-    local shiftMouseCut = false
+    local mouseCut = false
+
+    -- An unlock element (mover, its cog/menus, ghost, Blizzard-owned overlay)
+    -- under the cursor: the mouse focus sits below UM.unlockFrame, not in the bar.
+    -- Menu click catchers are full screen and not elements. Re-read only when the
+    -- cursor moved or the bar's mouse cut flipped (GetMouseFoci builds a table).
+    local lastCX, lastCY, lastCut, lastElem
+    local function ElementUnderCursor(cx, cy)
+        if cx == lastCX and cy == lastCY and mouseCut == lastCut then return lastElem end
+        lastCX, lastCY, lastCut, lastElem = cx, cy, mouseCut, false
+        local f = GetMouseFoci()[1]
+        while f do
+            if f.IsForbidden and f:IsForbidden() then return false end
+            local p = f:GetParent()
+            if p == UM.unlockFrame then
+                lastElem = f ~= UM.hudFrame and not f._umCatcher
+                return lastElem
+            end
+            f = p
+        end
+        return false
+    end
+
+    -- Closing Unlock Mode under the cursor may skip OnLeave: drop a bar tooltip left showing.
+    UM.hudFrame:HookScript("OnHide", function()
+        local owner = EllesmereUI._WidgetTooltipOwner()
+        if not owner then return end
+        for i = 1, #hudMouseKids do
+            if hudMouseKids[i] == owner then EllesmereUI.HideWidgetTooltip(true); return end
+        end
+    end)
 
     UM.hudFrame:SetScript("OnUpdate", function(self, dt)
         -- Hold Shift: temporarily hide the top bar (works in both modes)
         local shiftHeld = IsShiftKeyDown()
-        if shiftHeld ~= shiftMouseCut then
-            shiftMouseCut = shiftHeld
+            and not (self._filterBox and self._filterBox:HasFocus())  -- typing capitals in the filter
+        local cut = shiftHeld or (hoverBarEnabled and hoverAlpha == 0)
+        if cut ~= mouseCut then
+            mouseCut = cut
             for i = 1, #hudMouseKids do
                 local kid = hudMouseKids[i]
-                if shiftHeld then
+                if cut then
                     -- EnableMouse(false) does not fire OnLeave on a frame the
                     -- cursor is already over; reset hover visuals explicitly
                     -- so no button sticks in its highlighted state.
                     local leave = kid:GetScript("OnLeave")
                     if leave then leave(kid) end
                 end
-                kid:EnableMouse(not shiftHeld)
+                kid:EnableMouse(not cut)
             end
         end
         if shiftHeld then
@@ -624,13 +798,23 @@ local function CreateHUD(parent)
 
         hoverZone:Show()
 
-        -- Check if cursor is within the hover zone (top of screen)
+        -- Cursor in the bar's footprint: the top of the screen, within the bar's
+        -- width (it grows with the element filter)
         local scale = UIParent:GetEffectiveScale()
-        local _, cy = GetCursorPosition()
-        cy = cy / scale
+        local cx, cy = GetCursorPosition()
         local screenH = UIParent:GetHeight()
         local zoneBot = screenH - (HOVER_ZONE_H * (UM.hudFrame:GetScale() or uiScale))
-        local inZone = (cy >= zoneBot)
+        local inZone = (cy / scale >= zoneBot)
+        if inZone then
+            local hudS, l, r = self:GetEffectiveScale(), self:GetLeft(), self:GetRight()
+            inZone = l ~= nil and cx >= l * hudS and cx <= r * hudS
+        end
+        -- An element under the cursor or being dragged (it can lag the cursor at
+        -- the screen edge or on snap) keeps the bar out. While shown, a bar
+        -- control under the cursor is the focus, so it wins.
+        local sm = UM.selectedMover
+        if inZone and ((sm and sm._dragging) or ElementUnderCursor(cx, cy)) then inZone = false end
+        if self._filterBox and self._filterBox:HasFocus() then inZone = true end  -- typing in the filter
 
         if inZone then
             hoverAlpha = min(1, hoverAlpha + dt / HOVER_FADE)
@@ -709,6 +893,7 @@ local function SnapshotPositions()
         for childKey, info in pairs(anchorDB) do
             snapshotAnchors[childKey] = {
                 target = info.target, side = info.side,
+                mode = info.mode, sourcePoint = info.sourcePoint, targetPoint = info.targetPoint,
                 offsetX = info.offsetX, offsetY = info.offsetY,
                 refX = info.refX, refY = info.refY,
                 edgeOffX = info.edgeOffX, edgeOffY = info.edgeOffY,
@@ -829,7 +1014,7 @@ do
             local bg = specOvBanner:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints()
             bg:SetColorTexture(0.16, 0.12, 0.04, 0.92)
-            EllesmereUI.MakeBorder(specOvBanner, 199/255, 166/255, 90/255, 0.7)
+            specOvBanner._brd = EllesmereUI.MakeRoundedBorder(specOvBanner, 199/255, 166/255, 90/255, 0.7, bg)
             local fs = specOvBanner:CreateFontString(nil, "OVERLAY")
             fs:SetFont(FONT_PATH, 12, "OUTLINE, SLUG")
             fs:SetPoint("CENTER")
@@ -841,6 +1026,7 @@ do
             g.name or "?"))
         specOvBanner:SetWidth((specOvBanner._text:GetStringWidth() or 200) + 28)
         specOvBanner:Show()
+        specOvBanner._brd:Fit()
     end
 
     -- Layer model: a custom unlock mode is a whole-layout fork, so there are no
@@ -1050,6 +1236,7 @@ local function RevertPositions()
         for childKey, info in pairs(snapshotAnchors) do
             anchorDB[childKey] = {
                 target = info.target, side = info.side,
+                mode = info.mode, sourcePoint = info.sourcePoint, targetPoint = info.targetPoint,
                 offsetX = info.offsetX, offsetY = info.offsetY,
                 refX = info.refX, refY = info.refY,
                 edgeOffX = info.edgeOffX, edgeOffY = info.edgeOffY,
@@ -1163,7 +1350,11 @@ local function RevertPositions()
             local bar = UM.GetBarFrame(barKey)
             if bar then
                 local snap = snapshotPositions[barKey]
-                if snap and not snap._fromLiveFrame then
+                local revElem = registeredElements[barKey]
+                if revElem and revElem.noInitHook then
+                    -- Self-positioning: its own authority, from the restored save.
+                    if revElem.applyPosition then pcall(revElem.applyPosition, barKey) end
+                elseif snap and not snap._fromLiveFrame then
                     if not UM.ApplyCenterPosition(barKey, snap) then
                         pcall(function()
                             EllesmereUI.ClearFramePoints(bar)
@@ -1254,7 +1445,7 @@ local function DoClose(closeAction)
         local objTracker = _G.ObjectiveTrackerFrame
         if objTracker then
             objTracker:SetAlpha(1)
-            local wasEnabled = objTracker._eabMouseWasEnabled
+            local wasEnabled = EllesmereUI._GetFFD(objTracker).unlockMouseWasEnabled
             if objTracker.EnableMouse then
                 pcall(objTracker.EnableMouse, objTracker, wasEnabled and true or false)
             end
@@ -1328,6 +1519,7 @@ local function DoClose(closeAction)
     end
 
     -- Clean up pick mode / anchor dropdown state
+    UM.PointPicker.Cancel()
     UM.pickMode = nil
     UM.pickModeMover = nil
     if UM.anchorDropdownFrame then UM.anchorDropdownFrame:Hide() end
@@ -1407,6 +1599,7 @@ function ns.RequestClose(save, afterFn)
     -- Has unsaved changes -> show confirm popup
     EllesmereUI:ShowConfirmPopup({
         title = "Unsaved Changes",
+        frameLevel = (UM.moverOverlayLevel or 250) + 100,
         message = "You have unsaved position changes.\nWhat would you like to do?",
         cancelText  = "Exit Without Saving",
         confirmText = "Save & Exit",
@@ -1432,8 +1625,14 @@ end
 --- on a spec transition: movers, snapshots, and pending edits all belong to the
 --- OUTGOING spec's layout, so saving them against the incoming spec would corrupt both baseline and spec-override data.
 function EllesmereUI.ForceCloseUnlockDiscard()
+    -- A combat-suspended session is still open (it keeps its snapshots for the
+    -- resume): reopen its state so the close below ends it.
+    if UM.combatSuspended then
+        UM.combatSuspended = false
+        UM.isUnlocked = true
+    end
     if not UM.isUnlocked then return end
-    print("|cffff6060[EllesmereUI]|r Spec changed: Unlock Mode closed, unsaved layout changes discarded.")
+    EllesmereUI.PrintError(EllesmereUI.L("Layout changed: Unlock Mode closed, unsaved layout changes discarded."))
     pendingAfterClose = nil
     -- Unconditional: RevertPositions only runs below when positions changed,
     -- but the value-edit snapshot must never survive a discard-close.
@@ -1478,8 +1677,7 @@ local function CreateUnlockFrame()
     UM.unlockFrame._overlay = overlay
     UM.unlockFrame._overlayMaxAlpha = 0.20
 
-    -- Anchor connector lines: accent-colored lines drawn center-to-center
-    -- between each anchored child and its parent, rendered behind all elements.
+    -- Anchor lines connect mover centers or the explicit point pair.
     local anchorLinePool = {}
     local anchorPulsePool = {}
     local anchorLineFrame = CreateFrame("Frame", nil, UIParent)
@@ -1519,6 +1717,7 @@ local function CreateUnlockFrame()
     local function UpdateAnchorLines()
         local db = GetAnchorDB()
         local idx = 0
+        local pointLines = 0
         local now = GetTime()
         if db and UM.isUnlocked then
             for childKey, info in pairs(db) do
@@ -1548,12 +1747,27 @@ local function CreateUnlockFrame()
                         -- Parent center (line destination)
                         local x2 = ((tm:GetLeft() or 0) + (tm:GetRight()  or 0)) * 0.5
                         local y2 = ((tm:GetBottom() or 0) + (tm:GetTop()  or 0)) * 0.5
+                        if info.mode == "POINT" then
+                            local sx, sy = UM.PointPicker.Point(cm, info.sourcePoint)
+                            local tx, ty = UM.PointPicker.Point(tm, info.targetPoint)
+                            if sx and tx then
+                                x1, y1, x2, y2 = sx, sy, tx, ty
+                                pointLines = pointLines + 1
+                                UM.PointVisuals.Connection(pointLines, cm, info.sourcePoint, tm, info.targetPoint, ease)
+                            end
+                        end
                         -- Partial endpoint based on animation progress
                         local ex = x1 + (x2 - x1) * ease
                         local ey = y1 + (y2 - y1) * ease
                         line:SetStartPoint("BOTTOMLEFT", UIParent, x1, y1)
                         line:SetEndPoint("BOTTOMLEFT", UIParent, ex, ey)
-                        line:SetVertexColor(1, 0.7, 0.3, 0.75 * ease)
+                        local pointR, pointG, pointB, pointA
+                        if info.mode == "POINT" then
+                            pointR, pointG, pointB, pointA = EllesmereUI.GetPointAnchorColor("line")
+                            line:SetVertexColor(pointR, pointG, pointB, pointA * 0.75 * ease)
+                        else
+                            line:SetVertexColor(1, 0.7, 0.3, 0.75 * ease)
+                        end
                         line:Show()
 
                         -- Pulse overlay: streak that sweeps child->parent, loops every 3s
@@ -1588,7 +1802,13 @@ local function CreateUnlockFrame()
                                     local py2 = y1 + (y2 - y1) * clampHead
                                     pulse:SetStartPoint("BOTTOMLEFT", UIParent, px1, py1)
                                     pulse:SetEndPoint("BOTTOMLEFT", UIParent, px2, py2)
-                                    pulse:SetVertexColor(1, 0.89, 0.625, 0.5 * fadeA)
+                                    if info.mode == "POINT" then
+                                        pulse:SetVertexColor(pointR + (1 - pointR) * 0.5625,
+                                            pointG + (1 - pointG) * 0.5625,
+                                            pointB + (1 - pointB) * 0.5625, pointA * 0.5 * fadeA)
+                                    else
+                                        pulse:SetVertexColor(1, 0.89, 0.625, 0.5 * fadeA)
+                                    end
                                     pulse:Show()
                                 end
                             else
@@ -1611,6 +1831,7 @@ local function CreateUnlockFrame()
         for i = idx + 1, #anchorPulsePool do
             anchorPulsePool[i]:Hide()
         end
+        UM.PointVisuals.TrimConnections(pointLines)
     end
 
     -- Drive line updates every frame while unlock mode is open
@@ -1619,7 +1840,10 @@ local function CreateUnlockFrame()
     anchorLineDriver:Hide()
     UM.unlockFrame._anchorLineDriver = anchorLineDriver
     UM.unlockFrame._anchorLineFrame  = anchorLineFrame
-    UM.unlockFrame._clearAnchorLineAnim = function() wipe(anchorLineAnim) end
+    UM.unlockFrame._clearAnchorLineAnim = function()
+        wipe(anchorLineAnim)
+        UM.PointVisuals.TrimConnections(0)
+    end
 
     -- Click-to-deselect is handled by toggle behavior on movers themselves
     -- (clicking the selected mover again deselects it), so no full-screen catcher is needed -- world interaction (targeting, camera) stays unblocked.
@@ -1820,7 +2044,7 @@ end
 function ns.OpenUnlockMode()
     if UM.isUnlocked then return end
     if InCombatLockdown() then
-        print("|cffff6060[EllesmereUI]|r Cannot enter Unlock Mode during combat.")
+        print(EllesmereUI.L("|cffff6060[EllesmereUI]|r Cannot enter Unlock Mode during combat."))
         return
     end
     -- Standardized options-panel roundtrip: entering unlock mode by ANY means
@@ -1922,11 +2146,14 @@ function ns.OpenUnlockMode()
     local objTracker = _G.ObjectiveTrackerFrame
     if objTracker and objTracker:IsShown() then
         UM.objTrackerWasVisible = true
-        objTracker._eabMouseWasEnabled = objTracker:IsMouseEnabled()
+        -- Our state for Blizzard's tracker lives in the frame data table,
+        -- never on the frame itself.
+        local otfd = EllesmereUI._GetFFD(objTracker)
+        otfd.unlockMouseWasEnabled = objTracker:IsMouseEnabled()
         objTracker:SetAlpha(0)
         if objTracker.EnableMouse then pcall(objTracker.EnableMouse, objTracker, false) end
-        if not objTracker._eabUnlockAlphaHooked then
-            objTracker._eabUnlockAlphaHooked = true
+        if not otfd.unlockAlphaHooked then
+            otfd.unlockAlphaHooked = true
             hooksecurefunc(objTracker, "SetAlpha", function(self, a)
                 if UM.isUnlocked and a > 0 then
                     self:SetAlpha(0)
@@ -2108,6 +2335,25 @@ function ns.OpenUnlockMode()
     local panelRealScale = panel and panel:GetScale() or 1
     local elapsed = 0
     local fadeInSynced = false
+    local moversIn = false
+
+    -- Auto-select a mover if requested (the cog popup link, the options rows'
+    -- Move in Unlock Mode button), flashing it when the request asks: the
+    -- moment the movers have faded in, so the flash answers the click, and
+    -- again at the landing for a mover that was not built yet (the retry
+    -- ticker spawns late registrations). The request is kept until the mover
+    -- exists; the landing drops it after one more try.
+    local function TryAutoSelect()
+        local autoKey = EllesmereUI._unlockAutoSelectKey
+        if not autoKey then return end
+        local m = movers[autoKey]
+        if not m then return end
+        local autoFlash = EllesmereUI._unlockAutoSelectFlash
+        EllesmereUI._unlockAutoSelectKey = nil
+        EllesmereUI._unlockAutoSelectFlash = nil
+        SelectMover(m)
+        if autoFlash then UM.FlashSelectHighlight(m) end
+    end
 
     -- Grid glitch starts immediately and lasts 0.75s
     local GLITCH_DUR = 0.75
@@ -2305,11 +2551,13 @@ function ns.OpenUnlockMode()
 
             -- (Banner slides down during shackle phase, not here)
 
-            -- Movers fade in over 0.75s, delayed by 0.5s
+            -- Movers fade in over 0.75s, delayed by 0.5s. A mover selected
+            -- meanwhile (the auto-select, a click) keeps the alpha the
+            -- selection gave it.
             local MOVER_DELAY = 0.50
             local moverFadeT = glitchT - MOVER_DELAY
             for _, m in pairs(movers) do
-                if m:IsShown() then
+                if m:IsShown() and not m._selected then
                     if moverFadeT > 0 then
                         -- Re-sync once right as movers begin fading in so any
                         -- frames that were nil at initial sync are now ready.
@@ -2322,6 +2570,11 @@ function ns.OpenUnlockMode()
                         m:SetAlpha(0)
                     end
                 end
+            end
+            -- The movers are in: the requested mover is selected and flashed now.
+            if not moversIn and moverFadeT >= GLITCH_DUR then
+                moversIn = true
+                TryAutoSelect()
             end
             -- Blizzard-owned overlays fade in on the same curve
             for _, bov in pairs(_blizzOwnedOverlays) do
@@ -2513,6 +2766,7 @@ function ns.OpenUnlockMode()
         if UM.hudFrame then
             UM.hudFrame:ClearAllPoints()
             UM.hudFrame:SetPoint("TOP", UIParent, "TOP", 0, 0)
+            UM.hudFrame._refitOutlines()
         end
         self:SetScript("OnUpdate", nil)
 
@@ -2524,14 +2778,14 @@ function ns.OpenUnlockMode()
             UM.unlockFrame._anchorLineFrame:Show()
         end
 
-        -- Auto-select a mover if requested (e.g. from cog popup link)
+        -- A requested mover not built when the movers faded in: one more try
+        -- after the retry ticker's first pass, then the request is dropped.
+        TryAutoSelect()
         if EllesmereUI._unlockAutoSelectKey then
-            local autoKey = EllesmereUI._unlockAutoSelectKey
-            EllesmereUI._unlockAutoSelectKey = nil
             C_Timer.After(0.6, function()
-                if movers[autoKey] then
-                    SelectMover(movers[autoKey])
-                end
+                TryAutoSelect()
+                EllesmereUI._unlockAutoSelectKey = nil
+                EllesmereUI._unlockAutoSelectFlash = nil
             end)
         end
 

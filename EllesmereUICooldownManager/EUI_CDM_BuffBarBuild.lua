@@ -88,6 +88,7 @@ function ns.BuildTrackedBuffBars()
 
     local anyEnabled = false
     local anyLust = false  -- any enabled bloodlust bar -> needs the Sated listener
+    local anyAntiClip = false  -- WoW Forever: any enabled bar drawing the anti-clip glow
     local lastBarByGroup = {}  -- gid -> previous enabled member frame (chain tail)
     for i, cfg in ipairs(bars) do
         -- Update gating flags
@@ -111,6 +112,7 @@ function ns.BuildTrackedBuffBars()
         else
             anyEnabled = true
             if cfg.popularKey == "bloodlust" then anyLust = true end
+            if cfg.pandemicGlow then anyAntiClip = true end
             ApplyTrackedBuffBarSettings(bar, cfg)
 
             -- Icon texture: preset icon, else the EFFECTIVE (override-resolved) form of the
@@ -142,10 +144,12 @@ function ns.BuildTrackedBuffBars()
             -- Name text
             local namePos2 = cfg.namePosition or ((cfg.showName ~= false) and "left" or "none")
             if namePos2 ~= "none" and bar._nameText then
-                local displayName = cfg.name
-                -- Preset bars take the live label the same way the icon does above:
-                -- the copy saved at pick time can name the other faction's lust.
-                if cfg.popularKey then
+                local customName = ns.TBBCustomName(cfg)
+                local displayName = customName or cfg.name
+                -- Preset bars take the live label the same way the icon does above
+                -- (the copy saved at pick time can name the other faction's lust),
+                -- unless the bar has a name of its own.
+                if cfg.popularKey and not customName then
                     for _, pe in ipairs(TBB_POPULAR_BUFFS) do
                         if pe.key == cfg.popularKey then
                             displayName = pe.name or displayName
@@ -232,6 +236,9 @@ function ns.BuildTrackedBuffBars()
     end
     SetAnyPandemic(_anyPandemic); SetAnyThreshold(_anyThreshold)
     SetAnyStacks(_anyStacks); SetAnyVisCond(_anyVisCond)
+    -- WoW Forever: a Tracking Bar's Pandemic Glow is the anti-clip glow, which
+    -- listens to your casts only while an enabled bar uses it (EUI_CDM_ForeverAntiClip.lua).
+    if ns.CDM_AntiClipBars then ns.CDM_AntiClipBars(anyAntiClip) end
 
     -- Tick frame: every frame while anything is live (bar fill+spark need smooth updates);
     -- the idle sleeper in UpdateTrackedBuffBarTimers parks it when nothing is.

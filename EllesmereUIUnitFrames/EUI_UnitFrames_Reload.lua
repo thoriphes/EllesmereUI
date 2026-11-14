@@ -31,6 +31,16 @@ local GetCastbarColor, ApplyUnitFrameCastColor, IsKickCastbarUnit, UpdateUnitFra
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
+-- Detached portrait click overlays on the settled geometry; true while any
+-- frame wants one.
+local function SyncPortraitClicks()
+    local any = false
+    for _, frame in pairs(frames) do
+        if type(frame) == "table" and frame.Portrait and ns.UF_SyncPortraitClick(frame) then any = true end
+    end
+    return any
+end
+
 -- Blizzard Style: the per-unit geometry re-applies inside a reload each run
 -- the stock pass from UpdateBordersForScale's tail, only for the re-anchors
 -- that follow to undo it; the sweep at the end of the reload is the pass that
@@ -51,8 +61,6 @@ ReloadFramesBody = function()
     if InCombatLockdown() then
         return
     end
-
-    ApplyEnemyColors()
 
     -- Normalize opacity values: old profiles stored 0-1 floats, new format is 0-100 integers
     do
@@ -81,6 +89,109 @@ ReloadFramesBody = function()
     local castbarColor = GetCastbarColor()
     local castbarOpacity = profile.castbarOpacity
     local enabled = profile.enabledFrames
+
+    -- A frame's castbar pass (focus, and the pet when it has one): size, icon,
+    -- border, colors and text from the unit's settings.
+    local function ApplyUnitCastbar(frame, unit, settings)
+        if frame.Castbar then
+            local castbarBg = frame.Castbar:GetParent()
+            if castbarBg then
+                if settings.showCastbar ~= false then
+                    if not frame:IsElementEnabled("Castbar") then
+                        frame:EnableElement("Castbar")
+                    end
+                    local cbW3 = settings.castbarWidth or 181
+                    local cbH3 = settings.castbarHeight or 14
+                    PP.Size(castbarBg, cbW3, cbH3)
+                    if castbarBg._bgTex then
+                        local cbg = settings.castBgColor
+                        castbarBg._bgTex:SetColorTexture(cbg and cbg.r or 0, cbg and cbg.g or 0, cbg and cbg.b or 0, settings.castBgAlpha or 0.5)
+                    end
+                    local fIconOffX, fIconOffY = CastIconOffsets(unit, settings)
+                    LayoutCastbarIcon(frame.Castbar, CastIconInWidth(unit, settings), settings.castbarHeight or 14, CastIconOnRight(unit, settings), fIconOffX, fIconOffY, CastIconShown(unit, settings), settings.castbarStockBorderScale,
+                        ns.UF_CastIconPortrait(frame.Castbar, frame, settings, unit))
+                    ns.UF_ApplyCastBorder(frame.Castbar, settings, nil, unit)
+                    if frame.Castbar._iconFrame then
+                        PP.Size(frame.Castbar._iconFrame, cbH3, cbH3)
+                        if not frame.Castbar:IsShown() then
+                            frame.Castbar._iconFrame:Hide()
+                        elseif settings.showCastIcon == false then
+                            frame.Castbar._iconFrame:Hide()
+                        else
+                            frame.Castbar._iconFrame:Show()
+                        end
+                    end
+                    -- Position owned by centralized unlock system
+                    -- Respect hide-while-not-casting: only show bg if inactive hiding is off or cast is active
+                    if settings.castbarHideWhenInactive and not frame.Castbar:IsShown() then
+                        castbarBg:Hide()
+                    else
+                        castbarBg:Show()
+                    end
+                else
+                    if frame:IsElementEnabled("Castbar") then
+                        frame:DisableElement("Castbar")
+                    end
+                    frame.Castbar:Hide()
+                    castbarBg:Hide()
+                end
+            end
+            -- Store per-unit settings for PostCastStart
+            frame.Castbar._eufSettings = settings
+            -- A glow already showing takes new Important Cast Glow settings now.
+            if frame.Castbar._impGlowActive then ns.UpdateUnitFrameImportantGlow(frame.Castbar) end
+            -- Resolve per-unit fill color
+            local fCbColor = castbarColor
+            if settings.castbarFillColor then
+                fCbColor = settings.castbarFillColor
+            end
+            -- Fill Opacity below 100: tint layer carries the visible
+            -- fill; zero the base so it cannot bleed through.
+            frame.Castbar:SetStatusBarColor(fCbColor.r, fCbColor.g, fCbColor.b,
+                ((settings.castFillOpacity or 100) < 100) and 0 or castbarOpacity)
+            ns.ApplyCastFillOpacity(frame.Castbar, settings)
+            if frame.Castbar:IsShown() then
+                ApplyUnitFrameCastColor(frame.Castbar)
+                UpdateUnitFrameKickTick(frame.Castbar)
+            end
+            -- Apply cast bar text settings
+            if frame.Castbar.Text then
+                local snSz = settings.castSpellNameSize or 11
+                SetFSFont(frame.Castbar.Text, snSz)
+                local snC = settings.castSpellNameColor or { r=1, g=1, b=1 }
+                frame.Castbar.Text:SetTextColor(snC.r, snC.g, snC.b)
+            end
+            if frame.Castbar.Time then
+                local dtSz = settings.castDurationSize or 10
+                SetFSFont(frame.Castbar.Time, dtSz)
+                local dtC = settings.castDurationColor or { r=1, g=1, b=1 }
+                frame.Castbar.Time:SetTextColor(dtC.r, dtC.g, dtC.b)
+                frame.Castbar._showDuration = settings.showCastDuration ~= false
+                frame.Castbar._durationSize = dtSz
+                if frame.Castbar._showDuration and frame.Castbar:IsShown() then
+                    frame.Castbar.Time:Show()
+                elseif not frame.Castbar._showDuration then
+                    frame.Castbar.Time:Hide()
+                end
+            end
+            if frame.Castbar.Target then
+                local tsSz = settings.castSpellTargetSize or 11
+                SetFSFont(frame.Castbar.Target, tsSz)
+                local tsC = settings.castSpellTargetColor or { r=1, g=1, b=1 }
+                frame.Castbar.Target:SetTextColor(tsC.r, tsC.g, tsC.b)
+                frame.Castbar._showTarget = settings.showCastTarget ~= false
+                frame.Castbar._nameSide = settings.castSpellNameSide or "left"
+                frame.Castbar._tgtSide  = settings.castSpellTargetSide or "right"
+                frame.Castbar._durSide  = settings.castDurationSide or "right"
+                if not frame.Castbar._showTarget then
+                    frame.Castbar.Target:Hide()
+                end
+                if frame.Castbar._layoutTextZones then
+                    frame.Castbar:_layoutTextZones()
+                end
+            end
+        end
+    end
 
     -- Apply frame strata to all spawned unit frames
     local ufStrata = profile.frameStrata or "MEDIUM"
@@ -483,32 +594,6 @@ ReloadFramesBody = function()
 
                         -- Update power bar border (detached only; lazily created)
                         ns.UpdatePowerBorder(frame.Power, settings)
-
-                        -- Gray out power bar background for generic melee NPCs
-                        if ppPos ~= "none" and (ppPos == "below" or ppPos == "above") then
-                            local shouldGray = false
-                            if unit ~= "player" and UnitExists(unit) and UnitCanAttack("player", unit) and not UnitIsPlayer(unit) then
-                                local cls = UnitClassification(unit)
-                                local isBoss = (cls == "worldboss")
-                                local isElite = (cls == "elite" or cls == "rareelite")
-                                local lvl = UnitLevel(unit)
-                                local pLvl = UnitLevel("player")
-                                local lvlOk = lvl and not (issecretvalue and issecretvalue(lvl))
-                                local pLvlOk = pLvl and not (issecretvalue and issecretvalue(pLvl))
-                                local isMB = isElite and lvlOk and (lvl == -1 or (pLvlOk and lvl >= pLvl + 1))
-                                local isCst = UnitClassBase and UnitClassBase(unit); if issecretvalue(isCst) then isCst = nil end; isCst = (isCst == "PALADIN")
-                                if not isBoss and not isMB and not isCst then shouldGray = true end
-                            end
-                            if shouldGray then
-                                frame.Power._grayedOut = true
-                                if frame.Power.bg then
-                                    frame.Power.bg:SetColorTexture(0.25, 0.25, 0.25, 1)
-                                    frame.Power.bg:SetAlpha(1)
-                                end
-                            else
-                                frame.Power._grayedOut = false
-                            end
-                        end
                     end
                     if frame.Castbar then
                         local castbarBg = frame.Castbar:GetParent()
@@ -804,32 +889,6 @@ ReloadFramesBody = function()
 
                         -- Update power bar border (detached only; lazily created)
                         ns.UpdatePowerBorder(frame.Power, settings)
-
-                        -- Gray out power bar background for generic melee NPCs
-                        if ppPos ~= "none" and (ppPos == "below" or ppPos == "above") then
-                            local shouldGray = false
-                            if unit ~= "player" and UnitExists(unit) and UnitCanAttack("player", unit) and not UnitIsPlayer(unit) then
-                                local cls = UnitClassification(unit)
-                                local isBoss = (cls == "worldboss")
-                                local isElite = (cls == "elite" or cls == "rareelite")
-                                local lvl = UnitLevel(unit)
-                                local pLvl = UnitLevel("player")
-                                local lvlOk = lvl and not (issecretvalue and issecretvalue(lvl))
-                                local pLvlOk = pLvl and not (issecretvalue and issecretvalue(pLvl))
-                                local isMB = isElite and lvlOk and (lvl == -1 or (pLvlOk and lvl >= pLvl + 1))
-                                local isCst = UnitClassBase and UnitClassBase(unit); if issecretvalue(isCst) then isCst = nil end; isCst = (isCst == "PALADIN")
-                                if not isBoss and not isMB and not isCst then shouldGray = true end
-                            end
-                            if shouldGray then
-                                frame.Power._grayedOut = true
-                                if frame.Power.bg then
-                                    frame.Power.bg:SetColorTexture(0.25, 0.25, 0.25, 1)
-                                    frame.Power.bg:SetAlpha(1)
-                                end
-                            else
-                                frame.Power._grayedOut = false
-                            end
-                        end
                     end
 
                     -- Reposition name and health text
@@ -1165,104 +1224,7 @@ ReloadFramesBody = function()
                 end
 
                 -- Castbar (focus)
-                if frame.Castbar then
-                    local castbarBg = frame.Castbar:GetParent()
-                    if castbarBg then
-                        if settings.showCastbar ~= false then
-                            if not frame:IsElementEnabled("Castbar") then
-                                frame:EnableElement("Castbar")
-                            end
-                            local cbW3 = settings.castbarWidth or 181
-                            local cbH3 = settings.castbarHeight or 14
-                            PP.Size(castbarBg, cbW3, cbH3)
-                            if castbarBg._bgTex then
-                                local cbg = settings.castBgColor
-                                castbarBg._bgTex:SetColorTexture(cbg and cbg.r or 0, cbg and cbg.g or 0, cbg and cbg.b or 0, settings.castBgAlpha or 0.5)
-                            end
-                            local fIconOffX, fIconOffY = CastIconOffsets("focus", settings)
-                            LayoutCastbarIcon(frame.Castbar, CastIconInWidth("focus", settings), settings.castbarHeight or 14, CastIconOnRight("focus", settings), fIconOffX, fIconOffY, CastIconShown("focus", settings), settings.castbarStockBorderScale,
-                                ns.UF_CastIconPortrait(frame.Castbar, frame, settings, "focus"))
-                            ns.UF_ApplyCastBorder(frame.Castbar, settings, nil, "focus")
-                            if frame.Castbar._iconFrame then
-                                PP.Size(frame.Castbar._iconFrame, cbH3, cbH3)
-                                if not frame.Castbar:IsShown() then
-                                    frame.Castbar._iconFrame:Hide()
-                                elseif settings.showCastIcon == false then
-                                    frame.Castbar._iconFrame:Hide()
-                                else
-                                    frame.Castbar._iconFrame:Show()
-                                end
-                            end
-                            -- Position owned by centralized unlock system
-                            -- Respect hide-while-not-casting: only show bg if inactive hiding is off or cast is active
-                            if settings.castbarHideWhenInactive and not frame.Castbar:IsShown() then
-                                castbarBg:Hide()
-                            else
-                                castbarBg:Show()
-                            end
-                        else
-                            if frame:IsElementEnabled("Castbar") then
-                                frame:DisableElement("Castbar")
-                            end
-                            frame.Castbar:Hide()
-                            castbarBg:Hide()
-                        end
-                    end
-                    -- Store per-unit settings for PostCastStart
-                    frame.Castbar._eufSettings = settings
-                    -- A glow already showing takes new Important Cast Glow settings now.
-                    if frame.Castbar._impGlowActive then ns.UpdateUnitFrameImportantGlow(frame.Castbar) end
-                    -- Resolve per-unit fill color
-                    local fCbColor = castbarColor
-                    if settings.castbarFillColor then
-                        fCbColor = settings.castbarFillColor
-                    end
-                    -- Fill Opacity below 100: tint layer carries the visible
-                    -- fill; zero the base so it cannot bleed through.
-                    frame.Castbar:SetStatusBarColor(fCbColor.r, fCbColor.g, fCbColor.b,
-                        ((settings.castFillOpacity or 100) < 100) and 0 or castbarOpacity)
-                    ns.ApplyCastFillOpacity(frame.Castbar, settings)
-                    if frame.Castbar:IsShown() then
-                        ApplyUnitFrameCastColor(frame.Castbar)
-                        UpdateUnitFrameKickTick(frame.Castbar)
-                    end
-                    -- Apply cast bar text settings
-                    if frame.Castbar.Text then
-                        local snSz = settings.castSpellNameSize or 11
-                        SetFSFont(frame.Castbar.Text, snSz)
-                        local snC = settings.castSpellNameColor or { r=1, g=1, b=1 }
-                        frame.Castbar.Text:SetTextColor(snC.r, snC.g, snC.b)
-                    end
-                    if frame.Castbar.Time then
-                        local dtSz = settings.castDurationSize or 10
-                        SetFSFont(frame.Castbar.Time, dtSz)
-                        local dtC = settings.castDurationColor or { r=1, g=1, b=1 }
-                        frame.Castbar.Time:SetTextColor(dtC.r, dtC.g, dtC.b)
-                        frame.Castbar._showDuration = settings.showCastDuration ~= false
-                        frame.Castbar._durationSize = dtSz
-                        if frame.Castbar._showDuration and frame.Castbar:IsShown() then
-                            frame.Castbar.Time:Show()
-                        elseif not frame.Castbar._showDuration then
-                            frame.Castbar.Time:Hide()
-                        end
-                    end
-                    if frame.Castbar.Target then
-                        local tsSz = settings.castSpellTargetSize or 11
-                        SetFSFont(frame.Castbar.Target, tsSz)
-                        local tsC = settings.castSpellTargetColor or { r=1, g=1, b=1 }
-                        frame.Castbar.Target:SetTextColor(tsC.r, tsC.g, tsC.b)
-                        frame.Castbar._showTarget = settings.showCastTarget ~= false
-                        frame.Castbar._nameSide = settings.castSpellNameSide or "left"
-                        frame.Castbar._tgtSide  = settings.castSpellTargetSide or "right"
-                        frame.Castbar._durSide  = settings.castDurationSide or "right"
-                        if not frame.Castbar._showTarget then
-                            frame.Castbar.Target:Hide()
-                        end
-                        if frame.Castbar._layoutTextZones then
-                            frame.Castbar:_layoutTextZones()
-                        end
-                    end
-                end
+                ApplyUnitCastbar(frame, "focus", settings)
 
                 UpdateBordersForScale(frame, unit)
                 ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
@@ -1337,6 +1299,7 @@ ReloadFramesBody = function()
                     end
                 end
 
+                if unit == "pet" and frame.Castbar then ApplyUnitCastbar(frame, unit, settings) end
                 UpdateBordersForScale(frame, unit)
                 ReparentBarsToClip(frame, ns.UF_PowerPos(settings), settings)
 
@@ -1414,30 +1377,6 @@ ReloadFramesBody = function()
                         frame.Power:Show()
                     end
                     if frame.Power._applyPowerPercentText then frame.Power._applyPowerPercentText(settings) end
-
-                    -- Gray out power bar background for generic melee NPCs
-                    if bPpPos ~= "none" and (bPpPos == "below" or bPpPos == "above") then
-                        local shouldGray = false
-                        if UnitExists(unit) and UnitCanAttack("player", unit) and not UnitIsPlayer(unit) then
-                            local cls = UnitClassification(unit)
-                            local isBoss = (cls == "worldboss")
-                            local isElite = (cls == "elite" or cls == "rareelite")
-                            local lvl = UnitLevel(unit)
-                            local pLvl = UnitLevel("player")
-                            local isMB = isElite and (lvl == -1 or (pLvl and lvl >= pLvl + 1))
-                            local isCst = UnitClassBase and UnitClassBase(unit); if issecretvalue(isCst) then isCst = nil end; isCst = (isCst == "PALADIN")
-                            if not isBoss and not isMB and not isCst then shouldGray = true end
-                        end
-                        if shouldGray then
-                            frame.Power._grayedOut = true
-                            if frame.Power.bg then
-                                frame.Power.bg:SetColorTexture(0.25, 0.25, 0.25, 1)
-                                frame.Power.bg:SetAlpha(1)
-                            end
-                        else
-                            frame.Power._grayedOut = false
-                        end
-                    end
                 end
 
                 -- Castbar (boss)
@@ -1576,6 +1515,7 @@ ReloadFramesBody = function()
             ApplyDarkTheme(frame.Health, unit)  -- re-anchors health.bg for the new axis
             UpdateAbsorbBarReverseFill(frame, settings.healthReverseFill and true or false, settings)
             ns.UF_HealPredApply(frame, unit, settings)
+            ns.UF_MaxHpApply(frame, unit)
             ns.UF_AbsorbGlowApply(frame, unit)
             -- Smooth bar interpolation (live toggle without /reload)
             if settings.smoothBars then
@@ -1584,9 +1524,6 @@ ReloadFramesBody = function()
             else
                 frame.Health.smoothing = Enum and Enum.StatusBarInterpolation
                     and Enum.StatusBarInterpolation.Immediate
-            end
-            if frame.Health.ForceUpdate then
-                frame.Health:ForceUpdate()
             end
 
             -- Apply power bar opacity
@@ -1610,16 +1547,26 @@ ReloadFramesBody = function()
                     if not s2 then return end
                     local useP = s2.powerPercentPowerColor ~= false
                     local bR, bG, bB
+                    -- PLAIN stand-ins for bR
+                    local haveBase, baseSecret = false, false
                     if not useP then
                         local cf = s2.customPowerFillColor
                         if cf then bR, bG, bB = cf.r, cf.g, cf.b else bR, bG, bB = 0, 0, 1 end
+                        haveBase = true
                     else
-                        -- Secret-safe per-unit power color (player via token,
-                        -- non-player via the clean integer type), so custom power
-                        -- colors apply on EVERY unit independent of oUF's sync.
-                        bR, bG, bB = EllesmereUI.ResolveUnitPowerColor(unit)
+                        if s2.powerClassColored then
+                            haveBase, bR, bG, bB = ns.UF_PowerClassColor(unit)
+                            baseSecret = haveBase and issecretvalue(bR)
+                        end
+                        if not haveBase then
+                            -- Secret-safe per-unit power color (player via token,
+                            -- non-player via the clean integer type), so custom power
+                            -- colors apply on EVERY unit independent of oUF's sync.
+                            bR, bG, bB = EllesmereUI.ResolveUnitPowerColor(unit)
+                            haveBase = bR ~= nil
+                        end
                     end
-                    if s2.powerGradientEnabled and bR then
+                    if s2.powerGradientEnabled and haveBase and not baseSecret then
                         local gc = s2.powerGradientColor
                         local ga = s2.powerBarOpacity or 100
                         if ga > 1.0 then ga = ga / 100 end
@@ -1629,8 +1576,8 @@ ReloadFramesBody = function()
                     elseif not useP then
                         local cf = s2.customPowerFillColor
                         if cf then self:SetStatusBarColor(cf.r, cf.g, cf.b) else self:SetStatusBarColor(0, 0, 1) end
-                    elseif bR then
-                        -- Power-color mode (no gradient): explicitly paint the bar so it
+                    elseif haveBase then
+                        -- Power/class-color mode (no gradient): explicitly paint the bar so it
                         -- doesn't depend on oUF's colors.power being synced.
                         self:SetStatusBarColor(bR, bG, bB)
                     end
@@ -1661,12 +1608,14 @@ ReloadFramesBody = function()
                 elseif frame.Power.bg then
                     frame.Power.bg:SetColorTexture(17/255, 17/255, 17/255, 1)
                 end
+                -- The repaint above clears any gray: the pass's closing repaint
+                -- (ApplyEnemyColors) grays an ordinary enemy's bar again.
+                frame.Power._grayedOut = false
                 frame.Power:SetReverseFill(settings.powerReverseFill and true or false)
                 -- Reverse-fill direction is only final here; re-derive Fill Opacity state
                 -- (ApplyPowerBarAlpha above ran before this SetReverseFill, so a direction
                 -- change would otherwise leave the bg anchored to the wrong side).
                 ApplyPowerBarAlpha(frame.Power, UnitToSettingsKey(unit))
-                if frame.Power.ForceUpdate then frame.Power:ForceUpdate() end
                 if unit == "player" then
                     ns.UF_SetupPowerCost(frame.Power, settings)
                     ns.UF_PowerValSync(frame)
@@ -1728,11 +1677,12 @@ ReloadFramesBody = function()
                 ns.ApplyBossBorderState(frame)
             end
 
-            -- Helper: set font on a FontString, using donor font for mini frames
+            -- Helper: set font on a FontString, using donor font for mini frames.
+            -- A font family, as SetFSFont gives.
             local function SetMiniFont(fs, sz)
                 if not fs or not fs.SetFont then return end
                 if isMiniFrame then
-                    EllesmereUI.ApplyModuleFont(fs, donorFontPath, sz or 12, "unitFrames")
+                    EllesmereUI.ApplyModuleFontFamily(fs, donorFontPath, sz or 12, "unitFrames")
                 else
                     SetFSFont(fs, sz)
                 end
@@ -1900,6 +1850,10 @@ ReloadFramesBody = function()
     -- on the geometry the sweep just settled (returns at once everywhere else).
     ns.UF_ApplyForeverComboArc()
 
+    -- Detached portrait click overlays, and once more next frame (anchors still
+    -- resolving) only while a frame uses one.
+    if SyncPortraitClicks() then C_Timer.After(0, SyncPortraitClicks) end
+
     -- Rounded corners (EllesmereUI_RoundedCorners.lua), on the settled
     -- geometry. The radius rides with the border source, like the border; a
     -- detached power bar rounds on its own with the same radius. An attached
@@ -1966,12 +1920,18 @@ ReloadFramesBody = function()
     -- Reload-all also SWEEPS stale bar ids (a previous profile's bars must
     -- park on swap -- field report).
     if ns.PAB_ReloadAllCustomBars then ns.PAB_ReloadAllCustomBars() end
+    ns.UF_PlayerPortraitChanged()
     -- Size matching: the unified borders were just applied, so report each
     -- frame's border pad; only a pad that really changed re-pushes its matches.
     if EllesmereUI.MatchPadChanged then
         local padKeys = ns.UF_PAD_KEYS
         for i = 1, #padKeys do EllesmereUI.MatchPadChanged(padKeys[i]) end
     end
+    -- Last: its ForceAll repaint must follow the per-frame ApplyDarkTheme, or turning
+    -- Dark Mode off left the class-colored fill dark until the next health event.
+    -- The same repaint grays the power bar of an ordinary enemy again, whose
+    -- background the pass above repainted.
+    ApplyEnemyColors()
 end
 
 -- The unit frames whose unified border can reach outside the frame (the
@@ -1979,7 +1939,7 @@ end
 -- the three cast bars (a Custom Border Style border, the Classic frame; the
 -- cast bar pass runs inside the same reload sweep).
 ns.UF_PAD_KEYS = { "player", "target", "focus", "pet", "targettarget", "focustarget",
-    "playerCastbar", "targetCastbar", "focusCastbar" }
+    "playerCastbar", "targetCastbar", "focusCastbar", "petCastbar" }
 
 -- Size matching: the width and height the unit frame's textured border draws
 -- OUTSIDE the frame, from exactly what the reload sweep's unified border apply

@@ -1,7 +1,7 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 local GetSpecialization = (C_SpecializationInfo and C_SpecializationInfo.GetSpecialization) or GetSpecialization
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.HideFrame and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard frame suppression hides through the parent's HideFrame)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.HideFrame and EllesmereUI._Pool and EllesmereUI.AbsorbGlow and EllesmereUI.SetCraftBatch and EllesmereUI.FitCastName and EllesmereUI.CleanCastName and EllesmereUI.AbbreviateValue and EllesmereUI.IsZeroValue and EllesmereUI.UnitNameFormat and EllesmereUI.OwnSurnameHidden and EllesmereUI.PadGamepadUI and EllesmereUI.SetEditModeChildInert and EllesmereUI.ApplyModuleFontFamily and EllesmereUI.PadModeOn and EllesmereUI.UIScaledAlpha and EllesmereUI.OnUIAlphaChanged and EllesmereUI.CastChromeGeom and EllesmereUI.SetLeftClickTarget) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard frame suppression hides through the parent's HideFrame, the player absorb glow line is the parent's AbsorbGlow, the player cast bar's Full Craft Time is the parent's SetCraftBatch, Show Full Spell Name is the parent's FitCastName, the cast name drops the quest-object " - No Text" through its CleanCastName, and the health texts format through the parent's AbbreviateValue, the [absorb:abr] tags blank at zero through its IsZeroValue, and the Name Format asks its UnitNameFormat, the [name:last] and [target:last] tags its OwnSurnameHidden, and the WoW Forever gamepad target menu keeps Blizzard's TargetFrame live through its PadGamepadUI and SetEditModeChildInert, and the frame texts take their font family through its ApplyModuleFontFamily, and the gamepad cast bar hide follows its PadModeOn, and the 3D portraits follow a faded UI through its UIScaledAlpha and OnUIAlphaChanged, and the stock cast bar art seats from its CastChromeGeom, and the unit buttons' left-click target comes from its SetLeftClickTarget)
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
 
 local math_floor, math_ceil, math_max, math_min, math_abs =
@@ -31,6 +31,7 @@ do
     local hiddenParent = CreateFrame("Frame", nil, UIParent)
     hiddenParent:Hide()
     local pendingParent, looseFrames, hookedFrames = {}, {}, {}
+    local homeParent = {}   -- frame -> the parent it is kept in, when not hiddenParent
     local bossHandled = false
 
     -- Combat fallback: protected frames can't reparent in lockdown; park here, sweep at regen (mirrors stock lib).
@@ -40,13 +41,14 @@ do
             ns.CombatQueue.Defer("HiddenParentSweep", SweepLooseFrames)
             return
         end
-        for f in pairs(looseFrames) do f:SetParent(hiddenParent) end
+        for f in pairs(looseFrames) do f:SetParent(homeParent[f] or hiddenParent) end
         wipe(looseFrames)
     end
 
     local function ApplyHiddenParent(frame)
         pendingParent[frame] = nil
-        if frame:GetParent() == hiddenParent then return end
+        local home = homeParent[frame] or hiddenParent
+        if frame:GetParent() == home then return end
         if EditModeManagerFrame and EditModeManagerFrame:IsShown() then
             pendingParent[frame] = true
             C_Timer.After(0.25, function() ApplyHiddenParent(frame) end)
@@ -54,7 +56,7 @@ do
             looseFrames[frame] = true
             ns.CombatQueue.Defer("HiddenParentSweep", SweepLooseFrames)
         else
-            frame:SetParent(hiddenParent)
+            frame:SetParent(home)
         end
     end
 
@@ -62,23 +64,25 @@ do
         if child then child:UnregisterAllEvents() end
     end
 
-    local function HandleFrame(frame, doNotReparent)
+    -- keepShown: the frame stays shown in its home parent (homeParent[frame]).
+    local function HandleFrame(frame, doNotReparent, keepShown)
         if type(frame) == "string" then frame = _G[frame] end
         if not frame then return end
         frame:UnregisterAllEvents()
-        EllesmereUI.HideFrame(frame)
+        if not keepShown then EllesmereUI.HideFrame(frame) end
         if not doNotReparent then
-            frame:SetParent(hiddenParent)
+            frame:SetParent(homeParent[frame] or hiddenParent)
             if not hookedFrames[frame] then
                 hookedFrames[frame] = true
                 hooksecurefunc(frame, "SetParent", function(self, parent)
-                    if parent ~= hiddenParent and not pendingParent[self] then
+                    if parent ~= (homeParent[self] or hiddenParent) and not pendingParent[self] then
                         pendingParent[self] = true
                         C_Timer.After(0, function() ApplyHiddenParent(self) end)
                     end
                 end)
             end
         end
+        if keepShown then frame:Show() end
         Unreg(frame.healthBar or frame.healthbar or frame.HealthBar
             or (frame.HealthBarsContainer and frame.HealthBarsContainer.healthBar))
         Unreg(frame.manabar or frame.ManaBar)
@@ -114,6 +118,32 @@ do
     -- ComboFrame, see InitializeFrames).
     ns.UF_HideBlizzardFrame = HandleFrame
 
+    -- WoW Forever's Gamepad interface style: the gamepad bar's inspect button
+    -- (Y / Triangle) opens the target menu with Blizzard's TargetFrame as its
+    -- owner, and a menu closes the first frame its owner is not visible. Under
+    -- that style (decided as the target frame is hidden, at login) TargetFrame
+    -- is kept shown in an alpha 0 holder instead of the hidden parent, its
+    -- events still off and nothing of it taking the mouse; the menu opens at
+    -- Blizzard's TargetFrame spot. Owner sign-off 2026-11-05 for the children
+    -- (off only, never turned back on): the health and mana bars' hover, and
+    -- the aura container, which re-parses while shown. InitializeFrames also
+    -- suppresses its target-of-target child (ns.UF_TargetMenuOwner).
+    local function KeepTargetMenuOwner(tf)
+        local holder = CreateFrame("Frame", nil, UIParent)
+        holder:SetAlpha(0)
+        homeParent[tf] = holder
+        HandleFrame(tf, false, true)
+        tf:EnableMouse(false)
+        local main = tf.TargetFrameContent and tf.TargetFrameContent.TargetFrameContentMain
+        local bars = main and main.HealthBarsContainer
+        if bars and bars.HealthBar then bars.HealthBar:EnableMouseMotion(false) end
+        if main and main.ManaBar then main.ManaBar:EnableMouseMotion(false) end
+        local auras = tf.GetAuraContainer and tf:GetAuraContainer()
+        if auras then auras:Hide() end
+        EllesmereUI.SetEditModeChildInert(tf.Selection, true)
+        ns.UF_TargetMenuOwner = true
+    end
+
     function ns.UF_HideBlizzard(unit)
         if not unit then return end
         if unit == "player" then
@@ -122,7 +152,14 @@ do
         elseif unit == "pet" then
             HandleFrame(PetFrame)
         elseif unit == "target" then
-            HandleFrame(TargetFrame)
+            -- Once kept for the gamepad menu, a repeat call has nothing to do.
+            if not ns.UF_TargetMenuOwner then
+                if EllesmereUI.PadGamepadUI() and TargetFrame then
+                    KeepTargetMenuOwner(TargetFrame)
+                else
+                    HandleFrame(TargetFrame)
+                end
+            end
         elseif unit == "focus" then
             HandleFrame(FocusFrame)
         elseif unit:match("boss%d?$") then
@@ -227,6 +264,10 @@ local defaults = {
         -- Custom enemy reaction colors (empty = use Blizzard FACTION_BAR_COLORS).
         -- Keys: hostile (reactions 1-3), neutral (4), friendly (5-8), tapped.
         enemyColors = {},
+        -- Targeting Sound Effects: Blizzard's target / lost-target sounds,
+        -- which its parked TargetFrame no longer plays (Lifecycle). On by
+        -- default on WoW Forever only.
+        targetSounds = (EllesmereUI.IS_FOREVER == true) and true or false,
         player = {
             frameWidth = 181,
             healthHeight = 46,
@@ -242,6 +283,7 @@ local defaults = {
             powerPercentX = 0,
             powerPercentY = 0,
             powerPercentPowerColor = true,
+            powerClassColored = false,
             powerBgPowerColored = false,
             powerPercentTextPowerColor = false,
             manaRegenSpark = false,  -- WoW Forever: mana regen spark while the bar shows mana; manaRegenSparkMode "ticks" = Regen Ticks, nil = 5-Second Rule
@@ -389,6 +431,7 @@ local defaults = {
             castSpellNameColor = { r = 1, g = 1, b = 1 },
             castDurationSize = 10,
             castDurationColor = { r = 1, g = 1, b = 1 },
+            castFullCraftTime = false,  -- Duration counts down the whole repeat-craft batch
             castSpellNameX = 0,
             castSpellNameY = 0,
             castSpellTargetSize = 11,
@@ -511,6 +554,7 @@ local defaults = {
             powerPercentX = 0,
             powerPercentY = 0,
             powerPercentPowerColor = true,
+            powerClassColored = false,
             powerBgPowerColored = false,
             powerPercentTextPowerColor = false,
             healthClassColored = true,
@@ -707,7 +751,7 @@ local defaults = {
             eliteIndicatorPosition = "topleft",
             eliteIndicatorX = 0,
             eliteIndicatorY = 0,
-            eliteIndicatorShowInInstances = false,
+            eliteIndicatorShowInInstances = (EllesmereUI.IS_FOREVER == true) and true or false,  -- WoW Forever: on
             eliteIndicatorStyle = "badge",  -- "badge" | "pixelsDragon"
             -- A saved "wingless" style and these five keys read as the Portrait
             -- Dragon (ns.UF_DragonSettings) until a setter pins them over.
@@ -899,6 +943,14 @@ local defaults = {
             debuffSize = 22,
             debuffOffsetX = 0,
             debuffOffsetY = 0,
+            -- Cast bar (opt-in: the bar is built at login only while on, so
+            -- turning it on takes a reload). Position is the unlock mover's.
+            showCastbar = false,
+            castbarWidth = 120,
+            castbarHeight = 12,
+            castbarHideWhenInactive = true,
+            showCastIcon = true,
+            castbarIconInWidth = true,
             -- WoW Forever pets have power (hunter pet focus, warlock pet mana), so
             -- the pet frame carries a power bar there (retail: none).
             powerPosition = (EllesmereUI.IS_FOREVER == true) and "below" or "none",
@@ -942,6 +994,7 @@ local defaults = {
             powerPercentX = 0,
             powerPercentY = 0,
             powerPercentPowerColor = true,
+            powerClassColored = false,
             powerBgPowerColored = false,
             powerPercentTextPowerColor = false,
             healthClassColored = true,
@@ -1317,13 +1370,14 @@ local defaults = {
         bossSpacing = 80,
 
         -- Player dispel overlay (player frame only; keys mirror Raid Frames)
-        dispelOverlay        = "none",   -- "none", "fill", "full", "gradient", "gradient_sharp"
+        dispelOverlay        = "none",   -- "none", "fill", "full", "gradient", "gradient_sharp", "gradient_reverse"
         dispelOverlayOpacity = 100,
         dispelOverlayByMe    = false,    -- only debuffs the player can dispel (engine filter token)
         dispelCustomBorder   = false,    -- Color Custom Borders: the frame border copied in the dispel type color
         showDispelIcons      = false,    -- Type Icon Position: the type's icon on a health bar corner
         dispelIconPosition   = "right",
         dispelIconSize       = 16,
+        dispelIconGrowth     = "none",   -- "none" stacks the type icons; up/down/left/right flows them
         dispelIconOffsetX    = 0,
         dispelIconOffsetY    = 0,
         dispelColorMagic   = { r = 0.349, g = 0.475, b = 1.0 },
@@ -1383,8 +1437,13 @@ local function GetSelectedFont(unitKey)
     return cachedFontPath
 end
 
+-- The frames' texts can show other players' names, so they take the module
+-- font as a font family: the font draws the letters it has and the client's
+-- own faces draw Cyrillic, Korean and Chinese. A plain SetFont would pin a
+-- string's face for good, so every font write to these strings goes through
+-- here (or ApplyModuleFontFamily).
 local function SetFSFont(fs, size, flags)
-  EllesmereUI.ApplyModuleFont(fs, GetSelectedFont(), size or 12, "unitFrames", flags)
+  EllesmereUI.ApplyModuleFontFamily(fs, GetSelectedFont(), size or 12, "unitFrames", flags)
 end
 
 -- Shared cast-bar text anchoring (mirrors the nameplate cast text system). Three
@@ -1521,9 +1580,15 @@ do
         return s.textureBg == true
     end
 
+    -- Unset per-frame choices keep the profile's existing Dark Mode setting.
+    function ns.UF_DarkThemeOn(s)
+        if s and s.darkTheme ~= nil then return s.darkTheme end
+        return (db and db.profile and db.profile.darkTheme) or false
+    end
+
     -- The health fill is opaque: Dark Mode Fill in Dark Mode, else Fill Opacity.
     function ns.UF_HealthOpaque(s)
-        if db.profile.darkTheme then
+        if ns.UF_DarkThemeOn(s) then
             local _, _, _, fa = EllesmereUI.GetDarkModeFill()
             return fa >= 1
         end
@@ -1695,8 +1760,9 @@ ns.ApplyCastBarTexture = function(castbar, texKey)
     -- statusbar art BLANK on plain overlay textures (negative synthetic
     -- fileID, healthy alpha/rect/shown readbacks -- measured in-game
     -- 2026-08-12, the invisible-interrupt-shield report), so re-pointing it
-    -- at the art killed the shield entirely. A flat wash tints the textured
-    -- fill below it; SetAlphaFromBoolean keeps driving it secret-safe.
+    -- at the art killed the shield entirely. Only Blizzard Style still shows
+    -- that wash; elsewhere ApplyUnitFrameCastColor folds the uninterruptible
+    -- colour into the textured tint layer and base fill instead.
 end
 
 -- Cast bar Fill Opacity (player/target/focus). Below 100 the active-cast tint layer
@@ -1708,9 +1774,10 @@ end
 -- (relational anchors + plain alphas only), so secret cast states render identically.
 -- castbar._castTintOn mirrors "the last alpha we wrote to castTintLayer was
 -- above zero". It exists because castTintLayer:GetAlpha() cannot be trusted to
--- return a plain number: this castbar also drives _shieldedTint's alpha from
--- the SECRET notInterruptible flag (SetAlphaFromBoolean), and once secrecy is
--- in a castbar's render state an alpha read comes back secret. Comparing that
+-- return a plain number: this castbar's tint layer and base fill take colours
+-- folded from the SECRET notInterruptible flag (and Blizzard Style drives the
+-- shield's alpha from it), and once secrecy is in a castbar's render state an
+-- alpha read comes back secret. Comparing that
 -- inside our own (tainted) execution throws "attempt to compare a secret number
 -- value", which aborts the whole styling pass mid-way and leaves the cast bar
 -- unanchored at screen centre. We write every one of these alphas ourselves, so
@@ -2163,7 +2230,7 @@ local function ApplyDarkTheme(health, unit)
     -- TEMPORARY (see UF_SecretSafeHealthColor). Idempotent: this function
     -- re-runs on settings changes and re-assigning is harmless.
         health.UpdateColor = UF_SecretSafeHealthColor
-    local isDark = db and db.profile and db.profile.darkTheme
+    local isDark = ns.UF_DarkThemeOn(health._euiUnitKey and db.profile[health._euiUnitKey])
     if isDark then
         health.colorClass = false
         health.colorClassPet = false
@@ -2546,8 +2613,8 @@ end
 -- Main-chunk locals the other EUI_UnitFrames_*.lua files re-import by name.
 -- dbSetters: a file that reads db keeps its own local and adds a setter here,
 -- this file first; EllesmereUF:OnInitialize (EUI_UnitFrames_Lifecycle.lua)
--- assigns its own db, then runs the list.
-ns._internals = {
+-- assigns its own db, then calls SetDB.
+EllesmereUI.NewInternals(ns, "_internals", {
     frames = frames, GetSettingsForUnit = GetSettingsForUnit, UnsnapTex = UnsnapTex,
     unitSettingsKey = unitSettingsKey, UnitToSettingsKey = UnitToSettingsKey,
     ResolveFontPath = ResolveFontPath, ApplyDarkTheme = ApplyDarkTheme,
@@ -2559,10 +2626,6 @@ ns._internals = {
     ApplyBarGradient = ApplyBarGradient, ApplyHealthBarTexture = ApplyHealthBarTexture,
     ApplyHealthBarAlpha = ApplyHealthBarAlpha, ApplyPowerBarAlpha = ApplyPowerBarAlpha,
     SpecHasClassPower = SpecHasClassPower, UF_SecretSafeHealthColor = UF_SecretSafeHealthColor,
+    ClassColorSourceUnit = ClassColorSourceUnit,
     dbSetters = { function(v) db = v end },
-}
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._internals, { __index = function(_, k)
-    error("ns._internals has no entry " .. tostring(k), 2)
-end })
+}, { SetDB = "dbSetters" })

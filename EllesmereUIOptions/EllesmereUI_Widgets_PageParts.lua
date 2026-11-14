@@ -178,7 +178,10 @@ function EllesmereUI.ModuleNS(folder) return EllesmereUI._ModuleNS and Ellesmere
 
 -- Custom link row: label on the left, an Open Settings button on the right,
 -- jumping to the module page that owns a selection-bound settings family.
-function EllesmereUI.BuildLinkRow(parent, y, label, module, page, section, highlight)
+-- opts.warn: the label in the warning red, for a setting there that overrides
+-- this page. Returns the next y and the row; row:Relink(label, module, page,
+-- section, highlight) aims the same row at another setting.
+function EllesmereUI.BuildLinkRow(parent, y, label, module, page, section, highlight, opts)
     local PP = EllesmereUI.PanelPP
     local ROW_H = 40
     local row = CreateFrame("Frame", nil, parent)
@@ -191,6 +194,7 @@ function EllesmereUI.BuildLinkRow(parent, y, label, module, page, section, highl
     lbl:SetAlpha(0.9)
     lbl:SetPoint("LEFT", row, "LEFT", 20, 0)
     lbl:SetText(EllesmereUI.L(label))
+    if opts and opts.warn then lbl:SetTextColor(0.9, 0.3, 0.3) end
 
     local btn = CreateFrame("Button", nil, row)
     PP.Size(btn, 122, 26)
@@ -199,13 +203,17 @@ function EllesmereUI.BuildLinkRow(parent, y, label, module, page, section, highl
     EllesmereUI.MakeStyledButton(btn, "Open Settings", 11, EllesmereUI.WB_COLOURS, function()
         EllesmereUI:NavigateToElementSettings(module, page, section, nil, highlight)
     end)
+    function row:Relink(l, m, p, s, h)
+        lbl:SetText(EllesmereUI.L(l))
+        module, page, section, highlight = m, p, s, h
+    end
 
-    return y - ROW_H
+    return y - ROW_H, row
 end
 
 -- A row of action cards across the page (icon, title, a short description;
 -- the whole card is the click). cards[i] = { icon, title, desc, onClick,
--- accent, hero, iconSize, sizeAlso } -- accent { r, g, b } tints the icon
+-- accent, hero, iconSize, sizeAlso, pulse } -- accent { r, g, b } tints the icon
 -- (and a box's top edge), the theme accent when nil; iconSize (px) draws art
 -- that fills more of its canvas smaller, centred in the same slot (the text
 -- never moves). By default the cards are equal boxes side by side across
@@ -217,7 +225,9 @@ end
 -- the equal cards' boxed look. opts.footer (px, inline) leaves that much free
 -- under the line for the caller (a link). Returns the new y and the card
 -- buttons (in cards order); card:SetCardContent(icon, title, desc) swaps all
--- three in place.
+-- three in place. An equal card built with pulse = true also takes
+-- card:SetPulse(on): a breathing accent outline for an action that wants
+-- attention now, animated only while the card shows.
 local function BuildInlineRow(parent, y, cards, availW, fullW, footer)
     local PP = EllesmereUI.PanelPP
     local L  = EllesmereUI.L
@@ -314,14 +324,8 @@ local function BuildInlineRow(parent, y, cards, availW, fullW, footer)
         -- The equal cards' box: dark fill, thin outline, an accent top edge.
         local bg, brd, accentLine
         if boxed then
-            bg = card:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints()
-            brd = EllesmereUI.MakeBorder(card, 1, 1, 1, BOX_BRD_A, PP)
-            accentLine = card:CreateTexture(nil, "ARTWORK", nil, 7)
-            PP.Point(accentLine, "TOPLEFT", card, "TOPLEFT", 1, -1)
-            PP.Point(accentLine, "TOPRIGHT", card, "TOPRIGHT", -1, -1)
-            accentLine:SetHeight(2)
-            if accentLine.SetSnapToPixelGrid then accentLine:SetSnapToPixelGrid(false); accentLine:SetTexelSnappingBias(0) end
+            brd = EllesmereUI.MakeRoundedCard(card, BOX_BRD_A, 0.50, 2)
+            bg, accentLine = brd.bg, brd.accent
         end
         -- The accent is read at paint time, so an accent change repaints it.
         local function Paint(hover)
@@ -387,19 +391,11 @@ function EllesmereUI.BuildActionCardRow(parent, y, cards, opts)
         PP.Point(card, "TOPLEFT", rowFrame, "TOPLEFT", (i - 1) * (cardW + CARD_GAP), 0)
         card:SetFrameLevel(rowFrame:GetFrameLevel() + 2)
 
-        local bg = card:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        bg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
         local BRD_A = 0.12
-        local brd = EllesmereUI.MakeBorder(card, 1, 1, 1, BRD_A, PP)
-
-        -- Accent top edge
-        local accentLine = card:CreateTexture(nil, "ARTWORK", nil, 7)
-        accentLine:SetColorTexture(ac.r, ac.g, ac.b, 0.6)
-        PP.Point(accentLine, "TOPLEFT", card, "TOPLEFT", 1, -1)
-        PP.Point(accentLine, "TOPRIGHT", card, "TOPRIGHT", -1, -1)
-        accentLine:SetHeight(2)
-        if accentLine.SetSnapToPixelGrid then accentLine:SetSnapToPixelGrid(false); accentLine:SetTexelSnappingBias(0) end
+        -- Card look with the accent top edge (EllesmereUI_RoundedCorners.lua).
+        local brd = EllesmereUI.MakeRoundedCard(card, BRD_A, 0.50, 2)
+        local bg = brd.bg
+        brd.accent:SetColorTexture(ac.r, ac.g, ac.b, 0.6)
 
         local ICON_A, TITLE_A = 0.6, 0.9
         local icon = card:CreateTexture(nil, "ARTWORK")
@@ -432,6 +428,36 @@ function EllesmereUI.BuildActionCardRow(parent, y, cards, opts)
         end
         card:SetCardContent(spec.icon, spec.title, spec.desc)
 
+        -- The pulse outline is built with the card whenever it is asked for,
+        -- so a kept page hands it back in order; it stays hidden until
+        -- SetPulse turns it on, and its fade plays only while it shows.
+        local pulse
+        if spec.pulse then
+            pulse = CreateFrame("Frame", nil, card)
+            pulse:SetAllPoints(card)
+            pulse:SetFrameLevel(card:GetFrameLevel() + 3)
+            pulse:EnableMouse(false)
+            pulse:Hide()
+            pulse._ring = EllesmereUI.MakeRoundedBorder(pulse, ac.r, ac.g, ac.b, 1, nil, nil, nil, 2)
+            local breathe = pulse:CreateAnimationGroup()
+            breathe:SetLooping("BOUNCE")
+            local fade = breathe:CreateAnimation("Alpha")
+            fade:SetFromAlpha(1)
+            fade:SetToAlpha(0.2)
+            fade:SetDuration(0.9)
+            fade:SetSmoothing("IN_OUT")
+            pulse:SetScript("OnShow", function() breathe:Play() end)
+            pulse:SetScript("OnHide", function() breathe:Stop() end)
+        end
+        function card:SetPulse(on)
+            if not pulse then return end
+            if on then
+                local live = spec.accent or EllesmereUI.ELLESMERE_GREEN
+                pulse._ring:SetColor(live.r, live.g, live.b, 1)
+            end
+            pulse:SetShown(on and true or false)
+        end
+
         -- The title's resting alpha is its text colour's (as BuildInlineRow's).
         card:SetScript("OnEnter", function()
             bg:SetColorTexture(0.119, 0.111, 0.104, 0.50)
@@ -454,8 +480,11 @@ end
 -- Note row: a dim aside (inside a card when its module is disabled, under a
 -- row). opts.banner: the section banner look (row background, brighter text,
 -- up to two lines), for a note the player must read before the rows below.
+-- opts.warn: a warning, one centred line in the warning red (BuildLinkRow's),
+-- a size larger than the aside, for a note at the top of a page.
 function EllesmereUI.BuildNoteRow(parent, y, text, opts)
     local banner = opts and opts.banner
+    local warn = opts and opts.warn
     local ROW_H = banner and 40 or 34
     -- The search prebuild only indexes rows: same y advance, no frames.
     if EllesmereUI._prebuilding then return y - ROW_H end
@@ -465,7 +494,13 @@ function EllesmereUI.BuildNoteRow(parent, y, text, opts)
     PP.Point(row, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y)
     row._skipRowDivider = true
     if banner then EllesmereUI.RowBg(row, parent) end
-    local lbl = EllesmereUI.MakeFont(row, 12, nil, 1, 1, 1)
+    local lbl = EllesmereUI.MakeFont(row, warn and 13 or 12, nil, 1, 1, 1)
+    if warn then
+        lbl:SetTextColor(0.9, 0.3, 0.3)
+        lbl:SetPoint("CENTER", row, "CENTER", 0, 0)
+        lbl:SetText(EllesmereUI.L(text))
+        return y - ROW_H
+    end
     lbl:SetAlpha(banner and 0.6 or 0.45)
     lbl:SetPoint("LEFT", row, "LEFT", 20, 0)
     if banner then
@@ -532,8 +567,8 @@ function EllesmereUI.BuildModuleCard(parent, y, W, tile, opts)
             searchName, nil, nil, true)
     end
 
-    local hbg = EllesmereUI.SolidTex(hdr, "BACKGROUND", 0, 0, 0, 0)
-    hbg:SetAllPoints()
+    -- The header hover fill sits on the card (built below), inside its corners.
+    local hbg
 
     opts.glyph(hdr, enabled)
 
@@ -625,11 +660,14 @@ function EllesmereUI.BuildModuleCard(parent, y, W, tile, opts)
     bg:SetFrameLevel(parent:GetFrameLevel())
     PP.Size(bg, cardW, cardTop - y)
     PP.Point(bg, "TOPLEFT", hdr, "TOPLEFT", 0, 0)
-    local fill = EllesmereUI.SolidTex(bg, "BACKGROUND", 0.077, 0.068, 0.058, 0.5)
-    fill:SetAllPoints()
-    brd = EllesmereUI.MakeBorder(bg, 1, 1, 1, expanded and 0.16 or 0.12, PP)
+    brd = EllesmereUI.MakeRoundedCard(bg, expanded and 0.16 or 0.12)
+    hbg = bg:CreateTexture(nil, "BACKGROUND", nil, 1)
+    hbg:SetAllPoints(hdr)
+    hbg:SetColorTexture(0, 0, 0, 0)
+    brd:Clip(hbg)
 
     strip = bg:CreateTexture(nil, "ARTWORK")
+    brd:Clip(strip)
     strip:SetWidth(2)
     if enabled then
         strip:SetColorTexture(EG.r, EG.g, EG.b, 0.7)
@@ -654,7 +692,9 @@ end
 --  Manager-page parts (Buff Manager, Debuff Manager, Player Aura Bars)
 -------------------------------------------------------------------------------
 -- Sidebar tile. opts: width, fontPath, title, subtitle | subtitleFn, icon | iconFn
--- (the Fn forms re-read on every page widget refresh), posText, selected,
+-- (the Fn forms re-read on every page widget refresh) | iconApply(tex) (paints
+-- the icon itself, no crop), statusDot ({ r, g, b }: 8px dot, top right, left of
+-- the toggle pill when shown), posText, selected,
 -- enabled, showToggle, dimmed, inheritedTooltip,
 -- onSelect(), onToggle(newState), onDelete(), onEdit(), onContext(tile),
 -- height (66), textRight (-52), titleUnclamped, editSize (16), editTooltip,
@@ -692,9 +732,10 @@ function EllesmereUI.BuildManagerTile(parentFrame, y, opts)
 
     local textX = 12
     local titleY = -10
-    local textRight = opts.textRight or -52
+    -- A status dot beside the toggle pill pushes the text further in.
+    local textRight = opts.textRight or ((opts.showToggle and opts.statusDot) and -60 or -52)
 
-    if opts.icon or opts.iconFn then
+    if opts.icon or opts.iconFn or opts.iconApply then
         local ICON_SZ = 36
         local iconFrame = CreateFrame("Frame", nil, tile)
         iconFrame:SetSize(ICON_SZ, ICON_SZ)
@@ -702,8 +743,12 @@ function EllesmereUI.BuildManagerTile(parentFrame, y, opts)
         iconFrame:SetFrameLevel(tile:GetFrameLevel() + 1)
         local iconTex = iconFrame:CreateTexture(nil, "ARTWORK")
         iconTex:SetAllPoints()
-        iconTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        iconTex:SetTexture(opts.iconFn and opts.iconFn() or opts.icon)
+        if opts.iconApply then
+            opts.iconApply(iconTex)
+        else
+            iconTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            iconTex:SetTexture(opts.iconFn and opts.iconFn() or opts.icon)
+        end
         if opts.iconFn then
             EllesmereUI.RegisterWidgetRefresh(function() iconTex:SetTexture(opts.iconFn()) end)
         end
@@ -793,19 +838,26 @@ function EllesmereUI.BuildManagerTile(parentFrame, y, opts)
         if opts.inheritedTooltip and toggleBtn.SetIgnoreParentAlpha then
             toggleBtn:SetIgnoreParentAlpha(true)
         end
-        local toggleBg = toggleBtn:CreateTexture(nil, "BACKGROUND")
-        toggleBg:SetAllPoints()
-        local toggleKnob = toggleBtn:CreateTexture(nil, "ARTWORK")
-        toggleKnob:SetSize(toggleH - 4, toggleH - 4)
-        if opts.enabled then
+        -- Pill and knob on a pixel layer, as the settings toggle draws them.
+        local on = opts.enabled and true or false
+        local L = EllesmereUI.MakePixelLayer(toggleBtn, EllesmereUI.TogglePillFit)
+        local toggleBg = L._frame:CreateTexture(nil, "BACKGROUND")
+        toggleBg:SetAllPoints(L._frame)
+        local toggleKnob = L._frame:CreateTexture(nil, "ARTWORK")
+        L.track, L.knob, L.pad = toggleBg, toggleKnob, 2
+        L.apply = function()
+            local pad = L.padPx
+            toggleKnob:ClearAllPoints()
+            toggleKnob:SetPoint("TOPLEFT", L._frame, "TOPLEFT", on and (L.wp - pad - L.d) or pad, -pad)
+        end
+        L:Fit()
+        if on then
             local acr, acg, acb = EllesmereUI.ResolveActiveAccent()
-            toggleBg:SetColorTexture(acr, acg, acb, 1)
-            toggleKnob:SetPoint("RIGHT", toggleBtn, "RIGHT", -2, 0)
-            toggleKnob:SetColorTexture(1, 1, 1, 1)
+            toggleBg:SetVertexColor(acr, acg, acb, 1)
+            toggleKnob:SetVertexColor(1, 1, 1, 1)
         else
-            toggleBg:SetColorTexture(0.25, 0.25, 0.25, 1)
-            toggleKnob:SetPoint("LEFT", toggleBtn, "LEFT", 2, 0)
-            toggleKnob:SetColorTexture(0.5, 0.5, 0.5, 1)
+            toggleBg:SetVertexColor(0.25, 0.25, 0.25, 1)
+            toggleKnob:SetVertexColor(0.5, 0.5, 0.5, 1)
         end
         toggleBtn:SetScript("OnClick", function()
             if opts.onToggle then opts.onToggle(not opts.enabled) end
@@ -865,6 +917,15 @@ function EllesmereUI.BuildManagerTile(parentFrame, y, opts)
     sep:SetPoint("BOTTOMRIGHT", tile, "BOTTOMRIGHT", 0, 0)
     sep:SetColorTexture(1, 1, 1, 0.04)
 
+    if opts.statusDot then
+        local dot = tile:CreateTexture(nil, "ARTWORK")
+        PP.Size(dot, 8, 8)
+        -- Left of the toggle pill when the tile has one.
+        PP.Point(dot, "TOPRIGHT", tile, "TOPRIGHT", opts.showToggle and -46 or -12, -14)
+        dot:SetTexture("Interface\\Common\\CommonMaskCircle")
+        dot:SetVertexColor(opts.statusDot[1], opts.statusDot[2], opts.statusDot[3], 1)
+    end
+
     if opts.dimmed then tile:SetAlpha(0.55) end
 
     return TILE_H, tile
@@ -909,8 +970,9 @@ function EllesmereUI.BuildActivationOverlay(outerRoot, opts)
     local btn = CreateFrame("Button", nil, ov)
     btn:SetSize(240, 28)
     btn:SetPoint("TOP", sub or body, "BOTTOM", 0, -22)
-    EllesmereUI.SolidTex(btn, "BACKGROUND", 0.10, 0.10, 0.11, 0.9):SetAllPoints(btn)
-    local brd = EllesmereUI.MakeBorder(btn, 1, 1, 1, 0.22)
+    local bg = EllesmereUI.SolidTex(btn, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
+    bg:SetAllPoints(btn)
+    local brd = EllesmereUI.MakeRoundedBorder(btn, 1, 1, 1, 0.22, bg)
     local lbl = EllesmereUI.MakeFont(btn, 12, nil, 1, 1, 1, 0.85)
     lbl:SetPoint("CENTER")
     lbl:SetText(opts.buttonLabel)
@@ -926,7 +988,7 @@ function EllesmereUI.BuildPopupButton(parent, w, h, label, onClick)
     btn:SetSize(w, h)
     btn:SetFrameLevel(parent:GetFrameLevel() + 2)
     local bg = EllesmereUI.SolidTex(btn, "BACKGROUND", 0, 0, 0, 0.5); bg:SetAllPoints()
-    local brd = EllesmereUI.MakeBorder(btn, 1, 1, 1, 0.25)
+    local brd = EllesmereUI.MakeRoundedBorder(btn, 1, 1, 1, 0.25, bg)
     local lbl = EllesmereUI.MakeFont(btn, 12, nil, 1, 1, 1)
     lbl:SetAlpha(0.6)
     lbl:SetPoint("CENTER")
@@ -936,4 +998,84 @@ function EllesmereUI.BuildPopupButton(parent, w, h, label, onClick)
     btn:SetScript("OnLeave", function() lbl:SetAlpha(0.6); brd:SetColor(1, 1, 1, 0.25) end)
     btn:SetScript("OnClick", onClick)
     return btn
+end
+
+-------------------------------------------------------------------------------
+--  Rested Indicator row
+--  The player frame's rest marker (ZZZ text, or Blizzard's animated rest
+--  icon), drawn by Unit Frames from account-wide keys. Quality of Life's
+--  EXTRAS row and its mirror in the Unit Frames player EXTRAS are this one
+--  toggle and cog, so both pages show the same settings, whichever of the
+--  two modules is loaded.
+--  RestedIndicatorCfg()            -> a fresh toggle config for a DualRow slot
+--  BuildRestedIndicatorCog(region) -> its inline cog on that slot's region
+-------------------------------------------------------------------------------
+local function RestPlayerFrame() return _G["EllesmereUIUnitFrames_Player"] end
+local function RestUpdate()
+    local pf = RestPlayerFrame()
+    if pf and pf._restUpdate then pf._restUpdate() end
+end
+local function RestPlace()
+    local pf = RestPlayerFrame()
+    if pf and pf._restPlace then pf._restPlace() end
+end
+local function RestSet(key, v)
+    if not EllesmereUIDB then EllesmereUIDB = {} end
+    EllesmereUIDB[key] = v
+end
+local function RestOff()
+    return not EllesmereUIDB or EllesmereUIDB.showRestedIndicator ~= true
+end
+
+function EllesmereUI.RestedIndicatorCfg()
+    return { type="toggle", text="Rested Indicator",
+      tooltip="Displays a ZZZ indicator on your player frame when you are in a resting area.",
+      getValue=function()
+        if not EllesmereUIDB then return true end
+        return EllesmereUIDB.showRestedIndicator == true
+      end,
+      setValue=function(v)
+        RestSet("showRestedIndicator", v)
+        RestUpdate()
+        EllesmereUI:RefreshPage()
+      end }
+end
+
+-- Animated, Size, X / Y Offset; greyed while the indicator is off. Builds
+-- nothing during the search pre-build.
+function EllesmereUI.BuildRestedIndicatorCog(region)
+    if EllesmereUI._prebuilding then return end
+    return EllesmereUI.BuildInlineCog(region, {
+        title = "Rested Indicator",
+        rows = {
+            { type="toggle", label="Animated",
+              tooltip="Shows the animated rest icon from Blizzard's player frame instead of the ZZZ text.",
+              get=function() return EllesmereUIDB and EllesmereUIDB.restedIndicatorAnimated == true or false end,
+              set=function(v)
+                  RestSet("restedIndicatorAnimated", v)
+                  RestUpdate()
+              end },
+            { type="slider", label="Size", min=12, max=64, step=1,
+              disabled=function() return not (EllesmereUIDB and EllesmereUIDB.restedIndicatorAnimated == true) end,
+              disabledTooltip="Animated",
+              get=function() return (EllesmereUIDB and EllesmereUIDB.restedIndicatorAnimatedSize) or 24 end,
+              set=function(v)
+                  RestSet("restedIndicatorAnimatedSize", v)
+                  RestPlace()
+              end },
+            { type="slider", label="X Offset", min=-50, max=50, step=1,
+              get=function() return (EllesmereUIDB and EllesmereUIDB.restedIndicatorXOffset) or 0 end,
+              set=function(v)
+                  RestSet("restedIndicatorXOffset", v)
+                  RestPlace()
+              end },
+            { type="slider", label="Y Offset", min=-50, max=50, step=1,
+              get=function() return (EllesmereUIDB and EllesmereUIDB.restedIndicatorYOffset) or 0 end,
+              set=function(v)
+                  RestSet("restedIndicatorYOffset", v)
+                  RestPlace()
+              end },
+        },
+        gap = 9, disabled = RestOff, disabledTooltip = "Rested Indicator",
+    })
 end

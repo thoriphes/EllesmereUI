@@ -11,12 +11,7 @@ local GetItemInfo = C_Item.GetItemInfo
 local GetItemInfoInstant = C_Item.GetItemInfoInstant
 
 -- External weak-keyed lookup table for frame state (prevents tainting Blizzard frames)
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -- Equipment slot lists
 local EUI_ALL_SLOTS = {
@@ -1173,8 +1168,7 @@ end
 local function RefreshDock()
     local insp, cf = InspectFrame, _G.CharacterFrame
     if not insp or not cf then return end
-    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()
-        or EllesmereUI.BlizzSkinPadStandDown()) then return end
+    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
 
     if not (insp:IsShown() and cf:IsShown()) then
         _ignoreSP = true
@@ -1202,8 +1196,7 @@ end
 
 -- Main function to apply themed inspect sheet
 local function ApplyThemedInspectSheet()
-    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()
-        or EllesmereUI.BlizzSkinPadStandDown()) then
+    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then
         return
     end
 
@@ -1216,8 +1209,7 @@ end
 
 -- Persistently hide NineSlice borders
 local function EnsureInspectNineSliceHidden()
-    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()
-        or EllesmereUI.BlizzSkinPadStandDown()) then return end
+    if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
     if not InspectFrame then return end
 
     local frame = InspectFrame
@@ -1383,8 +1375,7 @@ if EllesmereUI then
     -- shown sheet; a hidden one restyles on its next show.
     function EllesmereUI._refreshInspectSlotLabels()
         if not (InspectFrame and InspectFrame:IsShown()) then return end
-        if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()
-            or EllesmereUI.BlizzSkinPadStandDown()) then return end
+        if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
         RefreshSlotStyles()
     end
 

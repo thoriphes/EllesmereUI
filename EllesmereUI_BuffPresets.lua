@@ -9,7 +9,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --    * Player Aura Bars derives its filter seed + class hints at load,
 --      flattening alts into their own rows (PAB has no primary/alt tiers).
 --  Also the WoW Forever buff families (EllesmereUI.FOREVER_BUFF_FAMILIES, at
---  the end): every spell that gives each group buff there.
+--  the end): every spell that gives each group buff there; and the combat
+--  consumables (EllesmereUI.CONSUMABLES): healthstones and potions; and the
+--  raid preparation buffs (EllesmereUI.RAID_PREP_IDS): flasks, runes, raid buffs.
 --  ADD OR EDIT CURATED IDS HERE ONLY -- never in the consumer files.
 --------------------------------------------------------------------------------
 
@@ -69,12 +71,18 @@ local function ForeverCatalogue()
                 [29166] = { class = "DRUID" },  -- Innervate
             },
             coreheals = {
-                -- Renew (rank 2 primary: retail curates rank 1 unchecked)
+                -- Renew (rank 2 primary: retail curates rank 1 unchecked; 425268 to
+                -- 425277 are the class's second set of ranks 1 to 10)
                 [6074] = { class = "PRIEST", alts = { 139, 6075, 6076, 6077, 6078, 10927,
-                    10928, 10929, 25315 } },
+                    10928, 10929, 25315, 425268, 425269, 425270, 425271, 425272, 425273,
+                    425274, 425275, 425276, 425277 } },
                 -- Power Word: Shield (rank 2 primary: retail curates rank 1 unchecked)
                 [592] = { class = "PRIEST", alts = { 17, 600, 3747, 6065, 6066, 10898, 10899,
                     10900, 10901 } },
+                -- Prayer of Mending (ranks 401859 / 1240826 / 1240827; the buff lands
+                -- as 401877 / 1240848 / 1240849)
+                [401859] = { class = "PRIEST", alts = { 1240826, 1240827, 401877, 1240848,
+                    1240849 } },
                 -- Rejuvenation (rank 2 primary: retail curates rank 1 unchecked)
                 [1058] = { class = "DRUID", alts = { 774, 1430, 2090, 2091, 3627, 8910, 9839,
                     9840, 9841, 25299 } },
@@ -125,10 +133,17 @@ local function ForeverCatalogue()
                 [1008] = { class = "MAGE", alts = { 8455, 10169, 10170 } },  -- Amplify Magic
                 [604] = { class = "MAGE", alts = { 8450, 8451, 10173, 10174 } },  -- Dampen Magic
             },
-            -- Aura spell ids of the vanilla flasks, elixirs and potions. Flasks,
-            -- protection potions, Free Action and Limited Invulnerability are
-            -- checked by default; the rest start unchecked.
+            -- Aura spell ids of the vanilla flasks, elixirs, potions, food and
+            -- drink. Flasks, protection potions, Free Action and Limited
+            -- Invulnerability are checked by default; the rest start unchecked.
             consumables = {
+                -- Food and Drink: every eating or drinking aura a Forever item
+                -- casts (each food and drink rank is its own id).
+                [433] = { class = "ALL", disabled = true, alts = { 434, 435, 1127, 1129, 1131, 2639,
+                    5004, 5006, 5007, 6410, 7737, 10256, 24005, 24707, 24869, 25660, 29008, 29073,
+                    470362, 470369, 1225769, 1225771, 1225772 } },  -- Food
+                [430] = { class = "ALL", disabled = true, alts = { 431, 432, 1133, 1135, 1137, 22734,
+                    24355, 29007, 468767 } },  -- Drink
                 [17626] = { class = "ALL" },  -- Flask of the Titans
                 [17628] = { class = "ALL" },  -- Flask of Supreme Power
                 [17627] = { class = "ALL" },  -- Flask of Distilled Wisdom
@@ -578,8 +593,8 @@ if EllesmereUI.IS_FOREVER == true then
             single = { 467, 782, 1075, 8914, 9756, 9910 }, group = {},
             ids = { 467, 782, 1075, 8914, 9756, 9910, 15438, 16877, 21335, 21337, 22128, 22351, 22696,
                     25640, 25777, 438294, 438326, 1213813, 1213816, 1213834, 1236308, 1291338, 1312955 } },
-        -- Paladin blessings, each with its Greater version (1213408 Kings and
-        -- 26650 Light are the client's two non-trainable copies).
+        -- Paladin blessings, each with its Greater version (1213408 is the
+        -- client's non-trainable copy of Kings).
         might = { names = { 19740, 25782 },
             single = { 19740, 19834, 19835, 19836, 19837, 19838, 25291 }, group = { 25782, 25916 },
             ids = { 19740, 19834, 19835, 19836, 19837, 19838, 25291, 25782, 25916 } },
@@ -594,12 +609,13 @@ if EllesmereUI.IS_FOREVER == true then
         salvation = { names = { 1038, 25895 },
             single = { 1038 }, group = { 25895 },
             ids = { 1038, 1912, 25895 } },
-        light = { names = { 19977, 25890 },
-            single = { 19977, 19978, 19979 }, group = { 25890 },
-            ids = { 19977, 19978, 19979, 26650, 25890 } },
+        -- beneficiaries: the classes the buff serves (every mana user,
+        -- hunters included); a family without it serves everyone.
         ai = { names = { 1459, 23028 },
             single = { 1459, 1460, 1461, 10156, 10157 }, group = { 23028 },
-            ids = { 1459, 1460, 1461, 10156, 10157, 13326, 16876, 364161, 23028 } },
+            ids = { 1459, 1460, 1461, 10156, 10157, 13326, 16876, 364161, 23028 },
+            beneficiaries = { DRUID = true, HUNTER = true, MAGE = true, PALADIN = true, PRIEST = true,
+                SHAMAN = true, WARLOCK = true } },
         bshout = { names = { 6673 },
             single = { 6673, 5242, 6192, 11549, 11550, 11551, 25289 }, group = {},
             ids = { 6673, 5242, 6192, 11549, 11550, 11551, 25289, 9128, 24438, 25101, 26043, 26099,
@@ -616,5 +632,113 @@ if EllesmereUI.IS_FOREVER == true then
         WARRIOR = { 78, 845 },  -- Heroic Strike, Cleave
         DRUID   = { 6807 },     -- Maul
         HUNTER  = { 2973 },     -- Raptor Strike
+    }
+end
+
+-- SEASON UPDATE: a potion tier a new season adds joins its family below.
+-- Combat consumables: healthstones and potions, one family per Cooldown
+-- Manager preset key, in that module's preset fields. itemID: the family's
+-- identity id (saved preset frames key on it). displayOrder: the dynamic
+-- display, newest tier first (rank 2 before rank 1, Fleeting first at equal
+-- rank). spellIDs: the cast ids known ahead (a buff potion casts its buff's
+-- id); every other potion's cast id comes from its items (C_Item.GetItemSpell).
+-- Read by the Cooldown Manager presets and Damage Meters' spell history. Built
+-- on both clients; WoW Forever offers only the Healthstone family, whose items
+-- there are FOREVER_HEALTHSTONES.
+EllesmereUI.CONSUMABLES = {
+    lights_potential = {
+        itemID = 241308, altItemIDs = { 245898, 245897, 241309 },
+        displayOrder = {
+            245898,  -- Fleeting Light's Potential r2
+            241308,  -- Light's Potential r2
+            245897,  -- Fleeting Light's Potential r1
+            241309,  -- Light's Potential r1
+        },
+        spellIDs = { 1236616 },
+    },
+    potion_recklessness = {
+        itemID = 241288, altItemIDs = { 241289, 245902, 245903 },
+        displayOrder = {
+            245902,  -- Fleeting Potion of Recklessness r2
+            241288,  -- Potion of Recklessness r2
+            245903,  -- Fleeting Potion of Recklessness r1
+            241289,  -- Potion of Recklessness r1
+        },
+        spellIDs = { 1236994 },
+    },
+    liquid_luster = {
+        itemID = 271887, altItemIDs = { 274764, 274763, 271886 },
+        displayOrder = {
+            274764,  -- Fleeting Liquid Luster r2
+            271887,  -- Liquid Luster r2
+            274763,  -- Fleeting Liquid Luster r1
+            271886,  -- Liquid Luster r1
+        },
+        spellIDs = { 1295132 },
+    },
+    -- The identity stays 241304 while the newer tier leads the display.
+    silvermoon_health = {
+        itemID = 241304, altItemIDs = { 241305, 271884, 271883 },
+        displayOrder = {
+            271884,  -- Concentrated Silvermoon Health Potion r2
+            271883,  -- Concentrated Silvermoon Health Potion r1
+            241304,  -- Silvermoon Health Potion r2
+            241305,  -- Silvermoon Health Potion r1
+        },
+    },
+    lightfused_mana = { itemID = 241300, altItemIDs = { 245917, 245916, 241301 } },
+    invis_potion = {
+        itemID = 241302, altItemIDs = { 241303 },
+        spellIDs = { 371125, 431424, 371133, 371134, 1236551 },
+    },
+    -- Pact of Gluttony turns self-conjured stones into Demonic Healthstones.
+    healthstone = { itemID = 5512, altItemIDs = { 224464 }, spellIDs = { 6262 } },
+    demonic_healthstone = { itemID = 224464, spellIDs = { 452930 } },
+}
+-- Raid preparation buffs (retail): the flask, augment rune and vantus rune
+-- buffs, and the raid buffs by the class that casts them. Read by AuraBuff
+-- Reminders and Quality of Life's Raid Buff Check.
+EllesmereUI.RAID_PREP_IDS = {
+    flask = {
+        1235110, 1235108, 1235111, 1235057, 1239355,     -- Midnight
+        1235113, 1235114, 1235115, 1235116,              -- Midnight, PvP variants
+        432473, 432021, 431974, 431973, 431972, 431971,  -- The War Within
+    },
+    -- SEASON UPDATE: current augment runes: Tidesworn (12.1), Void-Touched (12.0);
+    -- a rune the new season replaces moves to oldRune.
+    rune = { 1295329, 1264426 },
+    -- Older runes: Ethereal, Soulgorged, Crystallization (TWW), Draconic (DF), Veiled (SL).
+    oldRune = { 1234969, 1242347, 453250, 393438, 347901 },
+    -- SEASON UPDATE: add the new raid's Vantus Rune boss buffs.
+    -- Midnight boss buffs of Vantus Runes (Season 1 and 2, both IDs of each boss).
+    vantus = {
+        1276666, 1276669, 1276682, 1276683, 1276685, 1276686, 1276687, 1276688,
+        1276691, 1276698, 1276704, 1276705, 1276708, 1276709, 1276711, 1276712,
+        1276714, 1276715,
+        1300173, 1300174, 1303172, 1303173, 1303174, 1303175, 1303176, 1303177,
+        1303178, 1303179, 1303180, 1303181, 1303182, 1303183, 1303184, 1303185,
+        1303186, 1303187, 1310437, 1310439, 1319284, 1319286,
+    },
+    raidBuffs = {
+        { key = "motw",   class = "DRUID",   castSpell = 1126,   buffIDs = { 1126, 432661 } },
+        { key = "bshout", class = "WARRIOR", castSpell = 6673,   buffIDs = { 6673 } },
+        { key = "fort",   class = "PRIEST",  castSpell = 21562,  buffIDs = { 21562 } },
+        { key = "ai",     class = "MAGE",    castSpell = 1459,   buffIDs = { 1459, 432778 } },
+        { key = "bronze", class = "EVOKER",  castSpell = 364342, buffIDs = { 381732, 381741, 381746,
+            381748, 381749, 381750, 381751, 381752, 381753, 381754, 381756, 381757, 381758 } },
+        { key = "sky",    class = "SHAMAN",  castSpell = 462854, buffIDs = { 462854 } },
+    },
+}
+
+-- WoW Forever's healthstones after the Minor stone (5512, still the family's
+-- identity): the Major, Greater, Healthstone and Lesser tiers, each a base
+-- stone and two improved-talent stones, then the improved Minor stones.
+if EllesmereUI.IS_FOREVER == true then
+    EllesmereUI.FOREVER_HEALTHSTONES = {
+        9421, 19012, 19013,
+        5510, 19010, 19011,
+        5509, 19008, 19009,
+        5511, 19006, 19007,
+        19004, 19005,
     }
 end

@@ -201,19 +201,29 @@ do
     ns.Engine.SetPainter("absorb", PaintAbsorb)
 end
 
--- Global Dark Mode master: exposes darkTheme so the parent addon's master toggle can
--- flip it with other modules. setOn mirrors the individual toggle (write flag + reload).
-EllesmereUI.RegisterDarkModeToggle({
-    id = "unitFrames",
-    isOn = function()
-        return (db and db.profile and db.profile.darkTheme) or false
-    end,
-    setOn = function(on)
-        if not (db and db.profile) then return end
-        db.profile.darkTheme = on
-        if ns.ReloadFrames then ns.ReloadFrames() end
-    end,
-})
+-- The global master reads and sets every frame's effective Dark Mode choice.
+do
+    local UNITS = { "player", "target", "focus", "targettarget", "focustarget", "pet", "boss" }
+    EllesmereUI.RegisterDarkModeToggle({
+        id = "unitFrames",
+        isOn = function()
+            if not (db and db.profile) then return false end
+            for _, key in ipairs(UNITS) do
+                if not ns.UF_DarkThemeOn(db.profile[key]) then return false end
+            end
+            return true
+        end,
+        setOn = function(on)
+            if not (db and db.profile) then return end
+            db.profile.darkTheme = on
+            for _, key in ipairs(UNITS) do
+                local s = db.profile[key]
+                if s then s.darkTheme = on end
+            end
+            if ns.ReloadFrames then ns.ReloadFrames() end
+        end,
+    })
+end
 
 -- Smart power text: percent for healers/prot pally/arcane mage, numeric for the rest.
 -- Shared by the oUF tag and the resource bars renderer. `displayedPowerType` (optional
@@ -221,7 +231,10 @@ EllesmereUI.RegisterDarkModeToggle({
 -- classes (Druid, Monk) the decision MUST follow the displayed power, not UnitPowerType --
 -- a Balance druid's UnitPowerType is Astral Power even while the bar shows Mana, so the
 -- mana number would render raw instead of percent otherwise.
+-- WoW Forever offers no Smart Text (it chooses by spec, and Forever has no specs):
+-- a "smart" saved there reads as the value (EllesmereUI.PowerTextFormat).
 local function EUI_IsSmartPowerPercent(displayedPowerType)
+    if EllesmereUI.IS_FOREVER then return false end
     local _, cls = UnitClass("player")
     if not cls then return false end
     -- Druid/Monk shift displayed power with form/spec: percent only while the bar shows
@@ -294,6 +307,11 @@ if EllesmereUI.IS_FOREVER then
     end
 end
 
+-- Health, max health and absorb values without a decimal config: the global
+-- Number Format for valueType (EllesmereUI_NumberFormat.lua).
+ns.AbbreviateValue = EllesmereUI.AbbreviateValue
+EllesmereUI.RegisterNumberFormatCallback(function() ns.RefreshAllUnitNames() end)
+
 -- Health Short always abbreviates from 1,000 with one decimal.
 function ns.AbbreviateShortHealth(hp)
     if not ns._shortHealthAbbrevConfig then
@@ -331,7 +349,7 @@ function ns.ApplyTextDecimalGlobals()
         end
         _G._EUI_TextDecimals = true
         -- "Only Show for % Health": decimal on PERCENT, health/absorb VALUES whole --
-        -- withhold the abbreviate configs (values fall back to plain AbbreviateNumbers)
+        -- withhold the abbreviate configs (values follow the Number Format, ns.AbbreviateValue)
         -- while _EUI_TextDecimals stays true for percents.
         local percentOnly = db.profile.showDecimalPercentOnly
         _G._EUI_AbbrevDecimalCfg = ns._decimalAbbrevConfig
@@ -378,27 +396,31 @@ do
   -- current value takes it, so Health # / Max # names the status once
   -- ("DEAD / 150 K"). shortHealth (healthshort): always one decimal with an
   -- uppercase K/M/B (ns.AbbreviateShortHealth), whatever the decimal options say.
-  local function MakeAbbrevHP(getHP, status, shortHealth)
+  -- valueType: the Number Format type without a decimal config; boss frames
+  -- read "bossHealth" instead.
+  local function MakeAbbrevHP(getHP, status, shortHealth, valueType)
     return function(unit)
       if not unit or not UnitExists(unit) then return "" end
       if status then
-        if not UnitIsConnected(unit) then return "OFFLINE" end
-        if UnitIsDeadOrGhost(unit) then return "DEAD" end
+        if not UnitIsConnected(unit) then return EllesmereUI.L("OFFLINE") end
+        if UnitIsDeadOrGhost(unit) then return EllesmereUI.L("DEAD") end
       end
       local hp = getHP(unit) or 0
       if shortHealth then return ns.AbbreviateShortHealth(hp) end
       local cfg = _G._EUI_AbbrevDecimalCfg
+      local boss = IS_BOSS_UNIT[unit]
       -- Boss frames use the 2-decimal config when "Show 2 for Boss" is on.
-      if _G._EUI_BossExtraDecimal and IS_BOSS_UNIT[unit] then
+      if _G._EUI_BossExtraDecimal and boss then
         cfg = _G._EUI_AbbrevDecimalCfg2
       end
-      return cfg and AbbreviateNumbers(hp, cfg) or AbbreviateNumbers(hp)
+      if cfg then return AbbreviateNumbers(hp, cfg) end
+      return ns.AbbreviateValue(hp, boss and "bossHealth" or valueType)
     end
   end
 
-  TagFns.curhpshort = MakeAbbrevHP(UnitHealth, true)
+  TagFns.curhpshort = MakeAbbrevHP(UnitHealth, true, nil, "health")
   TagFns.healthshort = MakeAbbrevHP(UnitHealth, true, true)
-  TagFns.maxhpshort = MakeAbbrevHP(UnitHealthMax)
+  TagFns.maxhpshort = MakeAbbrevHP(UnitHealthMax, nil, nil, "maxHealth")
 end
 
 do
@@ -427,8 +449,8 @@ do
   TagFns.perhp = PercentHP
   TagFns.perhpnosign = function(unit)
     if not unit or not UnitExists(unit) then return "" end
-    if not UnitIsConnected(unit) then return "OFFLINE" end
-    if UnitIsDeadOrGhost(unit) then return "DEAD" end
+    if not UnitIsConnected(unit) then return EllesmereUI.L("OFFLINE") end
+    if UnitIsDeadOrGhost(unit) then return EllesmereUI.L("DEAD") end
     return PercentHP(unit)
   end
 end
@@ -443,7 +465,7 @@ local PLAYER_POWER_DEFAULT = {
     MONK   = { [2] = 0 },   -- Mistweaver: default to Mana
 }
 local PLAYER_POWER_ALT = {
-    DRUID  = { [1] = 0, [2] = 0, [3] = 0 },  -- Balance/Feral/Guardian -> Mana
+    DRUID  = { [1] = 0, [2] = 0, [3] = 0, [4] = 0 },  -- All druid specs -> Mana
     PRIEST = { [3] = nil },                     -- Shadow alt -> Insanity (UnitPowerType)
     SHAMAN = { [1] = 0 },                       -- Elemental -> Mana
 }
@@ -475,7 +497,15 @@ function EllesmereUI.GetPlayerPowerOverride()
         or (C_SpecializationInfo and C_SpecializationInfo.GetSpecializationInfo(spec))
         or nil
     local ov = db.profile.player and db.profile.player.powerTypeOverride
-    if sid and ov and ov[sid] and classAlt then
+    local choice = sid and ov and ov[sid]
+    if choice == "astral" then
+        -- Balance "Astral Power", saved only under its spec
+        -- ID: Cat and Bear Form (form IDs 1 and 5) keep their own power, every
+        -- other form shows Astral Power.
+        local f = GetShapeshiftFormID()
+        if f ~= 1 and f ~= 5 then return Enum.PowerType.LunarPower end
+        return nil
+    elseif choice and classAlt then
         return classAlt[spec]
     elseif classDef and classDef[spec] ~= nil then
         return classDef[spec]
@@ -512,7 +542,8 @@ ns.ResolveUnitNameColor = function(unit)
     if UnitIsPlayer(unit) or (UnitInPartyIsAI and UnitInPartyIsAI(unit)) then
         local _, class = UnitClass(unit)
         if not issecretvalue(class) and class then
-            local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[class]
+            -- The suite's Class Colors (custom colors, Class Color Darken), as the health bar.
+            local c = EllesmereUI.GetClassColor(class)
             if c then return c.r, c.g, c.b end
         end
         return nil
@@ -579,7 +610,7 @@ ns.NICK_ADDON = addonName:find("Standalone") and addonName or "EllesmereUI"
 
 -- Resolve a unit's display name through MethodInternal's authoritative surface
 -- choice for known Method players, then the normal provider order: NSAPI ->
--- TimelineReminders -> LiquidAPI, then the raw unit name. Each
+-- TimelineReminders -> LiquidAPI -> CustomNames, then the raw unit name. Each
 -- external call is pcall-wrapped so a misbehaving API can never break names.
 --
 -- SECRET-SAFE: an enemy unit's UnitName is secret in protected content and any Lua op
@@ -645,6 +676,15 @@ function ns.ResolveUnitNickname(unit)
             display = dn
         end
     end
+    -- CustomNames (LibStub library): UnitName returns the custom name, or the raw
+    -- name when none is set, so dn ~= name keeps the WithSurname path.
+    if not display and not nameSecret and ns._customNames then
+        local ok, dn = pcall(ns._customNames.UnitName, unit)
+        if ok and type(dn) == "string"
+           and not (issecretvalue and issecretvalue(dn)) and dn ~= "" and dn ~= name then
+            display = dn
+        end
+    end
     if display then return display end
     return EllesmereUI.WithSurname(name, surname)
 end
@@ -704,7 +744,7 @@ do
     end)
 end
 
--- Provider callbacks. MethodInternal uses the addon-loaded callback; NSAPI and
+-- Provider callbacks. MethodInternal and CustomNames use the addon-loaded callback; NSAPI and
 -- TimelineReminders retry on PLAYER_LOGIN/PLAYER_ENTERING_WORLD. Registrant key MUST
 -- be "EllesmereUIUnitFrames", not "EllesmereUI": Raid Frames owns that key and
 -- CallbackHandler keys registrations by it, so reuse would clobber one module. The
@@ -755,6 +795,27 @@ do
         end)
     end
     EventUtil.ContinueOnAddOnLoaded("MethodInternal", RegisterMethodInternal)
+    -- CustomNames fires one callback per character, so a BattleTag rename or an
+    -- import arrives as a burst: repaint once on the next frame. Nothing waits for
+    -- it unless it is installed and enabled for this character.
+    if C_AddOns.IsAddOnLoaded("CustomNames") or C_AddOns.IsAddOnLoadable("CustomNames") then
+        EventUtil.ContinueOnAddOnLoaded("CustomNames", function()
+            local CN = LibStub("CustomNames", true)
+            if not (CN and CN.UnitName and CN.RegisterCallback) or ns._customNames then return end
+            ns._customNames = CN
+            local pending
+            local function Flush() pending = nil; RefreshNames() end
+            local function QueueRefresh()
+                if pending then return end
+                pending = true
+                C_Timer.After(0, Flush)
+            end
+            CN.RegisterCallback("EllesmereUIUnitFrames", "Name_Added", QueueRefresh)
+            CN.RegisterCallback("EllesmereUIUnitFrames", "Name_Update", QueueRefresh)
+            CN.RegisterCallback("EllesmereUIUnitFrames", "Name_Removed", QueueRefresh)
+            RefreshNames()
+        end)
+    end
 end
 
 -- "Name > Target" is built from FOUR tags so the (possibly SECRET) target name is never
@@ -883,15 +944,40 @@ do
         local pType = _G._EUI_ResolvedPowerType[u] or UnitPowerType(u)
         return AbbreviateNumbers(UnitPowerMax(u, pType))
     end
+    -- Full numbers for the custom text tags ([hp], [hp:max], [pp], [pp:max]).
+    -- %d formats a secret value like P.perpp does; [hp] names the status as
+    -- curhpshort does.
+    P.curhp = function(u)
+        if not u or not UnitExists(u) then return "" end
+        if not UnitIsConnected(u) then return EllesmereUI.L("OFFLINE") end
+        if UnitIsDeadOrGhost(u) then return EllesmereUI.L("DEAD") end
+        return sf("%d", UnitHealth(u) or 0)
+    end
+    P.maxhp = function(u)
+        if not u or not UnitExists(u) then return "" end
+        return sf("%d", UnitHealthMax(u) or 0)
+    end
+    P.curppfull = function(u)
+        local pType = _G._EUI_ResolvedPowerType[u] or UnitPowerType(u)
+        return sf("%d", UnitPower(u, pType))
+    end
+    P.maxppfull = function(u)
+        local pType = _G._EUI_ResolvedPowerType[u] or UnitPowerType(u)
+        return sf("%d", UnitPowerMax(u, pType))
+    end
     P.absorb = function(u)
         if not u or not UnitExists(u) then return "" end
         return sf("%s", C_StringUtil.TruncateWhenZero(UnitGetTotalAbsorbs(u) or 0))
     end
+    -- An absorb amount abbreviated: Show Decimal on Health Text's table while it
+    -- is on, else the Number Format.
+    local function AbbrevAbsorb(v)
+        local cfg = _G._EUI_AbbrevDecimalCfg
+        return cfg and AbbreviateNumbers(v, cfg) or ns.AbbreviateValue(v, "absorb")
+    end
     P.absorbshort = function(u)
         if not u or not UnitExists(u) then return "" end
-        local cfg = _G._EUI_AbbrevDecimalCfg
-        return cfg and AbbreviateNumbers(UnitGetTotalAbsorbs(u) or 0, cfg)
-            or AbbreviateNumbers(UnitGetTotalAbsorbs(u) or 0)
+        return AbbrevAbsorb(UnitGetTotalAbsorbs(u) or 0)
     end
     P.healabsorb = function(u)
         if not u or not UnitExists(u) then return "" end
@@ -899,10 +985,21 @@ do
     end
     P.healabsorbshort = function(u)
         if not u or not UnitExists(u) then return "" end
-        local cfg = _G._EUI_AbbrevDecimalCfg
-        return cfg and AbbreviateNumbers(UnitGetTotalHealAbsorbs(u) or 0, cfg)
-            or AbbreviateNumbers(UnitGetTotalHealAbsorbs(u) or 0)
+        return AbbrevAbsorb(UnitGetTotalHealAbsorbs(u) or 0)
     end
+    -- [absorb:abr], [healabsorb:abr]: empty at zero like the full tags. The presets
+    -- above keep "0" because ApplyAbsorbGate clips their whole zone instead.
+    local IsZeroValue = EllesmereUI.IsZeroValue
+    local function AbsorbShortTag(get)
+        return function(u)
+            if not u or not UnitExists(u) then return "" end
+            local v = get(u) or 0
+            if IsZeroValue(v) then return "" end
+            return AbbrevAbsorb(v)
+        end
+    end
+    P.absorbshorttag = AbsorbShortTag(UnitGetTotalAbsorbs)
+    P.healabsorbshorttag = AbsorbShortTag(UnitGetTotalHealAbsorbs)
     P.group = function(u)
         if not IsInRaid() then return "" end
         local idx = UnitInRaid(u)
@@ -982,8 +1079,8 @@ do
     -- Identity-only zones: their pieces read name/level, which change only on
     -- identity edges (UNIT_NAME_UPDATE, UNIT_LEVEL, repoints, provider
     -- callbacks) -- Blizzard paints names on UNIT_NAME_UPDATE alone. Not
-    -- listed: nametotarget (target names churn) and group (roster-driven,
-    -- repainted by the value ticks it always rode).
+    -- listed: nametotarget (target names churn) and group (repainted by the
+    -- roster pass at the end of this block).
     local ZONE_IDENTITY = { name = true, levelname = true, namelevel = true, level = true }
     -- Value-class events and the value each one moves. A value event repaints
     -- only the zones that read that value (a static zone none of them); anything
@@ -999,21 +1096,80 @@ do
         UNIT_TARGET = "tgt",
     }
     -- What each piece reads: "hp" health, "pp" power, "abs" / "habs" the two
-    -- absorb amounts, "id" name or level only (identity events repaint those).
-    -- A piece not listed (the target pieces and separators, the group number,
-    -- the WoW Forever name twins) makes its zone repaint on every value event.
+    -- absorb amounts, "id" name or level only (identity events repaint those),
+    -- "roster" the raid group number (the roster pass repaints it). A piece not
+    -- listed (the target pieces and separators, the Name Format twins) makes
+    -- its zone repaint on every value event.
     local PIECE_READS = {
         [P.perhp] = "hp", [P.perhpnosign] = "hp", [P.curhpshort] = "hp",
-        [P.healthshort] = "hp", [P.maxhpshort] = "hp",
-        [P.perpp] = "pp", [P.curpp] = "pp", [P.maxpp] = "pp",
+        [P.healthshort] = "hp", [P.maxhpshort] = "hp", [P.curhp] = "hp", [P.maxhp] = "hp",
+        [P.perpp] = "pp", [P.curpp] = "pp", [P.maxpp] = "pp", [P.curppfull] = "pp", [P.maxppfull] = "pp",
         [P.absorb] = "abs", [P.absorbshort] = "abs",
         [P.healabsorb] = "habs", [P.healabsorbshort] = "habs",
+        [P.absorbshorttag] = "abs", [P.healabsorbshorttag] = "habs",
         [P.name] = "id", [P.level] = "id", [P.levelcol] = "id", [P.levelcolall] = "id",
+        [P.group] = "roster",
     }
+    -- The tags' Name Format modifiers ([name:abbr]): they shape the plain name,
+    -- whatever the slot's own Name Format says. [name:last] and [target:last]
+    -- show nothing for your own unit while your name is your first name alone
+    -- (OwnSurnameHidden: WoW Forever, Blizzard's My Surname off).
+    local function Shaped(piece, mode, ofTarget)
+        if mode ~= "last" then
+            return function(unit)
+                return EllesmereUI.ShortName(piece(unit), mode)
+            end
+        end
+        return function(unit)
+            if EllesmereUI.OwnSurnameHidden(ofTarget and unit and (unit .. "target") or unit) then return "" end
+            return EllesmereUI.ShortName(piece(unit), mode)
+        end
+    end
+    for _, mode in ipairs({ "first", "last", "abbr" }) do
+        P["name" .. mode] = Shaped(P.name, mode)
+        P["tgt" .. mode] = Shaped(P.tgtname, mode, true)
+        PIECE_READS[P["name" .. mode]] = "id"
+    end
+
+    -- Custom content: the slot's own format string (<prefix>CustomFormat),
+    -- parsed by EllesmereUI.TextTags against this binding of the unit schema.
+    -- Options, preview and the width estimate read the same catalog.
+    local TAG_CATALOG = EllesmereUI.TextTags.Bind(EllesmereUI.TextTags.UNIT, {
+        ["hp"] = P.curhp, ["hp:abr"] = P.curhpshort, ["hp:max"] = P.maxhp,
+        ["hp:max:abr"] = P.maxhpshort, ["hp:pct"] = P.perhp,
+        ["pp"] = P.curppfull, ["pp:abr"] = P.curpp, ["pp:max"] = P.maxppfull,
+        ["pp:max:abr"] = P.maxpp, ["pp:pct"] = P.perpp,
+        ["absorb"] = P.absorb, ["absorb:abr"] = P.absorbshorttag,
+        ["healabsorb"] = P.healabsorb, ["healabsorb:abr"] = P.healabsorbshorttag,
+        ["name"] = P.name, ["name:first"] = P.namefirst, ["name:last"] = P.namelast, ["name:abbr"] = P.nameabbr,
+        ["target"] = P.tgtname, ["target:first"] = P.tgtfirst, ["target:last"] = P.tgtlast, ["target:abbr"] = P.tgtabbr,
+        ["level"] = P.level, ["group"] = P.group,
+    })
+    ns.UF_TextTags = TAG_CATALOG
 
     --- Resolves a content key to (fmt, piecesArray, static) for a zone, or nil
     --- for "none"/unknown. nametotarget builds its settings-closure separator.
     function ns.ContentToZone(content, prefix, settings)
+        if content == "custom" then
+            local parsed = EllesmereUI.TextTags.Parse(TAG_CATALOG, settings and settings[prefix .. "CustomFormat"])
+            if not parsed then return nil end
+            local keys, map, pieces = parsed.keys, TAG_CATALOG.map, {}
+            local lvlCol = settings.levelDifficultyColor
+            for i = 1, #keys do
+                local key = keys[i]
+                if key == "level" and lvlCol then
+                    pieces[i] = settings.levelDifficultyColorFriendly and P.levelcolall or P.levelcol
+                else
+                    pieces[i] = map[key]
+                end
+            end
+            -- Static (identity repaints only) unless a tag reads a value.
+            local static = true
+            for cls in pairs(parsed.reads) do
+                if cls ~= "id" then static = nil; break end
+            end
+            return parsed.fmt, pieces, static
+        end
         if content == "nametotarget" then
             return "%s%s%s%s", { P.name, ns.MakeTgtSepPiece(prefix, settings), P.tgtcol, P.tgtname }
         end
@@ -1044,27 +1200,33 @@ do
         return def[1], pieces, ZONE_IDENTITY[content] or nil
     end
 
-    -- Name Format (WoW Forever only): a slot set to First Name or Last Name
-    -- (<prefix>NameFormat) gets short-name twins of its name pieces when the
-    -- zone is applied, so the painter and every unset slot run as before.
-    -- Level, separator and colour pieces stay; Name > Target shortens both
-    -- names. ForeverShortName passes a secret name through whole and caches
-    -- the short forms, so a zone repainted on every health tick builds no
-    -- strings.
-    if EllesmereUI.IS_FOREVER == true then
-        local short, nameFn, tgtFn = EllesmereUI.ForeverShortName, P.name, P.tgtname
-        local function Twins(mode)
-            return {
-                [nameFn] = function(u) return short(nameFn(u), mode) end,
-                [tgtFn]  = function(u) return short(tgtFn(u), mode) end,
-            }
-        end
-        local twinsByMode = { first = Twins("first"), last = Twins("last") }
+    -- Name Format: a slot set to one (<prefix>NameFormat) gets short-name twins
+    -- of its name pieces when the zone is applied, so the painter and every
+    -- unset slot run as before. Level, separator and colour pieces stay; Name >
+    -- Target shortens both names. ShortName passes a secret name through whole
+    -- and caches the short forms, so a zone repainted on every health tick
+    -- builds no strings. A mode's twins are made the first time a slot uses it.
+    -- Each twin asks EllesmereUI.UnitNameFormat for the unit whose name it
+    -- shows (WoW Forever: First / Last Name leave a non-player's name whole).
+    do
+        local short, unitMode = EllesmereUI.ShortName, EllesmereUI.UnitNameFormat
+        local nameFn, tgtFn = P.name, P.tgtname
+        local twinsByMode = {}
         local base = ns.ContentToZone
         function ns.ContentToZone(content, prefix, settings)
             local fmt, pieces, static = base(content, prefix, settings)
-            local twins = fmt and settings and twinsByMode[settings[prefix .. "NameFormat"]]
-            if twins then
+            local mode = fmt and settings and settings[prefix .. "NameFormat"]
+            if mode and EllesmereUI.IsNameFormat(mode) then
+                local twins = twinsByMode[mode]
+                if not twins then
+                    twins = {
+                        [nameFn] = function(u) return short(nameFn(u), unitMode(mode, u)) end,
+                        [tgtFn]  = function(u)
+                            return short(tgtFn(u), unitMode(mode, u and (u .. "target")))
+                        end,
+                    }
+                    twinsByMode[mode] = twins
+                end
                 for i = 1, #pieces do pieces[i] = twins[pieces[i]] or pieces[i] end
             end
             return fmt, pieces, static
@@ -1124,9 +1286,14 @@ do
         end
     end
 
+    -- The roster pass (end of this block): hidden, and with no event until
+    -- MarkReads stamps the first zone that reads the roster.
+    local rosterEv = CreateFrame("Frame")
+    rosterEv:Hide()
+
     -- Stamps a new zone with the values its pieces read (PIECE_READS): one
     -- field per value class for PaintText's filter, any = an unlisted piece,
-    -- and power for the power value pass.
+    -- power for the power value pass and roster for the roster pass.
     local function MarkReads(z)
         local pieces = z.pieces
         for i = 1, #pieces do
@@ -1139,6 +1306,7 @@ do
         end
         if z.abs or z.habs then z.absany = true end
         z.power = z.pp
+        if z.roster then rosterEv:RegisterEvent("GROUP_ROSTER_UPDATE") end
         return z
     end
 
@@ -1179,6 +1347,37 @@ do
         end
         ns.UF_PowerElementSync(frame)
     end
+
+    -- A raid subgroup move fires only GROUP_ROSTER_UPDATE: no unit event and
+    -- no value tick. A burst of them shows the frame once; on the next frame it
+    -- hides itself and repaints only the zones that read the roster (a frame
+    -- without a unit stays as PaintText leaves it). With no such zone left the
+    -- event goes, and MarkReads registers it again.
+    rosterEv:SetScript("OnEvent", function(self) self:Show() end)
+    rosterEv:SetScript("OnUpdate", function(self)
+        self:Hide()
+        local kept = false
+        for _, f in pairs(frames) do
+            local zones = type(f) == "table" and f._euiTextZones
+            if zones then
+                local unit = f._euiUnit
+                local live = unit and UnitExists(unit)
+                for i = 1, #zones do
+                    local z = zones[i]
+                    if z.roster then
+                        kept = true
+                        if live then
+                            local pieces = z.pieces
+                            local n = #pieces
+                            for k = 1, n do scratch[k] = pieces[k](unit) end
+                            z.fs:SetFormattedText(z.fmt, unpack(scratch, 1, n))
+                        end
+                    end
+                end
+            end
+        end
+        if not kept then self:UnregisterEvent("GROUP_ROSTER_UPDATE") end
+    end)
 end
 
 I.EUI_IsSmartPowerPercent, I.ResolveRestrictedClassColor = EUI_IsSmartPowerPercent, ResolveRestrictedClassColor

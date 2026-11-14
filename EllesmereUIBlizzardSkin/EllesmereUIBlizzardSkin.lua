@@ -6,21 +6,17 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  context menu and static popup reskinning (EUI_BlizzardSkin_*.lua).
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.FriendsKit and EllesmereUI.CreateQuantityDialog) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (FriendsForever reads the parent's friends kit, Merchant Bulk Buy its quantity window)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.FriendsKit and EllesmereUI.FriendsList and EllesmereUI.CreateQuantityDialog and EllesmereUI.NewFrameData and EllesmereUI.GetFontFamily and EllesmereUI.SetFontFamily and EllesmereUI.SetFontObjectFace and EllesmereUI.RealmRulesetSuffix and EllesmereUI.BorderPlacement and EllesmereUI.RoundCorners and EllesmereUI.Chars and EllesmereUI.CharEntry and EllesmereUI.CharGUID and EllesmereUI.ForgetCharField) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (FriendsForever reads the parent's friends kit and starts its custom friends list, Merchant Bulk Buy its quantity window; the tooltip lines, chat bubbles, mail alt list, the window packs' names and mail lines and the WoW Forever friends and Looking For Group texts that show other players' writing take the parent's font families, the tooltip skin sizes Blizzard's shared tooltip font objects through its SetFontObjectFace, the mail alt list reads a WoW Forever friend's ruleset through its RealmRulesetSuffix, the engine aura tooltip's border takes the parent's border placement, and the Timer Bars reskin rounds its bars with the parent's rounded corners; its per-character data is in the parent's roster: Chars, CharEntry, CharGUID, ForgetCharField)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
 -- External weak-keyed lookup table for frame state (prevents tainting Blizzard frames)
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -------------------------------------------------------------------------------
 --  Per-window skin style ("eui"|"modern"|"blizzard"|"off"). Enable keys are
---  the on/off source of truth (key false = "off"); blizzWindowSkinStyles only
+--  the on/off source of truth (key false = "off"; a STOCK_WINDOWS key is "off"
+--  until it is true); blizzWindowSkinStyles only
 --  records WHICH style an enabled window uses (nil = "eui"). "blizzard" is the
 --  Character Sheet's Blizz Default: Blizzard's own sheet with the EllesmereUI
 --  stats, slot text and socket panel. Its "off" leaves the sheet untouched.
@@ -72,11 +68,29 @@ local WINDOW_ENABLE_KEYS = {
     delvepicker     = "reskinDelvePicker",
     playerchoice    = "reskinPlayerChoice",
     trade           = "reskinTrade",
+    flagcarrier     = "reskinFlagCarriers",
 }
 -- WoW Forever's own windows: the bag bar and Progress Legacy skins exist only there.
 if EllesmereUI.IS_FOREVER then
     WINDOW_ENABLE_KEYS.bagbar       = "reskinBagBar"
     WINDOW_ENABLE_KEYS.legacysystem = "reskinLegacySystem"
+end
+
+-- Windows whose skin starts at Blizz Default (owner 2026-10-29: the Flag
+-- Carriers). Their enable key reads on only when true, where every other
+-- window's reads on until it is false, so a fresh install, a module reset, an
+-- import from a build before the card and the first visit of every look all
+-- leave them off; their card writes true or false. Enable keys are read and
+-- written through EnabledValue / OnValue, never `~= false` / `= nil` directly.
+local STOCK_WINDOWS = { flagcarrier = true }
+local function EnabledValue(winKey, v)
+    if STOCK_WINDOWS[winKey] then return v == true end
+    return v ~= false
+end
+-- What "on" is stored as: nil (the install default) or, for a stock window, true.
+local function OnValue(winKey)
+    if STOCK_WINDOWS[winKey] then return true end
+    return nil
 end
 --- Master PER-PROFILE kill switch for ALL Blizzard window skinning: window engine
 --- + every pack, plus CharacterSheet/Inspect, SocketPanel, LFG skins. Lives at
@@ -87,21 +101,6 @@ end
 function EllesmereUI.BlizzWindowSkinsKilled()
     local prof = EllesmereUI.GetActiveProfileData()
     return (prof and prof.disableWindowSkins) and true or false
-end
-
--- WoW Forever's Gamepad interface style shows, hides and navigates Blizzard's
--- windows, popups and tooltips from its own secure code and makes protected
--- calls in the same execution, so a script hook of ours on those frames taints
--- that path (ADDON_ACTION_FORBIDDEN, and the blocked-action popup's gamepad
--- handling can loop until the client freezes). Under that style the Blizzard
--- frame skins stand down for the session, like the bags and the Shifter.
--- Decided at the first call once logged in; false on retail.
-local _padStandDown
-function EllesmereUI.BlizzSkinPadStandDown()
-    if _padStandDown ~= nil then return _padStandDown end
-    local v = EllesmereUI.PadGamepadUI()
-    if IsLoggedIn() then _padStandDown = v end
-    return v
 end
 
 -------------------------------------------------------------------------------
@@ -145,7 +144,9 @@ do
         for _, k in ipairs(newKeys) do isNew[k] = true end
         local off, modern, eui = 0, 0, 0
         for winKey, ek in pairs(WINDOW_ENABLE_KEYS) do
-            if not isNew[winKey] then
+            -- A window that starts at Blizz Default says nothing of the
+            -- player's taste.
+            if not isNew[winKey] and not STOCK_WINDOWS[winKey] then
                 -- A Blizz Default character sheet keeps Blizzard's look.
                 if EllesmereUIDB[ek] == false or (styles and styles[winKey] == "blizzard") then
                     off = off + 1
@@ -266,9 +267,9 @@ function EllesmereUI.GetBlizzWindowStyle(winKey)
     if type(winKey) == "string" and winKey:sub(1, 3) == "tp:" then
         return EllesmereUI.GetThirdPartySkinStyle()
     end
-    if EllesmereUI.BlizzWindowSkinsKilled() or EllesmereUI.BlizzSkinPadStandDown() then return "off" end
+    if EllesmereUI.BlizzWindowSkinsKilled() then return "off" end
     local ek = WINDOW_ENABLE_KEYS[winKey]
-    if ek and EllesmereUIDB and EllesmereUIDB[ek] == false then return "off" end
+    if ek and not EnabledValue(winKey, EllesmereUIDB and EllesmereUIDB[ek]) then return "off" end
     local styles = EllesmereUIDB and EllesmereUIDB.blizzWindowSkinStyles
     local s = styles and styles[winKey]
     if s == "modern" or s == "blizzard" then return s end
@@ -297,7 +298,7 @@ function EllesmereUI.GetThirdPartySkinStyle()
             -- A Blizz Default character sheet wears no skin: it votes like
             -- a window that is off.
             if s == "blizzard" then s = "off" end
-            if s == "off" and not killed and euiSlot and euiSlot[ek] ~= false then
+            if s == "off" and not killed and euiSlot and EnabledValue(winKey, euiSlot[ek]) then
                 s = (styles and styles[winKey] == "modern") and "modern" or "eui"
             end
             if s == "modern" then modern = modern + 1
@@ -325,7 +326,8 @@ end
 -- Blizzard Style and Classic WoW UI keep Blizzard's own windows, every one at
 -- Blizz Default; the EllesmereUI look and WoW Forever put every one back to
 -- its default (on), the character sheet on its EllesmereUI skin -- except
--- that WoW Forever keeps the micro menu and the bag bar at Blizz Default. The Friends List window rides them whatever the
+-- that WoW Forever keeps the micro menu and the bag bar at Blizz Default, and
+-- no look turns on a window that starts there (STOCK_WINDOWS). The Friends List window rides them whatever the
 -- Friends module's state (its pack stands down by itself under a stock
 -- Friends style), so a key saved in one swap is always loaded back in the
 -- next. A slot holds on/off booleans; a window a slot never recorded (one
@@ -343,9 +345,11 @@ local function WindowInSlots(winKey)
     return winKey ~= "charsheet" and winKey ~= "inspect"
 end
 -- The looks whose first visit skins the windows (winKey nil: the look as a
--- whole). WoW Forever leaves the micro menu and the bag bar at Blizz Default.
+-- whole). WoW Forever leaves the micro menu and the bag bar at Blizz Default,
+-- every look a window that starts there.
 local FOREVER_STOCK = { micromenu = true, bagbar = true }
 local function LookSkinsWindows(look, winKey)
+    if winKey and STOCK_WINDOWS[winKey] then return false end
     if look == "forever" then return not (winKey and FOREVER_STOCK[winKey]) end
     return look == "eui"
 end
@@ -364,7 +368,7 @@ function EllesmereUI.SwapWindowSkinStyle(to, dryRun, legacyStock)
             local eui = {}
             for winKey, ek in pairs(WINDOW_ENABLE_KEYS) do
                 if WindowInSlots(winKey) then
-                    eui[ek] = rec[winKey] and true or (EllesmereUIDB[ek] ~= false)
+                    eui[ek] = rec[winKey] and true or EnabledValue(winKey, EllesmereUIDB[ek])
                 end
             end
             slots.eui = eui
@@ -376,7 +380,7 @@ function EllesmereUI.SwapWindowSkinStyle(to, dryRun, legacyStock)
     if type(styles) ~= "table" then styles = nil end
     local out = {}
     for winKey, ek in pairs(WINDOW_ENABLE_KEYS) do
-        if WindowInSlots(winKey) then out[ek] = EllesmereUIDB[ek] ~= false end
+        if WindowInSlots(winKey) then out[ek] = EnabledValue(winKey, EllesmereUIDB[ek]) end
     end
     out.charsheetStyle = (styles and styles.charsheet) or "eui"
     slots[from] = out
@@ -386,9 +390,10 @@ function EllesmereUI.SwapWindowSkinStyle(to, dryRun, legacyStock)
         if WindowInSlots(winKey) then
             local v = saved and saved[ek]
             if v == nil then v = LookSkinsWindows(to, winKey) end
-            -- On = nil (the install default), off = false. An explicit
-            -- branch: `x and false or nil` can only ever yield nil.
-            if v then EllesmereUIDB[ek] = nil else EllesmereUIDB[ek] = false end
+            -- On = OnValue (nil, the install default, or true for a stock
+            -- window), off = false. An explicit branch: `x and false or nil`
+            -- can only ever yield nil.
+            if v then EllesmereUIDB[ek] = OnValue(winKey) else EllesmereUIDB[ek] = false end
         end
     end
     -- The character sheet's style. A look's first visit (or a slot saved
@@ -457,12 +462,7 @@ end
 -- EUI_BlizzardSkin_*.lua file returns at its first lines unless the file
 -- before it got there, so one that errors, does not compile or is missing
 -- stops the files behind it.
-ns._internals = {
+EllesmereUI.NewInternals(ns, "_internals", {
     FFD = FFD, GetFFD = GetFFD,
     last = "main",
-}
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._internals, { __index = function(_, k)
-    error("ns._internals has no entry " .. tostring(k), 2)
-end })
+})

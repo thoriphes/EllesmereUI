@@ -48,6 +48,45 @@ local function GoldForgetCharacter(key)
     for gi in pairs(goldInstances) do gi:QueueRefresh() end
 end
 
+-- The tooltip roster: `keys` holds store keys sorted richest first. Past
+-- `maxRows` rows the rest are left out unless `all` is set (Shift held); the
+-- live character (`selfKey`) always shows. The shown rows go under the realm
+-- each character was recorded on (its ruleset on WoW Forever), realms A-Z and
+-- richest first within one, as the Time Played block lists them.
+-- Returns realms, byRealm (realm -> keys) and how many rows were left out.
+local function GoldRosterByRealm(store, keys, all, selfKey, maxRows)
+    local byRealm, realms = {}, {}
+    local shownRows, hiddenRows = 0, 0
+    for _, key in ipairs(keys) do
+        if not all and shownRows >= maxRows and key ~= selfKey then
+            hiddenRows = hiddenRows + 1
+        else
+            shownRows = shownRows + 1
+            local realm = store[key].realm or "?"
+            local list = byRealm[realm]
+            if not list then
+                list = {}
+                byRealm[realm] = list
+                realms[#realms + 1] = realm
+            end
+            list[#list + 1] = key
+        end
+    end
+    tsort(realms)
+    return realms, byRealm, hiddenRows
+end
+
+-- Every character and the warbank figure gone, as the Bags gold button's reset
+-- does (a list holding characters that never update, from another account):
+-- this character and the warbank are recorded again at once, the others when
+-- they next log in.
+local function GoldResetAll()
+    GL.Reset()
+    GL.RecordCharacter()
+    GL.RecordWarband()
+    for gi in pairs(goldInstances) do gi:QueueRefresh() end
+end
+
 -- Ledger callback, after it recorded. `money` is the live balance for character events (nil for warband ones or an unusable read, which the ledger refuses, so session math only ever sees numbers).
 local function GoldOnMoney(_, money)
     if money and goldLedger.lastMoney then
@@ -323,20 +362,27 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
                 ns.Tip_AddDouble(label, ns.FormatMoney(abs(net), true, sm, ci), 0.6, 0.6, 0.6, nr, ngr, 0.3)
             end
         end
-        local charCount = 0
+        -- unlisted: stored characters the roster leaves out (the hint offers them all)
+        local charCount, unlisted = 0, 0
         if showChars then
-            local store = GL.Data().chars
-            -- The list holds store KEYS ("Name-Realm"): a delete needs the key, and the entry itself does not carry one.
+            local store = GL.Chars()
+            -- The list holds store KEYS (GUIDs): a delete needs the key, and the entry itself does not carry one.
             local selfKey = GL.CharKey()
             -- Roster shows only balances above 10,000 gold (copper threshold) plus the live char; filtered chars still count into the total.
+            -- WoW Forever has no floor: its vanilla balances rarely come near one.
+            -- Hovered with Shift held, it shows every character, with no floor and no row cap, so any one can be removed.
+            local all = IsShiftKeyDown()
             local minCopper = 10000 * 10000
+            local noFloor = all or EllesmereUI.IS_FOREVER
             local total, charList = 0, {}
             for key, cdata in pairs(store) do
                 -- The ledger only ever stores usable numbers (secrets are refused on write).
                 local cm = cdata and cdata.money
                 if cm then
-                    if cm > minCopper or key == selfKey then
+                    if noFloor or cm > minCopper or key == selfKey then
                         tinsert(charList, key)
+                    else
+                        unlisted = unlisted + 1
                     end
                     total = total + cm
                 end
@@ -345,19 +391,19 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
                 return (store[a].money or 0) > (store[b].money or 0)
             end)
             charCount = #charList
+            local realmCount = 0
             if charCount > 0 then
-                ns.Tip_AddLine(" ")
-                ns.Tip_AddLine(GetRealmName() or "?", 0.5, 0.78, 1)
                 -- Cap roster rows so many alts cannot push the total and hint rows off
                 -- screen. Sorted richest first, so the cap keeps the highest balances; the
                 -- live character always shows; the total still sums EVERY stored character.
-                local maxRows, shownRows, hiddenRows = 10, 0, 0
-                for _, key in ipairs(charList) do
-                    local char = store[key]
-                    if shownRows >= maxRows and key ~= selfKey then
-                        hiddenRows = hiddenRows + 1
-                    else
-                        shownRows = shownRows + 1
+                -- Each realm (ruleset on WoW Forever) heads its own characters.
+                local realms, byRealm, hiddenRows = GoldRosterByRealm(store, charList, all, selfKey, 10)
+                realmCount = #realms
+                for _, realm in ipairs(realms) do
+                    ns.Tip_AddLine(" ")
+                    ns.Tip_AddLine(realm, 0.5, 0.78, 1)
+                    for _, key in ipairs(byRealm[realm]) do
+                        local char = store[key]
                         local cr, cg, cb = 1, 1, 1
                         if char.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[char.class] then
                             local cc = RAID_CLASS_COLORS[char.class]; cr, cg, cb = cc.r, cc.g, cc.b
@@ -377,14 +423,17 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
                 end
                 if hiddenRows > 0 then
                     ns.Tip_AddLine(format(L["PLUS_N_MORE"], hiddenRows), 0.6, 0.6, 0.6)
+                    unlisted = unlisted + hiddenRows
                 end
             end
-            -- Warbank rides the character list as its final row, no separator: it reads as one more entry.
-            -- Live when readable, otherwise the ledger's last known balance.
+            -- Warbank rides the character list as its final row, no separator under a single realm:
+            -- it reads as one more entry. Under several realms a blank line sets it apart, since it
+            -- belongs to none of them. Live when readable, otherwise the ledger's last known balance.
             GL.RecordWarband()
             local wband = GL.Data().warband
             local wbank = wband and wband.money
             if wbank and wbank > 0 then
+                if realmCount > 1 then ns.Tip_AddLine(" ") end
                 ns.Tip_AddColumns(EllesmereUI.L("Warbank"), ns.MoneyTokens(wbank, sm, ci, true), 1, 0.82, 0)
                 total = total + wbank
             end
@@ -402,8 +451,14 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
         ns.Tip_AddDouble(L["LEFT_CLICK"],       L["OPEN_BAGS"],       1, 1, 1, ar, ag, ab)
         ns.Tip_AddDouble(L["RIGHT_CLICK"],      L["OPEN_CURRENCIES"], 1, 1, 1, ar, ag, ab)
         ns.Tip_AddDouble(L["CTRL_RIGHT_CLICK"], L["RESET_SESSION"],   1, 1, 1, ar, ag, ab)
+        if showChars then
+            ns.Tip_AddDouble(L["CTRL_SHIFT_RIGHT_CLICK"], L["RESET_ALL_DATA"], 1, 1, 1, ar, ag, ab)
+        end
         if charCount > 1 then
             ns.Tip_AddDouble(L["CTRL_ALT_LEFT_CLICK"], L["REMOVE_CHARACTER"], 1, 1, 1, ar, ag, ab)
+        end
+        if unlisted > 0 then
+            ns.Tip_AddDouble(L["SHIFT_HOVER"], L["SHOW_EVERY_CHARACTER"], 1, 1, 1, ar, ag, ab)
         end
         ns.Tip_Show()
     end)
@@ -414,9 +469,21 @@ ns.BlockFactories.gold = function(blockCfg, slot, content, barCtx)
         inst:Refresh()
     end)
     goldButton:SetScript("OnClick", function(_, button)
-        if IsControlKeyDown() and button == "RightButton" then
+        if button == "RightButton" and IsControlKeyDown() and IsShiftKeyDown() then
+            ns.Tip_Hide(goldButton)
+            EllesmereUI:ShowConfirmPopup({
+                title = "Reset Gold Data",
+                message = "Clear the gold of every character and the warbank? This character and the warbank are recorded again at once, the others when they next log in.",
+                confirmText = "Reset",
+                cancelText = "Cancel",
+                onConfirm = GoldResetAll,
+            })
+        elseif IsControlKeyDown() and button == "RightButton" then
             goldLedger.profit = 0; goldLedger.spent = 0
             inst:Refresh()
+            -- The tooltip stays up through the click: drawn again, it shows the
+            -- session at zero.
+            if mouseOver then goldButton:GetScript("OnEnter")(goldButton) end
         elseif button == "RightButton" then
             if C_CurrencyInfo and C_CurrencyInfo.OpenCurrencyPanel then
                 C_CurrencyInfo.OpenCurrencyPanel()

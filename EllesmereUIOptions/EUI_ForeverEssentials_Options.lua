@@ -19,6 +19,19 @@ local PAGE_THREAT  = "Threat"
 local PAGE_LOOT    = "Loot"
 local PAGE_MACROS  = "Macros"
 
+-- Item quality dropdown values and order from Poor up to last, each in its
+-- colour (the General and Loot pages).
+_G._EUI_ItemQualityValues = function(last)
+    local values, order = {}, {}
+    for q = Enum.ItemQuality.Poor, last do
+        local key, color = tostring(q), ITEM_QUALITY_COLORS[q]
+        local label = _G["ITEM_QUALITY" .. q .. "_DESC"] or key
+        values[key] = color and (color.hex .. label .. "|r") or label
+        order[#order + 1] = key
+    end
+    return values, order
+end
+
 -- Page reuse: a frame this file builds goes through the options frame pool
 -- (EllesmereUI_FramePool.lua, the options addon's first file), which hands a
 -- kept page its previous build's frames back reset to new; on any other
@@ -35,7 +48,7 @@ initFrame:SetScript("OnEvent", function(self)
         title       = "Forever Essentials",
         description = "Essential tools for WoW Forever.",
         pages       = { PAGE_GENERAL, PAGE_TRAVEL, PAGE_THREAT, PAGE_LOOT, PAGE_MACROS },
-        searchTerms = { "flight timer", "flight path", "threat", "threat meter", "aggro", "loot", "loot feed", "reputation", "currency", "uprank", "spell rank", "junk", "junk items", "macro", "macros", "macro manager", "simplified stats", "item stats", "stat colors", "tooltip stats", "world map", "map", "reveal", "unexplored", "fog of war", "quest reward", "quest rewards", "sell value", "boat", "zeppelin", "zone exit", "dungeon entrance", "instance" },
+        searchTerms = { "flight timer", "flight path", "threat", "threat meter", "aggro", "loot", "loot feed", "reputation", "currency", "uprank", "spell rank", "junk", "junk items", "macro", "macros", "macro manager", "simplified stats", "item stats", "stat colors", "tooltip stats", "world map", "map", "reveal", "unexplored", "fog of war", "fishing skill", "quest reward", "quest rewards", "sell value", "boat", "zeppelin", "zone exit", "dungeon entrance", "instance" },
         buildPage   = function(pageName, parent, yOffset)
             if pageName == PAGE_GENERAL and _G._EUI_BuildForeverGeneralPage then
                 return _G._EUI_BuildForeverGeneralPage(pageName, parent, yOffset)
@@ -67,6 +80,9 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.flightTimer = nil
                 EllesmereUIDB.threatMeter = nil
                 EllesmereUIDB.lootFeed = nil
+                EllesmereUI.ClearCharField("lootFeedHistory")
+                -- the roster's spellUprank, the ranks each character has had, is not a setting: it stays, so the
+                -- option turned on again swaps only ranks learned since
                 EllesmereUIDB.spellUprank = nil
                 EllesmereUIDB.junkList = nil
                 EllesmereUIDB.junkListExcluded = nil

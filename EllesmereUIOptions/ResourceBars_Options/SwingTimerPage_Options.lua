@@ -11,6 +11,25 @@ if not ns then return end  -- module disabled: no options page
 -- elsewhere this is CreateFrame.
 local CreateFrame = EllesmereUI._Pool.CreateFrame
 
+-- The Talent Conditions picker's texts, in the swing timer's words (made on
+-- the first open).
+local swingTalentTexts
+local function SwingTalentTexts()
+    if not swingTalentTexts then
+        swingTalentTexts = {
+            hint = EllesmereUI.L("Click a talent to require it: Taken, then Not Taken, then cleared. Every condition must hold for the swing timer to show."),
+            none = EllesmereUI.L("No conditions: the swing timer always shows."),
+            met = function(n)
+                return EllesmereUI.Lf("%1$d condition(s), met by your current talents: the swing timer shows.", n)
+            end,
+            notMet = function(n)
+                return EllesmereUI.Lf("%1$d condition(s), not met by your current talents: the swing timer is hidden.", n)
+            end,
+        }
+    end
+    return swingTalentTexts
+end
+
 -- Swing Timer page (WoW Forever only: the page exists only where the client
 -- has C_SwingTimer; see EUI_ResourceBars_SwingTimer.lua). Same widget set as
 -- the GCD Bar page, plus the row/text/range rows the swing timer adds.
@@ -53,6 +72,7 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
 
     local _sec
     _sec, h = W:SectionHeader(parent, "LAYOUT", y);  y = y - h
+    EllesmereUI.BuildSectionUnlockJump(_sec, { key = "ERB_SwingTimer", disabled = stOff, disabledTooltip = ST_TIP })
 
     local sStrataValues = EllesmereUI.FRAME_STRATA_LABELS
     local sStrataOrder = EllesmereUI.FRAME_STRATA_ORDER_BASE
@@ -77,7 +97,7 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
     -- Inline position cog (X/Y + unlock) on Enable, as on the GCD Bar page
     if not EllesmereUI._prebuilding then
         local rgn = enableRow._leftRegion
-        EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+        EllesmereUI.BuildInlineCog(rgn, {
             disabled = function() local p = DB(); return p and not p.swingTimer.enabled end,
             disabledTooltip = ST_TIP,
             title = "Swing Timer Position",
@@ -147,7 +167,7 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
               get = function() local p = DB(); return p and p.swingTimer[key] or 0 end,
               set = function(v) local p = DB(); if not p then return end; p.swingTimer[key] = v; RefreshST() end }
         end
-        EllesmereUI.BuildInlineCog(stTextRow._rightRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+        EllesmereUI.BuildInlineCog(stTextRow._rightRegion, {
             disabled = stOff, disabledTooltip = ST_TIP,
             title = "Text Position",
             rows = {
@@ -174,6 +194,56 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
           getValue = function() local p = DB(); return p and p.swingTimer.hideWhenIdle end,
           setValue = function(v) local p = DB(); if not p then return end; p.swingTimer.hideWhenIdle = v; RefreshST() end }
     );  y = y - h
+    -- Inline cog on Visibility: Forms and Talents. A druid picks the forms the
+    -- timer shows in (the per-form map the other bars' cogs write); any class can
+    -- require talents, saved per class so one profile serves every class. While
+    -- they rule it out, the timer stands down like switched off. A class with no
+    -- forms gets the talent picker straight from the cog.
+    if not EllesmereUI._prebuilding then
+        local function STCfg() local p = DB(); return p and p.swingTimer end
+        local condShow
+        local function OpenTalents()
+            local pf = condShow and condShow._popupFrame
+            if pf and pf:IsShown() then pf:Hide() end
+            local g = STCfg(); if not g then return end
+            local _, class = UnitClass("player")
+            local byClass = g.classTalentConditions
+            EllesmereUI.ShowTalentConditionsPopup({
+                title = EllesmereUI.Lf("Talent Conditions: %1$s", EllesmereUI.L("Swing Timer")),
+                conds = byClass and byClass[class],
+                texts = SwingTalentTexts(),
+                fontKey = "resourceBars",
+                onConfirm = function(list)
+                    local q = STCfg(); if not q then return end
+                    local t = q.classTalentConditions
+                    if list then
+                        if not t then t = {}; q.classTalentConditions = t end
+                        t[class] = list
+                    elseif t then
+                        t[class] = nil
+                        if not next(t) then q.classTalentConditions = nil end
+                    end
+                    RefreshST()
+                end,
+            })
+        end
+        local formRows = env.FormToggleRows(STCfg, RefreshST, "barDisabledForms")
+        if formRows then
+            formRows[#formRows + 1] = { type = "button", label = "Talent Conditions", action = OpenTalents }
+            _, condShow = EllesmereUI.BuildInlineCog(stShowRow._leftRegion, {
+                disabled = stOff, disabledTooltip = ST_TIP,
+                title = "Forms and Talents",
+                rows = formRows,
+            })
+        else
+            EllesmereUI.BuildInlineCog(stShowRow._leftRegion, {
+                disabled = stOff, disabledTooltip = ST_TIP,
+                tip = "Talent Conditions",
+                show = OpenTalents,
+            })
+        end
+    end
+
     if not EllesmereUI._prebuilding then
         EllesmereUI.BuildInlineCog(stShowRow._rightRegion, {
             title = "Idle Rows",
@@ -194,12 +264,24 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
 
     _sec, h = W:SectionHeader(parent, "DISPLAY", y);  y = y - h
 
-    -- Row: Border Style | Border Size (+ inline color swatch + offset cog)
+    -- Global Settings > Style: the rows wear the Resource Bars row's stock
+    -- frame (ns.ST_Style), which gates the EUI border rows as on the other
+    -- bars.
+    local stStock = ns.ST_Style() ~= "eui"
+    local stClassic = stStock and ns.ERB_BarsClassic()
+    local function Gate(cfg)
+        if stStock then return EllesmereUI.BlizzStyle.Gate("resourcebars", cfg) end
+        return cfg
+    end
+    if stStock then y = EllesmereUI.BlizzStyle.Note(parent, y, "resourcebars") end
+
+    -- Row: Border Style | Border Size (+ inline color swatch + offset cog).
+    -- Classic WoW UI: the Border Size slot sizes the vanilla frame instead.
     do
         local btValues, btOrder = EllesmereUI.GetBorderTextureDropdown()
         local bsRow
         bsRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Border Style",
+            Gate({ type="dropdown", text="Border Style",
               disabled = stOff, disabledTooltip = ST_TIP,
               values=btValues, order=btOrder,
               getValue=function() local p = DB(); return p and p.swingTimer.borderTexture or "solid" end,
@@ -214,8 +296,18 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
                   if defSz then g.borderSize = defSz end
                   if g.borderSizePx then g.borderSizePx = false end
                   RefreshST(); EllesmereUI:RefreshPage(true)
-              end },
-            EllesmereUI.BorderPxSliderCfg({ text = "Border Size",
+              end }),
+            stClassic and EllesmereUI.BlizzStyle.ClassicBorderSizeCfg(
+                function() local p = DB(); return p and p.swingTimer.stockBorderScale end,
+                function(v)
+                    local p = DB(); if not p then return end
+                    p.swingTimer.stockBorderScale = v
+                    RefreshST()
+                    EllesmereUI.ReapplyMatchPads("ERB_SwingTimer")
+                    EllesmereUI:RefreshPage()
+                end,
+                { disabled = stOff, disabledTooltip = ST_TIP }) or
+            Gate(EllesmereUI.BorderPxSliderCfg({ text = "Border Size",
               disabled = stOff, disabledTooltip = ST_TIP,
               getStep = function() local p = DB(); return p and (p.swingTimer.borderSize or 0) or 0 end,
               setStep = function(v) local p = DB(); if p then p.swingTimer.borderSize = v end end,
@@ -223,7 +315,7 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
               getPx = function() local p = DB(); return p and p.swingTimer.borderSizePx end,
               setPx = function(v) local p = DB(); if p then p.swingTimer.borderSizePx = v end end,
               apply = function() RefreshST(); EllesmereUI:RefreshPage() end,
-            }));  y = y - h
+            })));  y = y - h
         -- Width Offset | Height Offset: own row while a textured style is selected.
         do
             local p = DB()
@@ -242,13 +334,32 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
                     setY = function(v) local p = DB(); if p then p.swingTimer.borderTextureOffsetY = v end end,
                     apply = function() RefreshST(); EllesmereUI:RefreshPage() end,
                 })
-                _, h = W:DualRow(parent, y, ocfgL, ocfgR);  y = y - h
+                _, h = W:DualRow(parent, y, Gate(ocfgL), Gate(ocfgR));  y = y - h
             end
         end
-        -- Border color swatch on the size slider (right region), the Corner
-        -- Radius cog left of it; neither in the search pre-build (they index
-        -- nothing, and the row is a stand-in there)
-        if not EllesmereUI._prebuilding then
+        -- Corner Radius cog on the size slider (right region), the Border color
+        -- swatch left of it; neither in the search pre-build (they index
+        -- nothing, and the row is a stand-in there) nor on Classic WoW UI's
+        -- frame size slider
+        if not EllesmereUI._prebuilding and not stClassic then
+            -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog on the
+            -- border size control. The stock styles keep the rows square.
+            EllesmereUI.BuildInlineCog(bsRow._rightRegion, {
+                title = "Corner Radius", tip = "Corner Radius",
+                disabled = function() if stOff() or stStock then return true end; local p = DB(); return not EllesmereUI.RoundedStyleOK(p and p.swingTimer.borderTexture) end,
+                disabledTooltip = function()
+                    if stStock then return EllesmereUI.BlizzStyle.Label("resourcebars") end
+                    if stOff() then return ST_TIP end
+                    return "This option requires the Solid, Glow or Shadow border style."
+                end,
+                requireState = function() return stStock and "disabled" or "enabled" end,
+                rows = EllesmereUI.RoundedCornerRows({
+                    { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+                      get = function() local p = DB(); return p and p.swingTimer.cornerRadius or 0 end,
+                      set = function(v) local p = DB(); if not p then return end; p.swingTimer.cornerRadius = v; RefreshST() end },
+                }, function() local p = DB(); return p and p.swingTimer.cornerMask end,
+                   function(v) local p = DB(); if not p then return end; p.swingTimer.cornerMask = v; RefreshST() end),
+            })
             EllesmereUI.BuildInlineSwatches(bsRow._rightRegion, {
                 { tooltip = "Border Color", hasAlpha = true,
                   disabled = function()
@@ -270,23 +381,10 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
                       RefreshST(); EllesmereUI:RefreshPage()
                   end },
             }, { size = 20 })
-            -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog on the
-            -- border size control.
-            EllesmereUI.BuildInlineCog(bsRow._rightRegion, {
-                title = "Corner Radius", tip = "Corner Radius",
-                disabled = function() if stOff() then return true end; local p = DB(); return not EllesmereUI.RoundedStyleOK(p and p.swingTimer.borderTexture) end,
-                disabledTooltip = function() if stOff() then return ST_TIP end; return "This option requires the Solid, Glow or Shadow border style." end,
-                rows = EllesmereUI.RoundedCornerRows({
-                    { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
-                      get = function() local p = DB(); return p and p.swingTimer.cornerRadius or 0 end,
-                      set = function(v) local p = DB(); if not p then return end; p.swingTimer.cornerRadius = v; RefreshST() end },
-                }, function() local p = DB(); return p and p.swingTimer.cornerMask end,
-                   function(v) local p = DB(); if not p then return end; p.swingTimer.cornerMask = v; RefreshST() end),
-            })
         end
         if not EllesmereUI._prebuilding then
             local rgn = bsRow._leftRegion
-            local cogBtn = EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+            local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
                 title = "Border Options",
                 rows = {
                     { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -303,7 +401,7 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
             local function UpdateCogVis()
                 local p = DB()
                 local tex = p and p.swingTimer.borderTexture or "solid"
-                if tex == "solid" then cogBtn:Hide() else cogBtn:Show() end
+                if tex == "solid" or stClassic then cogBtn:Hide() else cogBtn:Show() end
             end
             EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
             UpdateCogVis()
@@ -493,6 +591,20 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
             disabled = stOff, disabledTooltip = ST_TIP,
             title = "Tracked Weapons",
             rows = {
+                { type = "toggle", label = "Always Show Rows",
+                  tooltip = "Show every row ticked in the list even when no weapon is equipped in that slot, so the bar keeps the same layout on every class.",
+                  get = function() local p = DB(); return p and p.swingTimer.alwaysShowRows == true end,
+                  set = function(v) local p = DB(); if not p then return end; p.swingTimer.alwaysShowRows = v; RefreshST() end },
+                { type = "toggle", label = "Hide Label Without Weapon",
+                  tooltip = "A row shown only because of Always Show Rows drops its MH / OH / R label while no weapon is equipped in that slot. A shield keeps its Shield label.",
+                  disabled = function() local p = DB(); return not (p and p.swingTimer.alwaysShowRows) end,
+                  disabledTooltip = "Always Show Rows",
+                  get = function() local p = DB(); return p and p.swingTimer.hideLabelNoWeapon == true end,
+                  set = function(v) local p = DB(); if not p then return end; p.swingTimer.hideLabelNoWeapon = v; RefreshST() end },
+                { type = "toggle", label = "Show Shield As Off Hand",
+                  tooltip = "Show the Off Hand row, labelled Shield, while a shield is equipped. Always Show Rows also labels it.",
+                  get = function() local p = DB(); return p and p.swingTimer.shieldRow == true end,
+                  set = function(v) local p = DB(); if not p then return end; p.swingTimer.shieldRow = v; RefreshST() end },
                 { type = "toggle", label = "Combine Hands",
                   tooltip = "Show the off hand as a spark on the Main Hand bar instead of its own row.",
                   disabled = function() local p = DB(); return p and (p.swingTimer.showMH == false or p.swingTimer.showOH == false) end,
@@ -519,13 +631,16 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
 
     -- A cog's colour row: store keys prefix .. R/G/B/A, `def` the fallback
     -- {r, g, b, a}; `off` (optional) greys it out with `offTip`.
-    local function ColorRow(label, prefix, def, tip, off, offTip)
+    -- `shared` (optional): a prefix whose colour shows while this one is unset.
+    local function ColorRow(label, prefix, def, tip, off, offTip, shared)
         return { type = "colorpicker", label = label, tooltip = tip, hasAlpha = true,
             disabled = off, disabledTooltip = offTip,
             get = function()
                 local p = DB(); local g = p and p.swingTimer
                 if not g then return def[1], def[2], def[3], def[4] end
-                return g[prefix .. "R"] or def[1], g[prefix .. "G"] or def[2], g[prefix .. "B"] or def[3], g[prefix .. "A"] or def[4]
+                local k = prefix
+                if shared and g[prefix .. "R"] == nil then k = shared end
+                return g[k .. "R"] or def[1], g[k .. "G"] or def[2], g[k .. "B"] or def[3], g[k .. "A"] or def[4]
             end,
             set = function(r, gg, b, a)
                 local p = DB(); if not p then return end
@@ -561,8 +676,15 @@ function ns.ERB_BuildSwingTimerPage(pageName, parent, yOffset)
             rows = {
                 ColorRow("On", "active", { 0.047, 0.824, 0.616, 1 }, "While the attack is on and a swing is running.", stateNotFull, "This option requires Attack State Full."),
                 ColorRow("Waiting", "pending", { 0.659, 0.502, 0.949, 1 }, "While the attack is on but nothing is swinging.", stateNotFull, "This option requires Attack State Full."),
-                ColorRow("Queued", "queue", { 1, 0.70, 0.20, 1 }, "Heroic Strike, Maul or Raptor Strike queued.", stateOff, "This option requires an Attack State other than Off."),
+                ColorRow("Heroic Strike", "queueHS", { 1, 0.70, 0.20, 1 }, "Heroic Strike queued.", stateOff, "This option requires an Attack State other than Off.", "queue"),
+                ColorRow("Raptor Strike", "queueRaptor", { 1, 0.70, 0.20, 1 }, "Raptor Strike queued.", stateOff, "This option requires an Attack State other than Off.", "queue"),
+                ColorRow("Maul", "queueMaul", { 1, 0.70, 0.20, 1 }, "Maul queued.", stateOff, "This option requires an Attack State other than Off.", "queue"),
                 ColorRow("Cleave", "queueCleave", { 0.95, 0.35, 0.25, 1 }, "Cleave queued.", stateOff, "This option requires an Attack State other than Off."),
+                { type = "toggle", label = "Queued On Main Hand Only",
+                  tooltip = "Show a queued attack on the Main Hand row only, not on the Off Hand row.",
+                  disabled = stateOff, disabledTooltip = "This option requires an Attack State other than Off.",
+                  get = function() local p = DB(); return p and p.swingTimer.queueMainHandOnly == true end,
+                  set = function(v) local p = DB(); if not p then return end; p.swingTimer.queueMainHandOnly = v; RefreshST() end },
             },
         })
     end

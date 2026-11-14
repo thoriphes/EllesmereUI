@@ -13,7 +13,6 @@ EUI_NS = EUI_NS.__euiCoreNS or EUI_NS  -- standalone builds: the core's own tabl
 local PP                  = EllesmereUI.PP
 local PanelPP             = EllesmereUI.PanelPP
 local MakeFont            = EllesmereUI.MakeFont
-local MakeBorder          = EllesmereUI.MakeBorder
 local SolidTex            = EllesmereUI.SolidTex
 local lerp                = EllesmereUI.lerp
 local RegAccent           = EllesmereUI.RegAccent
@@ -190,9 +189,7 @@ local UpdateSidebarHighlight, ClearContent
 -------------------------------------------------------------------------------
 --  Build Main Frame
 -------------------------------------------------------------------------------
-local function CreateMainFrame()
-    if mainFrame then return mainFrame end
-
+local function BuildFrame()
     -----------------------------------------------------------------------
     --  Root frame + scaling
     -----------------------------------------------------------------------
@@ -889,7 +886,9 @@ local function CreateMainFrame()
             mainFrame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", ml + dx, mb + dy)
         end
     end
+end
 
+local function BuildSidebar()
     -----------------------------------------------------------------------
     --  Sidebar
     -----------------------------------------------------------------------
@@ -1216,6 +1215,7 @@ local function CreateMainFrame()
                 local t = dot:CreateTexture(nil, "OVERLAY")
                 t:SetAllPoints()
                 t:SetColorTexture(ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 1)
+                EllesmereUI.RegAccent({ type = "solid", obj = t, a = 1 })
                 -- Round: run the solid color through the portrait circle mask.
                 local mask = dot:CreateMaskTexture()
                 mask:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\portraits\\circle_mask.tga",
@@ -1420,8 +1420,8 @@ local function CreateMainFrame()
     local sbBg = SolidTex(sidebarSearchFrame, "BACKGROUND",
         EllesmereUI.SL_INPUT_R, EllesmereUI.SL_INPUT_G, EllesmereUI.SL_INPUT_B, EllesmereUI.SL_INPUT_A + 0.10)
     sbBg:SetAllPoints()
-    local sbBrd = MakeBorder(sidebarSearchFrame,
-        EllesmereUI.BORDER_R, EllesmereUI.BORDER_G, EllesmereUI.BORDER_B, 0.10)
+    local sbBrd = EllesmereUI.MakeRoundedBorder(sidebarSearchFrame,
+        EllesmereUI.BORDER_R, EllesmereUI.BORDER_G, EllesmereUI.BORDER_B, 0.10, sbBg)
 
     local sbEdit = CreateFrame("EditBox", nil, sidebarSearchFrame)
     sbEdit:SetAllPoints()
@@ -1549,6 +1549,10 @@ local function CreateMainFrame()
 
     local function UpdateAddonThumb()
         local maxScroll = EllesmereUI.SafeScrollRange(addonScrollFrame) or 0
+        -- A shorter list (a group collapsed) pulls the offset back into range.
+        if (tonumber(addonScrollFrame:GetVerticalScroll()) or 0) > maxScroll then
+            addonScrollFrame:SetVerticalScroll(math.max(0, maxScroll))
+        end
         -- Arrow state: dimmed when nothing is below. Runs before the no-scroll return.
         do
             local cur = tonumber(addonScrollFrame:GetVerticalScroll()) or 0
@@ -1713,23 +1717,54 @@ local function CreateMainFrame()
         end
     end
 
-    -- Create a group header row (accent-colored label only, no icon, no power,
-    -- not clickable). Acts as a visual category divider above its children.
+    -- Create a group header row: the accent-colored label, then right after its
+    -- text the quest tracker section headers' +/- art in the accent, shown only
+    -- while the row is hovered. A click anywhere on the row collapses or
+    -- expands the group; RefreshSidebarStates lays the rows out and sets the
+    -- +/- for the saved state.
     local function CreateGroupHeader(group)
-        local row = CreateFrame("Frame", nil, addonScrollChild)
+        local row = CreateFrame("Button", nil, addonScrollChild)
         row:SetSize(SIDEBAR_W, GROUP_ROW_H)
         row:SetFrameLevel(addonScrollChild:GetFrameLevel() + 1)
 
         local EG = ELLESMERE_GREEN
+        -- The label takes its text's width (one anchor), so the +/- follows the text.
         local label = MakeFont(row, 15, nil, EG.r, EG.g, EG.b, 1)
         label:SetPoint("LEFT", row, "LEFT", NAV_LEFT, 0)
+        label:SetWordWrap(false)
+        label:SetMaxLines(1)
         label:SetText(EllesmereUI.L(group.label))
-        RegAccent({ type="callback", fn = function(r, g, b)
+
+        local toggle = row:CreateTexture(nil, "ARTWORK")
+        toggle:SetSize(14, 14)
+        toggle:SetPoint("LEFT", label, "RIGHT", 4, 0)
+        toggle:SetAtlas("ui-questtrackerbutton-secondary-collapse")
+        toggle:SetDesaturated(true)
+        toggle:SetVertexColor(EG.r, EG.g, EG.b, 1)
+        toggle:Hide()
+
+        -- Hovering the row shows the +/- and lightens it and the label by 25%.
+        local cr, cg, cb = EG.r, EG.g, EG.b
+        local function Paint(lit)
+            local m = lit and 1.25 or 1
+            local r, g, b = math.min(1, cr * m), math.min(1, cg * m), math.min(1, cb * m)
             label:SetTextColor(r, g, b, 1)
+            toggle:SetVertexColor(r, g, b, 1)
+            toggle:SetShown(lit)
+        end
+        RegAccent({ type="callback", fn = function(r, g, b)
+            cr, cg, cb = r, g, b
+            Paint(row:IsMouseOver())
         end })
+        row:SetScript("OnEnter", function() Paint(true) end)
+        row:SetScript("OnLeave", function() Paint(false) end)
+
+        local key = group.key
+        row:SetScript("OnClick", function() EUI_NS.ToggleSidebarGroup(key) end)
 
         row._isGroup = true
         row._label   = label
+        row._toggle  = toggle
         return row
     end
 
@@ -2006,7 +2041,7 @@ local function CreateMainFrame()
 
     -- Build the sidebar in group order; positions are assigned once and re-stacked by
     -- RefreshSidebarStates. Group/roster references go through
-    -- the private EUI_NS model (one upvalue, CreateMainFrame is at the 60-upvalue cap);
+    -- the private EUI_NS model (one upvalue instead of one per name, keeps BuildSidebar well under the 60-upvalue cap);
     -- cumulative `_y` walks each row so group and child heights can differ.
     -- Outside addons' own groups and pages join the model first (see the Plugin API).
     EUI_NS.SyncExternal()
@@ -2039,7 +2074,7 @@ local function CreateMainFrame()
     -- cannot swap in one that is handed the private button table.
     local pairs = pairs
     -- Lock/unlock excluded modules during an override editing session: their settings cannot be
-    -- captured, so the row grays out and blocks clicks. Called from the session enter/exit paths in EllesmereUI_SpecOverrides.
+    -- captured, so the row grays out and blocks clicks. Called from the session enter/exit paths in EUI_SpecOverrides_Session.lua.
     EllesmereUI.RefreshSidebarOverrideLocks = function()
         local active = EllesmereUI.SpecOverrides_EditSessionActive
             and EllesmereUI.SpecOverrides_EditSessionActive() or false
@@ -2284,13 +2319,13 @@ local function CreateMainFrame()
     resCpuLabel:SetPoint("BOTTOMRIGHT", resCpuText, "TOPRIGHT", 0, 3)
     resCpuLabel:SetJustifyH("RIGHT")
     resCpuLabel:SetAlpha(0.5)
-    resCpuLabel:SetText("CPU Usage:")
+    resCpuLabel:SetText(EllesmereUI.L("CPU Usage:"))
 
     local resPerfLabel = MakeFont(sidebar, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
     resPerfLabel:SetPoint("BOTTOMRIGHT", resCpuLabel, "TOPRIGHT", 0, 11)
     resPerfLabel:SetJustifyH("RIGHT")
     resPerfLabel:SetAlpha(0.5)
-    resPerfLabel:SetText("All EUI Addons")
+    resPerfLabel:SetText(EllesmereUI.L("All EUI Addons"))
 
     local resDivider = sidebar:CreateTexture(nil, "ARTWORK")
     resDivider:SetColorTexture(1, 1, 1, 0.15)
@@ -2327,7 +2362,12 @@ local function CreateMainFrame()
     resUpdateFrame:SetScript("OnHide", function()
         if resTicker then resTicker:Cancel(); resTicker = nil end
     end)
+end
 
+-- The public header API below iterates private tables; a local pairs means setfenv on it
+-- cannot swap in one that is handed those tables.
+local function BuildContent()
+    local pairs = pairs
     -----------------------------------------------------------------------
     --  Right-side content region
     -----------------------------------------------------------------------
@@ -2932,6 +2972,10 @@ local function CreateMainFrame()
         InvalidateContentHeaderCache()
     end
 
+    return rightW, rightX
+end
+
+local function BuildFooter(rightW, rightX)
     -----------------------------------------------------------------------
     --  Footer  (Reset to Defaults + Reload UI | Done)
     -----------------------------------------------------------------------
@@ -2958,9 +3002,9 @@ local function CreateMainFrame()
         PanelPP.Size(btn, w, h)
         PanelPP.Point(btn, anchorPoint, anchorTo, anchorRel, ax, ay)
         btn:SetFrameLevel(parent:GetFrameLevel() + 1)
-        local brd = MakeBorder(btn, brdR, brdG, brdB, brdA, PanelPP)
         local bg = SolidTex(btn, "BACKGROUND", DARK_BG.r, DARK_BG.g, DARK_BG.b, .92)
         bg:SetAllPoints()
+        local brd = EllesmereUI.MakeRoundedBorder(btn, brdR, brdG, brdB, brdA, bg)
         local lbl = MakeFont(btn, 13, nil, textR, textG, textB)
         lbl:SetAlpha(textA); lbl:SetPoint("CENTER"); lbl:SetText(EllesmereUI.L(label))
         btn._label = lbl
@@ -3086,7 +3130,7 @@ local function CreateMainFrame()
 
                 local bg = SolidTex(linkPopup, "BACKGROUND", DARK_BG.r, DARK_BG.g, DARK_BG.b, 0.97)
                 bg:SetAllPoints()
-                MakeBorder(linkPopup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15)
+                EllesmereUI.MakeRoundedBorder(linkPopup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15, bg)
 
                 local hint = MakeFont(linkPopup, 11, nil, TEXT_SECTION.r, TEXT_SECTION.g, TEXT_SECTION.b, TEXT_SECTION.a)
                 hint:SetPoint("TOP", linkPopup, "TOP", 0, -10)
@@ -3100,7 +3144,8 @@ local function CreateMainFrame()
                 eb:SetJustifyH("CENTER")
                 local ebBg = SolidTex(eb, "BACKGROUND", 0.112, 0.105, 0.098, 1)
                 ebBg:SetPoint("TOPLEFT", -6, 4); ebBg:SetPoint("BOTTOMRIGHT", 6, -4)
-                MakeBorder(eb, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.02)
+                EllesmereUI.RoundBody(eb, ebBg)
+                EllesmereUI.MakeRoundedBorder(eb, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.02)
                 eb:SetScript("OnEscapePressed", function(self) self:ClearFocus(); HideLinkPopup() end)
                 eb:SetScript("OnMouseUp", function(self) self:HighlightText() end)
                 linkPopup:EnableMouse(true)
@@ -3186,9 +3231,9 @@ local function CreateMainFrame()
         PanelPP.Size(btn, DONE_BTN_W, FOOTER_BTN_H)
         PanelPP.Point(btn, "BOTTOMRIGHT", footerFrame, "BOTTOMRIGHT", -FOOTER_PAD, FOOTER_Y)
         btn:SetFrameLevel(footerFrame:GetFrameLevel() + 1)
-        local brd = MakeBorder(btn, ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 0.7, PanelPP)
         local bg = SolidTex(btn, "BACKGROUND", DARK_BG.r, DARK_BG.g, DARK_BG.b, .92)
         bg:SetAllPoints()
+        local brd = EllesmereUI.MakeRoundedBorder(btn, ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 0.7, bg)
         local lbl = MakeFont(btn, 13, nil, ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b)
         lbl:SetAlpha(0.7); lbl:SetPoint("CENTER"); lbl:SetText(EllesmereUI.L("Close"))
         -- Hover animation reads from ELLESMERE_GREEN live
@@ -3216,6 +3261,15 @@ local function CreateMainFrame()
             brd:SetColor(r, g, b, lerp(0.7, 1, progress))
         end })
     end
+end
+
+local function CreateMainFrame()
+    if mainFrame then return mainFrame end
+
+    BuildFrame()
+    BuildSidebar()
+    local rightW, rightX = BuildContent()
+    BuildFooter(rightW, rightX)
 
     return mainFrame
 end
@@ -3226,6 +3280,34 @@ end
 -- Display-only tab label overrides ([page identity] = shown label), registered by module options
 -- files. Page IDENTITY stays the original string everywhere else (SelectPage, nav targets, unlock elements, spec overrides, saved state); only the tab text changes.
 EllesmereUI.TAB_LABEL_OVERRIDES = EllesmereUI.TAB_LABEL_OVERRIDES or {}
+
+-- A page's tab label (not localized): a suite module's own config.tabLabels[page] first,
+-- so a label never lands on another module's page of the same name, then the shared
+-- TAB_LABEL_OVERRIDES, else the page identity itself. tabLabels is suite-only (plugin
+-- configs are ignored), and on EUI_NS, not EllesmereUI: a public slot would let any
+-- addon relabel the suite's tabs.
+function EUI_NS.GetTabLabel(folderName, page)
+    local m = folderName and EUI_NS.IsSuiteKey(folderName) and modules[folderName]
+    local own = m and type(m.tabLabels) == "table" and m.tabLabels[page]
+    return own or EllesmereUI.TAB_LABEL_OVERRIDES[page] or page
+end
+
+-- The page that holds a saved override entry's row. A suite module lists the sections
+-- whose rows are on another page in its config.movedSections: [page] = { [section] =
+-- the page that holds them, or { page = that page, stay = { [row label] = true } } when
+-- some rows are still on the first page }. Returns the page, and true when it is not the
+-- entry's own (its section is then not a section of that page). Suite-only, as
+-- tabLabels. The entry itself is only read.
+function EUI_NS.EntryPage(folderName, page, section, label)
+    local m = folderName and EUI_NS.IsSuiteKey(folderName) and modules[folderName]
+    local moved = m and type(m.movedSections) == "table" and m.movedSections[page]
+    local to = moved and moved[section]
+    if type(to) == "table" then
+        if to.stay and to.stay[label] then to = nil else to = to.page end
+    end
+    if to then return to, true end
+    return page, false
+end
 
 -- Tab buttons are pooled by position (tabBar._tabPool) and re-labelled for each
 -- module; tabBar._tabButtons lists the ones in use, in order.
@@ -3279,7 +3361,7 @@ CreateTabButton = function(index, name)
     btn._disabled = nil
     btn._tip      = nil
     local label = btn._label
-    label:SetText(EllesmereUI.L(EllesmereUI.TAB_LABEL_OVERRIDES[name] or name))
+    label:SetText(EllesmereUI.L(EUI_NS.GetTabLabel(activeModule, name)))
     label:SetTextColor(TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
     label:SetAlpha(1)
 
@@ -3329,7 +3411,7 @@ BuildTabs = function(pageNames, disabledPages, disabledTooltips)
 
         local searchBg = SolidTex(searchFrame, "BACKGROUND", STYLE.SL_INPUT_R, STYLE.SL_INPUT_G, STYLE.SL_INPUT_B, STYLE.SL_INPUT_A + 0.10)
         searchBg:SetAllPoints()
-        local searchBrd = MakeBorder(searchFrame, STYLE.BORDER_R, STYLE.BORDER_G, STYLE.BORDER_B, 0.10)
+        local searchBrd = EllesmereUI.MakeRoundedBorder(searchFrame, STYLE.BORDER_R, STYLE.BORDER_G, STYLE.BORDER_B, 0.10, searchBg)
 
         local editBox = CreateFrame("EditBox", nil, searchFrame)
         editBox:SetAllPoints()
@@ -3652,6 +3734,13 @@ function EllesmereUI:NavigateToElementSettings(moduleName, pageName, sectionName
         return nil
     end
 
+    -- Refused in combat like Show (see there), before the page selection below
+    -- runs, which has no combat check of its own.
+    if InCombatLockdown() then
+        EllesmereUI.PrintError("Cannot open options during combat.")
+        return
+    end
+
     -- First-open split (see _SplitFirstOpen): Show() below returns without
     -- building the panel on the session's first open, so run the whole deep
     -- link next frame rather than navigating a panel that does not exist yet.
@@ -3760,7 +3849,75 @@ local function GetDropdownValueText(region)
     return tostring(val)
 end
 
+-- "No results" hint for the module search box, with a link that hands the
+-- query to the sidebar search. Built on first use, parented to the scroll
+-- child (not the page wrapper, so the filter never sees it). nil hides it.
+local SetInlineEmptyHint
+do
+    local hint
+    SetInlineEmptyHint = function(query)
+        if not query then
+            if hint then hint:Hide() end
+            return
+        end
+        if not hint then
+            hint = CreateFrame("Frame", nil, contentFrame)
+            PanelPP.Size(hint, 600, 100)
+            -- Blizzard's own search box magnifier (SearchBoxTemplate).
+            local icon = hint:CreateTexture(nil, "ARTWORK")
+            icon:SetAtlas("common-search-magnifyingglass")
+            icon:SetDesaturated(true)
+            icon:SetVertexColor(TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, 0.6)
+            PanelPP.Size(icon, 24, 24)
+            PanelPP.Point(icon, "TOP", hint, "TOP", 0, 0)
+            hint._text = MakeFont(hint, 14, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
+            PanelPP.Point(hint._text, "TOPLEFT", hint, "TOPLEFT", 0, -34)
+            PanelPP.Point(hint._text, "TOPRIGHT", hint, "TOPRIGHT", 0, -34)
+            hint._text:SetJustifyH("CENTER")
+            hint._text:SetWordWrap(false)
+            local link = CreateFrame("Button", nil, hint)
+            link:SetPoint("TOP", hint._text, "BOTTOM", 0, -8)
+            local linkFS = MakeFont(link, 13, nil, ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 1)
+            linkFS:SetPoint("LEFT")
+            linkFS:SetText(EllesmereUI.L("Search all modules"))
+            local arrow = link:CreateTexture(nil, "ARTWORK")
+            arrow:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-right.png")
+            arrow:SetVertexColor(ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 1)
+            PanelPP.Size(arrow, 12, 12)
+            PanelPP.Point(arrow, "LEFT", linkFS, "RIGHT", 4, 0)
+            RegAccent({ type = "callback", fn = function(r, g, b)
+                linkFS:SetTextColor(r, g, b, 1)
+                arrow:SetVertexColor(r, g, b, 1)
+            end })
+            PanelPP.Size(link, linkFS:GetStringWidth() + 16, 18)
+            link:SetAlpha(0.8)
+            link:SetScript("OnEnter", function() link:SetAlpha(1) end)
+            link:SetScript("OnLeave", function() link:SetAlpha(0.8) end)
+            link:SetScript("OnClick", function()
+                local box = tabBar and tabBar._searchBox
+                local q = box and box:GetText() or ""
+                -- Clear this box first: it restores the page and cancels its
+                -- debounce; then the sidebar search takes over the query.
+                if box then box:SetText(""); box:ClearFocus() end
+                local sb = EllesmereUI._sidebarSearchBox
+                if sb and q ~= "" then
+                    sb:SetText(q)
+                    sb:SetFocus()
+                    sb:SetCursorPosition(#q)
+                end
+            end)
+        end
+        local q = query:gsub("||", "|"):gsub("|", "||")
+        hint._text:SetText(EllesmereUI.Lf("No results for %s", "\"" .. q .. "\""))
+        hint:ClearAllPoints()
+        PanelPP.Point(hint, "TOP", contentFrame, "TOP", 0, -40)
+        hint:SetFrameLevel(contentFrame:GetFrameLevel() + 20)
+        hint:Show()
+    end
+end
+
 function EllesmereUI:ApplyInlineSearch(query, skipHighlights)
+    SetInlineEmptyHint(nil)
     if not activeModule or not activePage then return end
     -- Active search force-expands every "Show Less Common" section (links hidden);
     -- clearing collapses back to session state. MUST run before the cache lookup below:
@@ -4069,6 +4226,10 @@ function EllesmereUI:ApplyInlineSearch(query, skipHighlights)
 
     -- Resize content to fit visible items only
     local visibleH = math.abs(y - startY)
+    if #visibleSections == 0 and #visibleOrphans == 0 and query:match("%S") then
+        SetInlineEmptyHint(query)
+        visibleH = 140
+    end
     contentFrame:SetHeight(visibleH + 30)
 
     if scrollFrame and scrollFrame.SetVerticalScroll then
@@ -4351,8 +4512,9 @@ end
 -------------------------------------------------------------------------------
 -- From here on the public functions iterate private tables (page cache, a
 -- module's page list): local iterators mean setfenv cannot swap in one that
--- is handed those tables. (Declared after CreateMainFrame, which is at the
--- upvalue cap.)
+-- is handed those tables. (Declared after CreateMainFrame and its Build*
+-- functions; BuildSidebar and BuildContent declare their own pairs, the others
+-- use none.)
 local pairs, ipairs = pairs, ipairs
 -- Page cache: maps "moduleName::pageName" -> { wrapper, totalH, headerBuilder }
 -- On revisit, we show the cached wrapper and refresh widget values instead of rebuilding.
@@ -5058,6 +5220,7 @@ function EllesmereUI:SelectModule(folderName)
 
     activeModule = folderName
     local config = modules[folderName]
+    EUI_NS.RevealSidebarRow(folderName)
     UpdateSidebarHighlight(folderName)
     headerFrame._title:SetText(EllesmereUI.L(config.title or folderName))
     local rb = footerFrame and footerFrame._resetBtn
@@ -5139,14 +5302,27 @@ local function RefreshSidebarStates()
     local GROUP_H   = EllesmereUI.SIDEBAR_GROUP_ROW_H
     local CHILD_H   = EllesmereUI.SIDEBAR_CHILD_ROW_H
     local GROUP_GAP = EllesmereUI.SIDEBAR_GROUP_GAP
+    -- Collapsed groups keep their header and hide their rows; the rows below close up.
+    -- The gap between groups follows only a group that shows rows, so collapsed
+    -- headers stack at the row pitch.
+    local collapsed = EllesmereUIDB and EllesmereUIDB.sidebarCollapsed
     local y = 0
-    for i, group in ipairs(EUI_NS.navGroups) do
-        if i > 1 then y = y + GROUP_GAP end
+    local afterRows = false
+    for _, group in ipairs(EUI_NS.navGroups) do
+        if afterRows then y = y + GROUP_GAP end
+        afterRows = false
+        local shut = collapsed and collapsed[group.key] and true or false
         local header = groupHeaders[group.key]
         if header then
             header:ClearAllPoints()
             header:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -y)
             header:Show()
+            local toggle = header._toggle
+            if toggle then
+                toggle:SetAtlas(shut and "ui-questtrackerbutton-secondary-expand"
+                    or "ui-questtrackerbutton-secondary-collapse")
+                toggle:SetDesaturated(true)
+            end
             y = y + GROUP_H
         end
         for _, folder in ipairs(group.members) do
@@ -5154,9 +5330,14 @@ local function RefreshSidebarStates()
             local btn = info and sidebarButtons[folder]
             if btn then
                 btn:ClearAllPoints()
-                btn:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -y)
-                btn:Show()
-                y = y + CHILD_H
+                if shut then
+                    btn:Hide()
+                else
+                    btn:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -y)
+                    btn:Show()
+                    y = y + CHILD_H
+                    afterRows = true
+                end
 
                 local loaded = info.alwaysLoaded or IsAddonLoaded(info.folder)
                 local isSpecial = info.comingSoon or info.maintenance
@@ -5216,6 +5397,35 @@ local function RefreshSidebarStates()
     end
 end
 
+-- Collapse or expand a sidebar group (header click). The state is account-wide,
+-- in EllesmereUIDB.sidebarCollapsed keyed by group key (true = collapsed).
+function EUI_NS.ToggleSidebarGroup(key)
+    if not EllesmereUIDB then return end
+    local c = EllesmereUIDB.sidebarCollapsed
+    if not c then c = {}; EllesmereUIDB.sidebarCollapsed = c end
+    c[key] = (not c[key]) or nil
+    RefreshSidebarStates()
+end
+
+-- Selecting a module whose group is collapsed expands that group, so the
+-- selected row shows (Global Search, link tabs and slash commands select
+-- modules the player cannot see).
+function EUI_NS.RevealSidebarRow(folder)
+    local c = EllesmereUIDB and EllesmereUIDB.sidebarCollapsed
+    if not (c and next(c)) then return end
+    for _, group in ipairs(EUI_NS.navGroups) do
+        if c[group.key] then
+            for _, member in ipairs(group.members) do
+                if member == folder then
+                    c[group.key] = nil
+                    RefreshSidebarStates()
+                    return
+                end
+            end
+        end
+    end
+end
+
 -----------------------------------------------------------------------
 --  Sidebar Unlock Mode tip  (one-time, shown on first panel open)
 -----------------------------------------------------------------------
@@ -5272,8 +5482,17 @@ function EllesmereUI:_SplitFirstOpen(afterFn)
     return true
 end
 
+-- The panel never opens in combat (it closes as combat starts). Callers check
+-- before they ask, but an open can still land after combat began: the
+-- first-open split and the Settings button run it a frame later, and a deep
+-- link (NavigateToElementSettings) can come from a click on a game frame.
+-- Pages built then would call widget methods that are blocked in combat.
 function EllesmereUI:Show()
     if self._openPending then return end
+    if InCombatLockdown() then
+        EllesmereUI.PrintError("Cannot open options during combat.")
+        return
+    end
     if self:_SplitFirstOpen(function() EllesmereUI:Show() end) then return end
     CreateMainFrame()
     RefreshSidebarStates()
@@ -5285,6 +5504,12 @@ end
 function EllesmereUI:Hide()   if mainFrame then mainFrame:Hide() end end
 function EllesmereUI:Toggle()
     if self._openPending then return end
+    -- Closing still works in combat; opening or unfolding the mini window does
+    -- not (see Show).
+    if InCombatLockdown() and not (mainFrame and mainFrame:IsShown() and not self._panelCollapsed) then
+        EllesmereUI.PrintError("Cannot open options during combat.")
+        return
+    end
     if self:_SplitFirstOpen(function() EllesmereUI:Toggle() end) then return end
     CreateMainFrame()
     if self._panelCollapsed then
@@ -5498,7 +5723,7 @@ end
 --  (a module can opt out of the latter with searchPrebuild = false).
 --  Developer guide: PLUGINS_API.md.
 -------------------------------------------------------------------------------
-EllesmereUI.PLUGIN_API_VERSION = 1
+EllesmereUI.PLUGIN_API_VERSION = 5
 
 do
     local PREFIX          = EUI_NS.PLUGIN_PREFIX

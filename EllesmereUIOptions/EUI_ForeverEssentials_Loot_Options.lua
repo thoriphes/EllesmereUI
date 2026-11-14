@@ -29,7 +29,7 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     local LF = EllesmereUI._LootFeed
     local BLANK = EllesmereUI.BlankRowCfg
     local y = yOffset
-    local _, h
+    local _, h, hdr
     parent._showRowDivider = true
 
     EllesmereUI:SetContentHeader(HeaderBuilder)
@@ -43,8 +43,7 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     -- Auction prices count only while the tracker or an item price shows, and
     -- only with the price addon's API at hand.
     local function auctionSource()
-        local api = Auctionator and Auctionator.API and Auctionator.API.v1
-        return api and api.GetAuctionPriceByItemLink and true or false
+        return EllesmereUI._ModuleNS["EllesmereUIForeverEssentials"].AuctionAPI() ~= nil
     end
     local function pricesUnused()
         return not (LF.Get("tracker") or (LF.Get("items") and LF.Get("showPrice")))
@@ -60,12 +59,12 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     local function style()
         return LF.Get("style")
     end
-    -- Accent Bar draws no border; Loot Toast's frame is always gold.
-    local function noBorder()
-        return off() or style() == "BAR" or LF.Get("borderSize") == 0
+    -- Loot Toast keeps its gold frame.
+    local function borderOff()
+        return off() or style() == "TOAST"
     end
     local function noBorderColor()
-        return noBorder() or style() == "TOAST"
+        return borderOff() or LF.Get("borderSize") == 0
     end
     -- Switching a source re-registers the feed's events.
     local function Reapply()
@@ -100,6 +99,9 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
             setValue = function(r, g, b)
                 local c = LF.Cfg()
                 c[prefix .. "R"], c[prefix .. "G"], c[prefix .. "B"] = r, g, b
+                if prefix == "border" and style() == "BAR" then
+                    c.borderTexture = LF.Get("borderTexture") or "solid"
+                end
                 LF.ApplyStyle()
             end,
         } }, { disabled = off, disabledTooltip = "Loot Feed" })
@@ -108,7 +110,8 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     ---------------------------------------------------------------------------
     --  GENERAL
     ---------------------------------------------------------------------------
-    _, h = W:SectionHeader(parent, "LOOT FEED", y);  y = y - h
+    hdr, h = W:SectionHeader(parent, "LOOT FEED", y);  y = y - h
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = "EUI_LootFeed", disabled = off, disabledTooltip = "Loot Feed" })
 
     _, h = W:DualRow(parent, y,
         { type = "toggle", text = "Enable Loot Feed",
@@ -158,6 +161,13 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
 
     _, h = W:DualRow(parent, y,
         Toggle("skills", "Skill Ups", "Weapon and profession skill increases.", Reapply),
+        Toggle("rolls", "Loot Rolls",
+            "Who won each group loot roll and with what roll. Your own wins add the roll to the item's row.",
+            Reapply)
+    );  y = y - h
+
+    local trackerRow
+    trackerRow, h = W:DualRow(parent, y,
         Toggle("tracker", "Gold per Hour Tracker", "Pins a row with your gold per hour.",
             function()
                 LF.Apply()
@@ -166,8 +176,21 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
                     EllesmereUI.RepositionBarToMover("EUI_LootFeed")
                 end
                 EllesmereUI:RefreshPage()
-            end)
+            end),
+        Toggle("history", "Loot History",
+            "Keeps your latest rows per character, also after a reload. Hold Shift and turn the mouse wheel over the feed to look back.",
+            Reapply)
     );  y = y - h
+    EllesmereUI.BuildInlineCog(trackerRow._rightRegion, { title = "Loot History",
+        disabled = function() return off() or not LF.Get("history") end,
+        disabledTooltip = "Loot History",
+        rows = {
+            { type = "slider", label = "Rows to Keep", min = 50, max = 500, step = 50,
+              tooltip = "How many rows each character keeps. Lowering it removes the oldest rows.",
+              get = function() return LF.Get("historyMax") end,
+              set = function(v) LF.Cfg().historyMax = v; Reapply() end },
+        },
+    })
 
     _, h = W:Spacer(parent, y, 20);  y = y - h
 
@@ -176,13 +199,7 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     ---------------------------------------------------------------------------
     _, h = W:SectionHeader(parent, "ITEMS", y);  y = y - h
 
-    local qualityValues, qualityOrder = {}, {}
-    for q = 0, 5 do
-        local key, color = tostring(q), ITEM_QUALITY_COLORS[q]
-        local label = _G["ITEM_QUALITY" .. q .. "_DESC"] or key
-        qualityValues[key] = color and (color.hex .. label .. "|r") or label
-        qualityOrder[q + 1] = key
-    end
+    local qualityValues, qualityOrder = _G._EUI_ItemQualityValues(Enum.ItemQuality.Legendary)
 
     _, h = W:DualRow(parent, y,
         Bind({ type = "dropdown", text = "Minimum Quality", values = qualityValues, order = qualityOrder,
@@ -229,6 +246,12 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
         Slider("textSize", "Text Size", 8, 24)
     );  y = y - h
 
+    _, h = W:DualRow(parent, y,
+        Slider("spacing", "Spacing", 0, 30,
+            "Space between loot rows or Icon Tray tiles. Loot Toast adds room for its decorative frame."),
+        BLANK()
+    );  y = y - h
+
     _, h = W:Spacer(parent, y, 20);  y = y - h
 
     ---------------------------------------------------------------------------
@@ -236,29 +259,101 @@ _G._EUI_BuildLootFeedPage = function(pageName, parent, yOffset)
     ---------------------------------------------------------------------------
     _, h = W:SectionHeader(parent, "DISPLAY", y);  y = y - h
 
+    local _, textureValues, textureOrder = EllesmereUI.BuildBarTextureTables()
     local displayRow
     displayRow, h = W:DualRow(parent, y,
+        Bind({ type = "dropdown", text = "Background Texture", values = textureValues, order = textureOrder },
+            "bgTexture", LF.ApplyStyle),
         Bind({ type = "slider", text = "Background", min = 0, max = 100, step = 1,
                tooltip = "Opacity of the row background.",
                getValue = function() return math.floor(LF.Get("bgA") * 100 + 0.5) end,
                setValue = function(v)
                    LF.Cfg().bgA = v / 100
                    LF.ApplyStyle()
-               end }),
-        Bind({ type = "slider", text = "Border Size", min = 0, max = 4, step = 1,
-               tooltip = "0 hides the border." }, "borderSize", function()
-            LF.ApplyStyle()
-            EllesmereUI:RefreshPage()
-        end, function() return off() or style() == "BAR" end,
-            function() return off() and "Loot Feed" or "Style" end)
+               end })
     );  y = y - h
     if not EllesmereUI._prebuilding then
-        Swatch(displayRow._leftRegion, "bg", "Background Color")
-        -- Nothing to colour at size 0 (the slider + inline swatch pattern).
-        Swatch(displayRow._rightRegion, "border", "Border Color", noBorderColor,
+        Swatch(displayRow._rightRegion, "bg", "Background Color")
+    end
+
+    local borderValues, borderOrder = EllesmereUI.GetBorderTextureDropdown()
+    local borderRow
+    borderRow, h = W:DualRow(parent, y,
+        Bind({ type = "dropdown", text = "Border Style", values = borderValues, order = borderOrder,
+               tooltip = "Accent Bar applies the border to the icon.",
+               getValue = function() return LF.Get("borderTexture") or "solid" end,
+               setValue = function(v)
+                   local c = LF.Cfg()
+                   c.borderTexture = v
+                   c.borderTextureOffset, c.borderTextureOffsetY = nil, nil
+                   c.borderTextureShiftX, c.borderTextureShiftY = nil, nil
+                   local color, behind = EllesmereUI.GetBorderStyleSelectDefaults(v)
+                   c.borderR, c.borderG, c.borderB, c.borderBehind = color.r, color.g, color.b, behind
+                   local size = EllesmereUI.GetBorderDefaultSize(nil, v)
+                   if size then c.borderSize = size end
+                   if c.borderSizePx then c.borderSizePx = false end
+                   LF.ApplyStyle()
+                   EllesmereUI:RefreshPage(true)
+               end }, nil, nil, borderOff, function() return off() and "Loot Feed" or "Style" end),
+        EllesmereUI.BorderPxSliderCfg{
+            trackWidth = 120, tooltip = "0 hides the border.",
+            disabled = borderOff, disabledTooltip = function() return off() and "Loot Feed" or "Style" end,
+            getStep = function() return LF.Get("borderSize") end,
+            setStep = function(v)
+                local c = LF.Cfg()
+                c.borderTexture, c.borderSize = LF.Get("borderTexture") or "solid", v
+            end,
+            getTex = function() return LF.Get("borderTexture") or "solid" end,
+            getPx = function() return LF.Get("borderSizePx") end,
+            setPx = function(v) LF.Cfg().borderSizePx = v end,
+            apply = function() LF.ApplyStyle(); EllesmereUI:RefreshPage() end }
+    );  y = y - h
+    if not EllesmereUI._prebuilding then
+        local offsetX, offsetY = EllesmereUI.BorderOffsetCogRows{
+            getTex = function() return LF.Get("borderTexture") end,
+            getStep = function() return LF.Get("borderSize") end,
+            getPx = function() return LF.Get("borderSizePx") end,
+            getX = function() return LF.Get("borderTextureOffset") end,
+            setX = function(v) LF.Cfg().borderTextureOffset = v end,
+            getY = function() return LF.Get("borderTextureOffsetY") end,
+            setY = function(v) LF.Cfg().borderTextureOffsetY = v end,
+            apply = LF.ApplyStyle,
+        }
+        local function Shift(key, label)
+            return { type = "slider", label = label, min = -10, max = 10, step = 1,
+                get = function() return LF.Get(key) or 0 end,
+                set = function(v) LF.Cfg()[key] = v; LF.ApplyStyle() end }
+        end
+        EllesmereUI.BuildInlineCog(borderRow._leftRegion, { title = "Border Options",
+            disabled = function()
+                local tex = LF.Get("borderTexture")
+                return borderOff() or not tex or tex == "solid" or tex == ""
+            end,
+            disabledTooltip = "This option requires a textured border.",
+            rows = {
+                Shift("borderTextureShiftX", "Shift X"), Shift("borderTextureShiftY", "Shift Y"),
+                offsetX, offsetY,
+                { type = "toggle", label = "Show Behind",
+                  get = function() return LF.Get("borderBehind") end,
+                  set = function(v) LF.Cfg().borderBehind = v; LF.ApplyStyle() end },
+                { type = "toggle", label = "Separator",
+                  tooltip = "Adds a matching divider beside the icon (Box) or the accent bar (Icon Tray).",
+                  hidden = function() return style() ~= "BOX" and style() ~= "TRAY" end,
+                  disabled = function()
+                      return LF.Get("borderSize") == 0 or (style() == "TRAY" and LF.Get("barWidth") == 0)
+                          or not EllesmereUI.GetBorderCompanion(LF.Get("borderTexture"), "sepV")
+                  end,
+                  disabledTooltip = function()
+                      if style() == "TRAY" and LF.Get("barWidth") == 0 then return "Accent Bar Width" end
+                      return "This option requires a Pixels or Pixels Textured border above size 0."
+                  end,
+                  get = function() return LF.Get("separator") end,
+                  set = function(v) LF.Cfg().separator = v; LF.ApplyStyle() end },
+            } })
+        Swatch(borderRow._rightRegion, "border", "Border Color", noBorderColor,
             function()
                 if off() then return "Loot Feed" end
-                if style() == "BAR" or style() == "TOAST" then return "Style" end
+                if style() == "TOAST" then return "Style" end
                 return "Border Size"
             end)
     end

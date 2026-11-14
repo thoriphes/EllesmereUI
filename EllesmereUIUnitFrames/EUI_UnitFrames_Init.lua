@@ -28,8 +28,10 @@ local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
 local function InitializeFrames()
-    -- Sync EUI global power colors into oUF at init
-    EllesmereUI.ApplyColorsToOUF()
+    -- The engine's shared class and power colors from the suite palette, before any
+    -- frame spawns. Only the sync: a full colors pass here would repaint every module
+    -- at login while nothing changed.
+    EllesmereUI.SyncUFColors()
 
     local classPowerStyle = db.profile.player.classPowerStyle or "none"
     -- Forever has no Blizzard class resource bar to adopt (see the ComboFrame
@@ -176,7 +178,10 @@ local function InitializeFrames()
     -- (Combat indicator overlay moved below the target/focus spawns -- the
     -- target frame does not exist yet at this point in the setup.)
 
-    -- Rested indicator ("ZZZ") on player health bar top-left
+    -- Rested indicator on the player frame: "ZZZ" text on the health bar's
+    -- top-left, or Blizzard's animated player frame rest icon when Animated is
+    -- on (the same spot; under the WoW Forever look's player art the stock
+    -- frame's own spot above the portrait, with its gold resting glow).
     do
         local pf = frames.player
         if pf and pf.Health then
@@ -187,29 +192,125 @@ local function InitializeFrames()
                 restText:SetTextColor(1, 1, 1)
                 restText:SetText("ZZZ")
                 restText:Hide()
-                pf._restIndicator = restText
+                pf._restText = restText
 
-                pf._restEventFrame = CreateFrame("Frame", nil, pf)
-                pf._restEventFrame:RegisterEvent("PLAYER_UPDATE_RESTING")
-                pf._restEventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-                pf._restEventFrame:SetScript("OnEvent", function()
-                    local enabled = EllesmereUIDB and EllesmereUIDB.showRestedIndicator == true
-                    if enabled and IsResting() then
-                        pf._restIndicator:Show()
-                    else
-                        pf._restIndicator:Hide()
+                -- The cog's X / Y offsets.
+                local function RestOffsets()
+                    local db = EllesmereUIDB
+                    return (db and db.restedIndicatorXOffset) or 0, (db and db.restedIndicatorYOffset) or 0
+                end
+                local function PlaceRest(region)
+                    local rx, ry = RestOffsets()
+                    region:ClearAllPoints()
+                    region:SetPoint("TOPLEFT", pf.Health, "TOPLEFT", 3 + rx, -2 + ry)
+                end
+                -- Places the text, and the animated icon once built, at the cog's X/Y
+                -- offsets (and the icon at its Size). The icon's spot depends on the
+                -- frame's art: the stock layout pass runs this again when that changes
+                -- (ns.UF_RestFollowArt).
+                pf._restPlace = function()
+                    PlaceRest(pf._restText)
+                    local a = pf._restAnim
+                    if a then
+                        local size = (EllesmereUIDB and EllesmereUIDB.restedIndicatorAnimatedSize) or 24
+                        local tex = pf._restAnimTex
+                        if ns.UF_Forever() and pf._blizzGeom == ns.UF_BLIZZ.player then
+                            -- WoW Forever's own PlayerRestLoop: a 20x20 frame at (64, -6) of
+                            -- the stock box, the 30x30 flipbook centred on it. The Size
+                            -- setting scales both, 24 being the stock look.
+                            local k = size / 24
+                            local rx, ry = RestOffsets()
+                            a:SetSize(20 * k, 20 * k)
+                            a:ClearAllPoints()
+                            ns.UF_BlizzPoint(a, "TOPLEFT", pf, "TOPLEFT", 64 + rx, -6 + ry, pf._blizzMirror)
+                            tex:ClearAllPoints()
+                            tex:SetPoint("CENTER", a, "CENTER")
+                            tex:SetSize(30 * k, 30 * k)
+                        else
+                            a:SetSize(size, size)
+                            PlaceRest(a)
+                            tex:ClearAllPoints()
+                            tex:SetAllPoints(a)
+                        end
                     end
-                end)
+                end
+
+                -- Shows the style the settings pick (or neither) and hides the other.
+                -- The animated icon is built the first time it is needed.
+                pf._restUpdate = function()
+                    local db = EllesmereUIDB
+                    local enabled = db and db.showRestedIndicator == true or false
+                    -- Rest changes are listened to only while the indicator is on.
+                    if enabled ~= pf._restListening then
+                        pf._restListening = enabled
+                        local ef = pf._restEventFrame
+                        if enabled then
+                            ef:RegisterEvent("PLAYER_UPDATE_RESTING")
+                            ef:RegisterEvent("PLAYER_ENTERING_WORLD")
+                        else
+                            ef:UnregisterAllEvents()
+                        end
+                    end
+                    local on = enabled and IsResting() or false
+                    local animated = db and db.restedIndicatorAnimated == true or false
+                    if on and animated and not pf._restAnim then
+                        -- On the unit frame, not the health bar: the bar sits in the frame's
+                        -- bar clip, which would cut off the z's as they float up past its edge.
+                        -- Its level keeps it above that clip, which draws as one group.
+                        local restAnim = CreateFrame("Frame", nil, pf)
+                        restAnim:SetFrameLevel(((pf._barClip or pf):GetFrameLevel()) + 10)
+                        restAnim:Hide()
+                        local restTex = restAnim:CreateTexture(nil, "OVERLAY")
+                        EllesmereUI.AddRestFlipbook(restAnim, restTex)
+                        pf._restAnim = restAnim
+                        pf._restAnimTex = restTex
+                        pf._restPlace()
+                    end
+                    pf._restText:SetShown(on and not animated)
+                    if pf._restAnim then pf._restAnim:SetShown(on and animated) end
+
+                    -- WoW Forever's stock frame also lights its art while resting: the
+                    -- status glow over the art in gold, pulsing between 55/255 and full
+                    -- alpha over a second (PlayerFrame_UpdateStatus). Rides the animated
+                    -- icon, on the player art only.
+                    local glow = pf._restGlow
+                    local glowOn = on and animated and ns.UF_Forever()
+                        and pf._blizzGeom == ns.UF_BLIZZ.player
+                        and ns.UF_AtlasOK("UI-HUD-UnitFrame-Player-PortraitOn-Status")
+                    if glowOn and not glow then
+                        glow = CreateFrame("Frame", nil, pf)
+                        glow:SetAllPoints(pf)
+                        glow:EnableMouse(false)
+                        local bar = pf._barClip or pf
+                        glow:SetFrameStrata(bar:GetFrameStrata())
+                        glow:SetFrameLevel(bar:GetFrameLevel() + 9)
+                        glow:Hide()
+                        local gt = glow:CreateTexture(nil, "OVERLAY")
+                        UnsnapTex(gt)
+                        ns.UF_StockAtlas(gt, "UI-HUD-UnitFrame-Player-PortraitOn-Status", true)
+                        gt:SetPoint("CENTER", pf, "CENTER", 0, 0)
+                        gt:SetVertexColor(1, 0.88, 0.25)
+                        local pulse = glow:CreateAnimationGroup()
+                        pulse:SetLooping("REPEAT")
+                        local up = pulse:CreateAnimation("Alpha")
+                        up:SetOrder(1); up:SetDuration(0.5); up:SetFromAlpha(55 / 255); up:SetToAlpha(1)
+                        local down = pulse:CreateAnimation("Alpha")
+                        down:SetOrder(2); down:SetDuration(0.5); down:SetFromAlpha(1); down:SetToAlpha(55 / 255)
+                        glow:SetScript("OnShow", function() pulse:Play() end)
+                        glow:SetScript("OnHide", function() pulse:Stop() end)
+                        pf._restGlow = glow
+                    end
+                    if glow then glow:SetShown(glowOn and true or false) end
+                end
+
+                -- Its events are registered by _restUpdate while the indicator is on.
+                pf._restEventFrame = CreateFrame("Frame", nil, pf)
+                pf._restEventFrame:SetScript("OnEvent", function() pf._restUpdate() end)
             end
             pf._restHolder:SetAllPoints(pf.Health)
             pf._restHolder:SetFrameLevel(pf.Health:GetFrameLevel() + 5)
-            pf._restIndicator:ClearAllPoints()
-            local rxOff = (EllesmereUIDB and EllesmereUIDB.restedIndicatorXOffset) or 0
-            local ryOff = (EllesmereUIDB and EllesmereUIDB.restedIndicatorYOffset) or 0
-            pf._restIndicator:SetPoint("TOPLEFT", pf.Health, "TOPLEFT", 3 + rxOff, -2 + ryOff)
-
-            local restEnabled = EllesmereUIDB and EllesmereUIDB.showRestedIndicator == true
-            if restEnabled and IsResting() then pf._restIndicator:Show() else pf._restIndicator:Hide() end
+            pf._restPlace()
+            pf._restUpdate()
         end
     end
 
@@ -309,12 +410,27 @@ local function InitializeFrames()
 
         if frame.Portrait and frame.Portrait.backdrop and showPortrait and not frame.Portrait.backdrop._isInside then
             PP.Size(frame.Portrait.backdrop, adjPortraitH, adjPortraitH)
+            -- The same anchors the reload pass gives the backdrop (a top text bar
+            -- pushes an attached one down; a detached one floats off the health
+            -- bar's edge): a backdrop cleared and left with no anchor renders
+            -- nowhere until the next reload pass.
             frame.Portrait.backdrop:ClearAllPoints()
+            local pBtbTopOff = (btbPos2 == "top" and settings.bottomTextBar) and (settings.bottomTextBarHeight or 16) or 0
             if isAttached then
                 if effectiveSide == "left" then
-                    PP.Point(frame.Portrait.backdrop, "TOPLEFT", frame, "TOPLEFT", 0, 0)
+                    PP.Point(frame.Portrait.backdrop, "TOPLEFT", frame, "TOPLEFT", 0, -pBtbTopOff)
                 else
-                    PP.Point(frame.Portrait.backdrop, "TOPRIGHT", frame, "TOPRIGHT", 0, 0)
+                    PP.Point(frame.Portrait.backdrop, "TOPRIGHT", frame, "TOPRIGHT", 0, -pBtbTopOff)
+                end
+            else
+                local pXOff = settings.portraitX or 0
+                local pYOff = (settings.portraitY or 0) + 5
+                if effectiveSide == "top" then
+                    frame.Portrait.backdrop:SetPoint("BOTTOM", frame.Health or frame, "TOP", pXOff, 15 + pYOff)
+                elseif effectiveSide == "left" then
+                    frame.Portrait.backdrop:SetPoint("TOPRIGHT", frame.Health or frame, "TOPLEFT", -15 + pXOff, pYOff)
+                else
+                    frame.Portrait.backdrop:SetPoint("TOPLEFT", frame.Health or frame, "TOPRIGHT", 15 + pXOff, pYOff)
                 end
             end
             if frame.Portrait.backdrop._2d then
@@ -323,6 +439,8 @@ local function InitializeFrames()
             if frame:IsElementEnabled("Portrait") and frame.Portrait.ForceUpdate then
                 frame.Portrait:ForceUpdate()
             end
+            -- The detached portrait moved: move its click overlay with it.
+            ns.UF_SyncPortraitClick(frame)
         end
     end
 
@@ -879,9 +997,11 @@ local function InitializeFrames()
             combat:ClearAllPoints()
 
             -- "healthbar" is the stored value shown as "Center" in the dropdown;
-            -- "center" is a render alias for it.
-            if pos == "portrait" and pf.Portrait then
-                combat:SetPoint("CENTER", pf.Portrait, "CENTER", ox, oy)
+            -- "center" is a render alias for it. Portrait with no portrait shown
+            -- takes the health bar's top-left corner (ns.UF_PortraitShown).
+            local bd = pf.Portrait and pf.Portrait.backdrop
+            if pos == "portrait" and bd and ns.UF_PortraitShown(ps) then
+                combat:SetPoint("CENTER", bd, "CENTER", ox, oy)
             elseif pos == "textbar" then
                 combat:SetPoint("CENTER", pf._btb or pf, "CENTER", ox, oy)
             elseif pos == "healthbar" or pos == "center" then
@@ -1028,7 +1148,8 @@ local function InitializeFrames()
                 local leader = uf._leaderIndicator
                 leader:SetSize(sz, sz)
                 leader:ClearAllPoints()
-                if pos == "portrait" and uf.Portrait and uf.Portrait.backdrop then
+                if pos == "portrait" and uf.Portrait and uf.Portrait.backdrop
+                    and ns.UF_PortraitShown(settings) then
                     leader:SetPoint("CENTER", uf.Portrait.backdrop, "CENTER", ox, oy)
                 else
                     local anchor =
@@ -1164,7 +1285,8 @@ local function InitializeFrames()
                 local tex = uf._eliteIndicator
                 tex:SetSize(sz, sz)
                 tex:ClearAllPoints()
-                if pos == "portrait" and uf.Portrait and uf.Portrait.backdrop then
+                if pos == "portrait" and uf.Portrait and uf.Portrait.backdrop
+                    and ns.UF_PortraitShown(settings) then
                     tex:SetPoint("CENTER", uf.Portrait.backdrop, "CENTER", ox, oy)
                 else
                     local anchor =
@@ -1278,12 +1400,14 @@ local function InitializeFrames()
                 end
             end
             if atlas then
-                -- Paint only on a real change: faction, style and dim are the
-                -- paint's only inputs (the texture is ours, so the memo lives on it).
+                -- Paint only on a real change: faction, style, dim and the honor
+                -- badge are the paint's only inputs (the texture is ours, so the
+                -- memo lives on it).
                 local style = s.factionIndicatorStyle or "pvp"
-                if tex._facFac ~= fac or tex._facStyle ~= style or tex._facDim ~= dim then
-                    tex._facFac, tex._facStyle, tex._facDim = fac, style, dim
-                    EllesmereUI.SetFactionArt(tex, style, fac)
+                local badge = EllesmereUI.FactionBadgeFor(style, unit)
+                if tex._facFac ~= fac or tex._facStyle ~= style or tex._facDim ~= dim or tex._facBadge ~= badge then
+                    tex._facFac, tex._facStyle, tex._facDim, tex._facBadge = fac, style, dim, badge
+                    EllesmereUI.SetFactionArt(tex, style, fac, badge)
                     tex:SetDesaturated(dim)
                     tex:SetAlpha(dim and 0.6 or 1)
                 end
@@ -1360,11 +1484,9 @@ local function InitializeFrames()
                 local tex = uf._factionIndicator
                 tex:SetSize(sz, sz)
                 tex:ClearAllPoints()
-                -- Same visibility rule as the frame layout (Blizzard/Classic Style
-                -- always carries its portrait): never centre on a hidden backdrop.
-                local pStyle = settings.portraitStyle or db.profile.portraitStyle or "attached"
-                local portraitOn = ns.UF_Blizz() or (pStyle ~= "none" and settings.showPortrait ~= false)
-                if pos == "portrait" and portraitOn and uf.Portrait and uf.Portrait.backdrop then
+                -- Never centred on a hidden backdrop (ns.UF_PortraitShown).
+                if pos == "portrait" and ns.UF_PortraitShown(settings)
+                    and uf.Portrait and uf.Portrait.backdrop then
                     tex:SetPoint("CENTER", uf.Portrait.backdrop, "CENTER", ox, oy)
                 else
                     local anchor =
@@ -1409,8 +1531,10 @@ local function InitializeFrames()
     -- Blizzard's target-of-target is a child of TargetFrame. When the target frame
     -- itself is EUI or hidden, TargetFrame is already disabled so the child is gone
     -- with it. Only needs suppressing when the target uses Blizzard's live frame but
-    -- the user does NOT want Blizzard's ToT (EUI or hidden) -- else both would show.
-    if totFrameSource ~= "blizzard" and targetFrameSource == "blizzard" then
+    -- the user does NOT want Blizzard's ToT (EUI or hidden) -- else both would show,
+    -- or while TargetFrame is kept shown for the WoW Forever gamepad target menu
+    -- (ns.UF_TargetMenuOwner): the child, a clickable unit button, would take clicks.
+    if (totFrameSource ~= "blizzard" and targetFrameSource == "blizzard") or ns.UF_TargetMenuOwner then
         SuppressBlizzardChildFrame(TargetFrame and TargetFrame.totFrame)
     end
 
@@ -1788,7 +1912,7 @@ local function InitializeFrames()
                 -- handlers mirror it too when they reveal a mouseover frame.
                 local bd3d = frame.Portrait and frame.Portrait.backdrop and frame.Portrait.backdrop._3d
                 if bd3d then
-                    bd3d:SetAlpha(bodyAlpha)
+                    ns.UF_SetModelAlpha(bd3d, bodyAlpha)
                 end
 
                 -- A class resource bar unlocked from the frame is parented to UIParent
@@ -2213,6 +2337,12 @@ local function InitializeFrames()
     -- Apply all settings (cast bar colors, text, sizes, etc.) now that
     -- frames are spawned and anchored.
     ReloadFrames()
+    -- A /reload in combat lands here under lockdown, where ReloadFrames holds
+    -- back its frame work: the throttle pass at combat end applies it
+    -- (ns.ReloadFrames exists by then, set a frame later by SetupOptionsPanel).
+    if InCombatLockdown() then
+        ns.CombatQueue.Defer("ReloadFrames", function() ns.ReloadFrames() end)
+    end
 end
 
 I.InitializeFrames = InitializeFrames

@@ -309,11 +309,13 @@ local function HideBlizzardBars()
         ActionBar_PageDown = function() ChangeManualPage(-1) end
     end
 
-    -- Hide status tracking bar manager (unless user wants Blizzard data bars)
+    -- Hide status tracking bar manager (unless user wants Blizzard data bars).
+    -- Its events come back only with a reload (ns.SetUseBlizzardDataBars).
     if not (EAB.db and EAB.db.profile.useBlizzardDataBars) then
         if StatusTrackingBarManager then
             StatusTrackingBarManager:UnregisterAllEvents()
             StatusTrackingBarManager:Hide()
+            ns._eabBlizzDataBarsDropped = true
         end
     end
     -- ActionBarParent is hidden at file load; OverrideActionBar visibility is fully
@@ -419,8 +421,11 @@ local BUTTON_EVENT_LISTS = {
         "SPELL_UPDATE_CHARGES",
         "UPDATE_INVENTORY_ALERTS",
         "PLAYER_EQUIPMENT_CHANGED",
-        "LOSS_OF_CONTROL_ADDED",
-        "LOSS_OF_CONTROL_UPDATE",
+        -- LOSS_OF_CONTROL_ADDED / _UPDATE are deliberately NOT registered per button
+        -- either: they run the mixin's ActionButton_UpdateCooldown, which under our
+        -- taint cannot hand the restricted loss-of-control times to SetCooldown, so
+        -- the overlay never drew in PvP matches. The dispatcher paints it
+        -- (ns._abLoCPass in EUI_ActionBars_Events.lua).
         "PLAYER_TARGET_CHANGED", -- native per-button usability via Blizzard's C-side dispatcher
     },
     stance = {
@@ -455,6 +460,21 @@ end
 
 -- Bar dormancy strips this same list per button (see ns.ApplyBarDormancy;
 -- the loop is inlined there).
+
+-- Blizzard's own attack flash on our buttons. The mixin starts it from its
+-- hover and show refreshes (UpdateFlash), but the events that stop it no
+-- longer reach our buttons (the broadcasters are quiet), so a flash started
+-- there kept running beside ours after the attack ended. Our flash
+-- (ns.AB_SetAttackFlash) is the only one: a mixin start is switched off again
+-- at once (flashing is the field its OnUpdate reads, which then unregisters
+-- the button on its next tick), and either edge has ours read the state.
+local function OnMixinStartFlash(btn)
+    btn.flashing = 0
+    ns.AB_SyncAttackState(btn, btn:GetAttribute("action"))
+end
+local function OnMixinStopFlash(btn)
+    ns.AB_SyncAttackState(btn, btn:GetAttribute("action"), true)
+end
 
 -- Get or create an action button for a slot. Action bars (1-8) always create
 -- our own buttons, eliminating the taint surface: Blizzard's protected
@@ -583,6 +603,13 @@ local function GetOrCreateButton(slot, parent, info, index, skipProtected)
                 EAB:QueueHotkeyColorReassert()
             end)
         end
+        -- The mixin's own flash hands over to ours (OnMixinStartFlash above).
+        -- Guarded as above.
+        if not EFD(btn).flashHooked then
+            EFD(btn).flashHooked = true
+            hooksecurefunc(btn, "StartFlash", OnMixinStartFlash)
+            hooksecurefunc(btn, "StopFlash", OnMixinStopFlash)
+        end
         -- Physical-press GCD paint: keybinds arrive as clicks too
         -- (SetOverrideBindingClick), so PostClick fires at the actual press
         -- before any server round-trip; pushes the predicted cooldown and
@@ -603,34 +630,41 @@ local function GetOrCreateButton(slot, parent, info, index, skipProtected)
                 if onPress then onPress(self, down, pressBindCmd) end
             end)
         end
-        -- When the pickup modifier is held (shift-click to move abilities),
-        -- clear useOnKeyDown for the duration of that mouse click: the down
-        -- edge never casts (a drag consumes the action instead), and a click
-        -- without a drag casts on RELEASE -- matching Blizzard's buttons,
-        -- which force useOnKeyDown off for hardware mouse clicks
-        -- (SecureTemplates.lua) and so act on the up edge.
-        -- MOUSE-ONLY via IsUnderMouse (rect test): keybinds ALSO arrive as
-        -- OnClick (SetOverrideBindingClick dispatch for all bars), and a
-        -- modified KEYBIND press must cast on its configured edge.
+        -- Cast Actions on Key Down is for keys. A mouse click acts on
+        -- RELEASE, as on Blizzard's buttons, which force useOnKeyDown off
+        -- for hardware mouse clicks (SecureTemplates.lua). Our buttons run
+        -- the secure template's own OnClick, which treats every click as a
+        -- key press, so this wrap clears useOnKeyDown for the duration of a
+        -- mouse click: the down edge never casts (a drag from it moves the
+        -- action, or does nothing on locked bars, without using it), and a
+        -- click without a drag casts on the up edge. A hold-and-release
+        -- spell still starts on the press: pressAndHoldAction decides its
+        -- edge, not useOnKeyDown.
+        -- MOUSE-ONLY via IsUnderMouse (rect test): click-routed keybinds
+        -- ALSO arrive as OnClick (SetOverrideBindingClick), and a KEYBIND
+        -- press must cast on its configured edge. A key pressed while the
+        -- cursor rests on its own button passes the test and counts as a
+        -- mouse click.
         -- The pre-body must return its message on the UP click and ONLY
         -- there: a wrap's post-body only executes when the pre returns a
         -- message (SecureHandlers.lua), so no message = the flip sticks
         -- (#1165's delayed presses / late GCD swipes), and a DOWN-edge
-        -- message = the restore lands before the release and a shift-click
+        -- message = the restore lands before the release and the click
         -- casts on neither edge. Both shapes shipped and failed; keep the
         -- message on the up edge.
         -- eabPickupFlipped marks OUR flip: useOnKeyDown=false is also a
-        -- legitimate user setting (press-and-hold casting), and the flag
-        -- keeps the restore from ever forcing those users back to true.
-        -- A drag consumes the up edge and strands the flip; the next down
-        -- click (mouse or keybind) clears it BEFORE the native handler
-        -- runs, so that press still acts on its configured edge.
+        -- legitimate user setting (key down off), and the flag keeps the
+        -- restore from ever forcing those users back to true.
+        -- A drag consumes the up edge and strands the flip. The next
+        -- keybind press clears it BEFORE the native handler runs, so that
+        -- press still acts on its configured edge; the next mouse click
+        -- keeps it and restores on its own release.
         if not btn:GetAttribute("eabPickupWrap") and not InCombatLockdown() then
             btn:SetAttribute("eabPickupWrap", true)
             SecureHandlerWrapScript(btn, "OnClick", btn, [[
                 local flipped = self:GetAttribute("eabPickupFlipped")
                 if down then
-                    if IsModifiedClick("PICKUPACTION") and self:IsUnderMouse() then
+                    if self:IsUnderMouse() then
                         if self:GetAttribute("useOnKeyDown") ~= false then
                             self:SetAttribute("eabPickupFlipped", true)
                             self:SetAttribute("useOnKeyDown", false)
@@ -675,6 +709,7 @@ do
     local V = EAB_VTABLE
     V.GetOverrideBarIndex = GetOverrideBarIndex or (C_ActionBar and C_ActionBar.GetOverrideBarIndex) or function() return 14 end
     V.GetVehicleBarIndex = GetVehicleBarIndex or (C_ActionBar and C_ActionBar.GetVehicleBarIndex) or function() return 12 end
+    V.GetTempShapeshiftBarIndex = GetTempShapeshiftBarIndex or (C_ActionBar and C_ActionBar.GetTempShapeshiftBarIndex) or function() return 13 end
     V.GetActionBarPage = GetActionBarPage or (C_ActionBar and C_ActionBar.GetActionBarPage) or function() return 1 end
     V.HasVehicleActionBar = HasVehicleActionBar or (C_ActionBar and C_ActionBar.HasVehicleActionBar) or function() return false end
     V.HasOverrideActionBar = HasOverrideActionBar or (C_ActionBar and C_ActionBar.HasOverrideActionBar) or function() return false end

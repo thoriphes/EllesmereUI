@@ -125,8 +125,18 @@ initFrame:SetScript("OnEvent", function(self)
         return false, WrapURLs(msg), ...
     end
     for _, ev in ipairs(URL_EVENTS) do
-        ChatFrame_AddMessageEventFilter(ev, UrlFilter)
+        ChatFrameUtil.AddMessageEventFilter(ev, UrlFilter)
     end
+
+    ---------------------------------------------------------------------------
+    --  2d. A system message with no text is dropped. WoW Forever sends them,
+    --      and an empty line shows as a blank row (a bare timestamp under
+    --      Timestamp All Messages).
+    ---------------------------------------------------------------------------
+    ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, msg)
+        if issecretvalue and issecretvalue(msg) then return false end
+        return msg == ""
+    end)
 
     ---------------------------------------------------------------------------
     --  3. Temporary window (whisper) detection.
@@ -404,9 +414,10 @@ initFrame:SetScript("OnEvent", function(self)
 
     ---------------------------------------------------------------------------
     --  6. Idle fade: dims chat after N seconds of inactivity. Resets on player
-    --     chat in a shown window (the selected tab or an undocked window), an
-    --     incoming whisper, edit box focus/typing, or the cursor entering the
-    --     chat area (event-driven, no polling).
+    --     chat in a shown window (the selected tab or an undocked window; the
+    --     kinds of lines ticked under Also Wake On too), an incoming whisper,
+    --     edit box focus/typing, or the cursor entering the chat area
+    --     (event-driven, no polling).
     ---------------------------------------------------------------------------
     do
         local idleTimer = nil
@@ -458,6 +469,16 @@ initFrame:SetScript("OnEvent", function(self)
             idleTimer = C_Timer.NewTimer(delay, StartIdleFade)
         end
 
+        -- Visibility fully hid the chat: fade now and drop the leftover delay.
+        function ECHAT.StartIdleFadeNow()
+            if not IsIdleApplicable() then return end
+            if idleTimer then
+                idleTimer:Cancel()
+                idleTimer = nil
+            end
+            StartIdleFade()
+        end
+
         -- Idle reset throttle: max once per second.
         local _lastIdleReset = 0
         local function OnActiveMessage()
@@ -466,6 +487,9 @@ initFrame:SetScript("OnEvent", function(self)
             -- message frames are hidden outright while passthrough is
             -- engaged -- a hidden frame arms nothing.)
             if not IsIdleApplicable() then return end
+            -- Hidden by visibility: lines and whispers land unseen, so they must
+            -- not wake the fade (StartIdleFadeNow) and flash the chat on reveal.
+            if not _visChatVisible then return end
             local now = GetTime()
             if now - _lastIdleReset < 1 then return end
             _lastIdleReset = now
@@ -478,8 +502,9 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Chat lines: the display engine's tail sees each line in the window
         -- Blizzard put it in, after its own channel, message-group and filter
-        -- checks, so player chat (CHAT_MSG_EVENTS) wakes the fade only when
-        -- that window is shown. Inside Blizzard's chat handler the observer
+        -- checks, so player chat (CHAT_MSG_EVENTS) and the lines of a ticked
+        -- Also Wake On group wake the fade only when that window is shown.
+        -- Inside Blizzard's chat handler the observer
         -- only reads and shows a frame of ours; the reset runs on its next
         -- OnUpdate, outside that handler.
         local wakeFrame = CreateFrame("Frame")
@@ -488,10 +513,45 @@ initFrame:SetScript("OnEvent", function(self)
             self:Hide()
             OnActiveMessage()
         end)
-        local function WakeOnChat(cf, event)
-            if event == nil or wakeFrame:IsShown() then return end
-            if issecretvalue and issecretvalue(event) then return end
-            if CHAT_MSG_EVENTS[event] and cf:IsShown() then wakeFrame:Show() end
+
+        -- Also Wake On groups (cfg.idleFadeWake) on top of CHAT_MSG_EVENTS: the
+        -- event names, and the chat type ids of lines Blizzard adds with no
+        -- event name. With no group checked these stay CHAT_MSG_EVENTS and nil.
+        local _wakeEvents, _wakeTypeIDs = CHAT_MSG_EVENTS, nil
+        function ECHAT.ApplyIdleFadeWake()
+            local sel = ECHAT.DB().idleFadeWake
+            local events, ids
+            if sel then
+                for _, g in ipairs(I.IDLE_WAKE_GROUPS) do
+                    if sel[g.key] then
+                        if not events then
+                            events, ids = {}, {}
+                            for e in pairs(CHAT_MSG_EVENTS) do events[e] = true end
+                        end
+                        for _, t in ipairs(g.types) do
+                            events["CHAT_MSG_" .. t] = true
+                            local info = ChatTypeInfo[t]
+                            if info and info.id then ids[info.id] = true end
+                        end
+                    end
+                end
+            end
+            _wakeEvents, _wakeTypeIDs = events or CHAT_MSG_EVENTS, ids
+        end
+
+        -- A line that does not wake ends at the table lookup: the frame is
+        -- asked only for one that does (most lines carry no event name, and
+        -- with no group ticked those return before any call).
+        local function WakeOnChat(cf, event, chatTypeID)
+            local hit
+            if event ~= nil then
+                if issecretvalue and issecretvalue(event) then return end
+                hit = _wakeEvents[event]
+            elseif _wakeTypeIDs and chatTypeID ~= nil then
+                if issecretvalue and issecretvalue(chatTypeID) then return end
+                hit = _wakeTypeIDs[chatTypeID]
+            end
+            if hit and not wakeFrame:IsShown() and cf:IsShown() then wakeFrame:Show() end
         end
         SetMessageWake = function(on)
             if ECHAT.EngineSetIdleObserver then
@@ -724,6 +784,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Start the initial timer
+        ECHAT.ApplyIdleFadeWake()
         ECHAT.ResetIdleTimer()
     end
 
@@ -861,6 +922,7 @@ initFrame:SetScript("OnEvent", function(self)
         ECHAT.ApplyFonts()
         if ECHAT.RefreshVisibility then ECHAT.RefreshVisibility() end
         -- The new profile's idle fade settings (and whether chat lines wake it).
+        if ECHAT.ApplyIdleFadeWake then ECHAT.ApplyIdleFadeWake() end
         if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
         -- The passes above can build panel chrome (borders, the tab-band
         -- extension) that did not exist when the house editor opened.
@@ -1015,6 +1077,10 @@ initFrame:SetScript("OnEvent", function(self)
                 -- a third owner, and a link saved before (the old WoW Forever base
                 -- layout made one) kept dragging chat back to its stale spot.
                 ownsPosition = true,
+                -- Relative to Screen (the cog) names the screen point chat's
+                -- saved spot is measured from; chat keeps it, no link.
+                getScreenPoint = function() return ns.GetChatScreenPoint() end,
+                setScreenPoint = function(_, point) ns.SetChatScreenPoint(point) end,
                 getFrame = function() return _G.ChatFrame1 end,
                 getSize  = function()
                     local cf1 = _G.ChatFrame1

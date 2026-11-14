@@ -79,10 +79,10 @@ function EllesmereUI.ClampPopupToScreen(popup, w, h)
 end
 
 -- Announcement popup shell: full-screen dimmer (name.."Dimmer") and a centred panel
--- (name.."Popup") with an edge of physical pixels and Escape handling. opts: w, h; bump
--- (PopupBump mult; nil = caller scales both frames later); strata; dimAlpha; bg {r,g,b};
--- edge {r,g,b,a}; edgePx; clamp (ClampPopupToScreen); onEscape (nil = Escape is only
--- swallowed); onDimmerDown. Other keys propagate. Returns dimmer, popup.
+-- (name.."Popup") with a rounded 1 px outline (popup._brd) and Escape handling. opts: w, h;
+-- bump (PopupBump mult; nil = caller scales both frames later); strata; dimAlpha; bg {r,g,b};
+-- edge {r,g,b,a}; clamp (ClampPopupToScreen); onEscape (nil = Escape is only swallowed);
+-- onDimmerDown. Other keys propagate. Returns dimmer, popup.
 function EllesmereUI.BuildPopupShell(name, opts)
     local strata = opts.strata or "FULLSCREEN_DIALOG"
     local dimmer = CreateFrame("Frame", name .. "Dimmer", UIParent)
@@ -111,19 +111,9 @@ function EllesmereUI.BuildPopupShell(name, opts)
     bg:SetAllPoints()
     bg:SetColorTexture(c[1], c[2], c[3], 1)
 
-    -- Edge width is read after every scale above, so it lands on whole physical pixels.
+    -- The outline sits on a pixel layer: whole physical pixels at every later scale.
     local e = opts.edge or { 1, 1, 1, 0.15 }
-    local edgeW = (1 / (popup:GetEffectiveScale() or 1)) * (opts.edgePx or 1)
-    local function MakeEdge()
-        local t = popup:CreateTexture(nil, "BORDER")
-        t:SetColorTexture(e[1], e[2], e[3], e[4])
-        if t.SetSnapToPixelGrid then t:SetSnapToPixelGrid(false); t:SetTexelSnappingBias(0) end
-        return t
-    end
-    local spT = MakeEdge(); spT:SetPoint("TOPLEFT", 0, 0); spT:SetPoint("TOPRIGHT", 0, 0); spT:SetHeight(edgeW)
-    local spB = MakeEdge(); spB:SetPoint("BOTTOMLEFT", 0, 0); spB:SetPoint("BOTTOMRIGHT", 0, 0); spB:SetHeight(edgeW)
-    local spL = MakeEdge(); spL:SetPoint("TOPLEFT", spT, "BOTTOMLEFT"); spL:SetPoint("BOTTOMLEFT", spB, "TOPLEFT"); spL:SetWidth(edgeW)
-    local spR = MakeEdge(); spR:SetPoint("TOPRIGHT", spT, "BOTTOMRIGHT"); spR:SetPoint("BOTTOMRIGHT", spB, "TOPRIGHT"); spR:SetWidth(edgeW)
+    popup._brd = EllesmereUI.MakeRoundedBorder(popup, e[1], e[2], e[3], e[4], bg)
 
     local onEscape = opts.onEscape
     -- EnableKeyboard and SetPropagateKeyboardInput are protected in combat:
@@ -157,7 +147,8 @@ end
 
 -- Announcement action button, 38 tall: primary is bright, secondary dim. opts: w;
 -- secondary; hoverA (secondary border alpha on hover); hoverRGB {r,g,b} (secondary
--- hovers to that colour instead, border alpha 0.95). The caller anchors it.
+-- hovers to that colour instead, border alpha 0.95); square (the square outline,
+-- for a window that is square by design). The caller anchors it.
 function EllesmereUI.MakeActionButton(parent, font, text, r, g, b, opts)
     local secondary, hoverRGB = opts.secondary, opts.hoverRGB
     local btn = CreateFrame("Button", nil, parent)
@@ -166,7 +157,12 @@ function EllesmereUI.MakeActionButton(parent, font, text, r, g, b, opts)
     local bbg = btn:CreateTexture(nil, "BACKGROUND")
     bbg:SetAllPoints()
     bbg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
-    local brd = MakeBorder(btn, r, g, b, secondary and 0.35 or 0.9, PanelPP)
+    local brd
+    if opts.square then
+        brd = MakeBorder(btn, r, g, b, secondary and 0.35 or 0.9, PanelPP)
+    else
+        brd = EllesmereUI.MakeRoundedBorder(btn, r, g, b, secondary and 0.35 or 0.9, bbg)
+    end
     local lbl = btn:CreateFontString(nil, "OVERLAY")
     lbl:SetFont(font, 15, "")
     PanelPP.Point(lbl, "CENTER", btn, "CENTER", 0, 0)
@@ -185,13 +181,17 @@ function EllesmereUI.MakeActionButton(parent, font, text, r, g, b, opts)
         lbl:SetTextColor(r, g, b, secondary and 0.55 or 0.9)
         brd:SetColor(r, g, b, secondary and 0.35 or 0.9)
     end)
+    -- The label, for a popup that changes its font later (the Talent Conditions
+    -- picker takes its opener's module font).
+    btn._label = lbl
     return btn
 end
 
 -- Fading popup button (confirm and input popups): 125x27; text and border lerp from the
 -- default to the hover colours over 0.1s. Exposes btn._lbl, btn._resetAnim and
 -- btn._setColors (new colours, same argument order as the defaults below).
-function EllesmereUI.MakePopupButton(parent, anchorPoint, anchorTo, anchorRef, xOff, yOff, defR, defG, defB, defA, hovR, hovG, hovB, hovA, bDefR, bDefG, bDefB, bDefA, bHovR, bHovG, bHovB, bHovA)
+-- square (optional): the square outline, for a window that is square by design.
+function EllesmereUI.MakePopupButton(parent, anchorPoint, anchorTo, anchorRef, xOff, yOff, defR, defG, defB, defA, hovR, hovG, hovB, hovA, bDefR, bDefG, bDefB, bDefA, bHovR, bHovG, bHovB, bHovA, square)
     local FADE_DUR = 0.1
     local btn = CreateFrame("Button", nil, parent)
     btn:SetSize(125, 27)
@@ -200,7 +200,12 @@ function EllesmereUI.MakePopupButton(parent, anchorPoint, anchorTo, anchorRef, x
 
     local bg = SolidTex(btn, "BACKGROUND", 0, 0, 0, 0.5)
     bg:SetAllPoints()
-    local brd = MakeBorder(btn, bDefR, bDefG, bDefB, bDefA)
+    local brd
+    if square then
+        brd = MakeBorder(btn, bDefR, bDefG, bDefB, bDefA)
+    else
+        brd = EllesmereUI.MakeRoundedBorder(btn, bDefR, bDefG, bDefB, bDefA, bg)
+    end
 
     local lbl = MakeFont(btn, 12, nil, defR, defG, defB)
     lbl:SetAlpha(defA)
@@ -267,14 +272,21 @@ local confirmPopup
 -- SetPropagateKeyboardInput are protected in combat, so the frame takes the
 -- keyboard now and each time the host shows, only out of combat, passing keys
 -- on by default; its OnKeyDown returns first in combat (keys reach the game,
--- Escape stands aside, the buttons still answer).
+-- Escape stands aside, the buttons still answer). It lets go when the host
+-- hides out of combat, so a popup shown again in combat holds no keyboard
+-- (an Escape that closed it left propagation off).
 function EllesmereUI.PopupTakeKeys(frame, host)
     local function Take()
         if InCombatLockdown() then return end
         frame:EnableKeyboard(true)
         frame:SetPropagateKeyboardInput(true)
     end
-    if host then host:HookScript("OnShow", Take) end
+    if host then
+        host:HookScript("OnShow", Take)
+        host:HookScript("OnHide", function()
+            if not InCombatLockdown() then frame:EnableKeyboard(false) end
+        end)
+    end
     Take()
 end
 
@@ -324,6 +336,56 @@ local function WirePopupEscape(popup, dimmer)
     EllesmereUI.PadHint(popup, "nodepass")
 end
 
+-- Checkbox row of the confirm and input popups (opts.checkbox): a box with an
+-- accent tick and a label, hidden until a show asks for it. A click flips
+-- popup._cbChecked.
+local function MakePopupCheckbox(popup, width)
+    local EG = ELLESMERE_GREEN
+    local cbRow = CreateFrame("Button", nil, popup)
+    cbRow:SetSize(width, 18)
+    cbRow:SetFrameLevel(popup:GetFrameLevel() + 2)
+
+    local cbBox = CreateFrame("Frame", nil, cbRow)
+    cbBox:SetSize(14, 14)
+    cbBox:SetPoint("LEFT", cbRow, "LEFT", 0, 0)
+    cbBox:SetFrameLevel(cbRow:GetFrameLevel() + 1)
+    local cbBoxBg = SolidTex(cbBox, "BACKGROUND", 0.103, 0.095, 0.088, 1)
+    cbBoxBg:SetAllPoints()
+    EllesmereUI.MakeRoundedBorder(cbBox, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.25, cbBoxBg)
+    local cbCheck = SolidTex(cbBox, "ARTWORK", EG.r, EG.g, EG.b, 1)
+    cbCheck:SetPoint("TOPLEFT", 3, -3)
+    cbCheck:SetPoint("BOTTOMRIGHT", -3, 3)
+    EllesmereUI.RoundBody(cbBox, cbCheck, 1)
+    cbCheck:Hide()
+
+    local cbLabel = MakeFont(cbRow, 11, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
+    cbLabel:SetPoint("LEFT", cbBox, "RIGHT", 6, 0)
+
+    popup._cbChecked = false
+    cbRow:SetScript("OnClick", function()
+        popup._cbChecked = not popup._cbChecked
+        if popup._cbChecked then cbCheck:Show() else cbCheck:Hide() end
+    end)
+    cbRow:Hide()
+    popup._cbRow = cbRow
+    popup._cbCheck = cbCheck
+    popup._cbLabel = cbLabel
+end
+
+-- Shows the checkbox row unchecked with its label, centred y above the
+-- popup's bottom edge.
+local function ShowPopupCheckbox(popup, label, y)
+    local EG = ELLESMERE_GREEN
+    popup._cbChecked = false
+    popup._cbCheck:SetColorTexture(EG.r, EG.g, EG.b, 1)
+    popup._cbCheck:Hide()
+    popup._cbLabel:SetText(EllesmereUI.L(label))
+    popup._cbRow:SetWidth(14 + 6 + popup._cbLabel:GetStringWidth())
+    popup._cbRow:ClearAllPoints()
+    popup._cbRow:SetPoint("BOTTOM", popup, "BOTTOM", 0, y)
+    popup._cbRow:Show()
+end
+
 local function CreateConfirmPopup()
     if confirmPopup then return confirmPopup end
 
@@ -367,8 +429,9 @@ local function CreateConfirmPopup()
     popup._popBgAtlas = popBgAtlas
     popup._popBgOverlay = popBgOverlay
 
-    -- Pixel-perfect border
-    MakeBorder(popup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15)
+    popup._brd = EllesmereUI.MakeRoundedBorder(popup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15, popBgFlat)
+    EllesmereUI.RoundBody(popup, popBgAtlas)
+    EllesmereUI.RoundBody(popup, popBgOverlay)
 
     -- Title
     local title = MakeFont(popup, 16, "", 1, 1, 1)
@@ -406,7 +469,6 @@ local function CreateConfirmPopup()
     popup._baseH = POPUP_H
 
     -- Button dimensions
-    local BTN_H = 27
     local BTN_GAP = 16
     local BTN_Y = 13
 
@@ -433,35 +495,7 @@ local function CreateConfirmPopup()
     popup._confirmBtn = confirmBtn
 
     -- Optional checkbox (above buttons, centered)
-    local cbRow = CreateFrame("Button", nil, popup)
-    cbRow:SetSize(POPUP_W - 60, 18)
-    cbRow:SetPoint("BOTTOM", popup, "BOTTOM", 0, BTN_Y + BTN_H + 10)
-    cbRow:SetFrameLevel(popup:GetFrameLevel() + 2)
-
-    local cbBox = CreateFrame("Frame", nil, cbRow)
-    cbBox:SetSize(14, 14)
-    cbBox:SetPoint("LEFT", cbRow, "LEFT", 0, 0)
-    cbBox:SetFrameLevel(cbRow:GetFrameLevel() + 1)
-    local cbBoxBg = SolidTex(cbBox, "BACKGROUND", 0.103, 0.095, 0.088, 1)
-    cbBoxBg:SetAllPoints()
-    MakeBorder(cbBox, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.25)
-    local cbCheck = SolidTex(cbBox, "ARTWORK", EG.r, EG.g, EG.b, 1)
-    cbCheck:SetPoint("TOPLEFT", 3, -3)
-    cbCheck:SetPoint("BOTTOMRIGHT", -3, 3)
-    cbCheck:Hide()
-
-    local cbLabel = MakeFont(cbRow, 11, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
-    cbLabel:SetPoint("LEFT", cbBox, "RIGHT", 6, 0)
-
-    popup._cbChecked = false
-    cbRow:SetScript("OnClick", function()
-        popup._cbChecked = not popup._cbChecked
-        if popup._cbChecked then cbCheck:Show() else cbCheck:Hide() end
-    end)
-    cbRow:Hide()
-    popup._cbRow = cbRow
-    popup._cbCheck = cbCheck
-    popup._cbLabel = cbLabel
+    MakePopupCheckbox(popup, POPUP_W - 60)
 
     -- Close on dimmer click outside the popup; modal popups ignore dimmer clicks.
     popup:EnableMouse(true)
@@ -527,6 +561,7 @@ function EllesmereUI:ShowConfirmPopup(opts)
     -- Force-close any widget tooltip so it doesn't linger behind the popup
     if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
     local popup = CreateConfirmPopup()
+    popup._dimmer:SetFrameLevel(opts.frameLevel or 100)
 
     -- Background style: flat (default) or modern Blizzard stone
     local modern = opts.modernBlizz
@@ -563,14 +598,7 @@ function EllesmereUI:ShowConfirmPopup(opts)
     -- Optional checkbox
     local cbH = 0
     if opts.checkbox then
-        popup._cbChecked = false
-        popup._cbCheck:Hide()
-        popup._cbLabel:SetText(EllesmereUI.L(opts.checkbox))
-        local rowW = 14 + 6 + popup._cbLabel:GetStringWidth()
-        popup._cbRow:SetWidth(rowW)
-        popup._cbRow:ClearAllPoints()
-        popup._cbRow:SetPoint("BOTTOM", popup, "BOTTOM", 0, 13 + 27 + 10)
-        popup._cbRow:Show()
+        ShowPopupCheckbox(popup, opts.checkbox, 13 + 27 + 10)
         cbH = 28
     else
         popup._cbRow:Hide()
@@ -612,7 +640,7 @@ function EllesmereUI:ShowConfirmPopup(opts)
             box:SetTextInsets(8, 8, 0, 0)
             box:SetMaxLetters(24)
             SolidTex(box, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
-            MakeBorder(box, 1, 1, 1, 0.12)
+            EllesmereUI.MakeRoundedBorder(box, 1, 1, 1, 0.12)
             box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
             box:SetScript("OnTextChanged", function(self)
                 if not popup._typeGateOn then return end
@@ -669,6 +697,8 @@ function EllesmereUI:ShowConfirmPopup(opts)
     end
 
     popup:SetHeight((popup._baseH or 176) + overflowH + scaleWarnH + cbH + typeH)
+    -- A popup shown again keeps its layer seat: refit for the new height.
+    popup._brd:Fit()
     popup._cancelBtn._lbl:SetText(EllesmereUI.L(opts.cancelText or "Cancel"))
     popup._confirmBtn._lbl:SetText(EllesmereUI.L(opts.confirmText or "Confirm"))
     -- onDismiss: called on escape/click-outside. Falls back to onCancel if not provided.
@@ -821,7 +851,7 @@ local function CreateInfoPopup()
 
     local popBg = SolidTex(popup, "BACKGROUND", 0.077, 0.068, 0.058, 1)
     popBg:SetAllPoints()
-    MakeBorder(popup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15)
+    EllesmereUI.MakeRoundedBorder(popup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15, popBg)
 
     -- Title
     local title = MakeFont(popup, 15, "", 1, 1, 1)
@@ -902,8 +932,77 @@ end
 -------------------------------------------------------------------------------
 --  Custom Input Popup  (matches EllesmereUI aesthetic, with EditBox)
 --  Usage:  EllesmereUI:ShowInputPopup({ title, message, placeholder, confirmText, cancelText, onConfirm, onCancel })
---          onConfirm receives the entered text as its first argument.
+--          onConfirm receives the entered text as its first argument. A copy box for
+--          a link: initialText + selectText (starts selected) + hideCancel (one button).
+--          infoTooltip (string or function) adds a hover info badge left of the input;
+--          infoTooltipOpts go to ShowWidgetTooltip, anchored to the popup frame.
+--          preview(text) returns a preview line (under the input, below previewLabel,
+--          in previewColor) and a hint line. complete(text, cursor) returns
+--          items { text, label, desc, detail }, from, to: a suggestion list under the input
+--          (Up/Down select, Tab inserts, Esc closes it). messageSize sets the message size,
+--          messageColor { r, g, b[, a] } its colour (a red note). warning adds an
+--          orange line under the input, redWarning a red one below it. numeric takes digits
+--          only. validate(text) runs on a confirm: a message it returns shows in red under
+--          the input and keeps the popup open. checkbox (a label) adds a box above the
+--          buttons, unchecked on each show; onConfirm then receives its state second.
+--          money swaps the text box for gold/silver/copper boxes, onConfirm
+--          then gets the total in copper.
 -------------------------------------------------------------------------------
+local MONEY_ICONS = {
+    "Interface\\MoneyFrame\\UI-GoldIcon",
+    "Interface\\MoneyFrame\\UI-SilverIcon",
+    "Interface\\MoneyFrame\\UI-CopperIcon",
+}
+
+-- opts.money: three number boxes with coin icons in the input frame (built on
+-- first use). tab / shift-tab jumps between them.
+local function BuildMoneyRow(popup)
+    if popup._moneyRow then return end
+    local row = CreateFrame("Frame", nil, popup._inputFrame)
+    row:SetAllPoints()
+    row:SetFrameLevel(popup._inputFrame:GetFrameLevel() + 1)
+    local boxes, widths = {}, { 100, 36, 36 }
+    local x = 12
+    for i = 1, 3 do
+        local eb = CreateFrame("EditBox", nil, row)
+        eb:SetPoint("TOPLEFT", row, "TOPLEFT", x, -1)
+        eb:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", x, 1)
+        eb:SetWidth(widths[i])
+        eb:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
+        eb:SetTextColor(1, 1, 1, 0.9)
+        eb:SetJustifyH("RIGHT")
+        eb:SetAutoFocus(false)
+        eb:SetNumeric(true)
+        eb:SetMaxLetters(i == 1 and 7 or 2)
+        local zero = eb:CreateFontString(nil, "ARTWORK")
+        zero:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
+        zero:SetTextColor(TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a * 0.5)
+        zero:SetPoint("RIGHT")
+        zero:SetText("0")
+        eb:SetScript("OnTextChanged", function(self) zero:SetShown((self:GetText() or "") == "") end)
+        eb:SetScript("OnEnterPressed", function() popup._tryConfirm() end)
+        eb:SetScript("OnEscapePressed", function()
+            popup._dimmer:Hide()
+            if popup._onCancel then popup._onCancel() end
+        end)
+        eb:SetScript("OnTabPressed", function()
+            boxes[(i - 1 + (IsShiftKeyDown() and 2 or 1)) % 3 + 1]:SetFocus()
+        end)
+        local coin = row:CreateTexture(nil, "ARTWORK")
+        coin:SetSize(13, 13)
+        coin:SetPoint("LEFT", eb, "RIGHT", 4, 0)
+        coin:SetTexture(MONEY_ICONS[i])
+        boxes[i] = eb
+        x = x + widths[i] + 4 + 13 + 14
+    end
+    popup._moneyRow, popup._moneyBoxes = row, boxes
+    -- silver and copper past 99 count as 99
+    popup._moneyValue = function()
+        local function N(eb) return tonumber(eb:GetText()) or 0 end
+        return N(boxes[1]) * 10000 + math.min(N(boxes[2]), 99) * 100 + math.min(N(boxes[3]), 99)
+    end
+end
+
 function EllesmereUI:ShowInputPopup(opts)
     if not self._inputPopup then
         local POPUP_W, POPUP_H = 390, 194
@@ -940,11 +1039,42 @@ function EllesmereUI:ShowInputPopup(opts)
         popup._popBgAtlas = popBgAtlas
         popup._popBgOverlay = popBgOverlay
 
-        MakeBorder(popup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15)
+        popup._brd = EllesmereUI.MakeRoundedBorder(popup, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15, popBgFlat)
+        EllesmereUI.RoundBody(popup, popBgAtlas)
+        EllesmereUI.RoundBody(popup, popBgOverlay)
 
         local title = MakeFont(popup, 16, "", 1, 1, 1)
         title:SetPoint("TOP", popup, "TOP", 0, -20)
         popup._title = title
+
+        -- Optional info badge left of the input (opts.infoTooltip): hover text only.
+        local info = CreateFrame("Frame", nil, popup)
+        PanelPP.Size(info, 14, 14)
+        info:SetFrameLevel(popup:GetFrameLevel() + 3)
+        info:EnableMouse(true)
+        local infoIco = info:CreateTexture(nil, "OVERLAY")
+        infoIco:SetAllPoints()
+        infoIco:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-info.png")
+        infoIco:SetVertexColor(1, 1, 1, 0.6)
+        info:SetScript("OnEnter", function(self)
+            infoIco:SetVertexColor(1, 1, 1, 1)
+            if self._tip then
+                self._tipShown = true
+                EllesmereUI.ShowWidgetTooltip(self._tipOpts and popup or self, self._tip, self._tipOpts)
+            end
+        end)
+        local function InfoLeave(self)
+            infoIco:SetVertexColor(1, 1, 1, 0.6)
+            if self._tipShown then
+                self._tipShown = nil
+                EllesmereUI.HideWidgetTooltip()
+            end
+        end
+        info:SetScript("OnLeave", InfoLeave)
+        -- Closing the popup under the cursor: drop the tooltip without relying on OnLeave.
+        info:SetScript("OnHide", InfoLeave)
+        info:Hide()
+        popup._info = info
 
         local msg = MakeFont(popup, 12, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
         msg:SetPoint("TOP", title, "BOTTOM", 0, -8)
@@ -962,7 +1092,7 @@ function EllesmereUI:ShowInputPopup(opts)
 
         local iBg = SolidTex(inputFrame, "BACKGROUND", 0, 0, 0, 0.5)
         iBg:SetAllPoints()
-        local iBrd = MakeBorder(inputFrame, 1, 1, 1, 0.2)
+        local iBrd = EllesmereUI.MakeRoundedBorder(inputFrame, 1, 1, 1, 0.2, iBg)
 
         -- Red flash animation for empty-input validation
         local FLASH_DUR = 0.7
@@ -991,7 +1121,7 @@ function EllesmereUI:ShowInputPopup(opts)
             flashing = true
             iBrd:SetColor(0.9, 0.15, 0.15, 0.7)
             flashFrame:Show()
-            popup._editBox:SetFocus()
+            popup._focusInput()
         end
 
         local editBox = CreateFrame("EditBox", nil, inputFrame)
@@ -1011,10 +1141,25 @@ function EllesmereUI:ShowInputPopup(opts)
         editBox:SetScript("OnTextChanged", function(self)
             local text = self:GetText() or ""
             if text == "" then placeholder:Show() else placeholder:Hide() end
+            if popup._statusShown then
+                popup._statusShown = nil
+                popup._statusLabel:SetText("")
+            end
             if popup._maxCount then
                 local count = strlenutf8 and strlenutf8(text) or #text
                 popup._countLabel:SetText(count .. "/" .. popup._maxCount)
             end
+            if popup._preview then popup._updatePreview(text) end
+            if popup._complete then popup._updateSuggest(text) end
+        end)
+        -- Suggestion list keys (opts.complete): Up/Down move the selection, Tab
+        -- inserts it. Same arrow handling as the panel's global search box.
+        editBox:SetScript("OnTabPressed", function()
+            if popup._suggest then popup._acceptSuggest() end
+        end)
+        editBox:SetScript("OnArrowPressed", function(_, key)
+            if not popup._suggest then return end
+            if key == "UP" then popup._stepSuggest(-1) elseif key == "DOWN" then popup._stepSuggest(1) end
         end)
         popup._editBox = editBox
 
@@ -1028,6 +1173,18 @@ function EllesmereUI:ShowInputPopup(opts)
         warnLabel:Hide()
         popup._warnLabel = warnLabel
         popup._inputFrame = inputFrame  -- store so reuse block can anchor against it
+        PanelPP.Point(info, "RIGHT", inputFrame, "LEFT", -8, 0)
+
+        -- A message from opts.validate, right under the input (each show anchors
+        -- it); it clears when the text changes.
+        local statusLabel = MakeFont(popup, 11, nil, 1, 0.3, 0.3, 1)
+        statusLabel:SetWidth(POPUP_W - 40)
+        statusLabel:SetJustifyH("CENTER")
+        statusLabel:SetWordWrap(false)
+        popup._statusLabel = statusLabel
+
+        -- Optional checkbox (above the buttons, centred)
+        MakePopupCheckbox(popup, POPUP_W - 60)
 
         -- Optional scale/resolution mismatch warning (red, shown below the orange warning)
         local scaleWarnLabel = MakeFont(popup, 10, nil, 1, 0.2, 0.2, 1)
@@ -1046,7 +1203,7 @@ function EllesmereUI:ShowInputPopup(opts)
         extraBtn:SetFrameLevel(popup:GetFrameLevel() + 2)
         local extraBg = SolidTex(extraBtn, "BACKGROUND", 0, 0, 0, 0.5)
         extraBg:SetAllPoints()
-        MakeBorder(extraBtn, 1, 1, 1, 0.25)
+        EllesmereUI.MakeRoundedBorder(extraBtn, 1, 1, 1, 0.25, extraBg)
         local extraLbl = MakeFont(extraBtn, 12, nil, 1, 1, 1)
         extraLbl:SetAlpha(0.6)
         extraLbl:SetPoint("CENTER")
@@ -1089,6 +1246,7 @@ function EllesmereUI:ShowInputPopup(opts)
 
         popup._cancelBtn  = cancelBtn
         popup._confirmBtn = confirmBtn
+        popup._btnGap, popup._btnY = BTN_GAP, BTN_Y
 
         popup:EnableMouse(true)
         dimmer:SetScript("OnMouseDown", function()
@@ -1100,22 +1258,60 @@ function EllesmereUI:ShowInputPopup(opts)
 
         WirePopupEscape(popup, dimmer)
 
+        -- The one confirm path (the confirm button and Enter). A message from
+        -- opts.validate keeps the popup open. The callback runs before the
+        -- popup closes, so a reload it asks for comes first in the click or
+        -- keypress (RequestReload); the popup closes only while it still shows
+        -- the same request (the callback may have opened the next one).
+        popup._tryConfirm = function()
+            -- money boxes: total in copper, has to be more than zero
+            if popup._money then
+                local copper = popup._moneyValue()
+                if copper <= 0 then popup._flashEmpty(); return end
+                local shown, cb = popup._handle, popup._onConfirmCb
+                if cb then cb(copper) end
+                if popup._handle == shown then dimmer:Hide() end
+                return
+            end
+            local txt = editBox:GetText()
+            if not txt or (txt == "" and not popup._allowEmpty) then
+                popup._flashEmpty()
+                return
+            end
+            local err = popup._validate and popup._validate(txt)
+            if err then
+                popup._statusLabel:SetText(EllesmereUI.L(err))
+                popup._statusShown = true
+                popup._flashEmpty()
+                return
+            end
+            if popup._closePicker then popup._closePicker() end
+            local shown, cb = popup._handle, popup._onConfirmCb
+            if cb then
+                if popup._cbRow:IsShown() then cb(txt, popup._cbChecked) else cb(txt) end
+            end
+            if popup._handle == shown then dimmer:Hide() end
+        end
+        confirmBtn:SetScript("OnClick", popup._tryConfirm)
+
         editBox:SetScript("OnEnterPressed", function()
             if popup._multiline then return end
-            local txt = editBox:GetText()
-            if txt and (txt ~= "" or popup._allowEmpty) then
-                -- The callback before the close, as the confirm button runs it.
-                local shown = popup._handle
-                if popup._onConfirmCb then popup._onConfirmCb(txt) end
-                if popup._handle == shown then dimmer:Hide() end
-            else
-                popup._flashEmpty()
-            end
+            -- An open suggestion list takes Enter like Tab.
+            if popup._suggest then popup._acceptSuggest(); return end
+            popup._tryConfirm()
         end)
         editBox:SetScript("OnEscapePressed", function()
+            -- An open suggestion list closes first.
+            if popup._suggest then popup._closeSuggest(); return end
             dimmer:Hide()
             if popup._onCancel then popup._onCancel() end
         end)
+
+        popup._focusInput = function()
+            local box = popup._money and popup._moneyBoxes[1] or popup._editBox
+            box:SetFocus()
+            return box
+        end
 
         popup._dimmer = dimmer
         self._inputPopup = popup
@@ -1135,25 +1331,106 @@ function EllesmereUI:ShowInputPopup(opts)
     popup._popBgOverlay:SetShown(modern == true)
 
     popup._title:SetText(EllesmereUI.L(opts.title or "Enter Name"))
+    popup._info._tip = opts.infoTooltip
+    popup._info._tipOpts = opts.infoTooltipOpts
+    popup._info:SetShown(opts.infoTooltip ~= nil)
+    -- Optional colour swatch left of the input (opts.swatch = { get, onClick,
+    -- tooltip }), built on its first use. It is painted from get() -> r, g, b
+    -- as the popup shows and each time the caller's onClick(swatch, repaint)
+    -- calls repaint(). The caller opens the colour picker, and an open one
+    -- closes with the popup: before a confirm runs its callback, and when the
+    -- popup is dismissed (so the picker's own cancel comes first).
+    local sw = opts.swatch
+    if sw and not popup._swatch then
+        local swatch = CreateFrame("Button", nil, popup)
+        PanelPP.Size(swatch, 20, 20)
+        PanelPP.Point(swatch, "RIGHT", popup._inputFrame, "LEFT", -8, 0)
+        swatch:SetFrameLevel(popup:GetFrameLevel() + 3)
+        local fill = SolidTex(swatch, "ARTWORK", 1, 1, 1, 1)
+        fill:SetAllPoints()
+        EllesmereUI.MakeRoundedBorder(swatch, 1, 1, 1, 0.9, fill)
+        popup._paintSwatch = function()
+            local o = popup._swatchOpts
+            if not o then return end
+            local r, g, b = o.get()
+            fill:SetColorTexture(r or 1, g or 1, b or 1, 1)
+        end
+        popup._closePicker = function()
+            local picker = popup._swatchOpts and EllesmereUI._colorPickerPopup
+            if picker and picker:IsShown() then picker:Hide() end
+        end
+        swatch:SetScript("OnClick", function(self)
+            local o = popup._swatchOpts
+            if o and o.onClick then o.onClick(self, popup._paintSwatch) end
+        end)
+        swatch:SetScript("OnEnter", function(self)
+            local o = popup._swatchOpts
+            if o and o.tooltip then
+                self._tipShown = true
+                EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.L(o.tooltip))
+            end
+        end)
+        local function SwatchLeave(self)
+            if self._tipShown then
+                self._tipShown = nil
+                EllesmereUI.HideWidgetTooltip()
+            end
+        end
+        swatch:SetScript("OnLeave", SwatchLeave)
+        swatch:SetScript("OnHide", SwatchLeave)
+        popup._dimmer:HookScript("OnHide", popup._closePicker)
+        popup._swatch = swatch
+    end
+    popup._swatchOpts = sw
+    if popup._swatch then
+        popup._swatch:SetShown(sw ~= nil)
+        if sw then popup._paintSwatch() end
+        -- The info badge steps left of a shown swatch
+        popup._info:ClearAllPoints()
+        PanelPP.Point(popup._info, "RIGHT", sw and popup._swatch or popup._inputFrame, "LEFT", -8, 0)
+    end
     popup._msg:SetText(EllesmereUI.L(opts.message or ""))
     popup._placeholder:SetText(EllesmereUI.L(opts.placeholder or "Enter name..."))
     popup._cancelBtn._lbl:SetText(EllesmereUI.L(opts.cancelText or "Cancel"))
     popup._confirmBtn._lbl:SetText(EllesmereUI.L(opts.confirmText or "Save"))
+    -- Single-button mode (a copy box): hide Cancel, centre the confirm button.
+    popup._cancelBtn:SetShown(not opts.hideCancel)
+    popup._confirmBtn:ClearAllPoints()
+    if opts.hideCancel then
+        popup._confirmBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, popup._btnY)
+    else
+        popup._confirmBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", popup._btnGap / 2, popup._btnY)
+    end
+    popup._selectText = opts.selectText == true
     popup._onCancel = opts.onDismiss or opts.onCancel or nil
     popup._onConfirmCb = opts.onConfirm or nil
     -- This show's request: a confirm closes the popup only while it still shows it.
-    local handle = {}
-    popup._handle = handle
+    popup._handle = {}
     popup._allowEmpty = opts.allowEmpty == true
     popup._multiline = opts.multiline == true
+    popup._validate = opts.validate
+    popup._money = opts.money == true
+    if popup._money then
+        BuildMoneyRow(popup)
+        for _, eb in ipairs(popup._moneyBoxes) do eb:SetText("") end
+    end
+    if popup._moneyRow then popup._moneyRow:SetShown(popup._money) end
+    popup._editBox:SetShown(not popup._money)
+    popup._statusShown = nil
+    popup._statusLabel:SetText("")
 
+    popup._editBox:SetNumeric(opts.numeric == true)
     popup._editBox:SetMaxLetters(opts.maxLetters or 30)
     popup._editBox:SetMultiLine(popup._multiline)
     popup._editBox:SetJustifyV(popup._multiline and "TOP" or "MIDDLE")
     popup._inputFrame:SetHeight(opts.inputHeight or 28)
     popup._editBox:ClearAllPoints()
     popup._editBox:SetPoint("TOPLEFT", popup._inputFrame, "TOPLEFT", 12, popup._multiline and -8 or -1)
-    popup._editBox:SetPoint("BOTTOMRIGHT", popup._inputFrame, "BOTTOMRIGHT", -12, opts.showCount and 18 or 1)
+    -- A multi-line box keeps the letter count inside its bottom-right corner,
+    -- under the text; a single-line box has no room under its text, so its
+    -- count sits beside its right edge and the box keeps its full height.
+    local countInside = opts.showCount and popup._multiline
+    popup._editBox:SetPoint("BOTTOMRIGHT", popup._inputFrame, "BOTTOMRIGHT", -12, countInside and 18 or 1)
     popup._placeholder:ClearAllPoints()
     if popup._multiline then
         popup._placeholder:SetPoint("TOPLEFT", popup._editBox, "TOPLEFT", 0, -1)
@@ -1161,16 +1438,220 @@ function EllesmereUI:ShowInputPopup(opts)
         popup._placeholder:SetPoint("LEFT", popup._editBox, "LEFT", 0, 0)
     end
     if opts.showCount and not popup._countLabel then
-        local countLabel = MakeFont(popup._inputFrame, 9, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
-        countLabel:SetPoint("BOTTOMRIGHT", popup._inputFrame, "BOTTOMRIGHT", -8, 5)
-        popup._countLabel = countLabel
+        popup._countLabel = MakeFont(popup._inputFrame, 9, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
     end
     popup._maxCount = opts.showCount and (opts.maxLetters or 0) or nil
     if popup._countLabel then
         popup._countLabel:SetShown(popup._maxCount and popup._maxCount > 0)
+        popup._countLabel:ClearAllPoints()
+        if countInside then
+            popup._countLabel:SetPoint("BOTTOMRIGHT", popup._inputFrame, "BOTTOMRIGHT", -8, 5)
+        else
+            popup._countLabel:SetPoint("LEFT", popup._inputFrame, "RIGHT", 8, 0)
+        end
+    end
+    popup._msg:SetFont(EllesmereUI.EXPRESSWAY, opts.messageSize or 12, "")
+    local mc = opts.messageColor or TEXT_DIM
+    popup._msg:SetTextColor(mc.r, mc.g, mc.b, mc.a or 1)
+    -- Optional preview block under the input (opts.preview), centred, one line
+    -- each at a fixed height so typing never re-lays out the popup; the
+    -- suggestion list (opts.complete) floats over it.
+    local belowH = 0
+    popup._preview, popup._complete = opts.preview, opts.complete
+    if (opts.preview or opts.complete) and not popup._previewValue then
+        local inputW = popup._inputFrame:GetWidth()
+        local div = SolidTex(popup, "ARTWORK", 1, 1, 1, 0.1)
+        PanelPP.Size(div, inputW, 1)
+        PanelPP.Point(div, "TOP", popup._inputFrame, "BOTTOM", 0, -10)
+        local label = MakeFont(popup, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
+        label:SetPoint("TOP", div, "BOTTOM", 0, -6)
+        local value = MakeFont(popup, 12, nil, 1, 1, 1, 1)
+        value:SetPoint("TOP", label, "BOTTOM", 0, -3)
+        value:SetWidth(popup:GetWidth() - 40)
+        value:SetJustifyH("CENTER")
+        value:SetWordWrap(false)
+        local hint = MakeFont(popup, 10, nil, 1, 0.65, 0.2, 0.85)
+        hint:SetPoint("TOP", value, "BOTTOM", 0, -4)
+        hint:SetWidth(popup:GetWidth() - 40)
+        hint:SetJustifyH("CENTER")
+        hint:SetWordWrap(false)
+        popup._previewDiv, popup._previewLabelFS, popup._previewValue, popup._hintLabel = div, label, value, hint
+        popup._updatePreview = function(text)
+            local line, note = popup._preview(text)
+            value:SetText(line or "")
+            hint:SetText(note or "")
+        end
+
+        -- Suggestion list: up to ROWS entries (the window follows the
+        -- selection or the mouse wheel), each with its description and the
+        -- sample on the right, a scrollbar when more entries exist, and a key
+        -- legend.
+        local ROWS, ROW_H = 6, 16
+        local dd = CreateFrame("Frame", nil, popup)
+        dd:SetFrameLevel(popup:GetFrameLevel() + 20)
+        dd:SetPoint("TOPLEFT", popup._inputFrame, "BOTTOMLEFT", 0, -2)
+        dd:SetWidth(inputW)
+        -- Full height up front: the outline's body mask (shared by the rows) is
+        -- shaped once here and keeps that radius for every later row count.
+        dd:SetHeight(ROWS * ROW_H + 21)
+        dd:EnableMouse(true)
+        local ddBg = SolidTex(dd, "BACKGROUND", 0.04, 0.035, 0.03, 0.97)
+        ddBg:SetAllPoints()
+        dd._brd = EllesmereUI.MakeRoundedBorder(dd, 1, 1, 1, 0.2, ddBg)
+        local rows = {}
+        for i = 1, ROWS do
+            local row = CreateFrame("Button", nil, dd)
+            row:SetHeight(ROW_H)
+            row:SetPoint("TOPLEFT", dd, "TOPLEFT", 1, -1 - (i - 1) * ROW_H)
+            row:SetPoint("TOPRIGHT", dd, "TOPRIGHT", -1, -1 - (i - 1) * ROW_H)
+            row._sel = SolidTex(row, "BACKGROUND", 1, 1, 1, 0.18)
+            row._sel:SetAllPoints()
+            -- The list's shape: the first row keeps its round corners.
+            row._sel:AddMaskTexture(dd._brd.bodyMask)
+            row._bar = SolidTex(row, "ARTWORK", 1, 1, 1, 1)
+            row._bar:AddMaskTexture(dd._brd.bodyMask)
+            row._bar:SetPoint("TOPLEFT"); row._bar:SetPoint("BOTTOMLEFT")
+            PanelPP.Width(row._bar, 2)
+            row._key = MakeFont(row, 11, nil, 1, 1, 1, 0.9)
+            row._key:SetPoint("LEFT", row, "LEFT", 8, 0)
+            row._detail = MakeFont(row, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
+            row._detail:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+            row._desc = MakeFont(row, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
+            row._desc:SetPoint("LEFT", row, "LEFT", 104, 0)
+            row._desc:SetPoint("RIGHT", row._detail, "LEFT", -8, 0)
+            row._desc:SetJustifyH("LEFT")
+            row._desc:SetWordWrap(false)
+            row:SetScript("OnClick", function(self)
+                local sg = popup._suggest
+                if sg then sg.sel = sg.offset + self._index; popup._acceptSuggest() end
+            end)
+            rows[i] = row
+        end
+        -- Scrollbar in the house look (AttachSmoothScrollbar's alphas), sized
+        -- to the row window, on its own frame so it draws above the rows.
+        local bar = CreateFrame("Frame", nil, dd)
+        bar:SetFrameLevel(dd:GetFrameLevel() + 5)
+        bar:SetPoint("TOPRIGHT", dd, "TOPRIGHT", -2, -2)
+        PanelPP.Size(bar, 3, ROWS * ROW_H - 2)
+        local track = SolidTex(bar, "ARTWORK", 1, 1, 1, 0.02)
+        track:SetAllPoints()
+        local thumb = SolidTex(bar, "OVERLAY", 1, 1, 1, 0.27)
+        PanelPP.Width(thumb, 3)
+        local legend = MakeFont(dd, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
+        legend:SetText(EllesmereUI.L("Up/Down: select   Tab/Enter: insert   Esc: close"))
+        local legendDiv = SolidTex(dd, "ARTWORK", 1, 1, 1, 0.1)
+        legendDiv:SetHeight(1)
+        dd:Hide()
+        popup._suggestDD = dd
+
+        local function Render()
+            local sg, EGC = popup._suggest, EllesmereUI.ELLESMERE_GREEN
+            local n = math.min(#sg.items, ROWS)
+            for i = 1, ROWS do
+                local row, item = rows[i], sg.items[sg.offset + i]
+                if i <= n and item then
+                    row._index = i
+                    row._key:SetText(item.label)
+                    row._desc:SetText(item.desc or "")
+                    row._detail:SetText(item.detail or "")
+                    local on = sg.offset + i == sg.sel
+                    if on then
+                        row._sel:SetColorTexture(EGC.r, EGC.g, EGC.b, 0.18)
+                        row._bar:SetColorTexture(EGC.r, EGC.g, EGC.b, 1)
+                    end
+                    row._sel:SetShown(on)
+                    row._bar:SetShown(on)
+                    row:Show()
+                else
+                    row:Hide()
+                end
+            end
+            local total = #sg.items
+            local more = total > ROWS
+            track:SetShown(more)
+            thumb:SetShown(more)
+            if more then
+                local trackH = ROWS * ROW_H - 2
+                local thumbH = math.max(12, trackH * ROWS / total)
+                thumb:SetHeight(thumbH)
+                thumb:ClearAllPoints()
+                thumb:SetPoint("TOPRIGHT", track, "TOPRIGHT", 0,
+                    -math.floor((trackH - thumbH) * sg.offset / (total - ROWS) + 0.5))
+            end
+            legendDiv:ClearAllPoints()
+            legendDiv:SetPoint("TOPLEFT", dd, "TOPLEFT", 1, -1 - n * ROW_H)
+            legendDiv:SetPoint("TOPRIGHT", dd, "TOPRIGHT", -1, -1 - n * ROW_H)
+            legend:ClearAllPoints()
+            legend:SetPoint("TOPLEFT", legendDiv, "BOTTOMLEFT", 7, -4)
+            dd:SetHeight(n * ROW_H + 21)
+            dd._brd:Fit()
+            dd:Show()
+        end
+        -- A click outside the list closes it (the panel search's pattern):
+        -- listened to only while the list is shown.
+        local clickOff = CreateFrame("Frame")
+        clickOff:SetScript("OnEvent", function()
+            if not dd:IsMouseOver() and not popup._editBox:IsMouseOver() then popup._closeSuggest() end
+        end)
+        dd:SetScript("OnShow", function() clickOff:RegisterEvent("GLOBAL_MOUSE_DOWN") end)
+        dd:SetScript("OnHide", function() clickOff:UnregisterEvent("GLOBAL_MOUSE_DOWN") end)
+        -- The wheel moves the window only; the selection stays and the arrow
+        -- keys bring it back into view.
+        dd:EnableMouseWheel(true)
+        dd:SetScript("OnMouseWheel", function(_, delta)
+            local sg = popup._suggest
+            if not sg then return end
+            local off = math.max(0, math.min(#sg.items - ROWS, sg.offset - delta))
+            if off ~= sg.offset then sg.offset = off; Render() end
+        end)
+
+        popup._closeSuggest = function()
+            popup._suggest = nil
+            dd:Hide()
+        end
+        popup._stepSuggest = function(d)
+            local sg = popup._suggest
+            local n = #sg.items
+            sg.sel = (sg.sel - 1 + d) % n + 1
+            if sg.sel <= sg.offset then sg.offset = sg.sel - 1
+            elseif sg.sel > sg.offset + ROWS then sg.offset = sg.sel - ROWS end
+            Render()
+        end
+        popup._acceptSuggest = function()
+            local sg, eb = popup._suggest, popup._editBox
+            local item = sg.items[sg.sel]
+            local text = eb:GetText() or ""
+            local new = text:sub(1, sg.from - 1) .. item.text .. text:sub(sg.to + 1)
+            popup._closeSuggest()
+            eb:SetText(new)
+            eb:SetFocus()
+            eb:SetCursorPosition(sg.from - 1 + #item.text)
+            popup._updateSuggest(new)
+        end
+        popup._updateSuggest = function(text)
+            local items, from, to = popup._complete(text, popup._editBox:GetCursorPosition())
+            if not items then popup._closeSuggest(); return end
+            popup._suggest = { items = items, from = from, to = to, sel = 1, offset = 0 }
+            Render()
+        end
+    end
+    if popup._previewValue then
+        local pv = opts.preview ~= nil
+        popup._previewDiv:SetShown(pv)
+        popup._previewLabelFS:SetShown(pv)
+        popup._previewValue:SetShown(pv)
+        popup._hintLabel:SetShown(pv)
+        popup._closeSuggest()
+        if pv then
+            popup._previewLabelFS:SetText(opts.previewLabel or "")
+            local c = opts.previewColor
+            popup._previewValue:SetTextColor(c and c.r or 1, c and c.g or 1, c and c.b or 1, 1)
+            belowH = 32
+        end
     end
     local initText = opts.initialText or ""
     popup._editBox:SetText(initText)
+    if opts.preview then popup._updatePreview(initText) end
     if popup._maxCount then
         local count = strlenutf8 and strlenutf8(initText) or #initText
         popup._countLabel:SetText(count .. "/" .. popup._maxCount)
@@ -1180,6 +1661,13 @@ function EllesmereUI:ShowInputPopup(opts)
     popup._cancelBtn._resetAnim()
     popup._confirmBtn._resetAnim()
 
+    -- The validate status line sits under the input (and a preview block); the
+    -- blocks below it move down by its height.
+    local statusH = opts.validate and 16 or 0
+    popup._statusLabel:ClearAllPoints()
+    popup._statusLabel:SetPoint("TOP", popup._inputFrame, "BOTTOM", 0, -6 - belowH)
+    belowH = belowH + statusH
+
     -- Extra button (e.g. "Add Current Zone")
     local extraH = 0
     if opts.extraButton then
@@ -1188,17 +1676,29 @@ function EllesmereUI:ShowInputPopup(opts)
         popup._extraBtn:SetScript("OnClick", function()
             if opts.extraButton.onClick then opts.extraButton.onClick(popup._editBox) end
         end)
+        -- Below the preview block when there is one.
+        popup._extraBtn:ClearAllPoints()
+        popup._extraBtn:SetPoint("TOP", popup._inputFrame, "BOTTOM", 0, -6 - belowH)
         popup._extraBtn:Show()
         extraH = 26
     else
         popup._extraBtn:Hide()
     end
 
+    -- Optional checkbox above the buttons
+    local cbH = 0
+    if opts.checkbox then
+        ShowPopupCheckbox(popup, opts.checkbox, popup._btnY + 27 + 10)
+        cbH = 28
+    else
+        popup._cbRow:Hide()
+    end
+
     -- Optional warning text below the input field
     local warnH = 0
     if opts.warning and opts.warning ~= "" then
         popup._warnLabel:ClearAllPoints()
-        popup._warnLabel:SetPoint("TOP", popup._inputFrame, "BOTTOM", 0, -18)
+        popup._warnLabel:SetPoint("TOP", popup._inputFrame, "BOTTOM", 0, -18 - belowH)
         popup._warnLabel:SetText(opts.warning)
         popup._warnLabel:Show()
         warnH = 24
@@ -1207,16 +1707,18 @@ function EllesmereUI:ShowInputPopup(opts)
         popup._warnLabel:Hide()
     end
 
-    -- Optional scale/resolution mismatch warning (red)
+    -- Optional red warning (redWarning; scaleWarning, its first use, a
+    -- scale/resolution mismatch), below the orange one
     local scaleWarnH = 0
-    if opts.scaleWarning and opts.scaleWarning ~= "" then
+    local redWarning = opts.redWarning or opts.scaleWarning
+    if redWarning and redWarning ~= "" then
         popup._scaleWarnLabel:ClearAllPoints()
         if opts.warning and opts.warning ~= "" then
             popup._scaleWarnLabel:SetPoint("TOP", popup._warnLabel, "BOTTOM", 0, -14)
         else
-            popup._scaleWarnLabel:SetPoint("TOP", popup._inputFrame, "BOTTOM", 0, -18)
+            popup._scaleWarnLabel:SetPoint("TOP", popup._inputFrame, "BOTTOM", 0, -18 - belowH)
         end
-        popup._scaleWarnLabel:SetText(EllesmereUI.L(opts.scaleWarning))
+        popup._scaleWarnLabel:SetText(EllesmereUI.L(redWarning))
         popup._scaleWarnLabel:Show()
         scaleWarnH = 30
     else
@@ -1224,32 +1726,24 @@ function EllesmereUI:ShowInputPopup(opts)
         popup._scaleWarnLabel:Hide()
     end
 
-    popup:SetHeight(194 + math.max(0, (opts.inputHeight or 28) - 28) + extraH + warnH + scaleWarnH)
+    popup:SetHeight(194 + math.max(0, (opts.inputHeight or 28) - 28) + extraH + warnH + scaleWarnH + belowH + cbH)
+    popup._brd:Fit()
 
     popup._cancelBtn:SetScript("OnClick", function()
         popup._dimmer:Hide()
         if opts.onCancel then opts.onCancel() end
     end)
     -- Controller cursor: its cancel press backs out through Cancel only when
-    -- Cancel is what Escape does (onDismiss differs from it).
+    -- Cancel shows and is what Escape does (onDismiss differs from it).
     if EllesmereUI.PadCP() then
-        popup.CloseButton = (not opts.onDismiss) and popup._cancelBtn or nil
+        popup.CloseButton = (not (opts.onDismiss or opts.hideCancel)) and popup._cancelBtn or nil
     end
-    popup._confirmBtn:SetScript("OnClick", function()
-        local txt = popup._editBox:GetText()
-        if txt and (txt ~= "" or opts.allowEmpty) then
-            -- The callback runs before the popup closes, so a reload it asks
-            -- for comes first in the click (RequestReload); the popup closes
-            -- only while it still shows this request.
-            if opts.onConfirm then opts.onConfirm(txt) end
-            if popup._handle == handle then popup._dimmer:Hide() end
-        else
-            popup._flashEmpty()
-        end
-    end)
 
     popup._dimmer:Show()
-    C_Timer.After(0.05, function() popup._editBox:SetFocus() end)
+    C_Timer.After(0.05, function()
+        local box = popup._focusInput()
+        if popup._selectText then box:HighlightText() end
+    end)
 end
 
 -------------------------------------------------------------------------------
@@ -1263,7 +1757,8 @@ end
 --    d:Open(owner), d:FocusInput(); d._eb, d._extra, d._buttons[key].
 --  opts: name, width, height, title, editWidth, maxLetters, extraLine,
 --    buttons = { { key, label, width, height, point ("BOTTOMLEFT", "BOTTOM" or
---    "BOTTOMRIGHT"), onClick, tooltip, primary } }, onEnter, onChange(n),
+--    "BOTTOMRIGHT"), onClick, tooltip (text, or a function read on every
+--    hover), tooltipOpts (ShowWidgetTooltip's opts), primary } }, onEnter, onChange(n),
 --    onShow, onHide, skin = { frame(d), font(fs, size), button(parent, w, h,
 --    label) -> button, editBox(eb), close(btn) }.
 -------------------------------------------------------------------------------
@@ -1370,7 +1865,7 @@ function EllesmereUI.CreateQuantityDialog(opts)
         b:SetPoint(p, d, p, (p == "BOTTOMLEFT" and 10) or (p == "BOTTOMRIGHT" and -10) or 0, 10)
         b:SetScript("OnClick", spec.onClick)
         if spec.tooltip then
-            b:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(b, spec.tooltip) end)
+            b:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(b, spec.tooltip, spec.tooltipOpts) end)
             b:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         end
         d._buttons[spec.key] = b

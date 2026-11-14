@@ -528,6 +528,12 @@ function ECME:OnEnable()
                 -- Blizzard's data actually becomes ready on a slow login and never try
                 -- again. Catch up now.
                 if ns.QueueReanchor then ns.QueueReanchor() end
+                -- A queued repopulate that reached its settled pass before the
+                -- layouts loaded runs now, a frame on, once every viewer shows them.
+                if ns._repopAwaitsLayouts then
+                    ns._repopAwaitsLayouts = nil
+                    C_Timer.After(0, ns.RunQueuedRepopulate)
+                end
             end
         end)
     end
@@ -631,10 +637,9 @@ function ECME:CDMFinishSetup()
         local p = ECME.db and ECME.db.profile
         if p and p.cdmBars and p.cdmBars.enabled and EllesmereUIDB then
 
-            local charKey = ns.GetCharKey()
             local specKey = ns.GetActiveSpecKey()
-            local cache = EllesmereUIDB.cdmCachedBarSizes
-            local counts = cache and cache[charKey] and cache[charKey][specKey]
+            local cache = EllesmereUI.CharData("cdmBarSizes")
+            local counts = cache and cache[specKey]
             if counts then
                 for i, barData in ipairs(p.cdmBars.bars) do
                     if barData.enabled then

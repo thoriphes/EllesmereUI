@@ -5,8 +5,9 @@ if not (EllesmereUI and EllesmereUI.IS_FOREVER) then return end
 --  The vanilla talent window, drawn with the client's own art: one tree a
 --  tab, talents on a grid with their ranks and prerequisite arrows. Points
 --  are staged with a click and spent with Learn, as the game's own window
---  does. The talents key opens it in place of the Talents & Spellbook window,
---  which the micro menu still opens. Active spec only.
+--  does. The talents key and the micro menu's Talents button open it in place
+--  of the Talents & Spellbook window. The QoL Shifter moves it like the game's
+--  windows. Active spec only.
 -------------------------------------------------------------------------------
 local _, module = ...
 
@@ -14,7 +15,7 @@ local SIZE = 32           -- talent button
 local STEP = 63           -- between talents on the grid
 local LEFT, TOP = 35, 20  -- first talent, inside the tree area
 local VIEW_W, VIEW_H = 296, 332
-local BESIDE = 392        -- clears the spellbook and the tabs on its right side
+local GAP = 8             -- beside the spellbook, past the tabs on its right side
 local ART = "Interface\\TalentFrame\\"
 local QUEUE_KEY = "ClassicTalentsBind"
 local TOGGLE_NAME = "EUI_ClassicTalentsToggle"
@@ -44,6 +45,8 @@ local ARROW_LEFT = { 0.5, 1, 0 }
 local F = module.Feature("classicTalents", { enabled = false })
 
 local win, toggle
+local microLayer  -- the click layer over the micro menu's Talents button (see Setup)
+local route       -- EUI_TalentsRoute (see Setup)
 local trees = {}  -- { groupID, name, nodes = { nodeID, ... } } in tree order
 local tree = 1    -- the selected tree
 local staged = {} -- [nodeID] = points staged here and not yet learned
@@ -53,10 +56,10 @@ local boundKeys   -- the keys the toggle holds, space separated
 local queued      -- a repaint is due next frame
 
 -------------------------------------------------------------------------------
---  Talent data
+--  Talent data (the trees and their grid: EllesmereUI.ForeverTalentTrees and
+--  EllesmereUI.TalentTreeGrid, shared with the Cooldown Manager's Talent
+--  Conditions popup)
 -------------------------------------------------------------------------------
-local function ByOrder(a, b) return a.orderIndex < b.orderIndex end
-
 -- The trees whose own name is too long for a tab, by trait group ID.
 local function ShortName(groupID)
     if groupID == 11326 then return EllesmereUI.L("Elemental") end -- Elemental Combat
@@ -66,97 +69,19 @@ end
 
 local function ReadTrees()
     wipe(trees)
-    configID = C_ClassTalents.GetActiveConfigID()
-    local config = configID and C_Traits.GetConfigInfo(configID)
-    treeID = config and config.treeIDs[1]
-    if not treeID then return end
-    local groups = C_Traits.GetGroupDisplayInfoByTreeID(treeID)
-    table.sort(groups, ByOrder)
-    local byGroup = {}
-    for i, g in ipairs(groups) do
-        trees[i] = { groupID = g.groupID, name = ShortName(g.groupID) or g.displayName, nodes = {} }
-        byGroup[g.groupID] = trees[i]
-    end
-    for _, nodeID in ipairs(C_Traits.GetTreeNodes(treeID)) do
-        local info = C_Traits.GetNodeInfo(configID, nodeID)
-        if info and info.isVisible and info.entryIDs[1] then
-            for _, groupID in ipairs(info.groupIDs) do
-                local t = byGroup[groupID]
-                if t then
-                    t.nodes[#t.nodes + 1] = nodeID
-                    break
-                end
-            end
-        end
+    local list
+    configID, treeID, list = EllesmereUI.ForeverTalentTrees()
+    if not list then return end
+    for i, t in ipairs(list) do
+        t.name = ShortName(t.groupID) or t.name
+        trees[i] = t
     end
     if tree > #trees then tree = 1 end
 end
 
--- One axis of a tree's grid from its node positions: the first line, the
--- step, and the last line before any position far beyond the rest. The step
--- is the smallest gap between neighbouring positions above a quarter of the
--- median gap: some nodes sit a few units off their line (the hunter's,
--- paladin's and warlock's trees), and a gap that small is the same line, never
--- a step of its own (taken as one, it spread a tree over hundreds of rows).
-local gaps = {}
-local function GridAxis(values)
-    table.sort(values)
-    local n = 0
-    for i = 2, #values do
-        local d = values[i] - values[i - 1]
-        if d > 0 then n = n + 1; gaps[n] = d end
-    end
-    for i = #gaps, n + 1, -1 do gaps[i] = nil end
-    local first = values[1] or 0
-    if n == 0 then return first, 1, first end
-    table.sort(gaps)
-    local least = gaps[math.floor(n / 2) + 1] / 4
-    local step
-    for i = 1, n do
-        if gaps[i] > least then step = gaps[i]; break end
-    end
-    -- Lines follow each other a few steps apart at most; past a bigger jump
-    -- the rest lie off the grid (see Line).
-    local last = first
-    for i = 2, #values do
-        if values[i] - values[i - 1] > 4 * step then break end
-        last = values[i]
-    end
-    return first, step, last
-end
-
--- A position's line (from 0) on one axis. A node far beyond the others whose
--- tenth falls on the grid is read there: an extra zero in the game's data
--- (the hunter's and priest's trees have such nodes).
-local function Line(v, first, step, last)
-    if v > last + 4 * step then
-        local t = v / 10
-        local k = (t - first) / step
-        local r = math.floor(k + 0.5)
-        if r >= 0 and t <= last + step / 4 and math.abs(k - r) < 0.25 then v = t end
-    end
-    return math.floor((v - first) / step + 0.5)
-end
-
 -- Each talent's column and row (from 0) in its tree, from the node positions.
 local function Grid(nodes)
-    local xs, ys, infos = {}, {}, {}
-    for i, nodeID in ipairs(nodes) do
-        local info = C_Traits.GetNodeInfo(configID, nodeID)
-        infos[nodeID] = info
-        xs[i], ys[i] = info.posX, info.posY
-    end
-    local x0, dx, xLast = GridAxis(xs)
-    local y0, dy, yLast = GridAxis(ys)
-    local cells, rows = {}, 0
-    for _, nodeID in ipairs(nodes) do
-        local info = infos[nodeID]
-        local col = Line(info.posX, x0, dx, xLast)
-        local row = Line(info.posY, y0, dy, yLast)
-        cells[nodeID] = { col = col, row = row, info = info }
-        rows = math.max(rows, row)
-    end
-    return cells, rows + 1
+    return EllesmereUI.TalentTreeGrid(configID, nodes)
 end
 
 local function SpellOf(info)
@@ -550,14 +475,23 @@ local function Build()
         QueuePaint()
     end)
     EllesmereUI.RegisterEscapeClose(win, { cursor = true })
+    if EllesmereUI._ShifterAdopt then EllesmereUI._ShifterAdopt("EUI_ClassicTalents") end
 end
 
--- At the left of the screen, or beside the Classic Spellbook while that is open.
+-- Beside the Classic Spellbook while that is open and in its place while it is
+-- closed, hanging from the book (the Shifter may have moved it); at the left of
+-- the screen without one. A spot saved in the Shifter wins over all of these.
 local function Place()
     if not win then return end
     local book = EUI_ClassicSpellbook
     win:ClearAllPoints()
-    win:SetPoint("TOPLEFT", UIParent, "TOPLEFT", book and book:IsShown() and BESIDE or 0, -104)
+    if not book then
+        win:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 0, -104)
+    elseif book:IsShown() then
+        win:SetPoint("TOPLEFT", book, "TOPRIGHT", GAP, 0)
+    else
+        win:SetPoint("TOPLEFT", book, "TOPLEFT")
+    end
 end
 
 local function Close()
@@ -578,6 +512,19 @@ end
 -------------------------------------------------------------------------------
 --  Setup
 -------------------------------------------------------------------------------
+-- The micro menu's Talents button opens the window too, through a click layer
+-- of ours over it (module.MicroClickLayer), in combat as well: the window is a
+-- plain frame. Our other panels that open the talents (the Data Bars micro
+-- menu block, Quickdraw) click EUI_TalentsRoute: a secure click that goes to
+-- the window's toggle while the feature is on and to the game's Talents micro
+-- button otherwise. Made at load, out of combat; aimed by Bind.
+if not InCombatLockdown() then
+    route = CreateFrame("Button", "EUI_TalentsRoute", UIParent, "SecureActionButtonTemplate")
+    route:SetAttribute("type", "click")
+    route:SetAttribute("useOnKeyDown", false)
+    route:SetAttribute("clickbutton", _G.TalentMicroButton)
+end
+
 -- The talents key clicks the toggle while the feature is on. Setting an
 -- override fires UPDATE_BINDINGS itself, so unchanged keys are left alone.
 local function Bind()
@@ -585,19 +532,25 @@ local function Bind()
         EllesmereUI.CombatQueue.Defer(QUEUE_KEY, Bind)
         return
     end
-    if not toggle then
-        if not F.Enabled() then return end
+    local on = F.Enabled()
+    if on and not toggle then
         toggle = CreateFrame("Button", TOGGLE_NAME, UIParent)
         toggle:SetScript("OnClick", Toggle)
         toggle:SetScript("OnEvent", Bind)
     end
-    local on = F.Enabled()
+    local target = on and toggle or _G.TalentMicroButton
+    if route and route:GetAttribute("clickbutton") ~= target then route:SetAttribute("clickbutton", target) end
+    if not toggle then return end
     if on then
         toggle:RegisterEvent("UPDATE_BINDINGS")
+        if not microLayer then
+            microLayer = module.MicroClickLayer("TalentMicroButton", Toggle)
+        end
     else
         toggle:UnregisterAllEvents()
         if win then win:Hide() end
     end
+    if microLayer then microLayer:SetShown(on) end
     local keys = on and table.concat({ GetBindingKey("TOGGLETALENTS") }, " ") or ""
     if keys == boundKeys then return end
     boundKeys = keys

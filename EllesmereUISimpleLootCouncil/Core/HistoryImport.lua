@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
+
 
 
 
@@ -104,13 +105,20 @@ end
 
 
 function Import:Count()
-    local n = 0
+    local n = tonumber(addon.History:ArchivedCount("i")) or 0
     for _ in pairs(addon.db.imported or {}) do n = n + 1 end
     return n
 end
 
 function Import:Clear()
     local removed = Import:Count()
+
+    if addon.SharedSaved then
+        for id in pairs(addon.db.imported or {}) do
+            addon.SharedSaved.Forget(addon.db, "imported", id)
+        end
+    end
+    addon.History:ClearArchived("imported")
     addon.db.imported = {}
     addon.History:Reindex()
     addon.Log:I("Import", "cleared", removed, "imported entries")
@@ -131,13 +139,15 @@ local function Store(entry, cutoff, stats, commit)
         return false
     end
 
-    if (addon.db.imported or {})[entry.id] then
+
+    if (addon.db.imported or {})[entry.id] or addon.History:IsArchived("imported", entry.id) then
         stats.duplicate = stats.duplicate + 1
         return false
     end
 
     if commit ~= false then
         addon.db.imported = addon.db.imported or {}
+        addon.History.Revive("imported", entry.id, true)
         addon.db.imported[entry.id] = entry
     end
     stats.imported = stats.imported + 1
@@ -164,7 +174,7 @@ end
 
 
 
-local function Normalise(source, winner, d)
+local function Normalise(source, winner, d, idWinner)
     if type(d) ~= "table" then return nil end
 
     local link = UnescapeLink(d.lootWon)
@@ -188,7 +198,8 @@ local function Normalise(source, winner, d)
     end
 
     return {
-        id = ImportedID(source, winner, d.id),
+
+        id = ImportedID(source, idWinner or winner, d.id),
         source = source,
         link = link,
 
@@ -249,248 +260,19 @@ function Import:Label(key)
     return source and source.label or tostring(key)
 end
 
-function Import:Abbrev(key)
-    local source = BY_KEY[key]
-    return source and source.abbrev or "??"
-end
-
-function Import:Tint(key)
-    local source = BY_KEY[key]
-    return source and source.tint or nil
-end
-
-
-function Import:Available()
-    local list = {}
-    for _, source in ipairs(SOURCES) do
-        if source.IsAvailable() then list[#list + 1] = source end
-    end
-    return list
-end
-
 
 
 
 Register({
     key = "rclc",
     label = "RCLootCouncil",
-    abbrev = "RC",
-    tint = "bad",
-
-    IsAvailable = function()
-        return type(RCLootCouncilLootDB) == "table"
-            and type(RCLootCouncilLootDB.factionrealm) == "table"
-    end,
-
-
-    Detail = function()
-        local realms = {}
-        if type(RCLootCouncilLootDB) ~= "table"
-            or type(RCLootCouncilLootDB.factionrealm) ~= "table" then
-            return realms
-        end
-        for key, players in pairs(RCLootCouncilLootDB.factionrealm) do
-            local count = 0
-            for _, entries in pairs(players) do
-                if type(entries) == "table" then count = count + #entries end
-            end
-            realms[#realms + 1] = { key, count }
-        end
-        table.sort(realms, function(a, b) return a[2] > b[2] end)
-        return realms
-    end,
-
-    Each = function(fn)
-        if type(RCLootCouncilLootDB) ~= "table"
-            or type(RCLootCouncilLootDB.factionrealm) ~= "table" then
-            return
-        end
-        for _, players in pairs(RCLootCouncilLootDB.factionrealm) do
-            for winner, entries in pairs(players) do
-                if type(entries) == "table" then
-                    for _, d in ipairs(entries) do fn(winner, d) end
-                end
-            end
-        end
-    end,
-
-    Normalise = function(winner, d)
-        if type(d) ~= "table" then return nil end
-        return Normalise("rclc", winner, {
-            id = d.id,
-            lootWon = d.lootWon,
-            itemName = d.itemName,
-            owner = d.owner,
-            response = d.response,
-            responseID = d.responseID,
-            isAwardReason = d.isAwardReason,
-            color = d.color,
-            date = d.date,
-            time = d.time,
-            instance = d.instance,
-            difficultyID = d.difficultyID,
-            mapID = d.mapID,
-            boss = d.boss,
-            note = d.note,
-            votes = d.votes,
-            class = d.class,
-            groupSize = d.groupSize,
-        })
-    end,
 })
-
-
-
-
-
-local function LoothingHistory()
-    local db = LoolibDB
-    if type(db) ~= "table" or type(db.addons) ~= "table" then return nil end
-    local ours = db.addons.Loothing
-    if type(ours) ~= "table" or type(ours.global) ~= "table" then return nil end
-    local history = ours.global.history
-    if type(history) ~= "table" then return nil end
-    return history
-end
 
 Register({
     key = "loothing",
     label = "Loothing",
-    abbrev = "LT",
-    tint = "good",
     csvMarker = "Loothing",
-
-    IsAvailable = function()
-        return LoothingHistory() ~= nil
-    end,
-
-    Detail = function()
-        local history = LoothingHistory() or {}
-        return { { T["entries recorded"], #history } }
-    end,
-
-    Each = function(fn)
-        for _, d in ipairs(LoothingHistory() or {}) do
-            if type(d) == "table" then fn(d.winner, d) end
-        end
-    end,
-
-    Normalise = function(winner, d)
-        if type(d) ~= "table" then return nil end
-        return Normalise("loothing", Recase(winner), {
-            id = d.guid,
-            lootWon = d.itemLink,
-            itemName = d.itemName,
-            owner = d.owner,
-
-            response = d.response or d.winnerResponseText,
-            responseID = d.responseID or d.winnerResponse,
-
-            isAwardReason = NonZero(d.awardReasonId) ~= nil,
-            awardReason = d.awardReason,
-            date = d.date,
-            time = d.time,
-            epoch = d.timestamp,
-            instance = d.instance,
-            difficultyID = d.difficultyID,
-            difficultyName = d.difficultyName,
-            mapID = d.mapID,
-            boss = d.boss or d.encounterName,
-            note = d.winnerNote,
-            votes = d.votes,
-            class = d.winnerClass,
-            groupSize = d.groupSize,
-        })
-    end,
 })
-
-
-
-
-
-
-local function Scan(source, commit)
-    if commit ~= false then addon.db.imported = addon.db.imported or {} end
-    local stats, cutoff = NewStats(), Cutoff()
-    stats.source = source.key
-
-    source.Each(function(winner, d)
-        stats.scanned = stats.scanned + 1
-        Store(source.Normalise(winner, d), cutoff, stats, commit)
-    end)
-    return stats
-end
-
-
-function Import:Preview(key)
-    local source = BY_KEY[key]
-    if not source then return nil, addon.Locale.Format(T["no such source: %s"], tostring(key)) end
-    if not source.IsAvailable() then
-        return nil, addon.Locale.Format(T["%s's saved data is not loaded on this client"], source.label)
-    end
-    return Scan(source, false)
-end
-
-function Import:FromSource(key)
-    local source = BY_KEY[key]
-    if not source then return nil, addon.Locale.Format(T["no such source: %s"], tostring(key)) end
-    if not source.IsAvailable() then
-        return nil, addon.Locale.Format(T["%s's saved data is not loaded on this client"], source.label)
-    end
-
-    local stats = Scan(source, true)
-    if stats.imported > 0 then addon.History:Reindex() end
-    addon.Log:I("Import", source.label, "saved variables:", stats.imported, "imported,",
-        stats.duplicate, "already held,", stats.tooOld, "outside the window")
-    return stats
-end
-
-
-function Import:FromSources(keys)
-    local results, any = {}, false
-    for _, key in ipairs(keys) do
-        local source = BY_KEY[key]
-        local stats, err
-        if source and source.IsAvailable() then
-            stats = Scan(source, true)
-            any = any or stats.imported > 0
-            addon.Log:I("Import", source.label, "saved variables:", stats.imported,
-                "imported,", stats.duplicate, "already held,", stats.tooOld,
-                "outside the window")
-        else
-            err = source and addon.Locale.Format(
-                T["%s's saved data is not loaded"], source.label)
-                or addon.Locale.Format(T["no such source: %s"], tostring(key))
-        end
-        results[#results + 1] = {
-            key = key, label = Import:Label(key), stats = stats, error = err,
-        }
-    end
-    if any then addon.History:Reindex() end
-    return results
-end
-
-
-
-function Import:GetAvailableSources()
-    local detected = {}
-    for _, source in ipairs(SOURCES) do
-        if source.IsAvailable() then
-            local stats = Scan(source, false)
-            detected[#detected + 1] = {
-                key = source.key,
-                label = source.label,
-                abbrev = source.abbrev,
-                entries = stats.scanned,
-                importable = stats.imported,
-                duplicate = stats.duplicate,
-                tooOld = stats.tooOld,
-                detail = source.Detail and source.Detail() or nil,
-            }
-        end
-    end
-    return detected
-end
 
 
 
@@ -594,7 +376,17 @@ local function MapHeader(line, delim, comments)
 end
 
 
-local function NormaliseSLC(get)
+local FREE_TEXT = {
+    winner = true, owner = true, item = true, response = true, instance = true,
+    boss = true, note = true, reason = true, guild = true, recorder = true,
+}
+
+
+local function NormaliseSLC(read)
+    local function get(name)
+        local value = read(name)
+        return FREE_TEXT[name] and addon.History.Plain(value) or value
+    end
     local winner, rawID = get("winner"), get("id")
     if not winner or not rawID then return nil end
 
@@ -617,10 +409,12 @@ local function NormaliseSLC(get)
     local storedID = rawID:find(":", 1, true) and rawID
         or ImportedID(SOURCE_CSV, winner, rawID)
     local epochID = rawID:match("([^:]*)$")
+    local named = get("source")
+    local source = named and BY_KEY[named] and named or SOURCE_CSV
 
     return {
         id = storedID,
-        source = SOURCE_CSV,
+        source = source,
 
 
         nativeID = rawID,
@@ -711,12 +505,68 @@ local function NormaliseForeign(source, get)
         groupSize = tonumber(get("groupSize")),
         note = get("note"),
         owner = get("owner"),
-    })
+    }, winner)
+end
+
+
+local function FoldedIDs(source)
+    local map, prefix = {}, source .. ":"
+    addon.History.EachEntry(function(entry)
+        local id = type(entry) == "table" and entry.id
+        if type(id) == "string" and id:sub(1, #prefix) == prefix then map[addon.Locale.Fold(id)] = true end
+    end, "imported")
+    return map
 end
 
 
 
 
+
+
+local function EndsQuoted(line, delim, open)
+    if not line:find('"', 1, true) then return open end
+    local start = not open
+    local i, n = 1, #line
+    while i <= n do
+        local c = line:sub(i, i)
+        if open then
+            if c == '"' then
+                if line:sub(i + 1, i + 1) == '"' then i = i + 1 else open = false end
+            end
+            start = false
+        elseif c == delim then
+            start = true
+        else
+            if start and c == '"' then open = true end
+            start = false
+        end
+        i = i + 1
+    end
+    return open
+end
+
+
+local MAX_JOIN = 32
+local function JoinQuoted(lines, delim)
+    local out, i = { lines[1] }, 2
+    while i <= #lines do
+        local line, j = lines[i], i
+        local open = EndsQuoted(line, delim, false)
+        while open and j < #lines and j - i < MAX_JOIN do
+            j = j + 1
+            line = line .. "\n" .. lines[j]
+            open = EndsQuoted(lines[j], delim, true)
+        end
+        if open then
+            out[#out + 1] = lines[i]
+            i = i + 1
+        else
+            out[#out + 1] = line
+            i = j + 1
+        end
+    end
+    return out
+end
 
 
 
@@ -767,6 +617,7 @@ function Import:PrepareCSV(text)
             err or T["unrecognised header"])
     end
 
+    if format == "slc" then lines = JoinQuoted(lines, delim) end
     addon.db.imported = addon.db.imported or {}
 
     local stats = NewStats()
@@ -817,13 +668,23 @@ function Import:StepCSV(job, budget)
                 if job.format == "slc" then
                     entry = NormaliseSLC(get)
 
-                    if entry and entry.nativeID
-                        and (addon.db.history or {})[entry.nativeID] then
+
+                    local native = entry and entry.nativeID
+                    if native and native:find(":", 1, true) then native = native:match("^slc%-csv:.*:([^:]+)$") end
+                    if native and ((addon.db.history or {})[native]
+                            or addon.History:IsArchived("history", native)) then
                         entry, counted = nil, true
                         job.stats.duplicate = job.stats.duplicate + 1
                     end
                 else
                     entry = NormaliseForeign(job.format, get)
+                    if entry then
+                        job.folded = job.folded or FoldedIDs(job.format)
+                        if job.folded[addon.Locale.Fold(entry.id)] then
+                            entry, counted = nil, true
+                            job.stats.duplicate = job.stats.duplicate + 1
+                        end
+                    end
                 end
 
                 if entry then
@@ -840,7 +701,11 @@ function Import:StepCSV(job, budget)
 end
 
 function Import:FinishCSV(job)
-    if job.stats.imported > 0 then addon.History:Reindex() end
+    addon.History.ReviveDone()
+    if job.stats.imported > 0 then
+        addon.History:Reindex()
+        addon.History:ScheduleSweep()
+    end
     addon.Log:I("Import", "CSV:", job.format, job.stats.imported, "imported,",
         job.stats.duplicate, "already held,", job.stats.tooOld,
         "outside the window,", job.stats.badRows, "unreadable")
@@ -878,13 +743,24 @@ function Import:BeginCSV(text, onProgress, onDone)
 
         if done then
             ticker:Cancel()
+            cancelled = true
             if onDone then onDone(Import:FinishCSV(job)) end
         end
     end)
 
+
     return function()
+        if cancelled then return end
         cancelled = true
         if ticker then ticker:Cancel() end
+        addon.History.ReviveDone()
+        if job.stats.imported > 0 then
+            addon.History:Reindex()
+            addon.History:ScheduleSweep()
+        end
+        addon.Log:I("Import", "CSV cancelled after", math.max(job.next - 2, 0), "of", total, "rows:",
+            job.stats.imported, "imported")
+        return job.stats
     end
 end
 

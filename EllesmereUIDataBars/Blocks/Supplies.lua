@@ -165,7 +165,8 @@ ns.BlockFactories.supplies = function(blockCfg, slot, content, barCtx)
             if rangedID and not itemClass then Request(rangedID) end
             rangedCount = GetInventoryItemCount("player", rangedSlot)
         end
-        for bag = 0, NUM_BAG_SLOTS or 4 do
+        -- Every carried bag, the reagent bag included.
+        for bag = 0, NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4 do
             for bagSlot = 1, C_Container.GetContainerNumSlots(bag) do
                 -- The ID read allocates nothing; the info table only for our items.
                 local itemID = C_Container.GetContainerItemID(bag, bagSlot)
@@ -357,6 +358,11 @@ ns.BlockFactories.supplies = function(blockCfg, slot, content, barCtx)
     button:SetScript("OnLeave", function() hovered = false; ns.Tip_Hide(button); Recolor() end)
     button:SetScript("OnClick", function(_, mouseButton)
         if mouseButton ~= "RightButton" then return end
+        -- The options never open in combat.
+        if InCombatLockdown() then
+            EllesmereUI.PrintError("Cannot open options during combat.")
+            return
+        end
         if not ns.OpenBlockSettings then EllesmereUI:EnsureLoaded() end
         if ns.OpenBlockSettings then ns.OpenBlockSettings(barCtx.id, blockCfg.id, "resources") end
     end)

@@ -751,7 +751,7 @@ end
 -- term of the size formulas (width on horizontal bars, height on vertical), so one rule covers both
 -- orientations. Returns the stride the CONTAINER reserves; the LAYOUT stride is never replaced --
 -- grid wrapping (col = idx % stride) and per-row centering keep using the real icon count, and the
--- reserved surplus becomes a single centering offset. nil/0 (the default) is a straight passthrough.
+-- reserved surplus becomes a single offset that follows the grow direction. nil/0 (the default) is a straight passthrough.
 local function ReserveStride(barData, stride)
     local minN = barData.minSizeIcons
     if minN and minN > stride then return minN end
@@ -788,7 +788,8 @@ local function ComputeCDMBarSize(barData, count)
     -- there is no match gate here: this is the pre-layout footprint estimate, and a matched bar's live frame rect (checked first by GetStableCDMBarSize) always wins over it.
     local resStride = ReserveStride(barData, stride)
     local grow = barData.growDirection or "CENTER"
-    local isH = (grow == "RIGHT" or grow == "LEFT" or grow == "CENTER")
+    -- Same orientation rule as LayoutCDMBar: a centred bar grows along its orientation.
+    local isH = (grow == "RIGHT" or grow == "LEFT" or (grow == "CENTER" and not barData.verticalOrientation))
     if isH then
         return resStride * iW + (resStride - 1) * sp,
                rows * iH + (rows - 1) * sp
@@ -1081,10 +1082,33 @@ LayoutCDMBar = function(barKey)
         local curW = frame:GetWidth() or 0
         local curH = frame:GetHeight() or 0
         if curW <= 1 or curH <= 1 then
-            local fallbackW, fallbackH = GetStableCDMBarSize(barKey, nil, barData)
-            -- EMPTY_CDM_BAR_SIZE is a raw coord-space placeholder; without snapping, often-empty buff-family bars render at non-pixel-aligned heights (43.20 px vs 43) at non-perfect UI scales.
-            fallbackW = SnapForScale(fallbackW, 1)
-            fallbackH = SnapForScale(fallbackH, 1)
+            local fallbackW, fallbackH
+            local minN = barData.minSizeIcons
+            local growMatched
+            if isHoriz then growMatched = widthMatchTarget else growMatched = heightMatchTarget end
+            if minN and minN > 0 and not growMatched then
+                -- Minimum Bar Size: an empty bar takes its reserved slots, in the same physical px
+                -- the first icon's layout gives (icons unmatched), so nothing matched to it moves
+                -- when that icon lands. The assigned-spell estimate would size it for every spell
+                -- on its list, learned or not (a low-level character).
+                local _, rows = ComputeTopRowStride(barData, 1)
+                if rows < 1 then rows = 1 end
+                local wPx = math.floor(iconW / onePx + 0.5)
+                local hPx = math.floor(iconH / onePx + 0.5)
+                local spPx = math.floor(spacing / onePx + 0.5)
+                local growPx = minN * (isHoriz and wPx or hPx) + (minN - 1) * spPx
+                local perpPx = rows * (isHoriz and hPx or wPx) + (rows - 1) * spPx
+                if isHoriz then
+                    fallbackW, fallbackH = growPx * onePx, perpPx * onePx
+                else
+                    fallbackW, fallbackH = perpPx * onePx, growPx * onePx
+                end
+            else
+                fallbackW, fallbackH = GetStableCDMBarSize(barKey, nil, barData)
+                -- EMPTY_CDM_BAR_SIZE is a raw coord-space placeholder; without snapping, often-empty buff-family bars render at non-pixel-aligned heights (43.20 px vs 43) at non-perfect UI scales.
+                fallbackW = SnapForScale(fallbackW, 1)
+                fallbackH = SnapForScale(fallbackH, 1)
+            end
             frame:SetSize(fallbackW, fallbackH)
             frame._prevLayoutW = fallbackW
             frame._prevLayoutH = fallbackH
@@ -1139,7 +1163,7 @@ LayoutCDMBar = function(barKey)
     -- Minimum Bar Size: reserve growth-axis room for at least minSizeIcons icon slots so a bar that
     -- loses icons (spec/talent swap, shift-hidden cooldowns) keeps its footprint -- everything
     -- matching its width or anchored to its edges then stays put, and the icons still present are
-    -- centered in the surplus. SKIPPED while the GROWTH axis is match-owned: that axis measures
+    -- placed in the surplus by grow direction. SKIPPED while the GROWTH axis is match-owned: that axis measures
     -- exactly what the match target dictates and padding it would overshoot. A match on the
     -- PERPENDICULAR axis is fine -- the growth axis still varies with icon count there.
     local growMatched
@@ -1151,8 +1175,14 @@ LayoutCDMBar = function(barKey)
         local basePx = isHoriz and iconWPx or iconHPx
         reservedPx = resStride * basePx + (resStride - 1) * spacingPx
     end
-    -- Offset that centers the real icon block inside the surplus (uniform layout only; the per-row branch centers each row inside the total already).
-    local padOffsetPx = 0
+    -- Where the real icon block sits inside the surplus: the surplus trails the pinned edge
+    -- (RIGHT/DOWN grow pins the start, LEFT/UP the end); CENTER splits it evenly. padLead is
+    -- the share of the surplus in front of the block, in halves: 0, 2 or 1. Each lead below is
+    -- rounded once, so a centred block sits where it did before the surplus followed the grow.
+    local padLead = (grow == "RIGHT" or grow == "DOWN") and 0 or ((grow == "LEFT" or grow == "UP") and 2 or 1)
+    local surplusPx, padOffsetPx = 0, 0
+    -- Per-row branch: growth-axis extent of the wider row (rows center against each other within it).
+    local rowContentPx
 
     local totalWPx, totalHPx
     if perRowActive then
@@ -1164,28 +1194,35 @@ LayoutCDMBar = function(barKey)
             local topRowW = topN * rowWPx[1] + math.max(0, topN - 1) * spacingPx
             local botRowW = botN * rowWPx[2] + math.max(0, botN - 1) * spacingPx
             totalWPx = math.max(topRowW, botRowW)
-            -- No pad offset needed: both rows are centered against totalWPx below, so growing it IS the centering.
-            if reservedPx > totalWPx then totalWPx = reservedPx end
+            rowContentPx = totalWPx
+            if reservedPx > totalWPx then
+                surplusPx = reservedPx - totalWPx
+                totalWPx = reservedPx
+            end
             totalHPx = rowHPx[1] + rowHPx[2] + spacingPx
         else
             local topColH = topN * rowHPx[1] + math.max(0, topN - 1) * spacingPx
             local botColH = botN * rowHPx[2] + math.max(0, botN - 1) * spacingPx
             totalHPx = math.max(topColH, botColH)
-            if reservedPx > totalHPx then totalHPx = reservedPx end
+            rowContentPx = totalHPx
+            if reservedPx > totalHPx then
+                surplusPx = reservedPx - totalHPx
+                totalHPx = reservedPx
+            end
             totalWPx = rowWPx[1] + rowWPx[2] + spacingPx
         end
     elseif isHoriz then
         totalWPx = stride  * iconWPx + (stride  - 1) * spacingPx + extraPixels
         totalHPx = effRows * iconHPx + (effRows - 1) * spacingPx + extraPixelsH
         if reservedPx > totalWPx then
-            padOffsetPx = math.floor((reservedPx - totalWPx) / 2 + 0.5)
+            padOffsetPx = math.floor(padLead * (reservedPx - totalWPx) / 2 + 0.5)
             totalWPx = reservedPx
         end
     else
         totalWPx = effRows * iconWPx + (effRows - 1) * spacingPx + extraPixels
         totalHPx = stride  * iconHPx + (stride  - 1) * spacingPx + extraPixelsH
         if reservedPx > totalHPx then
-            padOffsetPx = math.floor((reservedPx - totalHPx) / 2 + 0.5)
+            padOffsetPx = math.floor(padLead * (reservedPx - totalHPx) / 2 + 0.5)
             totalHPx = reservedPx
         end
     end
@@ -1263,7 +1300,7 @@ LayoutCDMBar = function(barKey)
                 -- Growth axis = width (center the row within the bar width);
                 -- perpendicular = height (top band, then bottom band).
                 local rowMainPx = rowN * wPx + math.max(0, rowN - 1) * spacingPx
-                local offMainPx = math.floor((totalWPx - rowMainPx) / 2 + 0.5)
+                local offMainPx = math.floor((padLead * surplusPx + rowContentPx - rowMainPx) / 2 + 0.5)
                 local xPx = offMainPx + idxInRow * (wPx + spacingPx)
                 -- Reversed when rows grow upward: rowIdx 2 on top, 1 below.
                 local yPx
@@ -1278,7 +1315,7 @@ LayoutCDMBar = function(barKey)
                 -- Growth axis = height (center the row within the bar height);
                 -- perpendicular = width (left band, then right band).
                 local rowMainPx = rowN * hPx + math.max(0, rowN - 1) * spacingPx
-                local offMainPx = math.floor((totalHPx - rowMainPx) / 2 + 0.5)
+                local offMainPx = math.floor((padLead * surplusPx + rowContentPx - rowMainPx) / 2 + 0.5)
                 local yPx = offMainPx + idxInRow * (hPx + spacingPx)
                 -- Reversed when columns grow leftward: rowIdx 2 at the left.
                 local xPx
@@ -1302,7 +1339,7 @@ LayoutCDMBar = function(barKey)
     -- Uniform icon size: every bar except the 2-row per-row-size case above.
     local stepW = iconW + spacing
     local stepH = iconH + spacing
-    -- Minimum Bar Size surplus in coord space: shifts the whole icon block along the GROWTH axis so it sits centered in the reserved footprint. 0 whenever the reservation is off or already filled.
+    -- Minimum Bar Size surplus in coord space: shifts the icon block along the GROWTH axis (padLead). 0 whenever the reservation is off or already filled.
     local padOffset = padOffsetPx * onePx
 
     local topRowCount = customTopCount
@@ -1468,7 +1505,7 @@ LayoutCDMBar = function(barKey)
            and (oldW >= 1 or oldH >= 1) then
             local adb = EllesmereUIDB and EllesmereUIDB.unlockAnchors
             local ai = adb and adb[unlockKey]
-            if ai then
+            if ai and ai.mode ~= "POINT" then
                 local side = ai.side
                 local PPo = EllesmereUI and EllesmereUI.PP
                 local uiES = PPo and UIParent:GetEffectiveScale()
@@ -1512,9 +1549,11 @@ LayoutCDMBar = function(barKey)
         end
     end
 
+    if EllesmereUI.IsPointAnchored(unlockKey) then EllesmereUI.ReapplyOwnAnchor(unlockKey) end
+
     -- FocusKick: re-anchor against the focus nameplate after every layout pass so the bar tracks size/icon-count changes from the options panel.
-    if barKey == FOCUSKICK_BAR_KEY and ns.ApplyFocusKickAnchor then
-        ns.ApplyFocusKickAnchor()
+    if barKey == ns.FOCUSKICK_BAR_KEY and ns.ReapplyFocusKick then
+        ns.ReapplyFocusKick()
     end
 end
 
@@ -1554,6 +1593,7 @@ function ns.QueueShiftLayout(bk)
         local grow = bd and bd.growDirection or "CENTER"
         local fixedEdge
         if frame and grow ~= "CENTER"
+           and not EllesmereUI.IsPointAnchored("CDM_" .. bk)
            and not frame._mouseTrack and bk ~= ns.FOCUSKICK_BAR_KEY
            and not EllesmereUI._unlockActive
            and frame:GetNumPoints() == 1 then
@@ -1622,13 +1662,9 @@ local function ApplyCDMTooltipState(barKey)
     else
         _tooltipBars[barKey] = nil
         -- Clear a tooltip showing for an icon on this bar
-        if _tooltipCurrentIcon then
-            local sfc = _ecmeFC[_tooltipCurrentIcon]
-            if sfc and sfc.barKey == barKey then
-                GameTooltip:Hide()
-                _tooltipCurrentIcon = nil
-            end
-        end
+        local owner = GameTooltip:GetOwner()
+        local sfc = owner and _ecmeFC[owner]
+        if sfc and sfc.barKey == barKey then GameTooltip:Hide() end
     end
     -- Mouse-motion follows the tooltip setting. A motion-enabled icon with no unit becomes the
     -- mouseover-focus frame and steals hover from unit frames underneath (raid frame hover

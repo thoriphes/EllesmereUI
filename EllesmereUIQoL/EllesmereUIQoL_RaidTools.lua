@@ -383,10 +383,12 @@ local COLLAPSE_SNIPPET = [[
 -- these panels would be the only ones in the suite ignoring the Global Font setting.
 local FONT_KEY = "extras"      -- QoL's key in EllesmereUI._addonKeyToFolder
 local fontOwners = {}          -- filled at build: shells + holders
-local function TrackFont(owner, fs, size)
+-- family: a font family string (a text that shows players' names), which takes
+-- every font through SetFontFamily, never a plain SetFont
+local function TrackFont(owner, fs, size, family)
     local t = owner._fonts
     if not t then t = {}; owner._fonts = t end
-    t[#t + 1] = { fs = fs, size = size }
+    t[#t + 1] = { fs = fs, size = size, family = family }
     return fs
 end
 local function ApplyFonts()
@@ -396,8 +398,12 @@ local function ApplyFonts()
         local t = owner._fonts
         if t then
             for _, e in ipairs(t) do
-                local _, _, flags = e.fs:GetFont()
-                e.fs:SetFont(path, e.size, flags or "")
+                if e.family then
+                    EllesmereUI.SetFontFamily(e.fs, path, e.size, "", false)
+                else
+                    local _, _, flags = e.fs:GetFont()
+                    e.fs:SetFont(path, e.size, flags or "")
+                end
             end
         end
     end
@@ -408,7 +414,7 @@ local markerButtons = {}       -- secure buttons, dimmed on assist
 local pullButtons = {}         -- fixed set of 3; only the ones above 0s show
 -- Created once at build; the layout pass decides which reach the screen. Ready
 -- Check has no switch by design.
-local readyButton, roleButton, convertButton, disbandButton, stopButton
+local readyButton, roleButton, convertButton, disbandButton, stopButton, buffButton
 local compactReadyButton, compactPullButton, compactDivider
 local compactMarkerButtons = {}
 local ShowCompactTip, HideCompactTip
@@ -476,6 +482,15 @@ local DB_DEFAULTS = {
         showRoleCheck = true,
         showConvert   = true,
         showDisband   = true,
+        -- Raid Buff Check (EllesmereUIQoL_RaidBuffCheck.lua): the feature, its
+        -- ready check trigger and window state. Off by default.
+        buffCheck            = false,
+        buffCheckOnReady     = true,
+        buffCheckOnlyMissing = true,
+        buffCheckRuneRequired = true,
+        buffCheckVantusRequired = false,
+        -- Opt-in Buff Check group button (needs buffCheck).
+        showBuffCheck = false,
         -- Per-section: pos[key] = { point, relPoint, x, y }
         pos           = {},
     },
@@ -497,6 +512,7 @@ local DB_DEFAULTS = {
 local function P()
     return db and db.profile and db.profile.raidTools
 end
+ns.RaidToolsProfile = P
 
 local function Mode()
     local p = P()
@@ -705,6 +721,35 @@ local function IsLeader()
     return UnitIsGroupLeader("player")
 end
 
+-- The Raid Buff Check window (EllesmereUIQoL_RaidBuffCheck.lua) wears these panels'
+-- dress and font. Text: a font string on parent in the QoL font, kept current by
+-- ApplyFonts through owner (registered with AddFontOwner).
+ns.RT = {
+    TOPBAR_H = TOPBAR_H,
+    SkinPanelBg = SkinPanelBg,
+    SkinPanelBorder = SkinPanelBorder,
+    SkinButtonChrome = SkinButtonChrome,
+    HasAssist = HasAssist,
+    AddFontOwner = function(owner) fontOwners[#fontOwners + 1] = owner end,
+    Text = function(owner, parent, size, r, g, b)
+        local fs = TrackFont(owner, EllesmereUI.MakeFont(parent, size, nil, r, g, b), size)
+        local path = EllesmereUI.GetFontPath(FONT_KEY)
+        if path then
+            local _, _, flags = fs:GetFont()
+            fs:SetFont(path, size, flags or "")
+        end
+        return fs
+    end,
+    -- Text for a player's name: the same font as a font family, which draws the
+    -- scripts the font lacks (no outline, no shadow, as Text has)
+    NameText = function(owner, parent, size, r, g, b)
+        local fs = TrackFont(owner, parent:CreateFontString(nil, "OVERLAY"), size, true)
+        EllesmereUI.SetFontFamily(fs, EllesmereUI.GetFontPath(FONT_KEY) or EllesmereUI.EXPRESSWAY, size, "", false)
+        if r then fs:SetTextColor(r, g, b, 1) end
+        return fs
+    end,
+}
+
 -- In a RAID, every control on the panel needs leader or assist: ready check,
 -- role check, the countdown, convert, disband and the marker buttons are all
 -- refused by the server without it. So the feature steps off the screen there
@@ -727,6 +772,17 @@ end
 local function ButtonShown(key)
     local p = P()
     return not p or p[key] ~= false
+end
+
+-- The Buff Check button needs Raid Buff Check on (and a retail client: the
+-- feature file publishes ns.ToggleBuffCheck only there).
+local function BuffCheckShown()
+    local p = P()
+    return p and p.showBuffCheck == true and p.buffCheck == true and ns.ToggleBuffCheck ~= nil
+end
+
+local function ToggleBuffCheck()
+    if ns.ToggleBuffCheck then ns.ToggleBuffCheck() end
 end
 
 -- The pull durations worth a button, in slot order. 0 (and anything below it)
@@ -756,7 +812,8 @@ local function RefreshPermissions(force)
 
     for _, b in ipairs(groupButtons) do
         local allowed
-        if b.needsLeader then allowed = leader else allowed = assist end
+        if b.ungated then allowed = true
+        elseif b.needsLeader then allowed = leader else allowed = assist end
         SetButtonEnabled(b, allowed)
     end
 
@@ -958,6 +1015,7 @@ local function LayoutGroupContent()
     end
     Add(readyButton)
     if ButtonShown("showRoleCheck") then Add(roleButton) end
+    if BuffCheckShown()             then Add(buffButton) end
     if ButtonShown("showConvert")   then Add(convertButton) end
     if ButtonShown("showDisband")   then Add(disbandButton) end
     if #pair > 0 then rows[#rows + 1] = pair end
@@ -1011,6 +1069,8 @@ local function BuildGroupContent()
 
     readyButton = MakeGroupButton(f, "Ready Check", full, function() DoReadyCheck() end)
     roleButton  = MakeGroupButton(f, "Role Check", full, function() InitiateRolePoll() end)
+    buffButton  = MakeGroupButton(f, "Buff Check", full, ToggleBuffCheck)
+    buffButton.ungated = true   -- only reads auras: needs no leader or assist
 
     convertButton = MakeGroupButton(f, "Convert to Raid", full, function()
         if IsInRaid() then C_PartyInfo.ConvertToParty() else C_PartyInfo.ConvertToRaid() end
@@ -1319,19 +1379,20 @@ local function BuildCompactContent()
     compactReadyButton = MakeCompactActionButton(compactHolder,
         "RC",
         function()
+            local actions = { { "Left Click", "Ready Check" } }
             if ButtonShown("showRoleCheck") then
-                return "Ready Check", {
-                    { "Left Click", "Ready Check" },
-                    { "Right Click", "Role Check" },
-                }
+                actions[#actions + 1] = { "Right Click", "Role Check" }
             end
-            return "Ready Check", {
-                { "Left Click", "Ready Check" },
-            }
+            if BuffCheckShown() then
+                actions[#actions + 1] = { "Shift + Left Click", "Buff Check" }
+            end
+            return "Ready Check", actions
         end,
         function(_, button)
             if button == "RightButton" then
                 if ButtonShown("showRoleCheck") then InitiateRolePoll() end
+            elseif IsShiftKeyDown() and BuffCheckShown() then
+                ToggleBuffCheck()
             else
                 DoReadyCheck()
             end
@@ -2190,6 +2251,9 @@ end
 -- protected as Hide). So in combat the whole request is parked behind applyPending,
 -- with the REGEN listener guaranteed alive to finish it.
 function Apply()
+    -- Raid Buff Check registers plain events only, so it follows the settings
+    -- even in combat and with the panels on Never.
+    if ns.BuffCheckSync then ns.BuffCheckSync() end
     if InCombatLockdown() then
         applyPending = true
         EnsureEvents()

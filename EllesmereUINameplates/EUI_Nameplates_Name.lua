@@ -2,8 +2,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 --  EUI_Nameplates_Name.lua
 --
---  NameplateFrame: name, classification, faction, raid icon, target and hover
---  extras.
+--  NameplateFrame: name, classification, Quest Objective Text, faction, raid
+--  icon, target and hover extras.
 --  Reads the earlier nameplate files through ns and ns._npInternals.
 -------------------------------------------------------------------------------
 local _, ns = ...
@@ -54,13 +54,17 @@ function NameplateFrame:UpdateName()
             -- paint takes the full absorb path for the new unit; the cached max
             -- belongs to the old unit, drop it too.
             self._absorbHidden = nil
+            -- Color Casting Enemies remembers the mob, not the plate.
+            if self._castSeen ~= nil then ns.NP_ResetCastKind(self) end
             -- Repaint target/hover styling for the new occupant so the old one's
             -- paint cannot stick; mirrors the UpdateHealthValues swap.
             -- ApplyTarget re-owns the shared target-plate cache as a side effect.
+            -- The new occupant's type scale first: ApplyTarget ends in ApplyScale.
+            if ns._typeScaleOn then self:UpdateTypeScale() end
             ns.ClearHoverExtras(self)
             self:ApplyTarget()
             self._maxHPValid = nil
-            if ns._npToTSlot or self._totEv then self:SyncToT(actualUnit) end
+            if ns._npTgtTexts or self._totEv then self:SyncToT(actualUnit) end
         end
     end
     -- Standalone level renders on its own FontString and can share the plate with a
@@ -80,66 +84,86 @@ function NameplateFrame:UpdateName()
     local el = slot and GetTextSlot(slot) or "enemyName"
     local name = EllesmereUI.WithSurname(UnitName(unit))
     if type(name) == "string" then
-        -- WoW Forever: the slot's Name Format (nil function off Forever).
-        if ns.NP_FormatName then name = ns.NP_FormatName(name, slot) end
+        name = ns.NP_FormatName(name, slot, unit)  -- the slot's Name Format
         ns.SetNameElementText(self.name, el, name, unit, slot)
-        if p and p.nameRaidMarkerEnabled == true then self:RefreshNamePosition(true) end
+        -- Debuff coloring's Color Name copies follow the text (RefreshNamePosition
+        -- passes it on too).
+        if p and p.nameRaidMarkerEnabled == true then
+            self:RefreshNamePosition(true)
+        elseif ns.DebuffColors_NameChanged then
+            ns.DebuffColors_NameChanged(self)
+        end
+    end
+    -- Custom texts: name, level and target follow the unit.
+    self:PaintCustomTexts()
+end
+-- Places an icon of a Core Positions slot (the raid marker, the Rare/Quest indicator, the
+-- Quest Objective Text, the faction badge; sz: its height) by the slot's own rule: centred
+-- above the bar at Top, beside the bar at Left and Right (past the cast icon where the two
+-- meet), on the bar's top corners (lift: the raid marker sits on the corner, the indicators
+-- 2 up; above the corner's Top Left / Top Right text while it shows one), under the cast bar
+-- at Bottom.
+-- The Core Positions chain (ns.NP_CoreChain) places the first shown element of a shared
+-- slot with it too.
+local function PlaceSlotIcon(plate, f, pos, xOff, yOff, lift, sz)
+    local cpPush = GetClassPowerTopPush(plate)
+    f:ClearAllPoints()
+    if pos == "top" then
+        PP.Point(f, "BOTTOM", plate.health, "TOP", xOff, GetDebuffYOffset() + cpPush + yOff)
+    elseif pos == "left" then
+        local iconPush = ns.NP_SideIconPush(plate, "left", yOff, sz)
+        PP.Point(f, "RIGHT", plate.health, "LEFT", -GetSideAuraXOffset() - iconPush + xOff, yOff)
+    elseif pos == "right" then
+        local iconPush = ns.NP_SideIconPush(plate, "right", yOff, sz)
+        PP.Point(f, "LEFT", plate.health, "RIGHT", GetSideAuraXOffset() + iconPush + xOff, yOff)
+    elseif pos == "topleft" then
+        PP.Point(f, "BOTTOMLEFT", plate.health, "TOPLEFT", xOff,
+            lift + cpPush + ns.NP_TopCornerLift("topleft") + yOff)
+    elseif pos == "topright" then
+        PP.Point(f, "BOTTOMRIGHT", plate.health, "TOPRIGHT", xOff,
+            lift + cpPush + ns.NP_TopCornerLift("topright") + yOff)
+    elseif pos == "bottom" then
+        -- Below the cast bar, centered (the aura slots' "bottom" convention).
+        PP.Point(f, "TOP", plate.cast, "BOTTOM", xOff, -2 + yOff)
     end
 end
+ns.NP_PlaceSlotIcon = PlaceSlotIcon
+-- Whether the player is in a dungeon, raid, battleground or arena: there each Core Positions
+-- quest and rare element shows only while its own Show In Instances allows it.
+local function InInstance()
+    local _, iType = GetInstanceInfo()
+    return iType == "party" or iType == "raid" or iType == "pvp" or iType == "arena"
+end
+-- The Rare/Quest frame: the Quest Indicator (the quest icon on a quest mob) takes priority
+-- over the Elite/Rare Indicator (the elite and rare marks), each half on while its box is
+-- checked and, in an instance, its Show In Instances is on. The frame keeps the size it was
+-- given in _npSz (each half its own size; the chain and the faction badge read it).
 function NameplateFrame:UpdateClassification()
     if not self.unit then return end
     local slot = GetClassificationSlot()
-    local _, iType = GetInstanceInfo()
-    local inInstance = (iType == "party" or iType == "raid" or iType == "pvp" or iType == "arena")
-    if inInstance then
-        -- "Show In Instances" (Rare/Quest Indicator slot cog) lifts the
-        -- open-world-only gate.
-        local show = p and p.classificationShowInInstances
-        if show == nil then show = defaults.classificationShowInInstances end
-        if show then inInstance = false end
-    end
-    if slot == "none" or inInstance then
+    if slot == "none" then
         self.classFrame:Hide()
         self:UpdateNameWidth()
         return
     end
-    -- Quest mob indicator takes priority over elite/rare. With "Replace Quest Icon with
-    -- Objective" on and a clean remaining count cached, draw that number instead of the icon.
-    -- Quest Indicator off: no quest scan, a quest mob shows its elite/rare mark instead.
-    if not (p and p.classificationHideQuest) and ns.IsQuestMob and ns.IsQuestMob(self.unit) then
-        local objText = (p and p.replaceQuestIconWithObjective == true)
-            and ns.GetQuestObjectiveText and ns.GetQuestObjectiveText(self.unit) or nil
-        if objText then
-            -- classFrame and classText are our own frames, custom keys are safe.
-            self.class:Hide()
-            if not self.classText then
-                self.classText = self.classFrame:CreateFontString(nil, "OVERLAY")
-                self.classText:SetPoint("CENTER", self.classFrame, "CENTER", 0, 0)
-                self.classText:SetJustifyH("CENTER")
-                self.classText:SetJustifyV("MIDDLE")
-            end
-            local fsz = (p and p.questObjectiveTextSize) or defaults.questObjectiveTextSize
-            SetFSFont(self.classText, fsz, GetNPOutline())
-            -- SetFormattedText("%s", ...) is the secret-safe text path; the value
-            -- was already verified clean (issecretvalue + ^%d+/%d+$) before caching.
-            self.classText:SetFormattedText("%s", objText)
-            self.classText:Show()
-        else
-            -- No clean count (quest-giver / percent / secret value) -> icon.
-            if self.classText then self.classText:Hide() end
-            self.class:Show()
-            self.class:SetAtlas("Crosshair_Quest_64")
-        end
+    local inInstance = InInstance()
+    -- Elite/Rare Indicator off: no elite or rare marks (the WoW Forever look starts with
+    -- it off, NP_SeedForever). Quest Indicator off: no quest scan, a quest mob shows its
+    -- elite/rare mark instead.
+    local rareOn = not (p and p.classificationHideRare)
+        and (not inInstance or ns.NP_ShowInInstances("rare"))
+    local questOn = ns.NP_QuestIconOn() and (not inInstance or ns.NP_ShowInInstances("quest"))
+    local sz
+    if questOn and ns.IsQuestMob(self.unit) then
+        self.class:SetAtlas("Crosshair_Quest_64")
+        sz = ns.NP_ElementSize("quest")
     else
-        if self.classText then self.classText:Hide() end
-        -- Elite/Rare Indicator off: no elite or rare marks (the WoW Forever
-        -- look starts with it off, NP_SeedForever).
-        if p and p.classificationHideRare then
+        if not rareOn then
             self.classFrame:Hide()
             self:UpdateNameWidth()
             return
         end
-        self.class:Show()
+        sz = GetRareEliteIconSize()
         local c = UnitClassification(self.unit)
         -- Classic WoW UI carries elite rank in the plate's own art, so the
         -- indicator marks RARITY alone there: a plain elite shows nothing,
@@ -164,46 +188,205 @@ function NameplateFrame:UpdateClassification()
             return
         end
     end
-    local cpPush = GetClassPowerTopPush(self)
     local cxOff, cyOff = GetAuraSlotOffsets("classification")
-    local reSize = GetRareEliteIconSize()
-    PP.Size(self.classFrame, reSize, reSize)
-    self.classFrame:ClearAllPoints()
-    if slot == "top" then
-        local debuffY = GetDebuffYOffset()
-        PP.Point(self.classFrame, "BOTTOM", self.health, "TOP",
-            cxOff, debuffY + cpPush + cyOff)
-    elseif slot == "left" then
-        local sideOff = GetSideAuraXOffset()
-        local iconRes, iconSide = ns.GetCastIconReserve(self)
-        local classicL = ns.NP_ClassicBarReserve()
-        local iconPush = ((iconSide == "left") and iconRes or 0) + classicL
-        PP.Point(self.classFrame, "RIGHT", self.health, "LEFT",
-            -sideOff - iconPush + cxOff, cyOff)
-    elseif slot == "right" then
-        local sideOff = GetSideAuraXOffset()
-        local iconRes, iconSide = ns.GetCastIconReserve(self)
-        local _, classicR = ns.NP_ClassicBarReserve()
-        local iconPush = ((iconSide == "right") and iconRes or 0) + classicR
-        PP.Point(self.classFrame, "LEFT", self.health, "RIGHT",
-            sideOff + iconPush + cxOff, cyOff)
-    elseif slot == "topleft" then
-        PP.Point(self.classFrame, "BOTTOMLEFT", self.health, "TOPLEFT", cxOff, 2 + cpPush + cyOff)
-    elseif slot == "topright" then
-        PP.Point(self.classFrame, "BOTTOMRIGHT", self.health, "TOPRIGHT", cxOff, 2 + cpPush + cyOff)
-    elseif slot == "bottom" then
-        PP.Point(self.classFrame, "TOP", self.cast, "BOTTOM", cxOff, -2 + cyOff)
-    end
+    self.classFrame._npSz = sz
+    PP.Size(self.classFrame, sz, sz)
+    PlaceSlotIcon(self, self.classFrame, slot, cxOff, cyOff, 2, sz)
     self.classFrame:Show()
     self:UpdateNameWidth()
 end
 -- "Rare/Quest + Faction": the faction badge's step-aside depends on whether the
 -- classification icon shows, and some passes (quest objective refreshes) redraw only
--- the classification, so re-place the badge after every classification pass.
+-- the classification, so re-place the badge after every classification pass. The Quest
+-- Objective Text follows every classification pass too (quest refreshes, plate setup).
 NameplateFrame._UpdateClassificationBase = NameplateFrame.UpdateClassification
 function NameplateFrame:UpdateClassification()
     self:_UpdateClassificationBase()
     if p and p.classificationIncludeFaction then self:UpdateFaction() end
+    local slot = GetClassificationSlot()
+    -- Its own chain pass is this one's when the two share the slot.
+    self:UpdateQuestText(slot)
+    -- Elements sharing the slot follow the indicator's show, hide and move.
+    if ns.NP_CoreChain then ns.NP_CoreChain(self, slot) end
+end
+
+-- Quest Objective Text: a Core Positions element of its own (its slot ns.NP_GetQuestTextSlot).
+-- On a quest mob it shows the objective's progress (2/6, 40%) as plain verified text; with no
+-- readable count it shows the quest icon instead, unless the Quest Indicator is on (one quest
+-- icon per plate). Frames: plate.questTextFrame (built on first show, so nothing exists for a
+-- player who never turns it on), plate.questText and plate.questTextIcon; the frame is sized
+-- to what it shows (_npW x _npSz) and placed like the slot's icons. The text is measured on a
+-- font string of the module's own, outside every plate, and only when the text, its size, its
+-- font or its outline moved. chainedBy: the slot whose chain pass follows this call.
+local QT = {}
+local function QuestTextMeasure(text, size, font, outline)
+    local fs = QT.fs
+    if not fs then
+        local host = CreateFrame("Frame", nil, UIParent)
+        host:Hide()
+        fs = host:CreateFontString(nil, "OVERLAY")
+        QT.fs = fs
+    end
+    if QT.size ~= size or QT.font ~= font or QT.outline ~= outline then
+        SetFSFont(fs, size, outline)
+        QT.size, QT.font, QT.outline = size, font, outline
+    end
+    fs:SetText(text)
+    local w, h = fs:GetStringWidth(), fs:GetStringHeight()
+    if not (w and w > 0) then w = size * 0.6 * #text end
+    if not (h and h > 0) then h = size end
+    return math.ceil(w), math.ceil(h)
+end
+local function QuestTextTypeIconHide(self)
+    local f = self.questTextFrame
+    local icon = self.questTextTypeIcon
+    if icon and icon:IsShown() then icon:Hide() end
+    if f and f._qtTypeIconOn then
+        self.questText:ClearAllPoints()
+        self.questText:SetPoint("CENTER", f, "CENTER", 0, 0)
+        f._qtTypeIconOn = nil
+    end
+end
+-- The objective type icon beside the count: its size follows the text size and Icon Scale, 2 px
+-- right of the count. Returns the element's width and height, the count's x offset from the
+-- frame's centre, the icon's left edge from the centre and the icon's size. The options
+-- preview lays its sample out with the same function.
+function ns.NP_QuestTypeIconLayout(counterW, counterH, fontSize, scale)
+    local iconSize = math.max(8, math.floor(fontSize * 0.8 * scale / 100 + 0.5))
+    local gap = 2
+    return counterW + gap + iconSize, math.max(counterH, iconSize),
+        -((iconSize + gap) / 2), (counterW + gap - iconSize) / 2, iconSize
+end
+-- Hides the frame; the name width, the target arrows and the slot's other elements follow.
+local function QuestTextHide(self, chainedBy)
+    if self.questTextTypeIcon then QuestTextTypeIconHide(self) end
+    local f = self.questTextFrame
+    if not (f and f:IsShown()) then return end
+    f:Hide()
+    local last = self._qtSlot
+    self:UpdateNameWidth()
+    if last == "left" or last == "right" then PositionArrowsOutsideAuras(self) end
+    if ns.NP_CoreChain and last and last ~= chainedBy then ns.NP_CoreChain(self, last) end
+end
+function NameplateFrame:UpdateQuestText(chainedBy)
+    local slot = ns.NP_GetQuestTextSlot()
+    local unit = self.unit
+    if slot == "none" or not unit then
+        QuestTextHide(self, chainedBy)
+        return
+    end
+    if (InInstance() and not ns.NP_ShowInInstances("questtext")) or not ns.IsQuestMob(unit) then
+        QuestTextHide(self, chainedBy)
+        return
+    end
+    local text = ns.GetQuestObjectiveText(unit)
+    local iconSz
+    if not text then
+        -- No readable count or percent: the quest icon, unless the Quest Indicator draws it.
+        if ns.NP_QuestIconOn() then
+            QuestTextHide(self, chainedBy)
+            return
+        end
+        iconSz = ns.NP_ElementSize("quest", nil, slot)
+    end
+    local f = self.questTextFrame
+    if not f then
+        -- The faction badge's tier, born in the plate's aspect holder like the other slot
+        -- icons (PlatePool, coreHost), so a Core Positions chain can anchor it to an aura row.
+        f = CreateFrame("Frame", nil, self.coreHost or self)
+        f:SetFrameStrata(ns.GetSlotRaiseStrata(slot) and "HIGH" or "MEDIUM")
+        f:SetFrameLevel(self.health:GetFrameLevel() + 2)
+        f:Hide()
+        local fs = f:CreateFontString(nil, "OVERLAY")
+        fs:SetPoint("CENTER", f, "CENTER", 0, 0)
+        fs:SetJustifyH("CENTER")
+        fs:SetJustifyV("MIDDLE")
+        fs:SetWordWrap(false)
+        fs:SetTextColor(1, 1, 1, 1)
+        local icon = f:CreateTexture(nil, "ARTWORK")
+        icon:SetAllPoints()
+        icon:SetAtlas("Crosshair_Quest_64")
+        icon:Hide()
+        self.questText, self.questTextIcon, self.questTextFrame = fs, icon, f
+    end
+    local w, h
+    if text then
+        local size, font, outline = ns.NP_QuestTextSize(), ns.GetFont(), GetNPOutline()
+        local fs = self.questText
+        -- Paint and measure only when the text or its font moved (the text is a verified
+        -- plain string: SetFormattedText's "%s" is the secret-safe text path all the same).
+        if f._qtText ~= text or f._qtSize ~= size or f._qtFont ~= font or f._qtOutline ~= outline then
+            SetFSFont(fs, size, outline)
+            fs:SetFormattedText("%s", text)
+            f._qtW, f._qtH = QuestTextMeasure(text, size, font, outline)
+            f._qtText, f._qtSize, f._qtFont, f._qtOutline = text, size, font, outline
+        end
+        w, h = f._qtW, f._qtH
+        if p and p.showQuestObjectiveTypeIcon == true then
+            local typeIcon = self.questTextTypeIcon
+            if not typeIcon then
+                typeIcon = f:CreateTexture(nil, "ARTWORK")
+                typeIcon:SetAtlas("Crosshair_Quest_64")
+                self.questTextTypeIcon = typeIcon
+            end
+            local objectiveType = ns.GetQuestObjectiveType(unit)
+            local art = objectiveType == "monster" and "monster"
+                or (objectiveType == "item" and "item" or "generic")
+            if f._qtTypeIconArt ~= art then
+                if art == "monster" then
+                    typeIcon:SetTexture("Interface\\Icons\\INV_Sword_04")
+                elseif art == "item" then
+                    typeIcon:SetTexture("Interface\\Icons\\INV_Misc_Bag_08")
+                else
+                    typeIcon:SetAtlas("Crosshair_Quest_64")
+                end
+                f._qtTypeIconArt = art
+            end
+            local fullW, fullH, textX, iconX, iconSize = ns.NP_QuestTypeIconLayout(f._qtW, f._qtH, size,
+                p.questObjectiveTypeIconScale or 100)
+            -- Laid out again only when the count's width or the icon's size moved.
+            if not f._qtTypeIconOn or f._qtTypeIconCounterW ~= f._qtW or f._qtTypeIconW ~= iconSize then
+                fs:ClearAllPoints()
+                fs:SetPoint("CENTER", f, "CENTER", textX, 0)
+                typeIcon:ClearAllPoints()
+                typeIcon:SetSize(iconSize, iconSize)
+                typeIcon:SetPoint("LEFT", f, "CENTER", iconX, 0)
+                f._qtTypeIconOn = true
+                f._qtTypeIconCounterW, f._qtTypeIconW = f._qtW, iconSize
+            end
+            typeIcon:Show()
+            w, h = fullW, fullH
+        elseif self.questTextTypeIcon then
+            QuestTextTypeIconHide(self)
+        end
+        self.questTextIcon:Hide()
+        fs:Show()
+    else
+        if self.questTextTypeIcon then QuestTextTypeIconHide(self) end
+        w, h = iconSz, iconSz
+        self.questText:Hide()
+        self.questTextIcon:Show()
+    end
+    local lastW, lastSlot, wasShown = f._npW, self._qtSlot, f:IsShown()
+    f._npW, f._npSz = w, h
+    PP.Size(f, w, h)
+    local xOff, yOff = GetSlotOffsets(slot)
+    PlaceSlotIcon(self, f, slot, xOff, yOff, 2, h)
+    self._qtSlot = slot
+    f:Show()
+    if not wasShown or lastW ~= w or lastSlot ~= slot then self:UpdateNameWidth() end
+    -- A side slot pushes the target arrows out, like the classification icon.
+    if (not wasShown or lastSlot ~= slot or lastW ~= w)
+        and (slot == "left" or slot == "right" or lastSlot == "left" or lastSlot == "right") then
+        PositionArrowsOutsideAuras(self)
+    end
+    -- Elements sharing the slot follow its show and move (and close up where it left).
+    if ns.NP_CoreChain then
+        if wasShown and lastSlot and lastSlot ~= slot and lastSlot ~= chainedBy then
+            ns.NP_CoreChain(self, lastSlot)
+        end
+        if slot ~= chainedBy then ns.NP_CoreChain(self, slot) end
+    end
 end
 -- Faction badge (Horde/Alliance): a Core Positions slot element, placed exactly like
 -- the Rare/Quest indicator above. Which badge (if any) comes from ns.NP_FactionBadge,
@@ -223,8 +406,10 @@ function NameplateFrame:UpdateFaction(artOnly)
         end
         if not self.factionFrame then
             -- Same indicator tier as the classification icon, one level below it, so
-            -- a stacked Rare/Quest + Faction pair draws Rare/Quest on top.
-            local f = CreateFrame("Frame", nil, self)
+            -- a stacked Rare/Quest + Faction pair draws Rare/Quest on top. Born in the
+            -- plate's aspect holder like the other slot icons (PlatePool, coreHost), so a
+            -- Core Positions chain can anchor it to an aura row.
+            local f = CreateFrame("Frame", nil, self.coreHost or self)
             f:SetFrameStrata(ns.GetSlotRaiseStrata(slot) and "HIGH" or "MEDIUM")
             f:SetFrameLevel(self.health:GetFrameLevel() + 2)
             f:Hide()
@@ -245,17 +430,20 @@ function NameplateFrame:UpdateFaction(artOnly)
             -- A side-slot badge had pushed the target arrows out: pull them back in.
             if self._facSlot == "left" or self._facSlot == "right" then
                 PositionArrowsOutsideAuras(self)
-                if ns.NPC_ReanchorArrows then ns.NPC_ReanchorArrows(self) end
             end
+            -- Elements sharing the slot close up.
+            if ns.NP_CoreChain then ns.NP_CoreChain(self, slot) end
         end
         return
     end
-    -- Repaint only when the art or the dim changes (inputs: faction, Icon Style, dim).
-    -- The texture keeps its art across pool recycles, so the memo never goes stale.
+    -- Repaint only when the art or the dim changes (inputs: faction, Icon Style, honor
+    -- badge, dim). The texture keeps its art across pool recycles, so the memo never
+    -- goes stale.
     local style = ns.NP_GetFactionStyle()
-    if self._facArt ~= atlas or self._facStyle ~= style then
-        EllesmereUI.SetFactionArt(self.faction, style, atlas)
-        self._facArt, self._facStyle = atlas, style
+    local badge = EllesmereUI.FactionBadgeFor(style, unit)
+    if self._facArt ~= atlas or self._facStyle ~= style or self._facBadge ~= badge then
+        EllesmereUI.SetFactionArt(self.faction, style, atlas, badge)
+        self._facArt, self._facStyle, self._facBadge = atlas, style, badge
     end
     if self._facDim ~= dim then
         self.faction:SetDesaturated(dim)
@@ -263,53 +451,76 @@ function NameplateFrame:UpdateFaction(artOnly)
         self._facDim = dim
     end
     if artOnly and self._facSlot == slot and self.factionFrame:IsShown() then return end
-    local cpPush = GetClassPowerTopPush(self)
     local fxOff, fyOff = GetSlotOffsets(slot)
-    -- "Rare/Quest + Faction" with the classification icon showing too: the faction
-    -- badge stacks behind it, overlapping by 40% (classification is a frame level
-    -- above, so it draws on top); up, or down in the Bottom slot so it clears the cast bar.
-    if p and p.classificationIncludeFaction and self.classFrame:IsShown() then
-        local step = math.floor(GetRareEliteIconSize() * 0.6 + 0.5)
-        fyOff = fyOff + ((slot == "bottom") and -step or step)
-    end
     local sz = ns.NP_GetFactionIconSize()
+    self.factionFrame._npSz = sz
     PP.Size(self.factionFrame, sz, sz)
-    self.factionFrame:ClearAllPoints()
-    if slot == "top" then
-        PP.Point(self.factionFrame, "BOTTOM", self.health, "TOP",
-            fxOff, GetDebuffYOffset() + cpPush + fyOff)
-    elseif slot == "left" then
-        local iconRes, iconSide = ns.GetCastIconReserve(self)
-        local classicL = ns.NP_ClassicBarReserve()
-        local iconPush = ((iconSide == "left") and iconRes or 0) + classicL
-        PP.Point(self.factionFrame, "RIGHT", self.health, "LEFT",
-            -GetSideAuraXOffset() - iconPush + fxOff, fyOff)
-    elseif slot == "right" then
-        local iconRes, iconSide = ns.GetCastIconReserve(self)
-        local _, classicR = ns.NP_ClassicBarReserve()
-        local iconPush = ((iconSide == "right") and iconRes or 0) + classicR
-        PP.Point(self.factionFrame, "LEFT", self.health, "RIGHT",
-            GetSideAuraXOffset() + iconPush + fxOff, fyOff)
-    elseif slot == "topleft" then
-        PP.Point(self.factionFrame, "BOTTOMLEFT", self.health, "TOPLEFT", fxOff, 2 + cpPush + fyOff)
-    elseif slot == "topright" then
-        PP.Point(self.factionFrame, "BOTTOMRIGHT", self.health, "TOPRIGHT", fxOff, 2 + cpPush + fyOff)
-    elseif slot == "bottom" then
-        PP.Point(self.factionFrame, "TOP", self.cast, "BOTTOM", fxOff, -2 + fyOff)
+    -- "Rare/Quest + Faction" with the classification icon showing too: the faction
+    -- badge stacks behind it, overlapping by 40% of the icon's current size
+    -- (classification is a frame level above, so it draws on top); up, or down in the
+    -- Bottom slot so it clears the cast bar.
+    if p and p.classificationIncludeFaction and self.classFrame:IsShown() then
+        local step = math.floor((self.classFrame._npSz or GetRareEliteIconSize()) * 0.6 + 0.5)
+        if slot == "bottom" then step = -step end
+        if ns.NP_CoreChained and ns.NP_CoreChained(slot) then
+            -- Other elements share the slot: the pair is one member of its chain, so the
+            -- badge rides the indicator wherever the chain puts it.
+            self.factionFrame:ClearAllPoints()
+            PP.Point(self.factionFrame, "BOTTOMLEFT", self.classFrame, "BOTTOMLEFT", 0, step)
+        else
+            PlaceSlotIcon(self, self.factionFrame, slot, fxOff, fyOff + step, 2, sz)
+        end
+    else
+        PlaceSlotIcon(self, self.factionFrame, slot, fxOff, fyOff, 2, sz)
     end
     local wasShown = self.factionFrame:IsShown()
     local lastSlot = self._facSlot
     self._facSlot = slot
     self.factionFrame:Show()
-    if not wasShown then self:UpdateNameWidth() end
+    if not wasShown or lastSlot ~= slot then self:UpdateNameWidth() end
     -- A side-slot badge pushes the target arrows out, like the classification icon:
     -- re-flank them when it appears or moves into or out of a side slot.
     if (not wasShown or lastSlot ~= slot)
         and (slot == "left" or slot == "right" or lastSlot == "left" or lastSlot == "right") then
         PositionArrowsOutsideAuras(self)
-        if ns.NPC_ReanchorArrows then ns.NPC_ReanchorArrows(self) end
     end
+    -- Elements sharing the slot follow the badge's show and move.
+    if ns.NP_CoreChain then ns.NP_CoreChain(self, slot) end
 end
+-- Whether a Core Positions slot sits at the Top name's height: Top or a top corner (Left,
+-- Right and Bottom sit off the name's row). The options preview asks the same.
+function ns.NP_OnNameRow(slot)
+    return slot == "top" or slot == "topleft" or slot == "topright"
+end
+local OnNameRow = ns.NP_OnNameRow
+-- The room a name has in the Top slot: the bar minus the raid marker, the Rare/Quest
+-- indicator, the Quest Objective Text and the faction badge while they show on the name's
+-- row, and minus the wider Top Left / Top Right text on each side (the name is centred
+-- between them). The Top Custom text naming the unit takes it too (AddCustomText, then
+-- UpdateNameWidth keeps it current).
+local function TopNameWidth(self, barW)
+    local nameW = barW - 2 * math.max(ns.NP_TopCornerTextWidth("textSlotTopLeft"),
+        ns.NP_TopCornerTextWidth("textSlotTopRight"))
+    if OnNameRow(GetRaidMarkerPos()) and self.raidFrame:IsShown() then
+        nameW = nameW - 2 * (GetRaidMarkerSize() - 2) - 7
+    end
+    if OnNameRow(GetClassificationSlot()) and self.classFrame:IsShown() then
+        nameW = nameW - ((self.classFrame._npSz or GetRareEliteIconSize()) + 4)
+    end
+    local qf = self.questTextFrame
+    if qf and qf:IsShown() and OnNameRow(ns.NP_GetQuestTextSlot()) then
+        nameW = nameW - ((qf._npW or 0) + 4)
+    end
+    -- Stacked with the classification icon ("Rare/Quest + Faction") it takes
+    -- no extra width; alone it reserves its own.
+    local stacked = p and p.classificationIncludeFaction and self.classFrame:IsShown()
+    if self.factionFrame and self.factionFrame:IsShown() and not stacked
+        and OnNameRow(ns.NP_GetFactionSlot()) then
+        nameW = nameW - (ns.NP_GetFactionIconSize() + 4)
+    end
+    return nameW
+end
+ns.NP_TopNameWidth = TopNameWidth
 function NameplateFrame:UpdateNameWidth()
     local barW = GetHealthBarWidth()
     -- Width % scales the computed (bar-derived) width; 100 = historical behaviour.
@@ -319,24 +530,11 @@ function NameplateFrame:UpdateNameWidth()
         and (((p and p.nameRaidMarkerSize) or defaults.nameRaidMarkerSize or 14) + 3) or 0
     if nameSlot == "textSlotTop" then
         -- Above the bar: reserve a fixed slot for the inline raid marker.
-        local nameW = barW - nameMarkerReserve
-        local rmPos = GetRaidMarkerPos()
-        if rmPos ~= "none" and self.raidFrame:IsShown() then
-            nameW = nameW - 2 * (GetRaidMarkerSize() - 2) - 7
-        end
-        local clSlot = GetClassificationSlot()
-        if clSlot ~= "none" and self.classFrame:IsShown() then
-            nameW = nameW - (GetRareEliteIconSize() + 4)
-        end
-        -- Stacked with the classification icon ("Rare/Quest + Faction") it takes
-        -- no extra width; alone it reserves its own.
-        local stacked = p and p.classificationIncludeFaction and self.classFrame:IsShown()
-        if self.factionFrame and self.factionFrame:IsShown() and not stacked then
-            nameW = nameW - (ns.NP_GetFactionIconSize() + 4)
-        end
+        local nameW = TopNameWidth(self, barW) - nameMarkerReserve
         PP.Width(self.name, math.max(nameW * pct / 100, 20))
-    elseif nameSlot == "textSlotBottomLeft" or nameSlot == "textSlotBottomRight" then
-        -- Under the bar the name never truncates: no width box (auto-sized).
+    elseif nameSlot == "textSlotBottomLeft" or nameSlot == "textSlotBottomRight"
+        or nameSlot == "textSlotTopLeft" or nameSlot == "textSlotTopRight" then
+        -- On a corner of the bar the name never truncates: no width box (auto-sized).
         self.name:SetWidth(0)
     elseif nameSlot then
         -- Inside the bar: estimate how much space health text occupies in
@@ -345,7 +543,9 @@ function NameplateFrame:UpdateNameWidth()
         for _, key in ipairs(ns._npBarTextKeys) do
             if key ~= nameSlot then
                 local el = GetTextSlot(key)
-                if el ~= "none" and not ns.IsNameElement(el) then
+                if el == "custom" then
+                    usedWidth = usedWidth + ns.NP_CustomWidth(key)
+                elseif el ~= "none" and not ns.IsNameElement(el) then
                     usedWidth = usedWidth + EstimateHealthTextWidth(el)
                 end
             end
@@ -356,6 +556,11 @@ function NameplateFrame:UpdateNameWidth()
         -- Name not in any slot, use minimal width
         PP.Width(self.name, math.max(barW * pct / 100, 20))
     end
+    if self._cuTopName then
+        local fs = self.customTop
+        fs:SetWidth(math.max(TopNameWidth(self, barW) * ((p and p.textSlotTopWidthPct) or 100) / 100, 20))
+        ns.ReflowFontString(fs)
+    end
 end
 function NameplateFrame:ApplyNameVisibility()
     -- Zero cost when off: the name's shown state is owned by RefreshNamePosition;
@@ -365,22 +570,20 @@ function NameplateFrame:ApplyNameVisibility()
     local shown = hasNameSlot and not self.cast:IsShown()
     self.name:SetShown(shown)
     if self.nameRaidFrame then self.nameRaidFrame:SetShown(shown and self._nameRaidMarkerShown == true) end
+    if ns.DebuffColors_NameChanged then ns.DebuffColors_NameChanged(self, true) end
 end
 -- The full-size cast icon (a cast-bar child) occupies its side-slot space only while a cast is
--- up, so its reserve is gated on the cast bar being shown (see GetCastIconReserve). On every
--- cast show/hide, re-anchor the side elements that reserve it (target arrow, classification
--- icon, raid marker) so they track the icon instead of sitting shoved out by a phantom gap.
--- Zero cost unless the full-size icon is enabled.
+-- up, so its push is gated on the cast bar being shown (see ns.NP_FullIconPush). On every cast
+-- show/hide, re-anchor the side elements it pushes (classification icon, faction badge, raid
+-- marker, the side aura rows) and the target arrows, so they track the icon instead of sitting
+-- shoved out by a phantom gap. Zero cost unless the full-size icon is enabled.
 function NameplateFrame:RefreshCastIconSideReserve()
     if not (GetShowCastIcon() and ns.GetCastIconFullSize()) then return end
     self:UpdateClassification()
     if not (p and p.classificationIncludeFaction) then self:UpdateFaction() end
     self:UpdateRaidIcon()
+    if ns.NPC_PlaceSideRows then ns.NPC_PlaceSideRows(self) end
     PositionArrowsOutsideAuras(self)
-    -- Without this, a cast bar showing/hiding shoves an already container-hugging
-    -- arrow back out to the coarse fallback position (same gap as the target-swap
-    -- path -- see NameplateFrame's isTarget branch).
-    if ns.NPC_ReanchorArrows then ns.NPC_ReanchorArrows(self) end
 end
 
 function NameplateFrame:RefreshNamePosition(localOnly)
@@ -429,9 +632,11 @@ function NameplateFrame:RefreshNamePosition(localOnly)
         PP.Point(self.name, "RIGHT", self.health, "RIGHT", -2 + txOff, tyOff)
         self.name:SetJustifyH("RIGHT")
         self.name:Show()
-    elseif nameSlot == "textSlotBottomLeft" or nameSlot == "textSlotBottomRight" then
+    elseif nameSlot == "textSlotBottomLeft" or nameSlot == "textSlotBottomRight"
+        or nameSlot == "textSlotTopLeft" or nameSlot == "textSlotTopRight" then
         local txOff, tyOff = GetTextSlotOffsets(nameSlot)
-        local slot = HP_BAR_SLOTS[(nameSlot == "textSlotBottomLeft") and 4 or 5]
+        local slot = HP_BAR_SLOTS[(nameSlot == "textSlotBottomLeft" and 4) or (nameSlot == "textSlotBottomRight" and 5)
+            or (nameSlot == "textSlotTopLeft" and 6) or 7]
         SetFSFont(self.name, GetTextSlotSize(nameSlot), GetNPOutline())
         self.name:SetParent(ns.SlotTextHost(self, nameSlot, nameStrata))
         self:PlaceSlotText(self.name, slot, txOff + ((slot.justify == "LEFT") and nameMarkerReserve or 0), tyOff)
@@ -453,7 +658,10 @@ function NameplateFrame:RefreshNamePosition(localOnly)
     -- settings refresh. Off = single line + ellipsis, on = up to two lines; reflow re-lays out.
     local nameWrap = defaults.enemyNameWrap
     if p and p.enemyNameWrap ~= nil then nameWrap = p.enemyNameWrap end
-    if nameSlot == "textSlotBottomLeft" or nameSlot == "textSlotBottomRight" then nameWrap = false end
+    if nameSlot == "textSlotBottomLeft" or nameSlot == "textSlotBottomRight"
+        or nameSlot == "textSlotTopLeft" or nameSlot == "textSlotTopRight" then
+        nameWrap = false
+    end
     self.name:SetWordWrap(nameWrap)
     self.name:SetNonSpaceWrap(false)
     self.name:SetMaxLines(nameWrap and 2 or 1)
@@ -474,6 +682,11 @@ function NameplateFrame:RefreshNamePosition(localOnly)
     elseif nameRaid then
         nameRaid:Hide()
     end
+    -- Debuff coloring's Color Name copies follow the name's host, font and wrapping.
+    if ns.DebuffColors_NameChanged then ns.DebuffColors_NameChanged(self) end
+    -- The top corner texts sit at the name's height: they follow the class power
+    -- push with it (a target change runs this on the target's plate).
+    if ns._npTopCornerUsed then self:AnchorTopCornerTexts() end
     if localOnly then return end
     self:UpdateClassification()
     if not (p and p.classificationIncludeFaction) then self:UpdateFaction() end
@@ -491,42 +704,20 @@ function NameplateFrame:UpdateRaidIcon()
     if type(idx) == "nil" then
         self.raidFrame:Hide()
         self:UpdateNameWidth()
+        -- Elements sharing the slot close up.
+        if ns.NP_CoreChain then ns.NP_CoreChain(self, pos) end
         return
     end
     SetRaidTargetIconTexture(self.raid, idx)
     local sz = GetRaidMarkerSize()
+    self.raidFrame._npSz = sz
     PP.Size(self.raidFrame, sz, sz)
-    local cpPush = GetClassPowerTopPush(self)
     local rxOff, ryOff = GetAuraSlotOffsets("raidMarker")
-    self.raidFrame:ClearAllPoints()
-    if pos == "top" then
-        local debuffY = GetDebuffYOffset()
-        PP.Point(self.raidFrame, "BOTTOM", self.health, "TOP",
-            rxOff, debuffY + cpPush + ryOff)
-    elseif pos == "left" then
-        local sideOff = GetSideAuraXOffset()
-        local iconRes, iconSide = ns.GetCastIconReserve(self)
-        local classicL = ns.NP_ClassicBarReserve()
-        local iconPush = ((iconSide == "left") and iconRes or 0) + classicL
-        PP.Point(self.raidFrame, "RIGHT", self.health, "LEFT",
-            -sideOff - iconPush + rxOff, ryOff)
-    elseif pos == "right" then
-        local sideOff = GetSideAuraXOffset()
-        local iconRes, iconSide = ns.GetCastIconReserve(self)
-        local _, classicR = ns.NP_ClassicBarReserve()
-        local iconPush = ((iconSide == "right") and iconRes or 0) + classicR
-        PP.Point(self.raidFrame, "LEFT", self.health, "RIGHT",
-            sideOff + iconPush + rxOff, ryOff)
-    elseif pos == "topleft" then
-        PP.Point(self.raidFrame, "BOTTOMLEFT", self.health, "TOPLEFT", rxOff, cpPush + ryOff)
-    elseif pos == "topright" then
-        PP.Point(self.raidFrame, "BOTTOMRIGHT", self.health, "TOPRIGHT", rxOff, cpPush + ryOff)
-    elseif pos == "bottom" then
-        -- Below the cast bar, centered (matches PositionAuraSlot "bottom" convention).
-        PP.Point(self.raidFrame, "TOP", self.cast, "BOTTOM", rxOff, -2 + ryOff)
-    end
+    PlaceSlotIcon(self, self.raidFrame, pos, rxOff, ryOff, 0, sz)
     self.raidFrame:Show()
     self:UpdateNameWidth()
+    -- Elements sharing the slot follow the marker's show and move.
+    if ns.NP_CoreChain then ns.NP_CoreChain(self, pos) end
 end
 function NameplateFrame:ApplyTarget()
     if not self.unit then return end
@@ -634,11 +825,6 @@ function NameplateFrame:ApplyTarget()
             self.leftArrow:Show()
             self.rightArrow:Show()
             PositionArrowsOutsideAuras(self)
-            -- The coarse pass above only flanks health/name; a plate that already
-            -- has a live aura container needs the hugging override too, or a
-            -- fresh target selection leaves the arrows stuck at the wide fallback
-            -- until an unrelated RAID_TARGET_UPDATE happens to fire afterward.
-            if ns.NPC_ReanchorArrows then ns.NPC_ReanchorArrows(self) end
         elseif self.leftArrow then
             self.leftArrow:Hide()
             self.rightArrow:Hide()

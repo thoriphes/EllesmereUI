@@ -15,6 +15,7 @@ local InCombatLockdown = InCombatLockdown
 local RegisterStateDriver = RegisterStateDriver
 
 local EAB, EAB_VTABLE, barButtons = ns.EAB, ns.EAB_VTABLE, ns.barButtons
+local EFD = ns.EFD
 local I = ns._internals
 local BAR_CONFIG = I.BAR_CONFIG
 local RegisterBarWithOverrideController = I.RegisterBarWithOverrideController
@@ -91,6 +92,7 @@ local function CreateBarFrame(info)
         ]])
 
         RegisterStateDriver(frame, "page", pagingConditions)
+        frame._eabPagingConds = pagingConditions
     end
 
     -- Bars 2-8 (nativeActionPage) and 9-10 (customPage): buttons have static action
@@ -105,6 +107,7 @@ local function CreateBarFrame(info)
         -- page; when no conditions match, fall back to the bar's default.
         local barSettings = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars[key]
         local customPaging = barSettings and barSettings.paging
+        frame._eabPagingConds = false
         if EAB_VTABLE.HasCustomPaging(barSettings) then
             frame:SetAttributeNoHandler("_onstate-page", [[
                 local page = tonumber(newstate) or 1
@@ -115,6 +118,7 @@ local function CreateBarFrame(info)
             local conditions = EAB_VTABLE.BuildPagingConditions(key, customPaging, defaultPage)
             if conditions then
                 RegisterStateDriver(frame, "page", conditions)
+                frame._eabPagingConds = conditions
             end
         end
     end
@@ -145,7 +149,7 @@ local function CreateBarFrame(info)
     -- If always-hidden or disabled, start hidden so the secure snippet hides
     -- it immediately, before combat can return after a brief reload regen.
     local s = EAB.db and EAB.db.profile.bars[key]
-    local startHidden = s and (s.alwaysHidden or s.enabled == false)
+    local startHidden = s and (EAB.VisibilityCompat.IsNever(s) or s.enabled == false)
     RegisterStateDriver(frame, "eabvis", startHidden and "hide" or "show")
 
     -- Register with the override controller so vehicle/override/petbattle
@@ -159,11 +163,17 @@ local function CreateBarFrame(info)
     -- fires this frame's insecure OnAttributeChanged -- the one clean owning
     -- edge to retire the filled lists and slot->button map so the next
     -- cooldown pass rebuilds against the new mapping.
-    frame:HookScript("OnAttributeChanged", function(_, name)
+    frame:HookScript("OnAttributeChanged", function(f, name)
         if name == "state-page" then
             ns._cdFilledDirty = true
             ns._slotBtnMapDirty = true
             ns._cdDirtyUntil = GetTime() + 2
+            -- Out-of-range coloring re-acquires the bar's new slots and the
+            -- proc glows re-scan (EUI_ActionBars_Range.lua / _Glows.lua): the
+            -- page is applied by now, which ACTIONBAR_PAGE_CHANGED's own
+            -- passes cannot rely on (it fires before the state driver runs)
+            if ns._eabRangePageEdge then ns._eabRangePageEdge(f._barKey) end
+            if ns._eabQueueGlowRescan then ns._eabQueueGlowRescan() end
         end
     end)
 
@@ -182,8 +192,13 @@ local function CreateBarFrame(info)
 end
 
 -- Rebuild the paging state driver for a bar after settings change. Called from the
--- options panel when the user modifies paging config. Must be called out of combat.
-function ns.RebuildBarPaging(barKey)
+-- options panel when the user modifies paging config, and from ApplyAll with
+-- onlyIfChanged so a profile swap or spec override apply picks up the new paging
+-- settings; onlyIfChanged skips a bar whose conditions match the ones installed
+-- (frame._eabPagingConds, false = fixed page) instead of re-registering its driver
+-- on every full apply, and returns true for a rebuilt bar instead of running the
+-- keybind pass, which ApplyAll runs once for all of them. Must be called out of combat.
+function ns.RebuildBarPaging(barKey, onlyIfChanged)
     if InCombatLockdown() then return end
     local frame = barFrames[barKey]
     if not frame then return end
@@ -199,12 +214,19 @@ function ns.RebuildBarPaging(barKey)
         else
             pagingConditions = GetClassPagingConditions()
         end
+        if onlyIfChanged and pagingConditions == frame._eabPagingConds then return end
+        frame._eabPagingConds = pagingConditions
         -- Force re-evaluation by unregistering first
         UnregisterStateDriver(frame, "page")
         RegisterStateDriver(frame, "page", pagingConditions)
     elseif info.nativeActionPage or info.customPage then
         local defaultPage = info.nativeActionPage or info.customPage
-        if EAB_VTABLE.HasCustomPaging(barSettings) then
+        local hasCustom = EAB_VTABLE.HasCustomPaging(barSettings)
+        local conditions = hasCustom
+            and EAB_VTABLE.BuildPagingConditions(barKey, customPaging, defaultPage) or false
+        if onlyIfChanged and conditions == frame._eabPagingConds then return end
+        frame._eabPagingConds = conditions
+        if hasCustom then
             -- Install handler if not already present
             if not frame._eabPagingInstalled then
                 frame:SetAttributeNoHandler("_onstate-page", [[
@@ -225,7 +247,6 @@ function ns.RebuildBarPaging(barKey)
                     end
                 end
             end
-            local conditions = EAB_VTABLE.BuildPagingConditions(barKey, customPaging, defaultPage)
             if conditions then
                 UnregisterStateDriver(frame, "page")
                 RegisterStateDriver(frame, "page", conditions)
@@ -243,6 +264,7 @@ function ns.RebuildBarPaging(barKey)
     -- (waiting on UPDATE_BINDINGS could wait forever); the signature diff
     -- makes this a no-op when routing didn't change, and UpdateKeybinds
     -- re-arms itself out of combat, so calling it unconditionally is safe.
+    if onlyIfChanged then return true end
     if _G._EAB_UpdateKeybinds then _G._EAB_UpdateKeybinds() end
 end
 
@@ -330,16 +352,27 @@ ns.BuildBarButtons = function(info, frame, skipProtected)
     else
         -- Action bars (never stance/pet in this branch): our own EABButtons.
         local slotOffset = BAR_SLOT_OFFSETS[key] or 0
+        -- A paged bar's state driver resolves as its frame is made, before
+        -- these buttons exist, so the page it stands on then (a form, a
+        -- stance or a held modifier at a login or /reload, or at a later
+        -- build) reached no button: each starts on that page, at the slot
+        -- its _childupdate-eab-page sets.
+        local curPage = frame._eabPagingConds and tonumber(frame:GetAttribute("state-page"))
         for i = 1, info.count do
             local slot = slotOffset + i
             local btn = GetOrCreateButton(slot, frame, info, i, skipProtected)
             if btn then
+                -- The bar's key before the first paint below, so the count
+                -- alpha reads this bar's Charge Numbers (LayoutBar stamps the
+                -- same key later).
+                EFD(btn).barKey = key
                 local bindPrefix = BINDING_MAP[key]
                 if not skipProtected then
                     ApplyShapeHitRects(btn, buttonShape)
+                    local action = curPage and (i + (curPage - 1) * 12) or slot
                     -- Explicit action attr: CalculateAction sees it non-zero
                     -- and returns it directly (path 2).
-                    btn:SetAttribute("action", slot)
+                    btn:SetAttribute("action", action)
                     if bindPrefix then
                         btn:SetAttributeNoHandler("binding", bindPrefix .. i)
                     end
@@ -347,10 +380,10 @@ ns.BuildBarButtons = function(info, frame, skipProtected)
                     -- (per-button registration on 96 buttons caused mass
                     -- OnEvent->UpdateAction calls per tick -- screen blink).
                     -- Taint-safe refresh; avoids passing secret cooldown values through a tainted call.
-                    EAB_VTABLE.ForceButtonRefresh(btn, slot)
+                    EAB_VTABLE.ForceButtonRefresh(btn, action)
                     -- Reconcile attack visuals and the equipped border on rebuild.
-                    ns.AB_SyncAttackState(btn, slot)
-                    ns.AB_SyncEquippedBorder(btn, slot)
+                    ns.AB_SyncAttackState(btn, action)
+                    ns.AB_SyncEquippedBorder(btn, action)
                 end
                 if bindPrefix then
                     btn.commandName = bindPrefix .. i

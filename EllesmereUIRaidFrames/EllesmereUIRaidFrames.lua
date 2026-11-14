@@ -6,7 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Secret-value-safe absorb shields matching UnitFrames visuals.
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.SetFrameScale and EllesmereUI.HideFrame and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard raid and party frame suppression hides and scales through the parent's HideFrame and SetFrameScale)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.SetFrameScale and EllesmereUI.HideFrame and EllesmereUI._Pool and EllesmereUI.NewFrameData and EllesmereUI.AbbreviateValue and EllesmereUI.IsZeroValue and EllesmereUI.UnitNameFormat and EllesmereUI.OwnSurnameHidden and EllesmereUI.ApplyModuleFontFamily and EllesmereUI.SetFontFamily and EllesmereUI.UIScaledAlpha and EllesmereUI.OnUIAlphaChanged and EllesmereUI.PREVIEW_ROSTER and EllesmereUI.SetLeftClickTarget and EllesmereUI.GetSecureTargetMacro) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard raid and party frame suppression hides and scales through the parent's HideFrame and SetFrameScale, and the health texts format through the parent's AbbreviateValue, the [absorb:abr] tags blank at zero through its IsZeroValue, and the Name Format asks its UnitNameFormat, and the [name:last] and [target:last] tags its OwnSurnameHidden, and the texts that show names take their font family through its ApplyModuleFontFamily and SetFontFamily, and the 3D portraits follow a faded UI through its UIScaledAlpha and OnUIAlphaChanged, and the preview names its members from its PREVIEW_ROSTER, and the unit buttons' left-click target comes from its SetLeftClickTarget, and click casting's target bindings take their macro from its GetSecureTargetMacro)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 
 local ERF = EllesmereUI.Lite.NewAddon(ADDON_NAME)
@@ -48,7 +48,8 @@ end
 --  icons, Buff Manager icons/squares/bars) share one band ABOVE the
 --  threat/dispel/base border so the threat border renders behind them; each
 --  aura unit renders children (cooldown/border/text) up to +5 above base.
---  Bottom to top: base border (+8/strips +9) -> hover/target/aggro raise (LVL_RAISE,
+--  Bottom to top: base border (+8/strips +9) -> dispel ring and Buff Manager
+--  Frame Border (LVL_RAISE - 1, strips +10) -> hover/target/aggro raise (LVL_RAISE,
 --  strips +11, covering base/threat/dispel border strips) -> text band
 --  (LVL_TEXT: name/health text, role icon, leader crown) -> aura band ->
 --  marker carrier (also hosts ready-check/summon/rez icons). The raise sits
@@ -60,9 +61,10 @@ end
 -------------------------------------------------------------------------------
 ns.LVL_DISPEL_OVERLAY = 7  -- Blizzard private-aura dispel gradient: below the border (+8) and name/health text (LVL_TEXT) so it renders BEHIND them (like the regular dispel overlay), but above the health bar so it stays visible. Per-slot private-aura icons stay above at LVL_AURA.
 ns.LVL_ROLE_BEHIND = 7  -- role icon with Show Behind Border: just under the base border (+8; strips +9)
-ns.LVL_RAISE  = 10   -- hover/target/aggro-recolor border (strips +11: above base strips +9;
-                     -- ties threat/dispel strips +11 but the raise container is
-                     -- created later so it wins). MUST stay below ns.LVL_TEXT:
+ns.LVL_RAISE  = 10   -- hover/target/aggro-recolor border (strips +11: above base strips +9
+                     -- and the dispel / Buff Manager border strips +10; ties threat
+                     -- strips +11 but the raise container is created later so it
+                     -- wins). MUST stay below ns.LVL_TEXT:
                      -- UpdateBorder creates strips lazily AFTER the text
                      -- carriers, so a tie with text puts the border on top.
 ns.LVL_TEXT   = 12   -- text band: name/health text, role icon, leader crown;
@@ -298,6 +300,8 @@ local REZ_SPELL_BY_CLASS = {
     WARLOCK     = 20707,   -- Soulstone
     EVOKER      = 361227,  -- Return
 }
+-- WoW Forever has no Intercession; Redemption rank 1 is the Paladin's rez there.
+if EllesmereUI.IS_FOREVER then REZ_SPELL_BY_CLASS.PALADIN = 7328 end
 local _, playerClassToken = UnitClass("player")
 local playerRezSpell = REZ_SPELL_BY_CLASS[playerClassToken]
 
@@ -335,6 +339,7 @@ local defaults = {
         partyCompactMode = false,
         groupGrowth      = "RIGHT",  -- "DOWN", "UP", "RIGHT", "LEFT", "DOWNRIGHT" (grid: ns._RF_GRID_ROWS per column)
         unitGrowth       = "DOWN",   -- any direction; same-axis as groupGrowth = one continuous line
+        groupGrowthCentered = false, -- center the shown groups in the mover box along the group axis (not for DOWNRIGHT)
         sortMode         = "ROLE",   -- "INDEX" (by group) or "ROLE" (by assigned role)
         roleOrder        = { "TANK", "HEALER", "DAMAGER" },
         prioritizeClass  = false,    -- sort by class within the main sort (raid)
@@ -390,7 +395,14 @@ local defaults = {
             raid  = false,
             position = "right",   -- "left" | "right" | "free" | "owner" (Beside Owner, Party tab)
             freePos  = { x = 100, y = -200 },
-            healthColor = { r = 23/255, g = 172/255, b = 49/255 },
+            -- Fill Color: healthColorMode ("class" | "dark" | "classic" | "custom" | "customDynamic")
+            -- has no default: unset, the pets follow the Dark Mode of the frames beside them
+            -- and are otherwise their own colour (healthColor); a pick is saved only where it
+            -- differs from that.
+            healthColor     = { r = 23/255, g = 172/255, b = 49/255 },
+            dynamicColor100 = { r = 0, g = 1, b = 0 },
+            dynamicColor50  = { r = 0xEC/255, g = 0xEC/255, b = 0x32/255 },
+            dynamicColor0   = { r = 0xE3/255, g = 0x30/255, b = 0x30/255 },
             extraWidth  = 0,      -- size offset on top of the party or raid frame size
             extraHeight = 0,
         },
@@ -409,12 +421,22 @@ local defaults = {
             -- unlockPos: saved by unlock mode (RF_HealerMana element)
         },
 
+        -- Player Group Label (Extras); unset style keys follow the raid frames.
+        playerGroup = {
+            enabled = false,
+            format  = "number", -- "number" | "full"
+            padding = 4,
+            -- width/height: nil = content-sized; unlockPos: saved by unlock
+            -- mode (RF_PlayerGroup element)
+        },
+
         -- Position (saved by unlock mode)
         unlockPos        = nil,
 
         -- Health bar
         healthBarTexture = "atrocity",
         healthBarOpacity = 100,
+        textureBg = false,  -- Textured Background (Health Bar Fill cog)
         healthColorMode  = "class",  -- "class", "dark", "classic", "custom", "customDynamic", "classReactive"
         customFillColor  = { r = 37/255, g = 193/255, b = 29/255 },
         -- Custom Dynamic Colors: health-percent gradient stops; defaults match
@@ -422,6 +444,8 @@ local defaults = {
         dynamicColor100  = { r = 0, g = 1, b = 0 },   -- full health
         dynamicColor50   = { r = 1, g = 1, b = 0 },   -- half health
         dynamicColor0    = { r = 1, g = 0, b = 0 },   -- empty health
+        dynamicLow       = 0,     -- health % at or below which the 0% color holds (0-20)
+        dynamicHigh      = 100,   -- health % at or above which the 100% color holds (80-100)
         customBgColor    = { r = 17/255, g = 17/255, b = 17/255 },
         bgClassColored   = false,
         bgDarkness       = 50,
@@ -569,6 +593,10 @@ local defaults = {
         roleIconOffsetX  = 0,
         roleIconOffsetY  = 0,
         roleIconHideInCombat = false,
+        roleIconOnNameBar = false,     -- Attach Role Icons: on the Top Name Bar, with its own position/offsets
+        roleNameBarPosition = "left",
+        roleNameBarOffsetX = 0,
+        roleNameBarOffsetY = 0,
         roleIconBehindBorder = false,  -- drop the carrier below the normal border so borders draw over the icon
         showRoleForTank    = true,
         showRoleForHealer  = true,
@@ -641,7 +669,7 @@ local defaults = {
 
         -- Dispels
         dispelBorderSize = 0,
-        dispelOverlay    = "fill",   -- "none", "fill", "full", "gradient", "gradient_sharp"
+        dispelOverlay    = "fill",   -- "none", "fill", "full", "gradient", "gradient_sharp", "gradient_reverse"
         dispelOverlayOpacity = 100,
         dispelShowAll             = true,   -- true = highlight any dispellable debuff; false = only player-dispellable
         dispelOverlayPosition     = 0,      -- 0=Top, 1=Bottom, 2=Left (aura-organization-type for private aura dispel container)
@@ -754,7 +782,7 @@ local defaults = {
 
         -- Range & misc
         oorAlpha         = 0.4,
-        -- showTooltip is the on/off fallback the "Show Raid Frames Tooltip"
+        -- showTooltip is the on/off fallback the "Show Raid & Party Frames Tooltip"
         -- dropdown derives from (ns._ResolveTooltipMode); picking an option writes
         -- tooltipMode = always|outOfCombat|outOfBossCombat|never. Raid/party only.
         showTooltip      = true,
@@ -778,11 +806,16 @@ local defaults = {
         -- Party target frames (Party tab PARTY TARGETS section): party only, one value under
         -- every style. partyTargetPosition nil = beside stacked frames, below horizontal ones.
         partyTargetIncludeSelf     = false,     -- your own target beside your frame too
-        partyTargetHealthColorMode = "class",   -- "class" | "dark" | "classic" | "custom"
+        partyTargetHealthColorMode = "class",   -- "class" | "dark" | "classic" | "custom" | "customDynamic"
         partyTargetCustomFillColor = { r = 37/255, g = 193/255, b = 29/255 },
+        partyTargetDynamicColor100 = { r = 0, g = 1, b = 0 },
+        partyTargetDynamicColor50  = { r = 0xEC/255, g = 0xEC/255, b = 0x32/255 },
+        partyTargetDynamicColor0   = { r = 0xE3/255, g = 0x30/255, b = 0x30/255 },
         partyTargetBgClassColored  = false,
         partyTargetCustomBgColor   = { r = 17/255, g = 17/255, b = 17/255 },
         partyTargetBgDarkness      = 50,
+        partyTargetTextClassColored = false,
+        partyTargetCustomTextColor = { r = 1, g = 1, b = 1 },
         partyTargetOffsetX         = 0,         -- -100..100
         partyTargetOffsetY         = 0,
         partyTargetWidth           = 70,
@@ -1045,12 +1078,7 @@ end
 
 -- FFD: external weak-keyed lookup for state on header-managed buttons
 -- (SecureGroupHeader buttons are Blizzard-owned, never write custom keys)
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -------------------------------------------------------------------------------
 --  Physical pixel snapping. PP.Scale uses PanelPP.mult, which can be 1 even
@@ -1071,9 +1099,13 @@ local function PixelSnap(value)
 end
 
 -------------------------------------------------------------------------------
---  Font helper (matches UF/CDM pattern)
+--  Font helper. The frames' texts show other players' names, so they take the
+--  module font as a font family: the font draws the letters it has and the
+--  client's own faces draw Cyrillic, Korean and Chinese. A plain SetFont would
+--  pin a string's face for good, so every font write to these strings goes
+--  through here.
 -------------------------------------------------------------------------------
-local function ApplyFont(fs, size) EllesmereUI.ApplyModuleFont(fs, nil, size, "raidFrames") end
+local function ApplyFont(fs, size) EllesmereUI.ApplyModuleFontFamily(fs, nil, size, "raidFrames") end
 
 -------------------------------------------------------------------------------
 --  Health bar texture helpers
@@ -1539,7 +1571,7 @@ ns._currentSizeTier = 20
 -- it writes through the Set<Name> function built below, which runs them all.
 -- broken: true while an EUI_RaidFrames_*.lua file loads; a file that fails
 -- leaves it set, and the files behind it return at their first lines.
-ns._internals = {
+EllesmereUI.NewInternals(ns, "_internals", {
     AbbreviateNumbers = AbbreviateNumbers, ABSORB_STYLE_ALPHA = ABSORB_STYLE_ALPHA,
     ABSORB_STYLE_TEX = ABSORB_STYLE_TEX, allButtons = allButtons, ApplyFont = ApplyFont,
     ApplyRoleIcon = ApplyRoleIcon, defaults = defaults, DISPEL_COLORS = DISPEL_COLORS,
@@ -1560,20 +1592,9 @@ ns._internals = {
     inCombatSetters = { function(v) inCombat = v end },
     readyCheckActiveSetters = {},
     framesVisibleSetters = {},
-    broken = false,
-}
--- Set<Name> hands a new value to every copy registered in <name>Setters.
-for setter, listName in pairs({ SetDB = "dbSetters", SetPP = "PPSetters",
-        SetContainerFrame = "containerFrameSetters", SetInCombat = "inCombatSetters",
-        SetReadyCheckActive = "readyCheckActiveSetters",
-        SetFramesVisible = "framesVisibleSetters" }) do
-    local list = ns._internals[listName]
-    ns._internals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
-end
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._internals, { __index = function(_, k)
-    error("ns._internals has no entry " .. tostring(k), 2)
-end })
+}, {
+    SetDB = "dbSetters", SetPP = "PPSetters",
+    SetContainerFrame = "containerFrameSetters", SetInCombat = "inCombatSetters",
+    SetReadyCheckActive = "readyCheckActiveSetters",
+    SetFramesVisible = "framesVisibleSetters",
+})

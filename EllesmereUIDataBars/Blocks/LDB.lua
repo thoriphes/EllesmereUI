@@ -76,6 +76,8 @@ end
 local function LDBDisplayText(obj)
     if not obj then return nil end
     local t = obj.text
+    -- Some plugins publish a bare number (an error count) instead of a string.
+    if type(t) == "number" then return tostring(t) end
     if type(t) == "string" and t ~= "" then return t end
     local v = obj.value
     if v ~= nil then
@@ -368,6 +370,11 @@ ns.BlockFactories.ldb = function(blockCfg, slot, content, barCtx)
         -- No plugin picked yet: nothing to forward the click to, so send the
         -- player to the picker instead of dead-ending there.
         if not D().source then
+            -- The options never open in combat.
+            if InCombatLockdown() then
+                EllesmereUI.PrintError("Cannot open options during combat.")
+                return
+            end
             -- Options surface is LoadOnDemand; load it so OpenBlockSettings exists.
             if not ns.OpenBlockSettings then EllesmereUI:EnsureLoaded() end
             if ns.OpenBlockSettings then

@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
+
 
 
 
@@ -95,7 +96,7 @@ function Attendance.Apply(store, pull)
         end
     end
 
-    return true
+    return true, night
 end
 
 
@@ -149,7 +150,8 @@ end
 
 
 
-function Attendance.Clear(store, nights, match)
+
+function Attendance.Clear(store, nights, match, removed)
     if type(store) ~= "table" or type(store.nights) ~= "table" then return 0, 0 end
 
     local chosen
@@ -164,6 +166,7 @@ function Attendance.Clear(store, nights, match)
         local inScope = not chosen or chosen[night]
         if inScope and not match then
             removedNights = removedNights + 1
+            if removed then removed(night) end
         else
             if inScope then
                 for name in pairs(night.members or {}) do
@@ -171,6 +174,7 @@ function Attendance.Clear(store, nights, match)
                         night.members[name] = nil
                         if night.memberKills then night.memberKills[name] = nil end
                         removedEntries = removedEntries + 1
+                        if removed then removed(night, name) end
                     end
                 end
             end
@@ -271,9 +275,21 @@ function Attendance.Matcher(roster, ranks, players)
 end
 
 
+local function Forget(night, name)
+    local shared = addon.SharedSaved
+    local key = shared and shared.NightKey(night)
+    if not key then return end
+    if name then
+        shared.Forget(addon.db, "members", shared.MemberKey(key, name))
+    else
+        shared.Forget(addon.db, "nights", key)
+    end
+end
+
+
 function Attendance:ClearNights(nights, match)
     local store = addon.db.attendance
-    local removedNights, removedEntries = Attendance.Clear(store, nights, match)
+    local removedNights, removedEntries = Attendance.Clear(store, nights, match, Forget)
     addon.Log:I("Attendance", "cleared", removedNights, "night(s),",
         removedEntries, "player entr(ies)")
     if removedNights + removedEntries > 0 then
@@ -285,6 +301,7 @@ end
 function Attendance:ClearAll()
     local store = addon.db.attendance
     local count = store and store.nights and #store.nights or 0
+    for _, night in ipairs(store and store.nights or {}) do Forget(night) end
     addon.db.attendance = { nights = {} }
     addon.Log:I("Attendance", "cleared all,", count, "night(s)")
     if count > 0 then addon.Callbacks:Fire("AttendanceChanged") end
@@ -296,8 +313,17 @@ end
 
 
 
+
+local FUTURE_SLACK = 10 * 60
+
 function Attendance:ApplyReceived(payload, sender)
     if type(payload) ~= "table" or type(payload.id) ~= "string" then return end
+
+    local stamp = tonumber(payload.id:match("^(%d+)%-%d+$"))
+    if not stamp or stamp > GetServerTime() + FUTURE_SLACK then
+        addon.Log:WLogOnly("Attendance", ("refused a pull id %s from %s"):format((payload.id:sub(1, 32):gsub("|", "||")), tostring(sender)))
+        return
+    end
 
     addon.db.attendance = addon.db.attendance or { nights = {} }
     local store = addon.db.attendance
@@ -316,10 +342,17 @@ function Attendance:ApplyReceived(payload, sender)
         end
     end
 
-    local applied = Attendance.Apply(store, {
+    local applied, night = Attendance.Apply(store, {
         id = payload.id, e = payload.e, n = payload.n,
         d = payload.d, k = payload.k, p = names,
     })
+
+    local shared, History = addon.SharedSaved, addon.History
+    local key = applied and shared and History and History.Revive and shared.NightKey(night)
+    if key then
+        for _, name in ipairs(names) do History.Revive("members", shared.MemberKey(key, name), true) end
+        History.ReviveDone()
+    end
 
     Attendance.Prune(store, GetServerTime())
 

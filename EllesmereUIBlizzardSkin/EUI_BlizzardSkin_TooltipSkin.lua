@@ -49,11 +49,9 @@ local FFD, GetFFD = I.FFD, I.GetFFD
         return true
     end
 
-    local function _applyConfiguredBorder(owner, prefix, legacySize)
-        if not owner or not EllesmereUI.ApplyBorderStyle then return end
-        -- Read the level up front: it is the first widget call this makes, so it doubles as the restriction probe (see _ttUsable).
-        local okLvl, ownerLevel = pcall(owner.GetFrameLevel, owner)
-        if not okLvl then return end
+    -- Size step, step key, color and opacity of a <prefix>Border* configured border
+    -- colorOverride (optional {r,g,b}): a caller-computed color for loot window's "quality"
+    local function _resolveConfiguredBorder(prefix, legacySize, colorOverride)
         local db = EllesmereUIDB or {}
         local key = db[prefix .. "BorderThickness"]
         local sizes = { none=0, thin=1, normal=2, heavy=3, strong=4 }
@@ -61,7 +59,9 @@ local FFD, GetFFD = I.FFD, I.GetFFD
         key = key or ({ [0]="none", [1]="thin", [2]="normal", [3]="heavy", [4]="strong" })[size] or "thin"
         local mode = db[prefix .. "BorderColorMode"] or "custom"
         local color
-        if mode == "accent" then
+        if colorOverride then
+            color = colorOverride
+        elseif mode == "accent" then
             color = EllesmereUI.ELLESMERE_GREEN or { r=.27, g=.86, b=.49 }
         elseif mode == "class" then
             local _, class = UnitClass("player")
@@ -71,6 +71,15 @@ local FFD, GetFFD = I.FFD, I.GetFFD
         end
         local alpha = db[prefix .. "BorderOpacity"]
         if alpha == nil then alpha = (mode == "custom") and EllesmereUI.RESKIN.BRD_ALPHA or .5 end
+        return db, size, key, color, alpha
+    end
+
+    local function _applyConfiguredBorder(owner, prefix, legacySize, colorOverride)
+        if not owner or not EllesmereUI.ApplyBorderStyle then return end
+        -- Read the level up front: it is the first widget call this makes, so it doubles as the restriction probe (see _ttUsable).
+        local okLvl, ownerLevel = pcall(owner.GetFrameLevel, owner)
+        if not okLvl then return end
+        local db, size, key, color, alpha = _resolveConfiguredBorder(prefix, legacySize, colorOverride)
         local data = GetFFD(owner)
         if not data.configBorder then
             data.configBorder = CreateFrame("Frame", nil, owner, "BackdropTemplate")
@@ -92,6 +101,15 @@ local FFD, GetFFD = I.FFD, I.GetFFD
             "blizzardSkin", key, nil, px)
     end
     EllesmereUI._applyBlizzardConfiguredBorder = _applyConfiguredBorder
+
+    -- Removes a border drawn by _applyConfiguredBorder for a setting that went back to its default.
+    EllesmereUI._hideBlizzardConfiguredBorder = function(owner)
+        local data = owner and FFD[owner]
+        local border = data and data.configBorder
+        if not border then return end
+        EllesmereUI.HideBorderStyle(border)
+        border:Hide()
+    end
 
     -- Element & Text Color mode. "native" = surfaces keep original coloring (Game Menu header
     -- stays branded green). UNSET resolves to native unless the user had the legacy Accent Colored Elements toggle on, so old choices carry forward with no migration write and a fresh install sees no change.
@@ -144,23 +162,48 @@ local FFD, GetFFD = I.FFD, I.GetFFD
     -- (their window packs call it on show).
     EllesmereUI._skinBlizzardTooltipFrame = _ttSkin
 
-    local function _ttFonts(tt, startFrom)
-        if not tt or tt:IsForbidden() or not _enabled() then return end
+    -- Face, outline and the two line sizes, with Blizzard's shared tooltip font objects
+    -- synced to them. Lines another addon adds after OnShow (Raider.IO, Archon Tooltip)
+    -- draw from those objects and never meet the per-line pass below; the login
+    -- failsafe (ApplyModuleFontFailsafe) gives the objects our face but keeps their
+    -- native size, so those lines came out larger than the rest of the tooltip.
+    -- Synced only when a value changes, since a font object change re-flows every
+    -- string inheriting it. Small takes the body size, as the per-line pass does.
+    local _ttObjSynced = {}
+    local function _ttFontSpec()
         local fp = EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
         local ol = EllesmereUI.GetFontOutlineFlag("blizzardSkin") or ""
         local scale = EllesmereUIDB and EllesmereUIDB.tooltipFontScale or 1.0
         local titleSize = math.floor(13 * scale + 0.5)
         local bodySize  = math.floor(11 * scale + 0.5)
+        local s = _ttObjSynced
+        if s.fp ~= fp or s.ol ~= ol or s.title ~= titleSize or s.body ~= bodySize then
+            s.fp, s.ol, s.title, s.body = fp, ol, titleSize, bodySize
+            local setFace = EllesmereUI.SetFontObjectFace
+            setFace(_G.GameTooltipHeaderText, fp, titleSize, ol)
+            setFace(_G.GameTooltipText, fp, bodySize, ol)
+            setFace(_G.GameTooltipTextSmall, fp, bodySize, ol)
+        end
+        return fp, ol, titleSize, bodySize
+    end
+
+    local function _ttFonts(tt, startFrom)
+        if not tt or tt:IsForbidden() or not _enabled() then return end
+        local fp, ol, titleSize, bodySize = _ttFontSpec()
         -- pcall'd for the same reason as _ttUsable, and this is the first widget call here.
         local okName, name = pcall(tt.GetName, tt)
         if not okName or not name then return end
         local nLines = tt.NumLines and tt:NumLines() or 30
+        -- Font families (lines show players' names, guilds and notes), with no
+        -- drop shadow, as the lines' own template font has none. A line already
+        -- on the family is left alone.
+        local SetFamily = EllesmereUI.SetFontFamily
         for i = (startFrom or 1), nLines do
             local left = _G[name .. "TextLeft" .. i]
             if not left then break end
-            left:SetFont(fp, (i == 1) and titleSize or bodySize, ol)
+            SetFamily(left, fp, (i == 1) and titleSize or bodySize, ol, false)
             local right = _G[name .. "TextRight" .. i]
-            if right then right:SetFont(fp, bodySize, ol) end
+            if right then SetFamily(right, fp, bodySize, ol, false) end
         end
     end
 
@@ -183,7 +226,6 @@ local FFD, GetFFD = I.FFD, I.GetFFD
 
     local function _ttHook(tt)
         if not tt or tt:IsForbidden() or _ttSkinned[tt] then return end
-        if EllesmereUI.BlizzSkinPadStandDown() then return end
         _ttSkinned[tt] = true
         tt:HookScript("OnShow", _ttOnShow)
     end
@@ -648,9 +690,6 @@ local FFD, GetFFD = I.FFD, I.GetFFD
     local function _ttShowBuffs(guid, unit)
         local db = EllesmereUIDB
         if not (unit and db and db.tooltipShowBuffs) then return end
-        -- Its GameTooltip hooks stand down with the others under the gamepad
-        -- interface style.
-        if EllesmereUI.BlizzSkinPadStandDown() then return end
         local AK = EllesmereUI.AuraKit
         if not _ttBuffs then
             -- noTooltips: no hover tooltips (they would take over GameTooltip);
@@ -679,6 +718,139 @@ local FFD, GetFFD = I.FFD, I.GetFFD
         _ttBuffs:Show()
     end
 
+    -- Tooltip Extras level/guild/spec/faction lines: level number by difficulty, a compact
+    -- level line, spec/class line in class color, Alliance/Horde line in faction color, and a
+    -- guildmate's guild line in guild chat color. Secret text is left as Blizzard drew it.
+    local _FACTION_CC = {
+        [FACTION_HORDE] = PLAYER_FACTION_COLORS[0],
+        [FACTION_ALLIANCE] = PLAYER_FACTION_COLORS[1],
+    }
+    -- Compact level line labels, colored like the target frame's portrait dragon.
+    local _CLASSIFICATION = {
+        elite = { ELITE, NORMAL_FONT_COLOR },
+        rare = { MAP_LEGEND_RARE, LIGHTGRAY_FONT_COLOR },
+        rareelite = { MAP_LEGEND_RAREELITE, LIGHTGRAY_FONT_COLOR },
+        worldboss = { BOSS, RED_FONT_COLOR },
+    }
+    -- Level line patterns, anchored at the start, built from the client's own level format
+    -- strings so they match in every locale ("Level %s" -> "^Level .-"). The anchor and the
+    -- required number (or "??") keep a title like "Leveling Coach" from matching.
+    local _LEVEL_PATTERNS = {}
+    for _, fmt in ipairs({ TOOLTIP_UNIT_LEVEL, TOOLTIP_UNIT_LEVEL_RACE, TOOLTIP_UNIT_LEVEL_TYPE,
+        UNIT_TYPE_LEVEL_TEMPLATE, UNIT_TYPE_PLUS_LEVEL_TEMPLATE, UNIT_LETHAL_LEVEL_TEMPLATE,
+        UNIT_TYPE_LETHAL_LEVEL_TEMPLATE }) do
+        if fmt:gsub("%%%d?%$?[sd]", ""):find("[^%s%p]") then
+            -- Escape the magic characters, then turn the (now escaped) %s / %d / %1$s into ".-".
+            local pat = "^" .. fmt:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"):gsub("%%%%%d?%%?%$?[sd]", ".-")
+            _LEVEL_PATTERNS[#_LEVEL_PATTERNS + 1] = pat
+        end
+    end
+    local function _isLevelText(text)
+        if not text:find("[%d%?]") then return false end
+        for _, pat in ipairs(_LEVEL_PATTERNS) do
+            if text:find(pat) then return true end
+        end
+        return false
+    end
+    -- The guild line is the guild name, optionally followed by "-Realm", " (Rank)" or
+    -- Guild Rank's " [Rank]"; matching the start keeps a guild named "Or" off "Level 80 Orc".
+    local function _isGuildText(text, guildName)
+        if text:sub(1, #guildName) ~= guildName then return false end
+        local rest = text:sub(#guildName + 1)
+        local two = rest:sub(1, 2)
+        return rest == "" or rest:sub(1, 1) == "-" or two == " (" or two == " ["
+    end
+    -- One parts list for the compact level line, refilled on every build.
+    local _compactParts = {}
+    local function _ttLineColors(tt, data, unit, cc)
+        local db = EllesmereUIDB
+        if not (db and (db.tooltipLevelColor or db.tooltipClassLineColor or db.tooltipFactionColor
+            or db.tooltipGuildmateColor or db.tooltipCompactLevel)) then return end
+        local guildName = unit and GetGuildInfo(unit)
+        if guildName and _isSecret and _isSecret(guildName) then guildName = nil end
+        local nLines = tt.NumLines and tt:NumLines() or 0
+        -- Level line: the tooltip data's UnitLevel line type when the client tags it, else the
+        -- first of lines 2-4 (after name, guild or title) that matches a level format.
+        local levelIdx
+        for _, ld in ipairs(data and data.lines or {}) do
+            local t = ld.type
+            if not (_isSecret and _isSecret(t)) and t == Enum.TooltipDataLineType.UnitLevel then
+                levelIdx = ld.lineIndex
+                break
+            end
+        end
+        if not levelIdx then
+            for i = 2, math.min(nLines, 4) do
+                local text = _G["GameTooltipTextLeft" .. i]:GetText()
+                if text and not (_isSecret and _isSecret(text))
+                    and not (guildName and _isGuildText(text, guildName)) and _isLevelText(text) then
+                    levelIdx = i
+                    break
+                end
+            end
+        end
+        -- Difficulty color on every unit, friendly included; battle pet levels aren't
+        -- comparable to the player's, so pets keep Blizzard's line.
+        local hex, compact
+        if levelIdx and unit and (db.tooltipLevelColor or db.tooltipCompactLevel)
+            and not (UnitIsWildBattlePet(unit) or UnitIsBattlePetCompanion(unit)) then
+            local lvl = UnitEffectiveLevel(unit)
+            local r, g, b
+            if db.tooltipLevelColor then r, g, b = EllesmereUI.GetLevelColor(unit, lvl, true) end
+            if r then hex = EllesmereUI.ColorText("%0", r, g, b) end
+            -- Compact line: "90 Tauren" for players, "90 Elite Humanoid" for NPCs.
+            local player = UnitIsPlayer(unit)
+            if db.tooltipCompactLevel and not (_isSecret and (_isSecret(lvl) or _isSecret(player))) then
+                local parts = _compactParts
+                wipe(parts)
+                parts[1] = EllesmereUI.ColorText(lvl > 0 and lvl or "??", r, g, b)
+                if player then
+                    parts[2] = UnitRace(unit)
+                else
+                    local cl = _CLASSIFICATION[UnitClassification(unit)]
+                    if cl then parts[#parts + 1] = cl[2]:WrapTextInColorCode(cl[1]) end
+                    parts[#parts + 1] = UnitCreatureType(unit)
+                end
+                local secret = false
+                for _, v in ipairs(parts) do
+                    if _isSecret and _isSecret(v) then secret = true end
+                end
+                if not secret then compact = table.concat(parts, " ") end
+            end
+        end
+        local doClass = levelIdx and unit and cc and db.tooltipClassLineColor
+        local guildColor = guildName and db.tooltipGuildmateColor and UnitIsInMyGuild(unit) and ChatTypeInfo.GUILD
+        if not (hex or compact or doClass or guildColor or db.tooltipFactionColor) then return end
+        for i = 2, nLines do
+            local line = _G["GameTooltipTextLeft" .. i]
+            local text = line and line:GetText()
+            if text and not (_isSecret and _isSecret(text)) then
+                if i == levelIdx then
+                    -- Compact rewrite, else color the number (or "??") only, leaving text
+                    -- another addon already colored.
+                    if compact then
+                        line:SetText(compact)
+                    elseif hex and not string.find(text, "|c", 1, true) then
+                        local newText, n = text:gsub("%d+", hex, 1)
+                        if n == 0 then newText, n = text:gsub("%?%?", hex, 1) end
+                        if n > 0 then line:SetText(newText) end
+                    end
+                elseif guildColor and (not levelIdx or i < levelIdx) and _isGuildText(text, guildName) then
+                    line:SetTextColor(guildColor.r, guildColor.g, guildColor.b)
+                    guildColor = nil
+                elseif _FACTION_CC[text] then
+                    if db.tooltipFactionColor then
+                        local fc = _FACTION_CC[text]
+                        line:SetTextColor(fc.r, fc.g, fc.b)
+                    end
+                -- The spec/class line directly follows the level line on player tooltips.
+                elseif doClass and i == levelIdx + 1 and text ~= PVP_ENABLED then
+                    line:SetTextColor(cc.r, cc.g, cc.b)
+                end
+            end
+        end
+    end
+
     local function _ttUnitColor(tt, data)
         if tt ~= _GameTooltip or tt:IsForbidden() then return end
         local nLinesBefore = tt.NumLines and tt:NumLines() or 0
@@ -700,6 +872,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
         if not classFile and unit then
             if not UnitIsPlayer(unit) then
                 -- No class additions on non-players, but Targeting still applies (checking a boss's target is the core case).
+                _ttLineColors(tt, data, unit)
                 _ttTargetLine(tt, unit)
                 _ttFonts(tt, nLinesBefore)
                 return
@@ -732,6 +905,16 @@ local FFD, GetFFD = I.FFD, I.GetFFD
                 if strip then _nameL1:SetText(display) end
             end
         end
+        -- Away/busy tag after the name, in Blizzard's own <Away>/<Busy> wording.
+        if unit and db and db.tooltipAFKTag then
+            local afk, dnd = UnitIsAFK(unit), UnitIsDND(unit)
+            local tag = not (_isSecret and (_isSecret(afk) or _isSecret(dnd)))
+                and (afk and CHAT_FLAG_AFK or dnd and CHAT_FLAG_DND)
+            local cur = tag and _nameL1:GetText()
+            if cur and not (_isSecret and _isSecret(cur)) and not string.find(cur, tag, 1, true) then
+                _nameL1:SetText(cur .. " " .. GRAY_FONT_COLOR:WrapTextInColorCode(tag))
+            end
+        end
         -- Recolor only (never replaces text): name line + health bar.
         local cc = _RAID_CC and _RAID_CC[classFile]
         if cc then
@@ -740,6 +923,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
                 GameTooltipStatusBar:SetStatusBarColor(cc.r, cc.g, cc.b)
             end
         end
+        _ttLineColors(tt, data, unit, cc)
         -- Guild rank next to guild name: Name-Realm [Rank]. Re-found every call (index varies
         -- per unit; titles shift it, so a cached index would decorate the wrong row). Deduped like the M+ line against refresh re-runs.
         if unit and db and db.tooltipShowGuildRank then
@@ -766,16 +950,16 @@ local FFD, GetFFD = I.FFD, I.GetFFD
             local info = C_PlayerInfo.GetPlayerMythicPlusRatingSummary(unit)
             local score = info and info.currentSeasonScore
             if score and not (_isSecret and _isSecret(score)) and score > 0
-                and not _tipHasLine(tt, "M+ Score") then
+                and not _tipHasLine(tt, EllesmereUI.L("M+ Score:")) then
                 local sColor = C_ChallengeMode and C_ChallengeMode.GetDungeonScoreRarityColor
                     and C_ChallengeMode.GetDungeonScoreRarityColor(score)
                 local r, g, b = 1, 1, 1
                 if sColor then r, g, b = sColor.r, sColor.g, sColor.b end
-                tt:AddDoubleLine("M+ Score:", score, 1, 1, 1, r, g, b)
+                tt:AddDoubleLine(EllesmereUI.L("M+ Score:"), score, 1, 1, 1, r, g, b)
             end
         end
         -- Mount name from the live helpful aura MountJournal recognizes. Opt-in (default off); per-GUID cached so refresh ticks on an unmounted player never re-walk the aura list.
-        if unit and guid and db and db.tooltipShowMount and not _tipHasLine(tt, "Mount:") then
+        if unit and guid and db and db.tooltipShowMount and not _tipHasLine(tt, EllesmereUI.L("Mount:")) then
             local mountName, mountCollected
             local cached = _mountCache[guid]
             local now = GetTime()
@@ -806,7 +990,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
                 elseif mountCollected == false then
                     valText = mountName .. " |TInterface\\RaidFrame\\ReadyCheck-NotReady:0|t"
                 end
-                tt:AddDoubleLine("Mount:", valText, 1, 1, 1, 1, 1, 1)
+                tt:AddDoubleLine(EllesmereUI.L("Mount:"), valText, 1, 1, 1, 1, 1, 1)
             end
         end
         _ttShowBuffs(guid, unit)
@@ -851,7 +1035,8 @@ local FFD, GetFFD = I.FFD, I.GetFFD
 
     -- Visual reskin: dark bg/border (via _ttHook -> _ttSkin), EUI fonts, and restyled status bar. Gated on "Reskin Tooltip" (customTooltips).
     local function _ttInitVisual()
-        if EllesmereUI.BlizzSkinPadStandDown() then return end
+        -- Shared font objects in step from login, not from the first tooltip shown.
+        _ttFontSpec()
         for _, tt in ipairs({
             _GameTooltip, ShoppingTooltip1, ShoppingTooltip2,
             ItemRefTooltip, ItemRefShoppingTooltip1, ItemRefShoppingTooltip2,
@@ -891,9 +1076,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
         if _ttDataInited then return end
         _ttDataInited = true
         -- Clear the recorded identity on hide so a late inspect result can never append to a closed/switched tooltip. HookScript (never SetScript) keeps the secure OnHide handler intact.
-        if not EllesmereUI.BlizzSkinPadStandDown() then
-            _GameTooltip:HookScript("OnHide", function() _tipShownGUID = nil end)
-        end
+        _GameTooltip:HookScript("OnHide", function() _tipShownGUID = nil end)
         -- Item level inspect pacing starts at login, so the request history from other
         -- addons is already being tracked before the first hover.
         if not EllesmereUIDB or EllesmereUIDB.tooltipItemLevel ~= false then _insp.Activate() end
@@ -1165,7 +1348,6 @@ local FFD, GetFFD = I.FFD, I.GetFFD
     end
 
     local function _popupInit()
-        if EllesmereUI.BlizzSkinPadStandDown() then return end
         for i = 1, STATICPOPUP_NUMDIALOGS or 4 do
             local popup = _G["StaticPopup" .. i]
             if popup then
@@ -1268,7 +1450,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
 
     -- Install OnShow/OnHide hooks once. Hooks cannot be uninstalled, so they self-gate (OnShow early-returns when off, OnHide is a raw weak-table lookup); never called before the first enable.
     local function _resGlowInit()
-        if _resGlowHooked or EllesmereUI.BlizzSkinPadStandDown() then return end
+        if _resGlowHooked then return end
         _resGlowHooked = true
         for i = 1, STATICPOPUP_NUMDIALOGS or 4 do
             local popup = _G["StaticPopup" .. i]
@@ -1288,6 +1470,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
     EllesmereUI._EnsureResurrectGlow = function()
         if _resGlowEnabled() then _resGlowInit() end
         if _resGlowHooked then _resGlowRefreshAll() end
+        if EllesmereUI._repaintPopupPreview then EllesmereUI._repaintPopupPreview() end
     end
 
     do
@@ -1317,18 +1500,251 @@ local FFD, GetFFD = I.FFD, I.GetFFD
     end
     EllesmereUI._initTooltipSkins = function() _ttInit(); _menuInit(); _popupInit() end
 
+    ---------------------------------------------------------------------------
+    --  Options header sample (Blizzard Skins+ > Tooltips & Menus)
+    --  A unit tooltip of our own, dressed by the live skin and font passes.
+    --  Its lines follow the Tooltip Extras the way _ttUnitColor and
+    --  _ttLineColors write them, from the player's own unit (never secret)
+    --  plus a fixed M+ score and mount. Built the first time the page asks;
+    --  no events, no OnUpdate.
+    ---------------------------------------------------------------------------
+    local _pv = {}  -- tt, strip, parent, place
+    local _PV_SCORE = 2850
+    local _PV_MOUNT_SPELL = 458  -- Brown Horse
+
+    local function _pvLine(tt, text, c)
+        if c then tt:AddLine(text, c.r, c.g, c.b) else tt:AddLine(text, 1, 1, 1) end
+    end
+
+    local function _pvPaint()
+        local tt, parent = _pv.tt, _pv.parent
+        if not tt then return end
+        local db = EllesmereUIDB or {}
+        local on = _enabled()
+        -- Extras exist only under the reskin, as on the live tooltip.
+        local x = on and db or {}
+        local L = EllesmereUI.L
+        if _pv.place then _pv.place(tt) end
+        -- SetOwner clears the lines and re-owns the tooltip after the header was hidden.
+        tt:SetOwner(parent, "ANCHOR_NONE")
+
+        local _, classFile = UnitClass("player")
+        local cc = classFile and _RAID_CC and _RAID_CC[classFile]
+        local name = UnitName("player") or ""
+        local title = (not on or x.tooltipPlayerTitles) and UnitPVPName("player")
+        if title and _isSecret and _isSecret(title) then title = nil end
+        local line1 = (title and title ~= "") and title or name
+        if x.tooltipAFKTag then line1 = line1 .. " " .. GRAY_FONT_COLOR:WrapTextInColorCode(CHAT_FLAG_AFK) end
+        _pvLine(tt, line1, on and cc or nil)
+
+        -- Without a guild (or with a secret one) Blizzard's own words stand in, uncolored.
+        local gName, gRank = GetGuildInfo("player")
+        local inGuild = gName and not (_isSecret and (_isSecret(gName) or _isSecret(gRank)))
+        if not inGuild then gName, gRank = GUILD, RANK end
+        if x.tooltipShowGuildRank then gName = gName .. " [" .. (gRank or RANK) .. "]" end
+        _pvLine(tt, gName, inGuild and x.tooltipGuildmateColor and ChatTypeInfo.GUILD or nil)
+
+        -- Level line as _ttLineColors leaves it: compact, or the number colored by difficulty.
+        local lvl, race = UnitEffectiveLevel("player"), UnitRace("player") or ""
+        if _isSecret and _isSecret(lvl) then lvl = 0 end
+        local r, g, b
+        if x.tooltipLevelColor and EllesmereUI.GetLevelColor then r, g, b = EllesmereUI.GetLevelColor("player", lvl, true) end
+        if x.tooltipCompactLevel then
+            _pvLine(tt, EllesmereUI.ColorText(lvl, r, g, b) .. " " .. race)
+        else
+            local text = UNIT_TYPE_LEVEL_TEMPLATE:format(lvl, race)
+            if r then text = text:gsub("%d+", EllesmereUI.ColorText("%0", r, g, b), 1) end
+            _pvLine(tt, text)
+        end
+
+        local className = UnitClass("player") or ""
+        local spec
+        local idx = C_SpecializationInfo and C_SpecializationInfo.GetSpecialization()
+        if idx then spec = select(2, C_SpecializationInfo.GetSpecializationInfo(idx)) end
+        _pvLine(tt, spec and (spec .. " " .. className) or className, x.tooltipClassLineColor and cc or nil)
+
+        local _, faction = UnitFactionGroup("player")
+        if faction then _pvLine(tt, faction, x.tooltipFactionColor and _FACTION_CC[faction] or nil) end
+
+        -- No Mythic+ on WoW Forever: the live line never shows there (no score above 0).
+        if on and db.tooltipMythicScore ~= false and not EllesmereUI.IS_FOREVER
+            and C_PlayerInfo and C_PlayerInfo.GetPlayerMythicPlusRatingSummary then
+            local sc = C_ChallengeMode and C_ChallengeMode.GetDungeonScoreRarityColor
+                and C_ChallengeMode.GetDungeonScoreRarityColor(_PV_SCORE)
+            tt:AddDoubleLine(L("M+ Score:"), _PV_SCORE, 1, 1, 1, sc and sc.r or 1, sc and sc.g or 1, sc and sc.b or 1)
+        end
+        local mount = x.tooltipShowMount and C_Spell.GetSpellName(_PV_MOUNT_SPELL)
+        if mount then
+            tt:AddDoubleLine(L("Mount:"), mount .. " |TInterface\\RaidFrame\\ReadyCheck-Ready:0|t", 1, 1, 1, 1, 1, 1)
+        end
+        if x.tooltipShowTarget then
+            tt:AddDoubleLine(L("Targeting:"), L("You"), 1, 1, 1, 0.1, 1, 0.1)
+        end
+        if on and db.tooltipItemLevel ~= false then
+            local _, equipped = GetAverageItemLevel()
+            if equipped and equipped > 0 then
+                tt:AddDoubleLine(L("Item Level:"), math.floor(equipped), 1, 1, 1, 1, 1, 1)
+            end
+        end
+
+        -- The look: the live skin and fonts, or Blizzard's own frame and fonts
+        -- with the reskin off (a switch that waits for its reload).
+        local data = GetFFD(tt)
+        if on then
+            if data.bg then data.bg:Show() end
+            if data.configBorder then data.configBorder:Show() end
+            _ttSkin(tt)
+            _ttFonts(tt)
+        else
+            if tt.NineSlice then tt.NineSlice:SetAlpha(1) end
+            if data.bg then data.bg:Hide() end
+            if data.configBorder then data.configBorder:Hide() end
+            local nm = tt:GetName()
+            for i = 1, tt:NumLines() do
+                local left, right = _G[nm .. "TextLeft" .. i], _G[nm .. "TextRight" .. i]
+                if left then left:SetFontObject(i == 1 and GameTooltipHeaderText or GameTooltipText) end
+                if right then right:SetFontObject(GameTooltipText) end
+            end
+        end
+        tt:Show()
+
+        -- Health strip: inside the bottom edge under the reskin, styled by the
+        -- live strip's own pass; Blizzard's bar below the tooltip without it.
+        local strip = _pv.strip
+        local below = 0
+        if db.tooltipHideHealthStrip == false then
+            if not strip then
+                strip = CreateFrame("StatusBar", nil, tt)
+                strip:SetMinMaxValues(0, 1)
+                strip.bg = strip:CreateTexture(nil, "BACKGROUND")
+                strip.bg:SetAllPoints()
+                strip.bg:SetColorTexture(0, 0, 0, 0.5)
+                _pv.strip = strip
+            end
+            strip:SetValue(1)
+            strip:ClearAllPoints()
+            if on then
+                strip:SetPoint("BOTTOMLEFT", tt, "BOTTOMLEFT", 1, 1)
+                strip:SetPoint("BOTTOMRIGHT", tt, "BOTTOMRIGHT", -1, 1)
+                strip:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+                strip:SetHeight(3)
+                strip.bg:Show()
+                if EllesmereUI._applyTooltipHealthStripStyle then EllesmereUI._applyTooltipHealthStripStyle(nil, strip) end
+            else
+                strip:SetPoint("TOPLEFT", tt, "BOTTOMLEFT", 2, -1)
+                strip:SetPoint("TOPRIGHT", tt, "BOTTOMRIGHT", -2, -1)
+                strip:SetStatusBarTexture("Interface\\TargetingFrame\\UI-TargetingFrame-BarFill")
+                strip:SetHeight(8)
+                strip.bg:Hide()
+                below = 9
+            end
+            local c = cc or HIGHLIGHT_FONT_COLOR
+            strip:SetStatusBarColor(c.r, c.g, c.b)
+            strip:Show()
+        elseif strip then
+            strip:Hide()
+        end
+        if _pv.place then _pv.place(tt, tt:GetWidth(), tt:GetHeight() + below) end
+    end
+
+    -- A write on the Tooltips page: the shown sample paints again.
+    EllesmereUI._repaintTooltipPreview = function()
+        local p = _pv.tt and _pv.tt:GetParent()
+        if p and p:IsVisible() then _pvPaint() end
+    end
+
+    -- Shows the sample under parent and paints it. place(tt) runs before the
+    -- paint (scale it), place(tt, w, h) after it (anchor it, size the header).
+    function EllesmereUI.ShowTooltipPreview(parent, place)
+        if not _pv.tt then
+            _pv.tt = CreateFrame("GameTooltip", "EllesmereUITooltipPreview", parent, "SharedTooltipTemplate")
+            _pv.tt:SetClampedToScreen(false)
+        end
+        local tt = _pv.tt
+        tt:SetParent(parent)
+        tt:SetFrameStrata(parent:GetFrameStrata())
+        tt:SetFrameLevel(parent:GetFrameLevel() + 5)
+        _pv.parent, _pv.place = parent, place
+        _pvPaint()
+        return tt
+    end
+
+    -- Popup sample: Blizzard's resurrect dialog in its own words, dressed by
+    -- _popupSkin and the resurrect glow like a live StaticPopup. Without the
+    -- reskin since login it keeps Blizzard's dialog art; switched off later it
+    -- dims, as the live popups wait for the reload.
+    local _pp = {}  -- f, place
+
+    local function _ppButton(f, text)
+        local b = CreateFrame("Button", nil, f)
+        b:SetSize(128, 21)
+        b:EnableMouse(false)
+        b:SetNormalTexture("Interface\\Buttons\\UI-DialogBox-Button-Up")
+        b:GetNormalTexture():SetTexCoord(0, 1, 0, 0.71875)
+        b:SetNormalFontObject(GameFontNormal)
+        b:SetText(text)
+        return b
+    end
+
+    local function _ppPaint()
+        local f = _pp.f
+        if not f then return end
+        if _pp.place then _pp.place(f) end
+        local on = _pmEnabled()
+        f:Show()
+        if on then _popupSkin(f) end
+        _resGlowRefresh(f)
+        f:SetAlpha((on or not GetFFD(f).bg) and 1 or 0.3)
+        if _pp.place then _pp.place(f, f:GetWidth(), f:GetHeight()) end
+    end
+
+    EllesmereUI._repaintPopupPreview = function()
+        local p = _pp.f and _pp.f:GetParent()
+        if p and p:IsVisible() then _ppPaint() end
+    end
+
+    -- Same contract as ShowTooltipPreview. Named: _popupSkin builds child names from it.
+    function EllesmereUI.ShowPopupPreview(parent, place)
+        local f = _pp.f
+        if not f then
+            f = CreateFrame("Frame", "EllesmereUIPopupPreview", parent)
+            f.which = "RESURRECT"
+            local bg = f:CreateTexture(nil, "BACKGROUND")
+            bg:SetAtlas("UI-DialogBox-Background-Dark")
+            bg:SetAllPoints()
+            f.text = f:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+            f.text:SetWidth(290)
+            f.text:SetPoint("TOP", f, "TOP", 0, -16)
+            f.text:SetText(RESURRECT_REQUEST:format(UnitName("player") or ""))
+            f.button1 = _ppButton(f, ACCEPT)
+            f.button1:SetPoint("BOTTOMRIGHT", f, "BOTTOM", -6, 16)
+            f.button2 = _ppButton(f, DECLINE)
+            f.button2:SetPoint("BOTTOMLEFT", f, "BOTTOM", 6, 16)
+            f:SetSize(320, 16 + f.text:GetStringHeight() + 16 + 21 + 16)
+            _pp.f = f
+        end
+        f:SetParent(parent)
+        f:SetFrameStrata(parent:GetFrameStrata())
+        f:SetFrameLevel(parent:GetFrameLevel() + 5)
+        _pp.place = place
+        _ppPaint()
+        return f
+    end
+
     -- Mirror the tooltip skin onto the ENGINE aura tooltip (AuraButtonTooltip,
     -- the forbidden GameTooltip clone every aura container button uses -- addon
     -- hooks can never touch it directly). Build 68914 exposes global styling entry
     -- points for it: resolved DEFENSIVELY (public-env reachability is a field-verify
     -- item) and pcall'd throughout. Applied at login and from tooltip-skin setters; skin off restores the engine default style.
     function EllesmereUI.SyncAuraTooltipSkin()
+        EllesmereUI._repaintTooltipPreview()
         local inb = _G.AuraContainerInbound
         if not inb then return end
         if _enabled() then
             if not inb.SetTooltipBackdrop then return end
             local cr, cg, cb, ca = EllesmereUI.GetTooltipBg()
-            local br, bgc, bb, ba, size = EllesmereUI.GetTooltipBorder()
+            local _, _, _, _, legacySize = EllesmereUI.GetTooltipBorder()
+            local db, size, key, color, alpha = _resolveConfiguredBorder("tooltip", legacySize)
             local info = {
                 backdropInfo = {
                     bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -1336,10 +1752,28 @@ local FFD, GetFFD = I.FFD, I.GetFFD
                 },
                 centerColor = CreateColor(cr or 0, cg or 0, cb or 0, ca or 0.9),
             }
-            if (size or 0) > 0 then
-                info.backdropInfo.edgeFile = "Interface\\Buttons\\WHITE8X8"
-                info.backdropInfo.edgeSize = size
-                info.borderColor = CreateColor(br or 0, bgc or 0, bb or 0, ba or 1)
+            -- Same style, size and placement as the GameTooltip border (ApplyBorderStyle,
+            -- through EllesmereUI.BorderPlacement), drawn by the one backdrop the engine
+            -- allows; insets keep the fill on the tooltip.
+            if size > 0 then
+                local tex = db.tooltipBorderTexture or "solid"
+                local px = EllesmereUI.BorderPx(db.tooltipBorderThicknessPx, size, tex)
+                local edgeFile = EllesmereUI.ResolveBorderTexture(tex)
+                local edge, ox, oy, sx, sy
+                if edgeFile then
+                    edge, ox, oy, sx, sy = EllesmereUI.BorderPlacement(size, tex,
+                        db.tooltipBorderOffsetX, db.tooltipBorderOffsetY,
+                        db.tooltipBorderShiftX, db.tooltipBorderShiftY, "blizzardSkin", key, px)
+                else
+                    -- Solid: the PP line, (px or size) whole pixels inside the tooltip.
+                    edgeFile = "Interface\\Buttons\\WHITE8X8"
+                    edge, ox, oy, sx, sy = (px or size) * EllesmereUI.PP.mult, 0, 0, 0, 0
+                end
+                info.backdropInfo.edgeFile = edgeFile
+                info.backdropInfo.edgeSize = edge
+                info.backdropInfo.insets = { left = ox - sx, right = ox + sx, top = oy + sy, bottom = oy - sy }
+                info.anchorOffsets = { left = sx - ox, right = sx + ox, top = sy + oy, bottom = sy - oy }
+                info.borderColor = CreateColor(color.r, color.g, color.b, alpha)
             end
             pcall(inb.SetTooltipBackdrop, info)
         elseif inb.ResetTooltipStyle then
@@ -1546,7 +1980,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
             if not popup then return end
 
             if not timerBar then
-                local timerParent = GetFFD(popup).bgFrame or dialog or popup
+                local timerParent = GetFFD(popup).bgFrame or popup
                 timerBar = CreateFrame("StatusBar", nil, timerParent)
                 timerBar:SetMinMaxValues(0, TIMER_DURATION)
 
@@ -1658,7 +2092,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
         -- Hook OnShow so the skin applies the moment the acceptance panel appears, before any specific event fires.
         local _statusHooked = false
         local function HookStatusOnShow()
-            if _statusHooked or EllesmereUI.BlizzSkinPadStandDown() then return end
+            if _statusHooked then return end
             local status = _G.LFGDungeonReadyStatus
             if not status then return end
             _statusHooked = true
@@ -1750,7 +2184,7 @@ local FFD, GetFFD = I.FFD, I.GetFFD
         -- of any Dungeon Finder UI ever being opened locally, so it is hooked directly.
         local _roleCheckHooked = false
         local function HookRoleCheckOnShow()
-            if _roleCheckHooked or EllesmereUI.BlizzSkinPadStandDown() then return end
+            if _roleCheckHooked then return end
             local popup = _G.LFDRoleCheckPopup
             if not popup then return end
             _roleCheckHooked = true

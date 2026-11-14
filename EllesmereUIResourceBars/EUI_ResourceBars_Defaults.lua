@@ -17,26 +17,27 @@ local UnitClass, GetShapeshiftFormID = UnitClass, GetShapeshiftFormID
 -------------------------------------------------------------------------------
 local _, playerClassFile = UnitClass("player")
 
--- Druid "hide bar text per form", the same buckets on every bar: Cat (1),
--- Bear (5) and Moonkin (31/35) each have their own; any other form, or none,
--- is "Caster" ("mana").
+-- The druid's per-form bucket, the same on every bar: Cat (1), Bear (5, and
+-- WoW Forever's Dire Bear Form, 8) and Moonkin (31/35) each have their own; any
+-- other form, or none, is "Caster" ("mana").
+local function FormBucket()
+    local f = GetShapeshiftFormID()
+    return (f == 1) and "energy" or (f == 5 or f == 8) and "rage" or (f == 31 or f == 35) and "moonkin" or "mana"
+end
+-- Druid "hide bar text per form", driven by cfg.textDisabledForms.
 _G._ERB_TextHiddenByForm = function(cfg)
     if playerClassFile ~= "DRUID" then return false end
     local df = cfg and cfg.textDisabledForms
     if not df then return false end
-    local f = GetShapeshiftFormID()
-    local key = (f == 1) and "energy" or (f == 5) and "rage" or (f == 31 or f == 35) and "moonkin" or "mana"
-    return df[key] and true or false
+    return df[FormBucket()] and true or false
 end
--- Druid "hide whole bar per form": the same buckets as above, driven by
--- cfg.barDisabledForms. Alpha-based hide, safe to flip mid-combat.
+-- Druid "hide whole bar per form", driven by cfg.barDisabledForms (the WoW
+-- Forever swing timer reads it too). Alpha-based hide, safe to flip mid-combat.
 _G._ERB_BarHiddenByForm = function(cfg)
     if playerClassFile ~= "DRUID" then return false end
     local df = cfg and cfg.barDisabledForms
     if not df then return false end
-    local f = GetShapeshiftFormID()
-    local key = (f == 1) and "energy" or (f == 5) and "rage" or (f == 31 or f == 35) and "moonkin" or "mana"
-    return df[key] and true or false
+    return df[FormBucket()] and true or false
 end
 -- Static neutral defaults for custom fill colors; used only as the initial custom
 -- color when the user first enables "Custom Colored" (class/power colors apply
@@ -44,6 +45,19 @@ end
 -- StripDefaults on logout nils any channel matching the current class default,
 -- then DeepMergeDefaults on a different class refills it with the wrong color.
 local CUSTOM_FILL_DEFAULT = { 1, 1, 1 }
+
+-- Mirror Timers (EUI_ResourceBars_MirrorTimer.lua): one timer bar's own
+-- settings, its switch, fill colour and Low Warning; the rest of its look is
+-- the Player Cast Bar's. A fresh table per call. OFF by default: nothing is
+-- built, registered or hidden until a bar is turned on.
+local function MirrorTimerDefaults(r, g, b)
+    return {
+        enabled   = false,
+        fillR = r, fillG = g, fillB = b, fillA = 1,
+        lowWarn   = false,   -- red and blinking once lowWarnAt percent is left
+        lowWarnAt = 30,      -- percent of the bar left where the warning starts
+    }
+end
 
 local DEFAULTS = {
     profile = {
@@ -83,6 +97,7 @@ local DEFAULTS = {
             barAlpha    = 1.0,
             oocFadeEnabled = false,  -- "Fade Out of Combat" toggle (off by default)
             oocAlpha    = 0.5,       -- alpha the bar fades to while out of combat
+            showWhenMissing = false,  -- reveal a hidden bar while below full (off by default)
             visibility  = "always",  -- "always","combat","target","mouseover","never","in_combat","in_raid","in_party","solo"
             visHideHousing = false,
             visOnlyInstances = false,
@@ -116,10 +131,9 @@ local DEFAULTS = {
             borderSize  = 1,
             borderR     = 0, borderG = 0, borderB = 0, borderA = 1,
             borderTexture = "solid",
-            -- Extend Top / Extend Bottom (Border Options cog, textured styles
-            -- only): UI units the border reaches past the bar's top / bottom
-            -- edge on screen. 0 = off (ns.ERB_BorderExtents).
-            borderExtendTop = 0, borderExtendBottom = 0,
+            -- Border extensions (textured styles only): UI units past each
+            -- screen edge. 0 = off (ns.ERB_BorderExtents).
+            borderExtendTop = 0, borderExtendBottom = 0, borderExtendLeft = 0, borderExtendRight = 0,
             -- Bottom Separator (Border Options cog, textured styles only): edgeSep
             -- off = None; on = the companion strip along the bottom edge, art
             -- edgeSepArt ("match" = the bar's own style, else a border key),
@@ -149,6 +163,8 @@ local DEFAULTS = {
             barAlpha    = 1.0,
             oocFadeEnabled = false,  -- "Fade Out of Combat" toggle (off by default)
             oocAlpha    = 0.5,       -- alpha the bar fades to while out of combat
+            showWhenMissing = false,  -- reveal a hidden bar while below full (off by default)
+            showManaWhenMissing = false,
             visibility  = "always",  -- "always","combat","target","mouseover","never","in_combat","in_raid","in_party","solo"
             visHideHousing = false,
             visOnlyInstances = false,
@@ -215,7 +231,7 @@ local DEFAULTS = {
             borderSize  = 1,
             borderR     = 0, borderG = 0, borderB = 0, borderA = 1,
             borderTexture = "solid",
-            borderExtendTop = 0, borderExtendBottom = 0,  -- full-bar border only, never per-pip
+            borderExtendTop = 0, borderExtendBottom = 0, borderExtendLeft = 0, borderExtendRight = 0,  -- full-bar border only, never per-pip
             -- Separators (Border Options cog): edgeSep = the dropdown's on/off (None
             -- = false), edgeSepH = the bottom-edge line, edgeSepV = one line per gap
             -- between pips and runes; edgeSepArt / edgeSepY as on the power bar.
@@ -224,6 +240,7 @@ local DEFAULTS = {
             raiseLevel  = false,  -- Draw Above Other Bars (Class Resource cog)
             darkTheme   = false,
             useBlizzardAtlas = false,  -- bar-style class resources use Blizzard's player-frame power atlas as the fill
+            useContinuousTexture = false,  -- pip-style resources use a continuous texture
             blizzardClassArt = false,  -- Blizzard's own class resource frame replaces this bar (specs that have one)
             blizzardClassArtScale = 1,
             classColored = true,
@@ -234,6 +251,7 @@ local DEFAULTS = {
             bgR         = 1, bgG = 1, bgB = 1, bgA = 0.1,
             showText    = true,
             showTextOnlyIfNoPower = false,  -- only show the resource text while the power bar is hidden (see IsPowerBarHidden)
+            hideTextAtZero = false,  -- blank the resource text while the resource reads zero (see ns.ERB_TextIsZero)
             showPercent = false,  -- secondary "Show %": OFF (default) = current / max, ON = percent (Maelstrom/Insanity/Focus/Astral Power bars).
             showMaxStacks = true,
             textSize    = 11,
@@ -302,6 +320,7 @@ local DEFAULTS = {
             useClassicStyle = false,
             alwaysShow    = false,  -- keep the bar on screen (sitting empty) while nothing is being cast
             showIcon      = true,
+            iconOnPortrait = false,
             iconOnRight   = false,  -- attach the spell icon to the right of the bar instead of the left
             showIconDivider = false,  -- draw a 1px divider at the icon/bar seam (interior seam has no border otherwise)
             iconSize      = 0,  -- 0 = the bar height
@@ -323,7 +342,7 @@ local DEFAULTS = {
             borderSize    = 1,
             borderR       = 0, borderG = 0, borderB = 0, borderA = 1,
             borderTexture = "solid",
-            borderExtendTop = 0, borderExtendBottom = 0,  -- border host is bar + icon
+            borderExtendTop = 0, borderExtendBottom = 0, borderExtendLeft = 0, borderExtendRight = 0,  -- border host is bar + icon
             edgeSep = false, edgeSepY = 0, edgeSepArt = "match",  -- Bottom Separator (Border Options cog)
             iconDividerArt = false,  -- Border Art Divider (Spell Icon Settings cog)
             bgR           = 0, bgG = 0, bgB = 0, bgA = 0.7,
@@ -338,6 +357,7 @@ local DEFAULTS = {
             spellTextSize = 11,
             spellTextX    = 0,
             spellTextY    = 0,
+            fitSpellName  = false,    -- Show Full Spell Name: long names shrink to fit instead of truncating
             spellTextSide = "left",   -- "left" | "right" | "center" (spell text position; "None" = showSpellText false)
             spellTextR = 1, spellTextG = 1, spellTextB = 1, spellTextA = 1,  -- Spell Text colour (white = untinted)
             unlockPos     = nil,
@@ -350,7 +370,13 @@ local DEFAULTS = {
             gcdBoundaryR = 1.0, gcdBoundaryG = 0.82, gcdBoundaryB = 0.0, gcdBoundaryA = 0.95,
             coloredEmpowerStages = false,  -- Color empowered spells from red to green per stage
             outOfRangeGray = false,  -- Gray fill while the target is out of the cast's range
+            channelOverride = false,  -- Own fill color for channeled spells
+            channelR = 0.3, channelG = 0.8, channelB = 0.3,
+            uninterruptibleOverride = false,  -- Own fill color for casts that cannot be interrupted
+            uninterruptibleR = 0.5, uninterruptibleG = 0.5, uninterruptibleB = 0.5,
             showTotalDuration = false,
+            fullCraftTime     = false,  -- Duration Text counts down the whole repeat-craft batch
+            mergeCrafts       = false,  -- One cast bar spans the whole repeat-craft batch
             latencyEnabled    = false,
             latencyShowText   = false,
             latencyR = 0.835, latencyG = 0.290, latencyB = 0.290, latencyA = 1.0,
@@ -374,7 +400,7 @@ local DEFAULTS = {
             borderSize    = 1,
             borderR       = 0, borderG = 0, borderB = 0, borderA = 1,
             borderTexture = "solid",
-            borderExtendTop = 0, borderExtendBottom = 0,
+            borderExtendTop = 0, borderExtendBottom = 0, borderExtendLeft = 0, borderExtendRight = 0,
             edgeSep = false, edgeSepY = 0, edgeSepArt = "match",  -- Bottom Separator (Border Options cog)
             bgR           = 0, bgG = 0, bgB = 0, bgA = 0.7,
             frameStrata   = "MEDIUM",
@@ -416,6 +442,10 @@ local DEFAULTS = {
             showMH        = true,   -- per-row toggles (a row also needs a weapon in the slot)
             showOH        = true,
             showR         = true,
+            alwaysShowRows = false, -- true = every row whose toggle is on shows, with or without a weapon in the slot
+            hideLabelNoWeapon = false, -- true = with Always Show Rows, a row with no weapon in its slot shows no label
+            shieldRow     = false, -- true = an equipped shield shows the Off Hand row, labelled Shield
+            queueMainHandOnly = false, -- true = a queued attack shows on the Main Hand row only
             combineHands  = false,  -- off hand as a spark on the Main Hand bar instead of its own row
             textSize      = 11,
             rangeCheck    = true,   -- dim rows whose target is out of auto-attack range
@@ -423,7 +453,8 @@ local DEFAULTS = {
             -- Attack State: "off" | "queued" (melee rows take the queued attack's colour + name)
             -- | "full" (also On while the attack is on, Waiting while it is on with nothing swinging)
             attackState   = "queued",
-            queueR = 1, queueG = 0.70, queueB = 0.20, queueA = 1,   -- Queued: Heroic Strike / Maul / Raptor Strike
+            queueR = 1, queueG = 0.70, queueB = 0.20, queueA = 1,   -- Queued: shared fallback for Heroic Strike / Maul / Raptor Strike
+            -- Per-attack colours (queueHSR/G/B/A, queueRaptor..., queueMaul...) are unset by default: they inherit the shared Queued colour above.
             queueCleaveR = 0.95, queueCleaveG = 0.35, queueCleaveB = 0.25, queueCleaveA = 1,   -- Queued: Cleave
             activeR = 0.047, activeG = 0.824, activeB = 0.616, activeA = 1,   -- On: EUI teal #0CD29D
             pendingR = 0.659, pendingG = 0.502, pendingB = 0.949, pendingA = 1,   -- Waiting: violet #A880F2
@@ -447,6 +478,17 @@ local DEFAULTS = {
             visHideNoTarget = false,
             visHideNoEnemy = false,
             unlockPos     = nil,
+        },
+        -- Mirror Timers: the timer bars (Breath, Fatigue, Feign Death and the
+        -- countdowns), set in the OTHER BARS section of the Cast Bar page.
+        -- unlockPos: their stack's one Unlock Mode position.
+        mirrorTimer = {
+            breath  = MirrorTimerDefaults(0, 0.5, 1),
+            fatigue = MirrorTimerDefaults(1, 0.9, 0),
+            feign   = MirrorTimerDefaults(1, 0.7, 0),
+            pvp     = MirrorTimerDefaults(0.8, 0.1, 0.1),
+            countdown = MirrorTimerDefaults(1, 0.8, 0.2),
+            unlockPos = nil,
         },
         -- Sunfury Arcane Mage Arcane Soul callout (EUI_ResourceBars_ArcaneSoul.lua).
         -- Flat colour keys per module convention; OFF by default, and nothing at
@@ -485,6 +527,7 @@ local DEFAULTS = {
             showTimer     = true,
             timerSize     = 11,
             orientation   = "HORIZONTAL",  -- "HORIZONTAL" or "VERTICAL"
+            flyoutDirection = "RIGHT",     -- vertical only: "RIGHT" or "LEFT"
             borderSize    = 1,
             borderR       = 0, borderG = 0, borderB = 0, borderA = 1,
             borderTexture = "solid",

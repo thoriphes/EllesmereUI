@@ -259,9 +259,9 @@ Register("minimap",      "EllesmereUIMinimap",         "Minimap",
     -- Either stock style, at each switch (the controls stay the user's
     -- afterwards): the Omnium Folio on the ring's bottom right spot (WoW
     -- Forever builds no folio), and the clock inside the map at the top,
-    -- 10px down, or, on a square (the WoW Forever look's Forever Square or
-    -- Blizzard Style's Square on the Forever client, each its Border Style
-    -- default there), at the map's bottom with no offset, its title bar
+    -- 10px down, or, on a square (the WoW Forever look's Forever Square, its
+    -- default there, or Slim Square, or Blizzard Style's Square on the Forever
+    -- client, its default there), at the map's bottom with no offset, its title bar
     -- holding the zone name up top. The Border Style rows move the clock the
     -- same way when a pick changes. Classic WoW UI also centres the zone text
     -- in the banner's text slot (its X/Y offsets back to 0).
@@ -269,7 +269,11 @@ Register("minimap",      "EllesmereUIMinimap",         "Minimap",
         if not EllesmereUI.IS_FOREVER then p.omniumFolioCorner = "BOTTOMRIGHT" end
         local square
         if isForever then
-            square = p.foreverBorder ~= "circle" and EllesmereUI.ForeverHeavyOK()
+            if p.foreverBorder == "slim" then
+                square = EllesmereUI.ForeverBorderOK()
+            else
+                square = p.foreverBorder ~= "circle" and EllesmereUI.ForeverHeavyOK()
+            end
         else
             square = styleKey == "blizzard" and EllesmereUI.IS_FOREVER and p.blizzBorder ~= "circle"
         end
@@ -334,13 +338,46 @@ Register("questtracker", "EllesmereUIQuestTracker",    "Quest Tracker",
     QTProfile, "useBlizzardStyle", "useClassicStyle", "QT_Style")
 Register("chat",         "EllesmereUIChat",            "Chat",
     ChatProfile, "useBlizzardStyle", "useClassicStyle", "ChatStyle")
+-- Bags has only the Forever art so far. While a profile has no Bags style
+-- picked, Bags follows the look most of its modules use (the Bags ns'
+-- BagsForeverWanted), so the first-install look reaches it with no write and
+-- ApplyAll leaves it out; a pick here is saved either way (false = the
+-- EllesmereUI style), so it holds against that majority.
+if IS_FOREVER then
+    local function BagsProfile()
+        local db = EllesmereUI._bagsDB
+        return db and db.profile
+    end
+    local bags = {
+        key = "bags", folder = "EllesmereUIBags", display = "Bags",
+        styles = { eui = true, forever = true },
+        firstInstall = false,
+        profile = BagsProfile,
+        foreverFlag = "useForeverStyle", foreverLatch = "BagsForever",
+        get = function()
+            local p = BagsProfile()
+            local n = p and NS("EllesmereUIBags")
+            return (n and n.BagsForeverWanted(p)) and "forever" or "eui"
+        end,
+        set = function(styleKey)
+            local p = BagsProfile()
+            if p then p.useForeverStyle = (styleKey == "forever") end
+        end,
+        active = function()
+            local n = NS("EllesmereUIBags")
+            return n and n.BagsForever and n.BagsForever() and "blizzard" or "eui"
+        end,
+    }
+    MODULES[#MODULES + 1] = bags
+    BY_KEY.bags = bags
+end
 -- One row covers raid, party (in its Raid Frames layout), Friendly Boss and
 -- Extra Frames, on both clients (WoW Forever draws Blizzard Style here).
 -- Either stock style's first visit seeds the stock raid fill (the 12.1 flat
 -- fill, or Classic's Blizzard Raid Bar), flush spacing, the stock role icons
 -- and absorb looks (the module's own seed; it also runs at enable for a
 -- profile that arrives already switched).
-Register("raidframes",   "EllesmereUIRaidFrames",      "Raid Frames",
+Register("raidframes",   "EllesmereUIRaidFrames",      "Raid & Party Frames",
     RFProfile, "useBlizzardStyle", "useClassicStyle", "RF_Style",
     function(p, styleKey)
         local rf = NS("EllesmereUIRaidFrames")
@@ -413,6 +450,7 @@ local SLOT_KEYS = {
                               "general.classicBorderAllSepSize", "general.classicBorderAllSepR",
                               "general.classicBorderAllSepG", "general.classicBorderAllSepB" },
                      seededBy = function(key)
+                         if key == "swingTimer.texture" then return "swingTimer.classicTextureSeeded" end
                          if key == "splitTex" or key:find("barTexture", 1, true) then
                              return "general.classicTextureSeeded"
                          end
@@ -457,6 +495,11 @@ if EllesmereUI.IS_FOREVER then
             if key == "appearance.colors.bgAlpha" then return "blizzBgAlphaSeeded" end
             return "classicSeeded"
         end }
+    -- The Swing Timer follows the Resource Bars row: its texture (the Classic
+    -- seed's, under a stamp of its own) rides that row's slots.
+    local rb = SLOT_KEYS.resourcebars
+    rb.keys[#rb.keys + 1] = "swingTimer.texture"
+    rb.stamps[#rb.stamps + 1] = "swingTimer.classicTextureSeeded"
 end
 -- WoW Forever's own seeds (the Nameplates Left Text its level box stands in
 -- for and the Elite/Rare Indicator box it starts unchecked, the Unit Frames
@@ -682,6 +725,10 @@ if IS_FOREVER then
     STYLE_VALUES.forever = "WoW Forever"
 end
 
+local function SupportsStyle(m, styleKey)
+    return not m.styles or m.styles[styleKey]
+end
+
 -- The style the module currently RENDERS (its session latch, not the profile
 -- flags): "eui", "blizzard" or "classic" -- "blizzard" under the WoW Forever
 -- variant too (ask Forever()). "eui" for unknown keys and for disabled
@@ -795,7 +842,7 @@ local function ApplyWholeUIWindows(styleKey, legacy)
     if prof then prof.windowSkinLook = styleKey end
 end
 
--- Every loaded module to one style at once, no prompt: the first-install
+-- Every loaded module taking part in first-install, no prompt: the first-install
 -- style picker (EllesmereUI_StyleChoicePopup.lua) writes the flags and
 -- reloads itself, and on the Forever client so does the module picker (the
 -- WoW Forever look a fresh install starts on, written as its reload is
@@ -808,7 +855,9 @@ function BlizzStyle.ApplyAll(styleKey)
     local legacy = InferredStockStyle()
     for i = 1, #MODULES do
         local m = MODULES[i]
-        if m.profile() then SwitchModuleStyle(m, styleKey) end
+        if m.firstInstall ~= false and SupportsStyle(m, styleKey) and m.profile() then
+            SwitchModuleStyle(m, styleKey)
+        end
     end
     ApplyWholeUIFont(styleKey, legacy)
     ApplyWholeUIWindows(styleKey, legacy)
@@ -965,13 +1014,13 @@ local function PromptStyleChanges(changes, wholeUIStyle)
         end,
     })
 end
--- Apply to All's batch for `styleKey`: every loaded module whose flag differs
--- (disabled modules have no profile to write; matching ones need no reload).
+-- Apply to All's batch for `styleKey`: every loaded module that supports it
+-- and whose flag differs.
 local function StyleChangesFor(styleKey)
     local changes = {}
     for i = 1, #MODULES do
         local m = MODULES[i]
-        if NS(m.folder) ~= nil and m.get() ~= styleKey then
+        if SupportsStyle(m, styleKey) and NS(m.folder) ~= nil and m.get() ~= styleKey then
             changes[#changes + 1] = { m = m, key = styleKey }
         end
     end
@@ -1040,15 +1089,14 @@ function _G._EUI_BuildStylePage(pageName, parent, yOffset)
         })
         if cards then
             local function RefreshCards()
-                local loaded = 0
-                for i = 1, #MODULES do
-                    if NS(MODULES[i].folder) ~= nil then loaded = loaded + 1 end
-                end
                 for key, handle in pairs(cards) do
-                    local differ = 0
+                    local loaded, differ = 0, 0
                     for i = 1, #MODULES do
                         local m = MODULES[i]
-                        if NS(m.folder) ~= nil and m.get() ~= key then differ = differ + 1 end
+                        if SupportsStyle(m, key) and NS(m.folder) ~= nil then
+                            loaded = loaded + 1
+                            if m.get() ~= key then differ = differ + 1 end
+                        end
                     end
                     local inUse = loaded > 0 and differ == 0
                     local pickable = differ > 0 or FontPending(key)
@@ -1093,15 +1141,17 @@ function _G._EUI_BuildStylePage(pageName, parent, yOffset)
                 local items = {}
                 for i = 1, #MODULES do
                     local m = MODULES[i]
-                    local function Off() return not Loaded(m) end
-                    items[i] = { key = m.key, label = m.display, excludeFromSummaryFn = Off,
-                        lockedFn = function() return Off() or PickOf(m) == styleKey end,
-                        -- Only a disabled module explains itself; a checked one
-                        -- just reads as fixed here.
-                        lockedTooltip = function()
-                            if not Off() then return nil end
-                            return EllesmereUI.Lf("Enable %1$s to change its style.", EllesmereUI.L(m.enableName or m.display))
-                        end }
+                    if SupportsStyle(m, styleKey) then
+                        local function Off() return not Loaded(m) end
+                        items[#items + 1] = { key = m.key, label = m.display, excludeFromSummaryFn = Off,
+                            lockedFn = function() return Off() or PickOf(m) == styleKey end,
+                            -- Only a disabled module explains itself; a checked one
+                            -- just reads as fixed here.
+                            lockedTooltip = function()
+                                if not Off() then return nil end
+                                return EllesmereUI.Lf("Enable %1$s to change its style.", EllesmereUI.L(m.enableName or m.display))
+                            end }
+                    end
                 end
                 local dd, ddRefresh = EllesmereUI.BuildVisOptsCBDropdown(
                     host, handle.card:GetWidth(), host:GetFrameLevel() + 3, items,

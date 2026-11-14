@@ -57,6 +57,8 @@ local ReloadAllCustomBars -- forward-declared; assigned by EUI_PlayerAuraBars_Cu
 I.reloadAllSetters[#I.reloadAllSetters + 1] = function(v) ReloadAllCustomBars = v end
 local PAB_MaybeRefreshPreview -- forward-declared; assigned by EUI_PlayerAuraBars_Preview.lua (SetMaybeRefreshPreview), called from every live-apply function so an open bar-detail preview box tracks slider drags without those functions knowing it exists
 I.previewRefreshSetters[#I.previewRefreshSetters + 1] = function(v) PAB_MaybeRefreshPreview = v end
+local SyncVisibility -- forward-declared; assigned by EUI_PlayerAuraBars_Visibility.lua (SetSyncVisibility), called from ApplyDefaultBarShown
+I.syncVisibilitySetters[#I.syncVisibilitySetters + 1] = function(v) SyncVisibility = v end
 
 -- Last-applied growDirection per live container (weak keys); written by
 -- ApplyContainerAnchorAndGrowth, read by the restricted-apply gate below.
@@ -112,14 +114,40 @@ end
 -- drops the player's combat, so the ride's hide replayed for real at that regen
 -- and the exit's show was blocked -- the bars stayed gone for the whole boss
 -- pulled afterwards.
+-- Visibility dimming (default bars): the resting alpha a parent takes while its
+-- Visibility verdict is "not shown", set by EUI_PlayerAuraBars_Visibility.lua.
+-- A suppressed or hidden parent stays at 0.
+-- Visibility gate (same file): "hide" forces the parent hidden (in combat that
+-- is alpha 0 on a parent its escape driver keeps shown), "driver" leaves
+-- Show/Hide to a secure state driver registered on it; nil is no gate.
+local parentDim, parentBaseAlpha, parentGate = {}, {}, {}
+function I.SetParentDim(parent, a)
+    if parentDim[parent] == a then return end
+    parentDim[parent] = a
+    if parentBaseAlpha[parent] == 1 and parent:GetAlpha() ~= (a or 1) then
+        parent:SetAlpha(a or 1)
+    end
+end
+
+-- Returns true when the gate changed.
+function I.SetParentGate(parent, g)
+    if parentGate[parent] == g then return false end
+    parentGate[parent] = g
+    return true
+end
+
 local function SetParentShownSafe(key, parent, want, recompute)
     want = want and true or false
+    local gate = parentGate[parent]
+    if gate == "hide" then want = false end
     local locked = InCombatLockdown()
     local shown = parent:IsShown()
     if issecretvalue and issecretvalue(shown) then shown = nil end
     local alpha = (pabSuppressed or (locked and not want)) and 0 or 1
+    parentBaseAlpha[parent] = alpha
+    if alpha == 1 then alpha = parentDim[parent] or 1 end
     if parent:GetAlpha() ~= alpha then parent:SetAlpha(alpha) end
-    if shown == want then return end
+    if gate == "driver" or shown == want then return end
     if locked then
         QueuePABRegenApply("shown:" .. key, recompute)
         return
@@ -144,6 +172,7 @@ local function ApplyDefaultBarShown(isBuff)
     SetParentShownSafe(isBuff and "default-buffs" or "default-debuffs", parent,
         s.enabled == true and cfg.enabled ~= false and s.useBlizzardBuffs ~= true,
         function() ApplyDefaultBarShown(isBuff) end)
+    if SyncVisibility then SyncVisibility() end
 end
 
 -- Grow direction. AK.ApplyContainerLayout only applies growth when BOTH growthH and
@@ -249,8 +278,10 @@ local function ApplyContainerAnchorAndGrowth(container, parent, cfg, grid)
     if directionChanged then container:Hide() end
 
     local size = PabSnap(cfg.iconSize or 32)
+    local height = cfg.iconShape == "cropped"
+        and PabSnap(ns.PAB_CroppedHeight(cfg.iconSize or 32, cfg)) or size
     container:ClearAllPoints()
-    container:SetSize(size, size)
+    container:SetSize(size, height)
     container:SetPoint(containerAnchor, parent, containerAnchor, 0, 0)
     AK.SetContainerAnchor(container, spec.layout.anchorPoint)
     AK.SetContainerAxis(container, vertical)
@@ -280,7 +311,7 @@ local function BarPositionKey(isBuff)
 end
 
 -- Snaps a saved (x, y) to the physical pixel grid before SetPoint, matching
--- EllesmereUIUnitFrames.lua's ApplyFramePosition. An unsnapped coordinate is only
+-- EUI_UnitFrames_Layout.lua's ApplyFramePosition. An unsnapped coordinate is only
 -- wrong at a non-pixel-perfect UIParent scale (1 coord unit == 1 physical pixel at
 -- PP.PixelBestSize()). CENTER/CENTER anchors need SnapCenterForDim -- its odd-
 -- dimension handling keeps both edges on whole pixels, while plain SnapForES would
@@ -518,6 +549,8 @@ do
         end
         return n
     end
+    -- Unit Frames widens the player buff row by the same cells.
+    ns.PAB_ActiveEnchantCount = ActiveEnchantCount
 
     -- Aura cap for the Buffs bar: "Max Icons" is the whole bar's budget, so the
     -- cells actually showing come off it and the rendered total stays at the
@@ -1157,7 +1190,7 @@ local function ApplyLiveConfig(isBuff)
 end
 ns.PAB_ApplyLiveConfig = ApplyLiveConfig
 -- Bridge for EllesmereUF:GetGrowDirectionForBar/SetGrowDirectionForBar, kept here
--- rather than in EllesmereUIUnitFrames.lua so the settings-field names stay defined
+-- rather than in EUI_UnitFrames_Lifecycle.lua so the settings-field names stay defined
 -- in one place.
 --
 -- Also handles custom-bar keys ("PAB_CustomBuff_<id>"/"PAB_CustomDebuff_<id>", the

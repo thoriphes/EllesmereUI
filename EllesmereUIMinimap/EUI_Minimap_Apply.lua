@@ -45,6 +45,19 @@ local coordFrame
 I.coordFrameSetters[#I.coordFrameSetters + 1] = function(v) coordFrame = v end
 local coordTicker
 I.coordTickerSetters[#I.coordTickerSetters + 1] = function(v) coordTicker = v end
+-- The clock, zone text and FPS readout sit this far above the map: other addons
+-- pin their minimap icons at fixed frame levels around 2000, and icons above the
+-- text would cover it. A field, not a local: ApplyMinimap is near the upvalue cap.
+EBS._INFO_TEXT_LEVEL = 2100
+-- A middle click on the map: the micro menu, under Open Micro Menu on Middle
+-- Click (read live). Run by the interceptor over the map and by the clock and
+-- the FPS readout, which sit above the interceptor and would take the click.
+function EBS._MapMiddleClick()
+    if not EBS._ToggleMicroMenu then return end
+    local mp = EBS.db and EBS.db.profile and EBS.db.profile.minimap
+    if mp and mp.openMicroMenuOnMiddleClick == false then return end
+    EBS._ToggleMicroMenu()
+end
 local clockFrame
 I.clockFrameSetters[#I.clockFrameSetters + 1] = function(v) clockFrame = v end
 local clockBg
@@ -172,12 +185,7 @@ local function ApplyMinimap()
         blocker:SetPassThroughButtons("LeftButton", "RightButton")
         blocker:SetPropagateMouseMotion(true)
         blocker:SetScript("OnMouseUp", function(_, btn)
-            if btn == "MiddleButton" and EBS._ToggleMicroMenu then
-                -- Gated by the "Open Micro Menu on Middle Click" toggle (read live)
-                local mp = EBS.db and EBS.db.profile and EBS.db.profile.minimap
-                if mp and mp.openMicroMenuOnMiddleClick == false then return end
-                EBS._ToggleMicroMenu()
-            end
+            if btn == "MiddleButton" then EBS._MapMiddleClick() end
         end)
         blocker:SetScript("OnMouseWheel", function(_, delta)
             local mp = EBS.db and EBS.db.profile.minimap
@@ -246,6 +254,17 @@ local function ApplyMinimap()
     local crop, cropMask = EBS._MapCrop(p, mapSize)
     local maskID = isCircle and 186178 or cropMask or 130937
     minimap:SetMaskTexture(maskID)
+    -- Minimap button libraries and map pins read this global to place their
+    -- buttons and pins on the map's edge; the 4:3 crop keeps square corners.
+    -- Leave a definition another addon made alone.
+    if GetMinimapShape == nil or GetMinimapShape == EBS._shapeFn then
+        local mapShapeName = isCircle and "ROUND" or "SQUARE"
+        if EBS._shapeName ~= mapShapeName then
+            EBS._shapeName = mapShapeName
+            EBS._shapeFn = function() return mapShapeName end
+            GetMinimapShape = EBS._shapeFn
+        end
+    end
     minimap:SetHitRectInsets(0, 0, crop, crop)
     if crop > 0 and not GetFFD(minimap).layoutFrame then
         local layout = CreateFrame("Frame", nil, UIParent)
@@ -513,15 +532,14 @@ local function ApplyMinimap()
     -- Shape changes do not fire a zone event. Reuse the existing housing detector
     -- so atlas/texture selection follows the new shape immediately.
     if GetFFD(minimap).checkHousing then GetFFD(minimap).checkHousing() end
-    -- Clamp to the visible shape. A cropped map keeps a square native canvas,
-    -- so allow only its hidden top/bottom strips beyond the screen bounds.
+    -- Clamp to the screen, a cropped map's whole square canvas included: the engine
+    -- keeps the canvas's terrain on screen, so a canvas whose hidden strip passes the
+    -- top or bottom edge slides its terrain inside the frame and leaves a strip with
+    -- no map at that edge. A cropped map therefore stops that strip short of the top
+    -- and bottom edges; the Unlock Mode box follows the canvas there.
     minimap:SetClampedToScreen(true)
-    if crop > 0 then
-        minimap:SetClampRectInsets(0, 0, -crop, crop)
-    else
-        local bInset = isCircle and (p.borderSize or 1) or 0
-        minimap:SetClampRectInsets(-bInset, bInset, bInset, -bInset)
-    end
+    local bInset = isCircle and (p.borderSize or 1) or 0
+    minimap:SetClampRectInsets(-bInset, bInset, bInset, -bInset)
     -- Force the engine to re-render at the new size: nudge zoom, restore same frame.
     local curZoom = minimap:GetZoom()
     minimap:SetZoom(curZoom > 0 and 0 or 1)
@@ -668,9 +686,16 @@ local function ApplyMinimap()
             clockBg:SetSize(80, 16)
             clockBg:SetPoint("TOP", minimap, "TOP", 0, 7)
             clockBg:SetBackdrop({ bgFile = "Interface\\ChatFrame\\ChatFrameBackground" })
-            clockBg:SetFrameLevel(minimap:GetFrameLevel() + 5)
+            clockBg:SetFrameLevel(minimap:GetFrameLevel() + EBS._INFO_TEXT_LEVEL)
             clockBg:RegisterForClicks("AnyUp")
-            clockBg:SetScript("OnClick", function()
+            clockBg:SetScript("OnClick", function(_, button)
+                -- The clock sits above the map's middle-click interceptor, which lets
+                -- only the left and right buttons through: the clock acts on those two,
+                -- and a middle click does here what it does on the map.
+                if button ~= "LeftButton" and button ~= "RightButton" then
+                    if button == "MiddleButton" then EBS._MapMiddleClick() end
+                    return
+                end
                 -- With the Great Vault hover tooltip assigned, clicking the clock opens the vault (same as the Great Vault button), not the clock config.
                 -- WoW Forever has no Great Vault: a saved "vault" reads as none there.
                 local mp = EBS.db and EBS.db.profile.minimap
@@ -799,7 +824,7 @@ local function ApplyMinimap()
             locationBg:SetSize(120, 18)
             locationBg:SetPoint("BOTTOM", minimap, "BOTTOM", 0, -7)
             locationBg:SetBackdrop({ bgFile = "Interface\\ChatFrame\\ChatFrameBackground" })
-            locationBg:SetFrameLevel(minimap:GetFrameLevel() + 5)
+            locationBg:SetFrameLevel(minimap:GetFrameLevel() + EBS._INFO_TEXT_LEVEL)
             locationBg:RegisterEvent("ZONE_CHANGED")
             locationBg:RegisterEvent("ZONE_CHANGED_INDOORS")
             locationBg:RegisterEvent("ZONE_CHANGED_NEW_AREA")
@@ -915,7 +940,7 @@ local function ApplyMinimap()
         if not fpsBg then
             fpsBg = CreateFrame("Frame", nil, minimap)
             fpsBg:SetSize(60, 20)
-            fpsBg:SetFrameLevel(minimap:GetFrameLevel() + 5)
+            fpsBg:SetFrameLevel(minimap:GetFrameLevel() + EBS._INFO_TEXT_LEVEL)
             fpsBg:EnableMouse(false)
             local function MakeFS(size)
                 local fs = fpsBg:CreateFontString(nil, "OVERLAY")
@@ -1022,6 +1047,8 @@ local function ApplyMinimap()
             -- With the Great Vault hover tooltip assigned, clicking the readout opens
             -- the vault. Mouse is enabled only while a hover tooltip is assigned, so this never intercepts clicks otherwise.
             fpsBg:SetScript("OnMouseUp", function(_, button)
+                -- Above the map's middle-click interceptor, like the clock.
+                if button == "MiddleButton" then EBS._MapMiddleClick(); return end
                 if button ~= "LeftButton" then return end
                 local mp = EBS.db and EBS.db.profile.minimap
                 if mp and mp.fpsHoverTooltip == "vault" and not EllesmereUI.IS_FOREVER then
@@ -1208,6 +1235,8 @@ local function ApplyMinimap()
     ApplyOmniumFolio()
     EBS._ApplyAddonCompartment()
     EBS._ApplyExternalEventButton()
+    -- Elements linked to the minimap follow a change of its insets.
+    EBS._NotifyMinimapExtent()
 end
 
 -- Blizzard's external event button (a link to an event outside the game,

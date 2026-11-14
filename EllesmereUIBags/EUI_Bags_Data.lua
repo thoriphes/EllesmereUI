@@ -202,27 +202,31 @@ local function GetItemExpansionIDFromLink(itemLink)
     return select(15, GetItemInfo(itemLink))
 end
 
+-- The game's own name for an expansion ID, in the client's language; the
+-- fallbacks cover an ID this client has no name for.
+local function ExpansionName(id)
+    local name = _G["EXPANSION_NAME" .. id]
+    if name and name ~= "" then return name end
+    if id == 11 then return "Midnight" end
+    return EllesmereUI.Lf("Expansion %1$d", id)
+end
+
 -- sortKey: higher = newer expansion, shown first. Unknown / uncached last.
 local function GetExpansionBucketKeyAndLabel(itemLink)
     local expID = GetItemExpansionIDFromLink(itemLink)
     if expID == nil then
-        return -999, (UNKNOWN or "Unknown")
+        return -999, (UNKNOWN or EllesmereUI.L("Unknown"))
     end
     local id = tonumber(expID)
     if id == nil then
-        return -999, (UNKNOWN or "Unknown")
+        return -999, (UNKNOWN or EllesmereUI.L("Unknown"))
     end
     -- Classic-era sentinel from some clients / items
     if id == 254 or id == 255 then
-        local name = _G["EXPANSION_NAME0"] or "Classic"
+        local name = _G["EXPANSION_NAME0"] or EllesmereUI.L("Classic")
         return 0, name
     end
-    local name = _G["EXPANSION_NAME" .. id]
-    if name and name ~= "" then
-        return id, name
-    end
-    if id == 11 then return id, "Midnight" end
-    return id, "Expansion " .. tostring(id)
+    return id, ExpansionName(id)
 end
 
 local function BuildExpansionBuckets(itemList)
@@ -232,7 +236,7 @@ local function BuildExpansionBuckets(itemList)
         if data.itemLink then
             local _, _, _, ilvl = GetItemInfo(data.itemLink)
             if ilvl and ilvl >= 180 then
-                sk, label = 11, "Midnight"
+                sk, label = 11, ExpansionName(11)
             end
         end
         if not sk then
@@ -487,18 +491,28 @@ local function GetVisualOrder()
     return BP().bagVisualOrder
 end
 
+-- A virtual category's order is kept for the session under its own key: its
+-- index is no stable key, and nothing of it is saved.
+local _virtualOrder = {}
+local function OrderFor(key)
+    if EUI_CategoryManager:IsVirtual(key) then
+        return _virtualOrder, EUI_CategoryManager:GetCategories()[key]._defaultName
+    end
+    return GetVisualOrder(), key
+end
+
 local function SaveCategoryOrder(key, items)
-    local order = GetVisualOrder()
+    local order, k = OrderFor(key)
     local list = {}
     for i, data in ipairs(items) do
         list[i] = data.info and data.info.itemID or 0
     end
-    order[key] = list
+    order[k] = list
 end
 
 local function ApplySavedOrder(key, items)
-    local order = GetVisualOrder()
-    local saved = order[key]
+    local order, k = OrderFor(key)
+    local saved = order[k]
     if not saved or #saved == 0 then return end
 
     -- Build position queues per itemID: each ID maps to its saved positions
@@ -576,16 +590,20 @@ local function DetectAndApplySwaps(tempItems, applySwap)
         if c1.curID == c2.oldID and c2.curID == c1.oldID and c1.curID ~= c2.curID then
             if applySwap then
                 local id1, id2 = c1.curID, c2.curID
+                -- The saved orders, then the virtual categories' session orders
                 local vo = GetVisualOrder()
-                for _, saved in pairs(vo) do
-                    local idx1, idx2
-                    for i, sid in ipairs(saved) do
-                        if sid == id1 and not idx1 then idx1 = i
-                        elseif sid == id2 and not idx2 then idx2 = i end
+                for pass = 1, 2 do
+                    for _, saved in pairs(vo) do
+                        local idx1, idx2
+                        for i, sid in ipairs(saved) do
+                            if sid == id1 and not idx1 then idx1 = i
+                            elseif sid == id2 and not idx2 then idx2 = i end
+                        end
+                        if idx1 and idx2 then
+                            saved[idx1], saved[idx2] = saved[idx2], saved[idx1]
+                        end
                     end
-                    if idx1 and idx2 then
-                        saved[idx1], saved[idx2] = saved[idx2], saved[idx1]
-                    end
+                    vo = _virtualOrder
                 end
             end
             return true

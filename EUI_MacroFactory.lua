@@ -63,11 +63,16 @@ local GENERAL_DEFS = {
         name = "EUI_Potion",
         icon = "Interface\\Icons\\inv_potion_54",
         label = "Potion",
+        -- SEASON UPDATE: the season's combat potions, each option an item's ranks best first
+        -- (the IDs EllesmereUI_BuffPresets.lua lists too). One /use line per item: these six
+        -- options fill 228 of the macro's 255 characters.
         checkboxes = {
             { key = "opt1", label = "Fleeting Light's Potential", items = {245898, 245897} },
             { key = "opt2", label = "Light's Potential",          items = {241308, 241309} },
             { key = "opt3", label = "Fleeting Recklessness",      items = {245902, 245903} },
             { key = "opt4", label = "Recklessness",               items = {241288, 241289} },
+            { key = "opt5", label = "Fleeting Liquid Luster",     items = {274764, 274763} },
+            { key = "opt6", label = "Liquid Luster",              items = {271887, 271886} },
         },
     },
     {
@@ -77,6 +82,7 @@ local GENERAL_DEFS = {
         spells = {1231418}, -- Recuperate (universal campfire self-heal)
         -- Line order is the priority: the first potion in bags is the one used.
         -- Concentrated Silvermoon r2 > r1, then Silvermoon r2 > r1.
+        -- SEASON UPDATE: the season's health potions, here and in fixedTooltip.
         fixedBody = "/stopcasting\n/cast [nocombat] {1}\n/use [combat] item:271884\n/use [combat] item:271883\n/use [combat] item:241304\n/use [combat] item:241305",
         fixedTooltip = "item:271884",
     },
@@ -84,6 +90,7 @@ local GENERAL_DEFS = {
         name = "EUI_Food",
         icon = "Interface\\Icons\\inv_misc_food_73cinnamonroll",
         label = "Food",
+        -- SEASON UPDATE: the expansion's food and drink (a new patch can add more).
         checkboxes = {
             { key = "opt1", label = "Conjured Mana Bun",          items = {113509} },
             { key = "opt2", label = "Fairbreeze Feast",           items = {260262} },
@@ -177,17 +184,33 @@ local function GetMacroDB(macroName)
     return EllesmereUIDB.macroFactory[macroName]
 end
 
+-- Priority order for a checkbox macro. Keeps a saved db.order and appends any option
+-- added since it was saved (so a new option never wipes a user's custom order); builds
+-- the default 1..n order when none is saved. A saved order already n long is returned as is.
+local function EnsureOrder(db, n)
+    local order = db.order
+    if type(order) == "table" and #order == n then return order end
+    if type(order) ~= "table" then order = {} end
+    local seen, clean = {}, {}
+    for _, idx in ipairs(order) do
+        if type(idx) == "number" and idx >= 1 and idx <= n and not seen[idx] then
+            seen[idx] = true; clean[#clean + 1] = idx
+        end
+    end
+    for i = 1, n do
+        if not seen[i] then clean[#clean + 1] = i end
+    end
+    db.order = clean
+    return clean
+end
+
 -------------------------------------------------------------------------------
 --  Macro body generation
 -------------------------------------------------------------------------------
 local function GetFirstAvailableItemID(def, db)
     if not def.checkboxes then return nil end
     local cbs = def.checkboxes
-    local order = db.order
-    if not order or #order < #cbs then
-        order = {}
-        for i = 1, #cbs do order[i] = i end
-    end
+    local order = EnsureOrder(db, #cbs)
     for _, idx in ipairs(order) do
         local cb = cbs[idx]
         if cb and db[cb.key] ~= false then
@@ -231,11 +254,7 @@ end
 local function BuildMacroBody(def, db)
     if def.checkboxes then
         local cbs = def.checkboxes
-        local order = db.order
-        if not order or #order < #cbs then
-            order = {}
-            for i = 1, #cbs do order[i] = i end
-        end
+        local order = EnsureOrder(db, #cbs)
 
         -- Collect all enabled items
         local availItems = {}
@@ -890,11 +909,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 local icon
                 if def.checkboxes then
                     local cbs = def.checkboxes
-                    local order = db.order
-                    if not order or #order < #cbs then
-                        order = {}
-                        for i = 1, #cbs do order[i] = i end
-                    end
+                    local order = EnsureOrder(db, #cbs)
                     for _, idx in ipairs(order) do
                         local cb = cbs[idx]
                         if cb and db[cb.key] ~= false and cb.items and cb.items[1] then
@@ -946,7 +961,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 menuFrame:Hide()
                 local mBg = menuFrame:CreateTexture(nil, "BACKGROUND"); mBg:SetAllPoints()
                 mBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA or 0.92)
-                EllesmereUI.MakeBorder(menuFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menuFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, mBg, nil, true)
                 local mY = -4
 
                 -- Create/Delete action row
@@ -990,9 +1005,10 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 tR:SetPoint("TOPRIGHT", menuFrame, "TOPRIGHT", -1, mY)
                 local tB = CreateFrame("Frame", nil, tR); tB:SetSize(16, 16); tB:SetPoint("RIGHT", tR, "RIGHT", -10, 0)
                 local tBg = tB:CreateTexture(nil, "BACKGROUND"); tBg:SetAllPoints(); tBg:SetColorTexture(0.114, 0.106, 0.099, 1)
-                local tBrd = EllesmereUI.MakeBorder(tB, 0.4, 0.4, 0.4, 0.6, PP)
+                local tBrd = EllesmereUI.MakeRoundedBorder(tB, 0.4, 0.4, 0.4, 0.6, tBg)
                 local tCk = tB:CreateTexture(nil, "ARTWORK"); PP.SetInside(tCk, tB, 2, 2)
                 tCk:SetColorTexture(EG.r, EG.g, EG.b, 1); tCk:SetSnapToPixelGrid(false)
+                EllesmereUI.RoundBody(tB, tCk, 2)
                 local tL = tR:CreateFontString(nil, "OVERLAY"); tL:SetFont(fontPath, 13, "")
                 tL:SetTextColor(0.75, 0.75, 0.75, 1); tL:SetPoint("LEFT", tR, "LEFT", 12, 0); tL:SetText(EllesmereUI.L("Show Tooltip"))
                 local tHL = tR:CreateTexture(nil, "ARTWORK"); tHL:SetAllPoints(); tHL:SetColorTexture(1, 1, 1, 0)
@@ -1032,9 +1048,10 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                         xR:SetPoint("TOPRIGHT", menuFrame, "TOPRIGHT", -1, mY)
                         local xB = CreateFrame("Frame", nil, xR); xB:SetSize(16, 16); xB:SetPoint("RIGHT", xR, "RIGHT", -10, 0)
                         local xBg = xB:CreateTexture(nil, "BACKGROUND"); xBg:SetAllPoints(); xBg:SetColorTexture(0.114, 0.106, 0.099, 1)
-                        local xBrd = EllesmereUI.MakeBorder(xB, 0.4, 0.4, 0.4, 0.6, PP)
+                        local xBrd = EllesmereUI.MakeRoundedBorder(xB, 0.4, 0.4, 0.4, 0.6, xBg)
                         local xCk = xB:CreateTexture(nil, "ARTWORK"); PP.SetInside(xCk, xB, 2, 2)
                         xCk:SetColorTexture(EG.r, EG.g, EG.b, 1); xCk:SetSnapToPixelGrid(false)
+                        EllesmereUI.RoundBody(xB, xCk, 2)
                         local xL = xR:CreateFontString(nil, "OVERLAY"); xL:SetFont(fontPath, 13, "")
                         xL:SetTextColor(0.75, 0.75, 0.75, 1); xL:SetPoint("LEFT", xR, "LEFT", 12, 0)
                         xL:SetText(EllesmereUI.L(xt.label))
@@ -1108,7 +1125,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                             list:Hide()
                             local lBg = list:CreateTexture(nil, "BACKGROUND"); lBg:SetAllPoints()
                             lBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, 0.98)
-                            EllesmereUI.MakeBorder(list, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+                            EllesmereUI.MakeRoundedBorder(list, 1, 1, 1, EllesmereUI.DD_BRD_A, lBg, nil, true)
                             for oi = 1, 8 do
                                 local oY = -2 - (oi - 1) * LRH
                                 local oR = CreateFrame("Button", nil, list)
@@ -1184,9 +1201,10 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                         rl:SetTextColor(0.75, 0.75, 0.75, 1); rl:SetPoint("LEFT", row, "LEFT", 12, 0); rl:SetText(OptionDisplayName(cb))
                         local rb = CreateFrame("Frame", nil, row); rb:SetSize(16, 16); rb:SetPoint("RIGHT", row, "RIGHT", -10, 0)
                         local rBg = rb:CreateTexture(nil, "BACKGROUND"); rBg:SetAllPoints(); rBg:SetColorTexture(0.114, 0.106, 0.099, 1)
-                        local rBrd = EllesmereUI.MakeBorder(rb, 0.4, 0.4, 0.4, 0.6, PP)
+                        local rBrd = EllesmereUI.MakeRoundedBorder(rb, 0.4, 0.4, 0.4, 0.6, rBg)
                         local rCk = rb:CreateTexture(nil, "ARTWORK"); PP.SetInside(rCk, rb, 2, 2)
                         rCk:SetColorTexture(EG.r, EG.g, EG.b, 1); rCk:SetSnapToPixelGrid(false)
+                        EllesmereUI.RoundBody(rb, rCk, 2)
                         local rHL = row:CreateTexture(nil, "ARTWORK"); rHL:SetAllPoints(); rHL:SetColorTexture(1, 1, 1, 0)
 
                         local function UC()
@@ -1247,11 +1265,11 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                             local to = math.max(1, math.min(iI, #cbItems))
                             if from ~= to then
                                 local db = GetDB()
-                                if not db.order then db.order = {}; for oi = 1, #cbItems do db.order[oi] = oi end end
+                                EnsureOrder(db, #cbItems)
                                 local mv = table.remove(db.order, from); table.insert(db.order, to, mv)
                             end
                             local db = GetDB()
-                            if not db.order then db.order = {}; for oi = 1, #cbItems do db.order[oi] = oi end end
+                            EnsureOrder(db, #cbItems)
                             for ri = 1, #rowFrames do
                                 local rf = rowFrames[ri]; local oi = db.order[ri]; local it = cbItems[oi]
                                 rf._cbIndex = ri; rf._cb = it; rf._lbl:SetText(OptionDisplayName(it))

@@ -61,7 +61,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --       preview strip re-solves from the block measurements that pass settled.
 
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool and EllesmereUI.RequestTimePlayed and EllesmereUI.FormatDuration and EllesmereUI.SetFontFamily and EllesmereUI.Chars and EllesmereUI.CharData and EllesmereUI.CharFieldMap and EllesmereUI.CharGUID and EllesmereUI.ClearCharField and EllesmereUI.ForgetCharField) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Time Played block asks /played through RequestTimePlayed and formats through FormatDuration; the tooltip rows take font families through SetFontFamily; its per-character data is in the parent's roster: Chars, CharData, CharFieldMap, CharGUID, ClearCharField, ForgetCharField)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -72,11 +72,14 @@ ns.WB = WB
 local L = {
     LEFT_CLICK           = "|cffFFFFFFLeft Click:|r",
     RIGHT_CLICK          = "|cffFFFFFFRight Click:|r",
+    MIDDLE_CLICK         = "|cffFFFFFFMiddle Click:|r",
     SHIFT_MIDDLE_CLICK   = "|cffFFFFFFShift + Middle Click:|r",
     SHIFT_LEFT_CLICK     = "|cffFFFFFFShift + Left Click:|r",
     CTRL_LEFT_CLICK      = "|cffFFFFFFCtrl + Left Click:|r",
     CTRL_RIGHT_CLICK     = "|cffFFFFFFCtrl + Right Click:|r",
-    CTRL_ALT_LEFT_CLICK  = "|cffFFFFFFCtrl + Alt + Left Click:|r",
+    CTRL_SHIFT_RIGHT_CLICK = "|cffFFFFFFCtrl + Shift + Right Click:|r",
+    CTRL_ALT_LEFT_CLICK  = "|cffFFFFFFCtrl + Alt + Left Click a Name:|r",
+    SHIFT_HOVER          = "|cffFFFFFFShift + Hover:|r",
     YOU_HAVE_MAIL        = "You've Got Mail!",
     SERVER_TIME          = "Server time",
     SAVED_INSTANCES      = "Saved Raid(s)",
@@ -107,7 +110,9 @@ local L = {
     FREE                 = "Free",
     OPEN_CURRENCIES      = "Open Currencies",
     RESET_SESSION        = "Reset Session",
+    RESET_ALL_DATA       = "Reset All Data",
     REMOVE_CHARACTER     = "Remove Character",
+    SHOW_EVERY_CHARACTER = "Show Every Character",
     PLUS_N_MORE          = "+ %d more",
     TRAVEL_COOLDOWNS     = "Travel Cooldowns",
     HEARTHSTONE          = "Hearthstone",
@@ -115,7 +120,14 @@ local L = {
     ON_COOLDOWN          = "On Cooldown",
     MYTHIC_TELEPORTS     = "Mythic+ Teleports",
     USE_HEARTHSTONE      = "Use Hearthstone",
+    OTHER_CHARACTERS     = "Other Characters",
     RANDOM_HEARTHSTONE   = "Random Hearthstone",
+    RETURN_FROM_HOME     = "Return from Home",
+    RETURN_AVAILABLE     = "Return available",
+    HOME_ALLIANCE        = "Home (A)",
+    HOME_HORDE           = "Home (H)",
+    TRAVEL_ARCANTINA     = "Arcantina",
+    TRAVEL_MOONGLADE     = "Moonglade",
     CURRENT_SPEC         = "Current Specialization",
     CHANGE_SPEC          = "Change Specialization",
     CHANGE_SPEC_SHORT    = "Change Spec",
@@ -230,10 +242,24 @@ ns.BLOCK_TYPES = {
     { key = "crests",     label = "Crests" },
     { key = "ilvl",       label = "Item Level" },
     { key = "greatvault", label = "Great Vault" },
+    { key = "mplussummary", label = "M+ Summary",
+      available = function() return EllesmereUI._MythicRuns ~= nil end },
+    { key = "timeplayed", label = "Time Played" },
     { key = "audio",      label = "Audio" },
     { key = "ldb",        label = "Broker Plugin" },
     { key = "spacer",     label = "Spacer" },
 }
+
+-- The types the picker offers: one with available() only while it answers
+-- true (M+ Summary needs Mythic+ Tools loaded). Asked when the picker is built,
+-- after login, once every module has loaded. A bar saved with one keeps it.
+function ns.OfferedBlockTypes()
+    local out = {}
+    for _, t in ipairs(ns.BLOCK_TYPES) do
+        if not t.available or t.available() then out[#out + 1] = t end
+    end
+    return out
+end
 
 ns.BLOCK_DEFAULTS = {
     clock      = { localTime = true, twentyFour = true, showMail = true, showResting = true, fontSizeClock = nil, fontSizeInfo = nil },
@@ -264,6 +290,8 @@ ns.BLOCK_DEFAULTS = {
                    hideEmpty = false, reverse = false },
     ilvl       = { prefix = "short", value = "equipped", precision = 0 },
     greatvault = {},
+    mplussummary = { hideWhenEmpty = false },
+    timeplayed = { alwaysTotal = false },
     audio      = { channel = "master" },
     -- Broker plugin: one block type for every LibDataBroker data source, picked
     -- by name (source). stripColors defaults ON -- broker text arrives full of
@@ -277,13 +305,14 @@ ns.BLOCK_DEFAULTS = {
 -- Factories are registered by Blocks\*.lua.
 ns.BlockFactories = {}
 
--- WoW Forever has no Great Vault, no season crests and one spec per class with
--- nothing to switch: those blocks leave the picker (BLOCK_TYPES), the add path
--- refuses them (no default, so the Bottom Info Bar template skips its spec
--- block) and their Blocks\*.lua files return before registering a factory, so
--- a bar saved with one shows an empty slot there instead of erroring.
+-- WoW Forever has no Great Vault, no season crests, no Mythic+ Tools runs and
+-- one spec per class with nothing to switch: those blocks leave the picker
+-- (BLOCK_TYPES), the add path refuses them (no default, so the Bottom Info Bar
+-- template skips its spec block) and their Blocks\*.lua files return before
+-- registering a factory, so a bar saved with one shows an empty slot there
+-- instead of erroring.
 if EllesmereUI.IS_FOREVER then
-    local FOREVER_OFF = { greatvault = true, crests = true, spec = true }
+    local FOREVER_OFF = { greatvault = true, crests = true, spec = true, mplussummary = true }
     table.insert(ns.BLOCK_TYPES, #ns.BLOCK_TYPES, { key = "supplies", label = "Class Resources" })
     ns.BLOCK_DEFAULTS.supplies = { showIcon = true }
     for i = #ns.BLOCK_TYPES, 1, -1 do
@@ -328,19 +357,26 @@ end
 -------------------------------------------------------------------------------
 --  Fonts
 -------------------------------------------------------------------------------
-function ns.SetFont(fs, size, barCfg)
+-- family: the text can show other players' writing (the tooltip rows that list
+-- friends and guild members with their names and notes). It takes a font family
+-- (EllesmereUI.SetFontFamily): Cyrillic, Korean and Chinese letters draw in the
+-- client's own faces. Every font write to such a string passes family.
+function ns.SetFont(fs, size, barCfg, family)
     if not (fs and fs.SetFont) then return end
     local path  = EllesmereUI.GetFontPath("dataBars")
     local flags = EllesmereUI.GetFontOutlineFlag()
     local scale = 100
     if barCfg and barCfg.fontScale then scale = barCfg.fontScale end
     local sz = max(6, floor((size or 11) * scale / 100 + 0.5))
+    local useShadow = flags == "" and EllesmereUI.GetFontUseShadow()
+    if family then
+        -- The family carries the drop shadow.
+        EllesmereUI.SetFontFamily(fs, path, sz, flags, useShadow and true or false)
+        return
+    end
     -- SetShadowOffset does not render on 12.x; shadows must ride a FontObject.
     -- Prime BEFORE SetFont -- the inherited shadow survives the typeface call.
-    if EllesmereUI.PrimeFontShadow then
-        local useShadow = flags == "" and EllesmereUI.GetFontUseShadow()
-        EllesmereUI.PrimeFontShadow(fs, useShadow and true or false)
-    end
+    EllesmereUI.PrimeFontShadow(fs, useShadow and true or false)
     fs:SetFont(path, sz, flags)
 end
 
@@ -405,7 +441,7 @@ end
 -- any locale-specific algorithm (e.g. CJK wan/yi grouping) live in the
 -- shared EllesmereUI_NumberFormat.lua, so every module abbreviates the same way.
 local function GoldDisplay(val, abbreviate, forceEnglish)
-    if abbreviate then return EllesmereUI.AbbreviateNumber(val, forceEnglish) end
+    if abbreviate then return EllesmereUI.AbbreviateNumberFixed(val, forceEnglish) end
     return BreakUpLargeNumbers and BreakUpLargeNumbers(val) or tostring(val)
 end
 
@@ -413,7 +449,9 @@ end
 -- in columns (tooltip) or separate lines (vertical bar) -- a single formatted
 -- string can't, since the proportional font makes "9g" and "1 234g" different
 -- widths and everything after the first drifts. Buffer is reused;
--- Tip_AddColumns copies it, so one buffer serves all rows.
+-- Tip_AddColumns copies it, so one buffer serves all rows. Silver and copper
+-- follow showSmall, and always come while there is no gold, as in FormatMoney
+-- (an amount under 1 gold never reads a bare 0g).
 local _moneyTokens = {}
 
 function ns.MoneyTokens(amount, showSmall, coinIcons, coloured, abbreviate, forceEnglish)
@@ -421,7 +459,7 @@ function ns.MoneyTokens(amount, showSmall, coinIcons, coloured, abbreviate, forc
     wipe(_moneyTokens)
     local gold = floor(amount / DENOMINATIONS[1].divisor)
     _moneyTokens[1] = GoldDisplay(gold, abbreviate, forceEnglish) .. CoinMarker(1, coinIcons, coloured)
-    if showSmall ~= false then
+    if showSmall ~= false or gold == 0 then
         local silver = floor((amount % DENOMINATIONS[1].divisor) / DENOMINATIONS[2].divisor)
         _moneyTokens[2] = silver .. CoinMarker(2, coinIcons, coloured)
         _moneyTokens[3] = (amount % DENOMINATIONS[2].divisor) .. CoinMarker(3, coinIcons, coloured)
@@ -1026,6 +1064,7 @@ do
         d.action = nil
         d.actionToy = nil
         d.actionMacro = nil
+        d.actionHouse = nil
         d._padBand = nil
         d.onClick = nil
         d.onWheel = nil
@@ -1059,6 +1098,7 @@ do
         d.action = nil
         d.actionToy = nil
         d.actionMacro = nil
+        d.actionHouse = nil
         d._padBand = nil
         d.onClick = nil
         d.onWheel = nil
@@ -1089,6 +1129,7 @@ do
         d.action = nil
         d.actionToy = nil
         d.actionMacro = nil
+        d.actionHouse = nil
         d._padBand = nil
         d.onClick = nil
         d.onWheel = nil
@@ -1128,6 +1169,14 @@ do
     function ns.Tip_AddMacroActionDouble(left, right, macrotext, lr, lg, lb, rr, rg, rb)
         if ns.Tip_AddDouble(left, right, lr, lg, lb, rr, rg, rb) and macrotext then
             data[dataCount].actionMacro = macrotext
+        end
+    end
+
+    -- Click-to-teleport HOUSE row: same overlay/degrade contract. house is a HouseInfo
+    -- whose GUIDs the caller checked are not secret; returnTrip fires returnhome instead.
+    function ns.Tip_AddHouseActionDouble(left, right, house, returnTrip, lr, lg, lb, rr, rg, rb)
+        if ns.Tip_AddDouble(left, right, lr, lg, lb, rr, rg, rb) and house then
+            data[dataCount].actionHouse = { house = house, returnTrip = returnTrip }
         end
     end
 
@@ -1193,11 +1242,13 @@ do
         for i = 1, dataCount do
             local d = data[i]
             local row = EnsureRow(i)
-            ns.SetFont(row.left, FONT_SIZE)
+            -- Both columns can list players (friends, guild members, their
+            -- notes, the account's characters): font families.
+            ns.SetFont(row.left, FONT_SIZE, nil, true)
             -- The right FS needs a font even on left-only rows: SetText("") on a
             -- never-fonted FontString hard-errors, and a pooled row's first use
             -- can be a plain line.
-            ns.SetFont(row.right, FONT_SIZE)
+            ns.SetFont(row.right, FONT_SIZE, nil, true)
             -- Rows are pooled: reset wrap state every pass so a wrapped row
             -- reused as plain measures naturally. Wrapped rows measure
             -- UNWRAPPED here so GetStringWidth reports the natural one-line
@@ -1257,7 +1308,7 @@ do
                 -- Clickable (or pad-marked) rows carry 2px of breathing room
                 -- above and below the text; the padded band is the rect the
                 -- overlay button and its hover wash cover.
-                if d.action or d.actionToy or d.actionMacro or d._padBand then h = h + 4 end
+                if d.action or d.actionToy or d.actionMacro or d.actionHouse or d._padBand then h = h + 4 end
                 d._h = h
             end
         end
@@ -1289,7 +1340,7 @@ do
                     left:SetWordWrap(true)
                     left:SetWidth(innerW)
                     local h = left:GetStringHeight() or FONT_SIZE
-                    if d.action or d.actionToy or d.actionMacro or d._padBand then h = h + 4 end
+                    if d.action or d.actionToy or d.actionMacro or d.actionHouse or d._padBand then h = h + 4 end
                     d._h = h
                 end
             end
@@ -1311,7 +1362,7 @@ do
             -- Text sits 4px into a clickable row's padded band (centered);
             -- d._y keeps the band's top so the overlay covers all of it.
             local ty = y
-            if d.action or d.actionToy or d.actionMacro or d._padBand then ty = y - 2 end
+            if d.action or d.actionToy or d.actionMacro or d.actionHouse or d._padBand then ty = y - 2 end
             row.left:ClearAllPoints()
             row.left:SetPoint("TOPLEFT", tip, "TOPLEFT", PAD, ty)
             if d.r then
@@ -1345,7 +1396,7 @@ do
         if not InCombatLockdown() then
             for i = 1, dataCount do
                 local d = data[i]
-                if d.action or d.actionToy or d.actionMacro then
+                if d.action or d.actionToy or d.actionMacro or d.actionHouse then
                     interactive = true
                     -- Re-attach the host: REGEN_DISABLED detaches it (and the
                     -- buttons) from the tip at every combat start.
@@ -1360,6 +1411,10 @@ do
                     local b = AcquireActionButton()
                     -- Pooled reuse swaps type + payload; the unused payload is
                     -- cleared so a recycled button can never fire a stale one.
+                    local h = d.actionHouse and not d.actionHouse.returnTrip and d.actionHouse.house
+                    b:SetAttribute("house-neighborhood-guid", h and h.neighborhoodGUID or nil)
+                    b:SetAttribute("house-guid", h and h.houseGUID or nil)
+                    b:SetAttribute("house-plot-id", h and h.plotID or nil)
                     if d.action then
                         b:SetAttribute("type", "spell")
                         b:SetAttribute("spell", d.action)
@@ -1369,6 +1424,11 @@ do
                         b:SetAttribute("type", "toy")
                         b:SetAttribute("toy", d.actionToy)
                         b:SetAttribute("spell", nil)
+                        b:SetAttribute("macrotext", nil)
+                    elseif d.actionHouse then
+                        b:SetAttribute("type", d.actionHouse.returnTrip and "returnhome" or "teleporthome")
+                        b:SetAttribute("spell", nil)
+                        b:SetAttribute("toy", nil)
                         b:SetAttribute("macrotext", nil)
                     else
                         b:SetAttribute("type", "macro")
@@ -1993,10 +2053,12 @@ local function EnsureSlot(rec, blockCfg)
     if not slot then
         slot = CreateFrame("Frame", nil, rec.bar)
         slot:SetSize(10, 10)
+        rec.slots[blockCfg.id] = slot
+    end
+    if not slot._edbContent then
         local content = CreateFrame("Frame", nil, slot)
         content:SetSize(10, 10)
         slot._edbContent = content
-        rec.slots[blockCfg.id] = slot
     end
     return slot
 end
@@ -2287,6 +2349,8 @@ function ns.ApplyBar(id)
     end
 
     ApplyBarPosition(id)
+    -- Back onto its unlock anchor (nil until the unlock core is built).
+    if EllesmereUI.ReapplyUnlockAnchor then EllesmereUI.ReapplyUnlockAnchor("EDB_" .. id) end
     ApplyThemeToHost(rec.bar, cfg.theme, cfg.barTexture, not cfg.hideBorder)
 
     -- Reconcile block instances against cfg.blocks
@@ -2302,7 +2366,18 @@ function ns.ApplyBar(id)
             rec.insts[blockId] = nil
             rec.assigned[blockId] = nil
             local slot = rec.slots[blockId]
-            if slot then slot:Hide() end
+            if slot then
+                slot:Hide()
+                -- The block's frames stay parented to its content, and Destroy
+                -- only hides it; a later block with this id (another type, or a
+                -- profile switch) would show them again. Retire it so EnsureSlot
+                -- builds a fresh one.
+                local content = slot._edbContent
+                if content and not (InCombatLockdown() and content:IsProtected()) then
+                    content:Hide()
+                    slot._edbContent = nil
+                end
+            end
         end
     end
     for blockId, slot in pairs(rec.slots) do
@@ -2346,6 +2421,12 @@ function ns.ApplyBar(id)
 
     ns.RequestLayout(id)
     if AfterBarStateChange then AfterBarStateChange() end
+    -- Enabled after registration: getFrame was nil, so install the unlock hooks
+    -- and bring held followers to the bar.
+    if wasDisabled and ns._edbUnlockRegistered then
+        ns.RegisterAllUnlockElements()
+        if EllesmereUI.PropagateAnchorChain then EllesmereUI.PropagateAnchorChain("EDB_" .. id) end
+    end
 end
 
 -- Theme-only fast path (live slider / swatch feedback).
@@ -2653,13 +2734,17 @@ local dispRuntime = {}
 do
     local dispFrame
 
-    local function AnyFullBar()
+    -- Full-length and edge-snapped bars are placed from UIParent's size.
+    local function FollowsScreen(cfg)
+        return cfg.lengthMode == "full" or (cfg.snapEdge and cfg.snapEdge ~= "none")
+    end
+
+    local function AnyScreenBar()
         local profile = ns.GetProfile()
         if not profile then return false end
         local bars = profile.bars
         for i = 1, #bars do
-            if not ns.VisIsNever(bars[i])
-               and bars[i].lengthMode == "full" then
+            if not ns.VisIsNever(bars[i]) and FollowsScreen(bars[i]) then
                 return true
             end
         end
@@ -2672,22 +2757,38 @@ do
         ns.WipeFitCache()
         local bars = profile.bars
         for i = 1, #bars do
-            if bars[i].lengthMode == "full" then
+            if FollowsScreen(bars[i]) then
                 ns.ApplyBar(bars[i].id)
             end
         end
     end
 
+    -- UIParent:SetScale (login, scale slider) fires no event: follow its size too.
+    -- The two events and the size change all land in one pass on the next frame.
+    local sizeQueued
+    local function FlushSized()
+        sizeQueued = false
+        OnDispEvent()
+    end
+    local function OnUIParentSized()
+        if sizeQueued then return end
+        sizeQueued = true
+        C_Timer.After(0, FlushSized)
+    end
+
     function dispRuntime.UpdateEventRegistration()
-        if AnyFullBar() then
+        if AnyScreenBar() then
             if not dispFrame then
-                dispFrame = CreateFrame("Frame")
-                dispFrame:SetScript("OnEvent", OnDispEvent)
+                dispFrame = CreateFrame("Frame", nil, UIParent)
+                dispFrame:SetAllPoints(UIParent)
+                dispFrame:SetScript("OnEvent", OnUIParentSized)
             end
             dispFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
             dispFrame:RegisterEvent("UI_SCALE_CHANGED")
+            dispFrame:SetScript("OnSizeChanged", OnUIParentSized)
         elseif dispFrame then
             dispFrame:UnregisterAllEvents()
+            dispFrame:SetScript("OnSizeChanged", nil)
         end
     end
 end
@@ -2712,6 +2813,15 @@ local function MakeBarElement(barId, orderIdx)
     local cfgNow = cfgOf()
     local label = "DataBar " .. barId
     if cfgNow and cfgNow.name then label = cfgNow.name end
+    -- Unlock resize: ApplyBar moved the bar to its stored spot, so return it to
+    -- the mover. Snapped and anchored bars keep their edge or link.
+    local function holdAtMover(cfg)
+        if cfg.snapEdge and cfg.snapEdge ~= "none" then return end
+        local key = "EDB_" .. barId
+        if EllesmereUI._unlockActive and not EllesmereUI.IsUnlockAnchored(key) then
+            EllesmereUI.RepositionBarToMover(key)
+        end
+    end
     return EllesmereUI.MakeUnlockElement({
         key      = "EDB_" .. barId,
         label    = label,
@@ -2739,11 +2849,14 @@ local function MakeBarElement(barId, orderIdx)
         savePos  = function(_, pt, rpt, x, y)
             local cfg = cfgOf()
             if not cfg then return end
+            local sp = cfg.savedPos
+            local moved = not (sp and sp.point == pt and (sp.relPoint or sp.point) == rpt
+                and sp.x == x and sp.y == y)
             cfg.savedPos = { point = pt, relPoint = rpt, x = x, y = y }
-            -- Any manual move un-snaps the bar: it is no longer flush to
-            -- the edge, so the setting reverting to None reflects reality
-            -- (and applyPos would otherwise fight the drag).
-            if cfg.snapEdge and cfg.snapEdge ~= "none" then
+            -- A real move un-snaps the bar: it is no longer flush to the edge,
+            -- so the setting reverting to None reflects reality (and applyPos
+            -- would otherwise fight the drag). A Cancel restores the same spot.
+            if moved and cfg.snapEdge and cfg.snapEdge ~= "none" then
                 cfg.snapEdge = "none"
             end
         end,
@@ -2777,6 +2890,7 @@ local function MakeBarElement(barId, orderIdx)
                 cfg.length = w
             end
             ns.ApplyBar(barId)
+            holdAtMover(cfg)
         end,
         setHeight = function(_, h)
             local cfg = cfgOf()
@@ -2790,6 +2904,7 @@ local function MakeBarElement(barId, orderIdx)
                 cfg.thickness = h
             end
             ns.ApplyBar(barId)
+            holdAtMover(cfg)
         end,
         isHidden = function()
             return cfgOf() == nil
@@ -2813,6 +2928,7 @@ function ns.RegisterAllUnlockElements()
     if #elements > 0 then
         EllesmereUI:RegisterUnlockElements(elements, "EllesmereUIDataBars")
     end
+    ns._edbUnlockRegistered = true
 end
 
 -------------------------------------------------------------------------------

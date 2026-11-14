@@ -26,3 +26,12 @@ luac.out
 # Python bytecode from .tools scripts and tests
 __pycache__/
 *.pyc
+
+# A stray working folder: tools of other projects have written to _tools/ here by mistake.
+# Never part of the addon.
+/_tools/
+
+# Local test harnesses: the maintainer's own tooling, not part of the repository.
+# CI needs only the guardrails' own test.
+/.tools/tests/*
+!/.tools/tests/test_guardrails.py

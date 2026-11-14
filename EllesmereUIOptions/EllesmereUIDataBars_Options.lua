@@ -101,7 +101,7 @@ initFrame:SetScript("OnEvent", function(self)
         profession = 120, travel = 40, micromenu = 340, currency = 90, spacer = 40,
         durability = 70, combat = 105, profession2 = 120, greatvault = 100,
         location = 140, coords = 70, crests = 160, ilvl = 70, supplies = 70,
-        bags = 50,
+        bags = 50, mplussummary = 150, timeplayed = 60,
     }
 
     ---------------------------------------------------------------------------
@@ -230,40 +230,33 @@ initFrame:SetScript("OnEvent", function(self)
     local function MakeTemplateCard(host, x, y, w, cardH, def)
         local EGc = EllesmereUI.ELLESMERE_GREEN
         local card = CreateFrame("Button", nil, host)
-        PP.Size(card, w, cardH)
-        PP.Point(card, "TOPLEFT", host, "TOPLEFT", x, y)
+        EllesmereUI.PanelPP.Size(card, w, cardH)
+        EllesmereUI.PanelPP.Point(card, "TOPLEFT", host, "TOPLEFT", x, y)
         card:SetFrameLevel(host:GetFrameLevel() + 2)
 
-        local cbg = card:CreateTexture(nil, "BACKGROUND")
-        cbg:SetAllPoints()
-        cbg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-        local cbrd = EllesmereUI.MakeBorder(card, 1, 1, 1, 0.12, PP)
+        local cbrd = EllesmereUI.MakeRoundedCard(card, 0.12, 0.50, 2)
+        local cbg, accentLine = cbrd.bg, cbrd.accent
 
-        local accentLine = card:CreateTexture(nil, "ARTWORK", nil, 7)
         accentLine:SetColorTexture(EGc.r, EGc.g, EGc.b, 0.6)
-        PP.Point(accentLine, "TOPLEFT", card, "TOPLEFT", 1, -1)
-        PP.Point(accentLine, "TOPRIGHT", card, "TOPRIGHT", -1, -1)
-        accentLine:SetHeight(2)
-        if accentLine.SetSnapToPixelGrid then accentLine:SetSnapToPixelGrid(false); accentLine:SetTexelSnappingBias(0) end
 
         local cIcon = card:CreateTexture(nil, "ARTWORK")
         cIcon:SetSize(24, 24)
-        PP.Point(cIcon, "LEFT", card, "LEFT", 14, 0)
+        EllesmereUI.PanelPP.Point(cIcon, "LEFT", card, "LEFT", 14, 0)
         cIcon:SetTexture(MEDIA_ICONS .. def.icon)
         cIcon:SetVertexColor(EGc.r, EGc.g, EGc.b)
         cIcon:SetAlpha(0.6)
         if cIcon.SetSnapToPixelGrid then cIcon:SetSnapToPixelGrid(false); cIcon:SetTexelSnappingBias(0) end
 
         local titleFs = EllesmereUI.MakeFont(card, 12, nil, 1, 1, 1, 0.9)
-        PP.Point(titleFs, "TOPLEFT", cIcon, "TOPRIGHT", 12, 1)
-        PP.Point(titleFs, "RIGHT", card, "RIGHT", -8, 0)
+        EllesmereUI.PanelPP.Point(titleFs, "TOPLEFT", cIcon, "TOPRIGHT", 12, 1)
+        EllesmereUI.PanelPP.Point(titleFs, "RIGHT", card, "RIGHT", -8, 0)
         titleFs:SetJustifyH("LEFT")
         titleFs:SetWordWrap(false)
         titleFs:SetText(L(def.title))
 
         local descFs = EllesmereUI.MakeFont(card, 10, nil, 1, 1, 1, 0.35)
-        PP.Point(descFs, "TOPLEFT", titleFs, "BOTTOMLEFT", 0, -4)
-        PP.Point(descFs, "RIGHT", card, "RIGHT", -8, 0)
+        EllesmereUI.PanelPP.Point(descFs, "TOPLEFT", titleFs, "BOTTOMLEFT", 0, -4)
+        EllesmereUI.PanelPP.Point(descFs, "RIGHT", card, "RIGHT", -8, 0)
         descFs:SetJustifyH("LEFT")
         descFs:SetWordWrap(false)
         descFs:SetText(L(def.desc))
@@ -384,13 +377,13 @@ initFrame:SetScript("OnEvent", function(self)
         local ddW = 280
         local NEWBTN_W = 110
         local ddBtn = CreateFrame("Button", nil, hdr)
-        PP.Size(ddBtn, ddW, DD_H)
-        PP.Point(ddBtn, "TOPLEFT", hdr, "TOPLEFT", (hdrW - (ddW + 10 + NEWBTN_W)) / 2, fy)
+        EllesmereUI.PanelPP.Size(ddBtn, ddW, DD_H)
+        EllesmereUI.PanelPP.Point(ddBtn, "TOPLEFT", hdr, "TOPLEFT", (hdrW - (ddW + 10 + NEWBTN_W)) / 2, fy)
         ddBtn:SetFrameLevel(hdr:GetFrameLevel() + 5)
         local ddBg = ddBtn:CreateTexture(nil, "BACKGROUND")
         ddBg:SetAllPoints()
         ddBg:SetColorTexture(DDS.BG_R, DDS.BG_G, DDS.BG_B, DDS.BG_A)
-        local ddBrd = EllesmereUI.MakeBorder(ddBtn, 1, 1, 1, DDS.BRD_A, EllesmereUI.PanelPP)
+        local ddBrd = EllesmereUI.MakeRoundedBorder(ddBtn, 1, 1, 1, DDS.BRD_A, ddBg)
         local ddLbl = EllesmereUI.MakeFont(ddBtn, 13, nil, 1, 1, 1, DDS.TXT_A)
         ddLbl:SetJustifyH("LEFT")
         ddLbl:SetWordWrap(false)
@@ -426,7 +419,7 @@ initFrame:SetScript("OnEvent", function(self)
                 local bg = menu:CreateTexture(nil, "BACKGROUND")
                 bg:SetAllPoints()
                 bg:SetColorTexture(DDS.BG_R, DDS.BG_G, DDS.BG_B, DDS.BG_HA)
-                EllesmereUI.MakeBorder(menu, 1, 1, 1, DDS.BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, DDS.BRD_A, bg, nil, true)
                 menu._rows = {}
 
                 -- One bar row; its bar and selected state are set per open
@@ -657,8 +650,8 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- "+ New Bar" (toggles the template card strip)
         local newBtn = CreateFrame("Button", nil, hdr)
-        PP.Size(newBtn, 110, DD_H)
-        PP.Point(newBtn, "LEFT", ddBtn, "RIGHT", 10, 0)
+        EllesmereUI.PanelPP.Size(newBtn, 110, DD_H)
+        EllesmereUI.PanelPP.Point(newBtn, "LEFT", ddBtn, "RIGHT", 10, 0)
         newBtn:SetFrameLevel(hdr:GetFrameLevel() + 5)
         EllesmereUI.MakeStyledButton(newBtn, "+ New Bar", 12, EllesmereUI.WB_COLOURS, function()
             _cardsExpanded = not _cardsExpanded
@@ -678,8 +671,8 @@ initFrame:SetScript("OnEvent", function(self)
             local cw = floor((stripW - gap * 3) / 4)
             local ch = 64
             local host = CreateFrame("Frame", nil, hdr)
-            PP.Size(host, stripW, ch)
-            PP.Point(host, "TOPLEFT", hdr, "TOPLEFT", PAD, fy)
+            EllesmereUI.PanelPP.Size(host, stripW, ch)
+            EllesmereUI.PanelPP.Point(host, "TOPLEFT", hdr, "TOPLEFT", PAD, fy)
             for i = 1, 4 do
                 MakeTemplateCard(host, (i - 1) * (cw + gap), 0, cw, ch, TEMPLATE_CARDS[i])
             end
@@ -1326,7 +1319,7 @@ initFrame:SetScript("OnEvent", function(self)
                 local bg = menu:CreateTexture(nil, "BACKGROUND")
                 bg:SetAllPoints()
                 bg:SetColorTexture(DDS.BG_R, DDS.BG_G, DDS.BG_B, DDS.BG_HA)
-                EllesmereUI.MakeBorder(menu, 1, 1, 1, DDS.BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, DDS.BRD_A, bg, nil, true)
                 local rowY = -3
                 local function AddRow(text, onClick)
                     local row = CreateFrame("Button", nil, menu)
@@ -1473,10 +1466,10 @@ initFrame:SetScript("OnEvent", function(self)
                 local bg = menu:CreateTexture(nil, "BACKGROUND")
                 bg:SetAllPoints()
                 bg:SetColorTexture(DDS.BG_R, DDS.BG_G, DDS.BG_B, DDS.BG_HA)
-                EllesmereUI.MakeBorder(menu, 1, 1, 1, DDS.BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, DDS.BRD_A, bg, nil, true)
                 menu._rows = {}
                 local mH = 4
-                for _, t in ipairs(ns.BLOCK_TYPES) do
+                for _, t in ipairs(ns.OfferedBlockTypes()) do
                     local item = CreateFrame("Button", nil, menu)
                     item:SetHeight(ITEM_H)
                     item:SetPoint("TOPLEFT", menu, "TOPLEFT", 1, -mH)
@@ -1601,7 +1594,7 @@ initFrame:SetScript("OnEvent", function(self)
     local function BuildDataBarsPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local _, h
+        local _, h, hdr
         local row
 
         parent._showRowDivider = true
@@ -1711,8 +1704,8 @@ initFrame:SetScript("OnEvent", function(self)
             -- Explicit size + single TOPLEFT anchor (search contract); the
             -- host doubles as a search pseudo-section.
             local host = CreateFrame("Frame", nil, parent)
-            PP.Size(host, hostW, hostH)
-            PP.Point(host, "TOPLEFT", parent, "TOPLEFT", PADC, y)
+            EllesmereUI.PanelPP.Size(host, hostW, hostH)
+            EllesmereUI.PanelPP.Point(host, "TOPLEFT", parent, "TOPLEFT", PADC, y)
             host._isSectionHeader = true
             host._sectionName = "Create New DataBar"
             local hint = EllesmereUI.MakeFont(host, 13, nil, 1, 1, 1, 0.55)
@@ -1739,8 +1732,8 @@ initFrame:SetScript("OnEvent", function(self)
             ns.ApplyBar(barId)
         end
 
-        -- Sizing mode: centered segmented two-button toggle (same recipe as
-        -- the Buff Manager's Simple/Custom switch), in its OWN space between
+        -- Sizing mode: centered segmented two-button toggle (the shared
+        -- segmented control), in its OWN space between
         -- the preview header and BAR SETTINGS with 15px above and below.
         -- BAR-level -- it owns every block's width: Auto Sized = content +
         -- per-side gaps with one Fill Remaining block; Even Split = equal
@@ -1748,63 +1741,36 @@ initFrame:SetScript("OnEvent", function(self)
         -- their sizing rows).
         y = y - 15
         do
-            local EG = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
             local BTN_W, BTN_H = 150, 26
-            -- On a kept page wrapper the toggle is the page's own frame
-            -- (Pool.Owned: the same one every build, hidden by a build with no
-            -- bar), never a frame an earlier build used for something else:
-            -- one of those keeps its old children in their old order, which
-            -- would put the border over the two buttons instead of under them.
-            local wrap
-            if Pool.Gen(parent) then
-                wrap = Pool.Owned(parent, "edbSizingToggle", "Frame", parent)
-            else
-                wrap = CreateFrame("Frame", nil, parent)
-            end
-            wrap:SetSize(BTN_W * 2, BTN_H)
-            wrap:SetPoint("TOP", parent, "TOP", 0, y)
-            PP.CreateBorder(wrap, 1, 1, 1, 0.10, 1)
-            local curMode = ns.BarSizingMode(cfg)
-            local MODES = {
-                { key = "auto", label = "Auto Sized" },
-                { key = "even", label = "Even Split" },
-            }
-            for mi, m in ipairs(MODES) do
-                local btn = CreateFrame("Button", nil, wrap)
-                btn:SetSize(BTN_W, BTN_H)
-                btn:SetPoint("LEFT", wrap, "LEFT", (mi - 1) * BTN_W, 0)
-                local bg = btn:CreateTexture(nil, "BACKGROUND")
-                bg:SetAllPoints()
-                local lbl = EllesmereUI.MakeFont(btn, 12, nil, 1, 1, 1, 1)
-                lbl:SetPoint("CENTER")
-                lbl:SetText(L(m.label))
-                if curMode == m.key then
-                    bg:SetColorTexture(EG.r, EG.g, EG.b, 0.85)
-                else
-                    bg:SetColorTexture(0.10, 0.10, 0.11, 0.85)
-                    lbl:SetTextColor(1, 1, 1, 0.55)
-                    btn:SetScript("OnEnter", function()
-                        bg:SetColorTexture(0.16, 0.16, 0.17, 0.9)
-                        lbl:SetTextColor(1, 1, 1, 0.85)
-                    end)
-                    btn:SetScript("OnLeave", function()
-                        bg:SetColorTexture(0.10, 0.10, 0.11, 0.85)
-                        lbl:SetTextColor(1, 1, 1, 0.55)
-                    end)
-                    btn:SetScript("OnClick", function()
-                        cfg.sizingMode = m.key
-                        ns.ApplyBar(barId)
-                        HardRefresh()
-                    end)
-                end
-            end
+            local seg = EllesmereUI.BuildSegmentedControl({
+                parent     = parent,
+                keys       = { "auto", "even" },
+                labels     = { auto = "Auto Sized", even = "Even Split" },
+                width      = BTN_W * 2,
+                square     = true,
+                height     = BTN_H,
+                getChecked = function(key) return ns.BarSizingMode(cfg) == key end,
+                onToggle   = function(key)
+                    if ns.BarSizingMode(cfg) == key then return end
+                    cfg.sizingMode = key
+                    ns.ApplyBar(barId)
+                    HardRefresh()
+                end,
+            })
+            seg:SetPoint("TOP", parent, "TOP", 0, y)
             y = y - (BTN_H + 15)
         end
 
         -------------------------------------------------------------------
         --  BAR SETTINGS
         -------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, "BAR SETTINGS", y);  y = y - h
+        hdr, h = W:SectionHeader(parent, "BAR SETTINGS", y);  y = y - h
+        -- The Move in Unlock Mode button on the selected bar's first section:
+        -- the key is read at the click, so it highlights the bar the selector shows.
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = function()
+            local c = SelectedBar()
+            return c and ("EDB_" .. c.id) or nil
+        end })
 
         -- Visibility | Visibility Options (renaming lives in the selector's
         -- inline edit; "Never" visibility fully disables the bar's work).
@@ -1836,7 +1802,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- is a set-once setting that should not cost a row.
         do
             local leftRgn = visRow._leftRegion
-            EllesmereUI.BuildInlineCog(leftRgn, { icon = EllesmereUI.COGS_ICON,
+            EllesmereUI.BuildInlineCog(leftRgn, {
                 title = "Bar Layer",
                 rows = {
                     { type = "dropdown", label = "Bar Strata",
@@ -2036,7 +2002,7 @@ initFrame:SetScript("OnEvent", function(self)
                     RefreshPreviewTheme()
                 end,
                 false, 20)
-            PP.Point(swatch, "RIGHT", rgn._control, "LEFT", -8, 0)
+            EllesmereUI.PanelPP.Point(swatch, "RIGHT", rgn._control, "LEFT", -8, 0)
             if theme.style ~= "modern" then
                 swatch:SetAlpha(0.3)
                 local blk = CreateFrame("Frame", nil, swatch)
@@ -2300,7 +2266,7 @@ initFrame:SetScript("OnEvent", function(self)
                 do
                     -- Text Position cog: offsets the TEXT only (factories
                     -- inject these into every text anchor; icons stay put).
-                    EllesmereUI.BuildInlineCog(alignRow._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+                    EllesmereUI.BuildInlineCog(alignRow._leftRegion, {
                         title = "Text Position",
                         rows = {
                             { type = "slider", label = "X Offset", min = -50, max = 50, step = 1,
@@ -2328,7 +2294,7 @@ initFrame:SetScript("OnEvent", function(self)
 
                     -- Content Position cog (next to Content Scale): offsets
                     -- the WHOLE block content group, text included.
-                    EllesmereUI.BuildInlineCog(alignRow._rightRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+                    EllesmereUI.BuildInlineCog(alignRow._rightRegion, {
                         title = "Content Position",
                         rows = {
                             { type = "slider", label = "X Offset", min = -50, max = 50, step = 1,
@@ -2573,7 +2539,7 @@ initFrame:SetScript("OnEvent", function(self)
                         Apply()
                     end,
                     true, 20)
-                PP.Point(swatch, "RIGHT", ctrl, "LEFT", -8, 0)
+                EllesmereUI.PanelPP.Point(swatch, "RIGHT", ctrl, "LEFT", -8, 0)
                 local block = CreateFrame("Frame", nil, swatch)
                 block:SetAllPoints()
                 block:SetFrameLevel(swatch:GetFrameLevel() + 10)
@@ -2844,6 +2810,8 @@ initFrame:SetScript("OnEvent", function(self)
             end
 
             local typeRows = {}
+            -- Travel: its three click dropdowns, set by the row loop below.
+            local travelClickDD
             if b.type == "audio" then
                 typeRows = {
                     { type = "dropdown", text = "Audio Channel",
@@ -3068,66 +3036,120 @@ initFrame:SetScript("OnEvent", function(self)
                     MkToggle("Uppercase Text", "useUppercase", "Renders the spec text in uppercase."),
                 }
             elseif b.type == "travel" then
-                -- Hearthstone dropdown: "random" or a specific owned entry
-                -- from the shared pool (ns.TravelHearthstoneIDs). hsChoice
-                -- nil derives from the legacy randomizeHs boolean, which is
-                -- kept mirrored on write for old readers/exports.
-                local hsValues = { random = "Random Hearthstone" }
-                local hsOrder = { "random" }
-                do
-                    local pool = ns.TravelHearthstoneIDs
-                    local usable = ns.TravelIsUsable
-                    local owned = {}
-                    if pool and usable then
-                        for _, id in ipairs(pool) do
-                            if usable(id) then owned[#owned + 1] = id end
+                local function ChoiceOf(btn) return ns.TravelClickChoice(s, btn) end
+                -- Houses arrive asynchronously: the page refresh lists them (the refill below).
+                ns.TravelRequestHouseList(function()
+                    if EllesmereUI:GetActiveModule() == "EllesmereUIDataBars" then EllesmereUI:RefreshPage() end
+                end)
+                -- Fills values / order in place: a built dropdown keeps reading these tables.
+                local function BuildClickValues(btn, values, order)
+                    wipe(values); wipe(order)
+                    if btn == 3 then values.none = "None"; order[1] = "none" end
+                    values.random = "Random Hearthstone"; order[#order + 1] = "random"
+                    local cur = ChoiceOf(btn)
+                    -- A saved house missing from the list (not loaded yet, or sold) stays listed as "Home".
+                    local houses = ns.TravelHouseChoices()
+                    local curIsHouse = type(cur) == "string" and cur:find("house:", 1, true) == 1
+                    if #houses > 0 or curIsHouse then
+                        order[#order + 1] = "---house"
+                        for _, house in ipairs(houses) do
+                            values[house.key] = house.name
+                            order[#order + 1] = house.key
+                        end
+                        if curIsHouse and not values[cur] then
+                            values[cur] = "Home"
+                            order[#order + 1] = cur
                         end
                     end
-                    -- Keep the current pick listed even if it went unowned,
-                    -- so the dropdown shows its label instead of a blank.
-                    local cur = s.hsChoice
-                    if cur == nil then cur = s.randomizeHs and "random" or 6948 end
-                    if type(cur) == "number" then
-                        local seen = false
-                        for _, id in ipairs(owned) do
-                            if id == cur then seen = true; break end
+                    local curPlaced = type(cur) ~= "number"
+                    local groups = {
+                        { key = "---travel", ids = ns.TravelExtraIDs, usable = ns.TravelExtraUsable },
+                        { key = "---hearth", ids = ns.TravelHearthstoneIDs, usable = ns.TravelIsUsable },
+                    }
+                    for gi, g in ipairs(groups) do
+                        local list, curInGroup = {}, false
+                        if g.ids and g.usable then
+                            for _, id in ipairs(g.ids) do
+                                if id == cur then curInGroup = true end
+                                if g.usable(id) and id ~= cur then list[#list + 1] = id end
+                            end
                         end
-                        if not seen then owned[#owned + 1] = cur end
-                    end
-                    local names = {}
-                    for _, id in ipairs(owned) do
-                        local n
-                        if C_ToyBox and C_ToyBox.GetToyInfo then
-                            local _, tn = C_ToyBox.GetToyInfo(id)
-                            n = tn
+                        -- Keep the current pick listed even if it went unowned,
+                        -- so the dropdown shows its label instead of a blank.
+                        if not curPlaced and (curInGroup or gi == #groups) then
+                            list[#list + 1] = cur
+                            curPlaced = true
                         end
-                        if not n and C_Item and C_Item.GetItemInfo then
-                            n = C_Item.GetItemInfo(id)
+                        if #list > 0 then
+                            local names = {}
+                            for _, id in ipairs(list) do
+                                names[id] = ns.TravelEntryName(id) or ("Item " .. id)
+                            end
+                            table.sort(list, function(a, z) return names[a] < names[z] end)
+                            order[#order + 1] = g.key
+                            for _, id in ipairs(list) do
+                                values[id] = names[id]
+                                order[#order + 1] = id
+                            end
                         end
-                        names[id] = n or ("Item " .. id)
                     end
-                    table.sort(owned, function(x, y) return names[x] < names[y] end)
-                    for _, id in ipairs(owned) do
-                        hsValues[id] = names[id]
-                        hsOrder[#hsOrder + 1] = id
-                    end
+                    return values, order
                 end
-                typeRows = {
-                    { type = "dropdown", text = "Left Click",
-                      tooltip = "Which hearthstone the left click uses. Random Hearthstone picks a random owned variant each cast. Right click always rolls a random one.",
-                      values = hsValues, order = hsOrder,
-                      getValue = function()
-                          local c = s.hsChoice
-                          if c == nil then c = s.randomizeHs and "random" or 6948 end
-                          return c
-                      end,
-                      setValue = function(v)
-                          s.hsChoice = v
-                          s.randomizeHs = (v == "random")
-                          Apply()
-                      end },
+                local CLICK_LABELS = { "Left Click", "Right Click", "Middle Click" }
+                local CLICK_KEYS = { "hsChoice", "hsChoiceRight", "hsChoiceMiddle" }
+                local CLICK_TIPS = {
+                    "Where left-clicking the block takes you.",
+                    "Where right-clicking the block takes you.",
+                    "Where middle-clicking the block takes you.",
                 }
-                if travelIconCfg then table.insert(typeRows, 1, travelIconCfg) end
+                local TEXT_LABELS = { "Left Click Text", "Right Click Text", "Middle Click Text" }
+                local TEXT_KEYS = { "textLeft", "textRight", "textMiddle" }
+                local TEXT_VALUES = { location = "Destination", smart = "Cooldown Else Destination",
+                                      both = "Destination and Cooldown", cooldown = "Cooldown Only", none = "None" }
+                local TEXT_ORDER = { "location", "smart", "both", "cooldown", "none" }
+                typeRows = {}
+                local clickVals, clickOrd = {}, {}
+                for btn = 1, 3 do
+                    local vals, ord = BuildClickValues(btn, {}, {})
+                    clickVals[btn], clickOrd[btn] = vals, ord
+                    typeRows[#typeRows + 1] = { type = "dropdown", text = CLICK_LABELS[btn],
+                      tooltip = CLICK_TIPS[btn],
+                      values = vals, order = ord,
+                      getValue = function() return ChoiceOf(btn) end,
+                      setValue = function(v)
+                          s[CLICK_KEYS[btn]] = v
+                          -- Mirrored for old readers/exports of the legacy boolean.
+                          if btn == 1 then s.randomizeHs = (v == "random") end
+                          Apply(); EllesmereUI:RefreshPage()
+                      end }
+                    typeRows[#typeRows + 1] = { type = "dropdown", text = TEXT_LABELS[btn],
+                      tooltip = "What the bar shows for this click.",
+                      values = TEXT_VALUES, order = TEXT_ORDER,
+                      getValue = function() return ns.TravelClickTextMode(s, btn) end,
+                      setValue = function(v) s[TEXT_KEYS[btn]] = v; Apply() end,
+                      disabled = function() return ChoiceOf(btn) == "none" end,
+                      disabledTooltip = "Set this click to something other than None.",
+                      rawTooltip = true }
+                end
+                -- Last, so each click keeps its choice and text on one row.
+                if travelIconCfg then typeRows[#typeRows + 1] = travelIconCfg end
+                typeRows[#typeRows + 1] = MkToggle("Show Other Characters", "altHearths",
+                    "Lists your other characters' hearthstones in the tooltip, once each has logged in with this on.")
+                -- A house list that arrived after the build: refill the three menus in place.
+                if not EllesmereUI._prebuilding then
+                    travelClickDD = {}
+                    local clickDD, listGen = travelClickDD, ns.TravelHouseListGen()
+                    EllesmereUI.RegisterWidgetRefresh(function()
+                        local gen = ns.TravelHouseListGen()
+                        if gen == listGen then return end
+                        listGen = gen
+                        for btn = 1, 3 do
+                            BuildClickValues(btn, clickVals[btn], clickOrd[btn])
+                            local dd = clickDD[btn]
+                            if dd and dd._invalidateMenu then dd._invalidateMenu() end
+                        end
+                    end)
+                end
             elseif b.type == "micromenu" then
                 -- Align Content returns here as a type row (its shared-row
                 -- slot hosts the Enable Text toggle instead): anchors the
@@ -3261,6 +3283,16 @@ initFrame:SetScript("OnEvent", function(self)
                           if wasOn ~= (v > 0) then EllesmereUI:RefreshPage() end
                       end },
                 }
+            elseif b.type == "mplussummary" then
+                typeRows = {
+                    MkToggle("Hide When Empty", "hideWhenEmpty",
+                        "Removes the block from the bar until a Mythic+ run has been recorded."),
+                }
+            elseif b.type == "timeplayed" then
+                typeRows = {
+                    MkToggle("Always Show Total", "alwaysTotal",
+                        "Shows this character's total time played instead of the time played at the current level."),
+                }
             elseif b.type == "ilvl" then
                 -- Prefix rides the Icon Color row's right slot above.
                 typeRows = {
@@ -3363,6 +3395,8 @@ initFrame:SetScript("OnEvent", function(self)
                 local rightCfg = typeRows[k + 1]
                 if not rightCfg then rightCfg = { type = "label", text = "" } end
                 row, h = W:DualRow(parent, y, typeRows[k], rightCfg);  y = y - h
+                -- Travel: the first three rows hold the click dropdowns on their left.
+                if travelClickDD and k <= 5 then travelClickDD[(k + 1) / 2] = row._leftRegion._control end
                 if b.type == "supplies" and k == 1 and not EllesmereUI._prebuilding then
                     local region = row._leftRegion
                     if region._control then region._control:Hide() end
@@ -3374,7 +3408,7 @@ initFrame:SetScript("OnEvent", function(self)
                             s.hiddenItems[key] = not value
                             Apply()
                         end, nil, 10, true)
-                    PP.Point(dropdown, "RIGHT", region, "RIGHT", -20, 0)
+                    EllesmereUI.PanelPP.Point(dropdown, "RIGHT", region, "RIGHT", -20, 0)
                     region._control = dropdown
                     region._lastInline = nil
                     if refresh then EllesmereUI.RegisterWidgetRefresh(refresh) end
@@ -3502,7 +3536,7 @@ initFrame:SetScript("OnEvent", function(self)
                         EllesmereUI.ShowWidgetTooltip(swatch, sp.tip)
                     end)
                     swatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                    PP.Point(swatch, "RIGHT", anchor, "LEFT", -8, 0)
+                    EllesmereUI.PanelPP.Point(swatch, "RIGHT", anchor, "LEFT", -8, 0)
                     anchor = swatch
 
                     -- Blocking overlay while Show Icon is off: the icons are
@@ -3546,7 +3580,7 @@ initFrame:SetScript("OnEvent", function(self)
                         Apply()
                     end,
                     false, 20)
-                PP.Point(swatch, "RIGHT", rgn._control, "LEFT", -8, 0)
+                EllesmereUI.PanelPP.Point(swatch, "RIGHT", rgn._control, "LEFT", -8, 0)
                 local blk = CreateFrame("Frame", nil, swatch)
                 blk:SetAllPoints()
                 blk:SetFrameLevel(swatch:GetFrameLevel() + 5)
@@ -3590,7 +3624,7 @@ initFrame:SetScript("OnEvent", function(self)
                         function(k, v)
                             if v then s[k] = true else s[k] = false end
                         end)
-                    PP.Point(cbDD, "RIGHT", rightRgn, "RIGHT", -20, 0)
+                    EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rightRgn, "RIGHT", -20, 0)
                     rightRgn._control = cbDD
                     rightRgn._lastInline = nil
                     if cbDDRefresh then EllesmereUI.RegisterWidgetRefresh(cbDDRefresh) end
@@ -3632,7 +3666,7 @@ initFrame:SetScript("OnEvent", function(self)
                             if v then s[k] = true else s[k] = false end
                             Apply()
                         end)
-                    PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+                    EllesmereUI.PanelPP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
                     leftRgn._control = cbDD
                     leftRgn._lastInline = nil
                     if cbDDRefresh then EllesmereUI.RegisterWidgetRefresh(cbDDRefresh) end
@@ -3699,10 +3733,57 @@ initFrame:SetScript("OnEvent", function(self)
                             Apply()
                         end,
                         { setOrder = function(keys) ns.SetMicroMenuOrder(s, keys); Apply() end })
-                    PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+                    EllesmereUI.PanelPP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
                     leftRgn._control = cbDD
                     leftRgn._lastInline = nil
                     if cbDDRefresh then EllesmereUI.RegisterWidgetRefresh(cbDDRefresh) end
+                end
+
+                local notesRow
+                notesRow, h = W:DualRow(parent, y,
+                    { type = "toggle", text = "Show Guild Notes",
+                      tooltip = "Shows each online member's public note after their name in the Guild tooltip.",
+                      getValue = function() return s.showGuildNotes == true end,
+                      setValue = function(v)
+                          s.showGuildNotes = v and true or false
+                          Apply(); EllesmereUI:RefreshPage()
+                      end },
+                    EllesmereUI.BlankRowCfg());  y = y - h
+                if not EllesmereUI._prebuilding then
+                    local rgn = notesRow._leftRegion
+                    local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
+                        rgn, notesRow:GetFrameLevel() + 3,
+                        function()
+                            local c = s.guildNoteColor
+                            if not c then return 0.925, 0.839, 0.447 end
+                            return c.r or 0.925, c.g or 0.839, c.b or 0.447
+                        end,
+                        function(r, g, b2)
+                            s.guildNoteColor = { r = r, g = g, b = b2 }
+                            Apply()
+                        end,
+                        false, 20)
+                    EllesmereUI.PanelPP.Point(swatch, "RIGHT", rgn._control, "LEFT", -8, 0)
+                    rgn._lastInline = swatch
+                    local block = CreateFrame("Frame", nil, swatch)
+                    block:SetAllPoints()
+                    block:SetFrameLevel(swatch:GetFrameLevel() + 10)
+                    block:EnableMouse(true)
+                    block:SetScript("OnEnter", function()
+                        EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Show Guild Notes"))
+                    end)
+                    block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                    local function UpdateState()
+                        if s.showGuildNotes == true then
+                            swatch:SetAlpha(1)
+                            block:Hide()
+                        else
+                            swatch:SetAlpha(0.3)
+                            block:Show()
+                        end
+                    end
+                    EllesmereUI.RegisterWidgetRefresh(function() updateSwatch(); UpdateState() end)
+                    UpdateState()
                 end
             end
 
@@ -3789,6 +3870,11 @@ initFrame:SetScript("OnEvent", function(self)
     --  preview strip navigates through _edbNavigateFn directly.
     ---------------------------------------------------------------------------
     function ns.OpenBlockSettings(barId, blockId, settingKey)
+        -- The options never open in combat; nor does the scroll below run then.
+        if InCombatLockdown() then
+            EllesmereUI.PrintError("Cannot open options during combat.")
+            return
+        end
         local key = "block:" .. blockId .. ":" .. settingKey
         EllesmereUI:NavigateToElementSettings("EllesmereUIDataBars", PAGE_DATABARS, nil,
             function()
