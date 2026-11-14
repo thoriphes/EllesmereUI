@@ -1150,6 +1150,7 @@ function NameplateFrame:UNIT_CLASSIFICATION_CHANGED()
 end
 function NameplateFrame:UNIT_THREAT_LIST_UPDATE()
     self:UpdateHealthColor()
+    if ns._trivOn then ns.TRIV_Eval(self) end
     -- An aggro change often moves the target: the target texts follow (throttled).
     if ns._npTgtTexts then self:RefreshTargetTexts() end
     -- Out of Combat Opacity: UNIT_FLAGS alone misses some pulls.
