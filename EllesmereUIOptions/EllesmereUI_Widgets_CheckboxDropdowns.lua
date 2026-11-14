@@ -1286,11 +1286,13 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
     end
     ddBtn:SetScript("OnEnter", function()
         ApplyHover()
+        if not (menu and menu:IsShown()) then EllesmereUI._widgetInternals.ShowDropdownTip(ddBtn, ddLbl) end
     end)
     ddBtn:SetScript("OnLeave", function()
         if not (menu and menu:IsShown()) then
             ApplyNormal()
         end
+        EllesmereUI._widgetInternals.HideDropdownTip(ddBtn)
     end)
 
     local function ShowMenu()
@@ -1364,6 +1366,7 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
             if EllesmereUI._openDropdownMenu == self then EllesmereUI._openDropdownMenu = nil end
             if ddBtn:IsMouseOver() then
                 ApplyHover()
+                EllesmereUI._widgetInternals.ShowDropdownTip(ddBtn, ddLbl)
             else
                 ApplyNormal()
             end
@@ -1394,7 +1397,7 @@ function EllesmereUI.BuildVisOptsCBDropdown(parentFrame, ddW, fLevel, items, get
         end
     end
 
-    ddBtn:SetScript("OnClick", function() ShowMenu() end)
+    ddBtn:SetScript("OnClick", function() EllesmereUI._widgetInternals.HideDropdownTip(ddBtn); ShowMenu() end)
     ddBtn:HookScript("OnHide", function() if menu then menu:Hide() end end)
 
     -- RefreshAll(true), opt-in: a dynamic list is read again first, so the summary
@@ -2027,6 +2030,7 @@ function EllesmereUI.BuildReorderCBDropdown(parentFrame, ddW, fLevel, items, get
             -- Controller cursor: back onto the dropdown button before onClose, so a
             -- prompt it opens can still take the cursor (a no-op once the button is hidden).
             if EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(ddBtn) end
+            if ddBtn:IsMouseOver() then EllesmereUI._widgetInternals.ShowDropdownTip(ddBtn, ddLbl) end
             local changed = orderChanged
             orderChanged = false
             if opts.onClose then opts.onClose(changed) end
@@ -2048,9 +2052,13 @@ function EllesmereUI.BuildReorderCBDropdown(parentFrame, ddW, fLevel, items, get
         ddBrd:SetColor(1, 1, 1, EllesmereUI.DD_BRD_HA)
         ddBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA)
     end
-    ddBtn:SetScript("OnEnter", ApplyHover)
+    ddBtn:SetScript("OnEnter", function()
+        ApplyHover()
+        if not (menu and menu:IsShown()) then EllesmereUI._widgetInternals.ShowDropdownTip(ddBtn, ddLbl) end
+    end)
     ddBtn:SetScript("OnLeave", function()
         if not (menu and menu:IsShown()) then ApplyNormal() end
+        EllesmereUI._widgetInternals.HideDropdownTip(ddBtn)
     end)
 
     local function ShowMenu()
@@ -2073,7 +2081,7 @@ function EllesmereUI.BuildReorderCBDropdown(parentFrame, ddW, fLevel, items, get
         -- Controller cursor: into the opened list.
         if EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(menu) end
     end
-    ddBtn:SetScript("OnClick", ShowMenu)
+    ddBtn:SetScript("OnClick", function() EllesmereUI._widgetInternals.HideDropdownTip(ddBtn); ShowMenu() end)
     ddBtn:HookScript("OnHide", function() if menu then menu:Hide() end end)
 
     local function RefreshAll()
@@ -2228,6 +2236,7 @@ function EllesmereUI.BuildSliderDropdown(parentFrame, ddW, fLevel, items, opts)
             self:SetScript("OnUpdate", nil)
             if EllesmereUI._openDropdownMenu == self then EllesmereUI._openDropdownMenu = nil end
             Paint(ddBtn:IsMouseOver())
+            if ddBtn:IsMouseOver() then EllesmereUI._widgetInternals.ShowDropdownTip(ddBtn, ddLbl) end
             -- Controller cursor: back onto the button (a no-op once that is hidden too).
             if EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(ddBtn) end
         end)
@@ -2275,11 +2284,15 @@ function EllesmereUI.BuildSliderDropdown(parentFrame, ddW, fLevel, items, opts)
         end)
         if EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(menu) end
     end
-    ddBtn:SetScript("OnEnter", function() Paint(true) end)
+    ddBtn:SetScript("OnEnter", function()
+        Paint(true)
+        if not (menu and menu:IsShown()) then EllesmereUI._widgetInternals.ShowDropdownTip(ddBtn, ddLbl) end
+    end)
     ddBtn:SetScript("OnLeave", function()
         if not (menu and menu:IsShown()) then Paint(false) end
+        EllesmereUI._widgetInternals.HideDropdownTip(ddBtn)
     end)
-    ddBtn:SetScript("OnClick", ShowMenu)
+    ddBtn:SetScript("OnClick", function() EllesmereUI._widgetInternals.HideDropdownTip(ddBtn); ShowMenu() end)
     ddBtn:HookScript("OnHide", function() if menu then menu:Hide() end end)
 
     local function RefreshAll()
