@@ -5,9 +5,12 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ADDON_NAME = "EllesmereUIQuickdraw"
 local ns = EllesmereUI._ModuleNS[ADDON_NAME]  -- module namespace (published by the module at its load)
 if not ns then return end  -- module disabled: no options page
--- Stood down for the session (secure snippets unavailable: WoW Forever beta):
--- the module is not running, so its page stays out of the sidebar.
-if (EllesmereUI.Lite.GetAddon(ADDON_NAME, true) or ns).standDown then return end
+
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it is the plain CreateFrame.
+local Pool = EllesmereUI._Pool
+local CreateFrame = Pool.CreateFrame
 
 local PAGE_DISPLAY = "Quickdraw"
 local BINDING_PREFIX = "EUI_RADIAL"
@@ -60,12 +63,12 @@ initFrame:SetScript("OnEvent", function(self)
             EllesmereUI:RefreshPage(true)
             return
         end
-        if EllesmereUI.RefreshPage then EllesmereUI:RefreshPage() end
+        EllesmereUI:RefreshPage()
     end
 
     local function RebuildPage()
         if _G._EQD_Apply then _G._EQD_Apply() end
-        if EllesmereUI.RefreshPage then EllesmereUI:RefreshPage(true) end
+        EllesmereUI:RefreshPage(true)
     end
 
     -- Which palette the ACTION MENU SETUP section is editing. Transient: the editor
@@ -78,6 +81,15 @@ initFrame:SetScript("OnEvent", function(self)
 
     local function Palette(index)
         return ns.EnsurePalette and ns.EnsurePalette(index or editPalette)
+    end
+
+    -- A palette as stored, for getters: nothing created or compacted (getters
+    -- must not write; the panel's read trace runs them).
+    local function PaletteRead(index)
+        local prof = DB()
+        local pals = prof and prof.palettes
+        local pal = type(pals) == "table" and pals[index or editPalette]
+        return type(pal) == "table" and pal or nil
     end
 
     -- Does ANY menu hold a nested entry? Read-only walk over the stored
@@ -107,16 +119,13 @@ initFrame:SetScript("OnEvent", function(self)
     --  own reads the profile's value, so a profile written before any of this
     --  existed draws exactly as it did. Only the module's enable switch and
     --  the menu list itself are profile state through Cfg/Set; the "Apply All
-    --  Settings To" row below the preview is the bridge between menus.
+    --  Settings From" row below the preview is the bridge between menus.
     --
-    --  Every row that writes through ASet carries noCapture: these live
-    --  inside p.palettes[n] rather than under a flat key, and a per-spec
-    --  override banked against
-    --  whichever palette happened to be on screen at capture time would rewrite
-    --  a palette the user was not looking at.
+    --  The module is outside Spec Overrides (EllesmereUI_SpecOverrides.lua):
+    --  which specs a menu works in is its own Assign to Spec setting instead.
     ---------------------------------------------------------------------------
     local function ACfg(key)
-        local pal = ns.EnsurePalette and ns.EnsurePalette(editPalette)
+        local pal = PaletteRead(editPalette)
         local a = pal and pal.appearance
         local v = a and a[key]
         if v ~= nil then return v end
@@ -135,6 +144,12 @@ initFrame:SetScript("OnEvent", function(self)
     local function AutoName(index)
         if ns.AutoPaletteName then return ns.AutoPaletteName(index) end
         return "Action Menu " .. index
+    end
+
+    -- A menu's name as the page shows it.
+    local function MenuName(index)
+        local pal = PaletteRead(index)
+        return (pal and pal.name) or AutoName(index)
     end
 
     -- The icon a menu is listed BY, everywhere one is listed: its first entry,
@@ -161,10 +176,10 @@ initFrame:SetScript("OnEvent", function(self)
     --  driving ns.UpdateBindings, and the SaveBindings call fires
     --  UPDATE_BINDINGS so the palette re-routes its override binding by itself.
     --
-    --  The button is the Action Bars "Toggle Action Bar" keybind button: it
-    --  does its own listening -- left-click arms it, the next key press binds,
-    --  right-click unbinds, Escape cancels -- with no overlay of any kind.
-    --  The build lives in BuildKeybindButton below the page's selector.
+    --  The button is the shared keybind capture button: it does its own
+    --  listening -- left-click arms it, the next key press binds, right-click
+    --  unbinds, Escape cancels -- with no overlay of any kind. The page's
+    --  wrapper lives in BuildKeybindButton below the page's selector.
     ---------------------------------------------------------------------------
 
     -- The combat rejections below are the one case where EllesmereUI.Print is
@@ -176,7 +191,7 @@ initFrame:SetScript("OnEvent", function(self)
         if _G.UIErrorsFrame then
             UIErrorsFrame:AddMessage(msg, 1.0, 0.3, 0.3, 1.0)
         else
-            EllesmereUI.Print("|cff0cd29fQuickdraw:|r " .. msg)
+            EllesmereUI.Print(EllesmereUI.COLOR_CODES.BRAND .. "Quickdraw:|r " .. msg)
         end
     end
 
@@ -185,6 +200,108 @@ initFrame:SetScript("OnEvent", function(self)
     -- keybind UI shows, and our own palettes declare one each.
     local function BindingLabel(action)
         return _G["BINDING_NAME_" .. action] or action
+    end
+
+    ---------------------------------------------------------------------------
+    --  Shared keys
+    --
+    --  Two menus that can never load in the same spec (Assign to Spec) may share
+    --  a key. WoW's binding holds one action per key, so the key stays on its
+    --  holder's EUI_RADIAL binding and the sharer records the holder in
+    --  palette.keyShare (ns.ShareOwner); the module sends the key to whichever
+    --  of them loads. A holder letting a shared key go hands it to its first
+    --  sharer, so the sharers keep it.
+    ---------------------------------------------------------------------------
+    -- The menus sharing owner's key, in index order.
+    local function Sharers(owner)
+        local out = {}
+        for i = 1, PaletteCount() do
+            if i ~= owner and ns.ShareOwner(i) == owner then out[#out + 1] = i end
+        end
+        return out
+    end
+
+    -- Their names joined for a message ("Action Menu 2, Action Menu 3") and
+    -- their count, or nil when nothing shares owner's key.
+    local function SharerNames(owner)
+        local list = Sharers(owner)
+        if #list == 0 then return nil end
+        for n = 1, #list do list[n] = MenuName(list[n]) end
+        return table.concat(list, ", "), #list
+    end
+
+    -- Gives the keys owner lets go to its first sharer, which then holds them
+    -- for the rest. Returns that heir, or nil when nothing shares them.
+    local function HandOffKeys(owner, k1, k2)
+        local list = Sharers(owner)
+        local heir = list[1]
+        if not heir then return nil end
+        Palette(heir).keyShare = nil
+        for n = 2, #list do Palette(list[n]).keyShare = heir end
+        if k1 then SetBinding(k1, BINDING_PREFIX .. heir) end
+        if k2 then SetBinding(k2, BINDING_PREFIX .. heir) end
+        return heir
+    end
+
+    -- May menu idx share the key owner holds? Only when idx can never load
+    -- together with owner or with any menu already sharing it.
+    local function CanShareWith(idx, owner)
+        if not ns.PalettesExclusive(idx, owner) then return false end
+        for _, s in ipairs(Sharers(owner)) do
+            if s ~= idx and not ns.PalettesExclusive(idx, s) then return false end
+        end
+        return true
+    end
+
+    -- The menu of this profile a binding action opens, or nil.
+    local function PaletteOfAction(action)
+        local n = type(action) == "string" and tonumber(action:match("^" .. BINDING_PREFIX .. "(%d+)$"))
+        if n and n >= 1 and n <= PaletteCount() then return n end
+        return nil
+    end
+
+    -- Menu idx takes on the key owner holds: the keys idx held stay with the
+    -- menus sharing them, or are let go. An owner that itself shared another
+    -- menu's key (a key bound to it from Blizzard's Keybindings page) holds
+    -- this one of its own now, so its old share ends.
+    local function ShareKey(idx, owner, chord)
+        local k1, k2 = GetBindingKey(BINDING_PREFIX .. idx)
+        if not HandOffKeys(idx, k1, k2) then
+            if k1 then SetBinding(k1, nil) end
+            if k2 then SetBinding(k2, nil) end
+        end
+        Palette(owner).keyShare = nil
+        Palette(idx).keyShare = owner
+        if k1 or k2 then SaveBindings(GetCurrentBindingSet()) end
+        EllesmereUI.Print(EllesmereUI.COLOR_CODES.BRAND .. "Quickdraw:|r " .. EllesmereUI.Lf("%1$s now shares %2$s with %3$s.",
+            MenuName(idx), GetBindingText(chord) or chord, MenuName(owner)))
+        RebuildPage()
+    end
+
+    -- An Assign to Spec change can let menus that share a key load together:
+    -- each such share is broken, its menu left unbound, and said so in chat.
+    -- Returns true when it broke one.
+    local function CheckShares()
+        local broke = false
+        for owner = 1, PaletteCount() do
+            local kept = {}
+            for _, s in ipairs(Sharers(owner)) do
+                local ok = ns.PalettesExclusive(s, owner)
+                for _, k in ipairs(kept) do
+                    if ok and not ns.PalettesExclusive(s, k) then ok = false end
+                end
+                if ok then
+                    kept[#kept + 1] = s
+                else
+                    Palette(s).keyShare = nil
+                    broke = true
+                    EllesmereUI.Print(EllesmereUI.COLOR_CODES.BRAND .. "Quickdraw:|r "
+                        .. EllesmereUI.Lf("%1$s no longer shares the key of %2$s: they can now load in the same spec.",
+                            MenuName(s), MenuName(owner)))
+                end
+            end
+        end
+        return broke
     end
 
     -- Both halves of a commit, past the point of asking. Split out so the
@@ -197,27 +314,43 @@ initFrame:SetScript("OnEvent", function(self)
         local oldK1, oldK2 = GetBindingKey(action)
 
         if chord then
-            -- Replace the PRIMARY key only and leave a secondary binding
-            -- alone. Blizzard's own panel allows two keys per action, and
-            -- clearing both here silently destroyed the second one with no
-            -- message (and no way to see it, since the label shows key1).
-            if oldK1 then SetBinding(oldK1, nil) end
+            -- Bound first, so a key that cannot be bound changes nothing, the
+            -- shares included. Then the PRIMARY key is replaced and a secondary
+            -- binding left alone: Blizzard's own panel allows two keys per
+            -- action, and clearing both silently destroyed the second one with
+            -- no message (and no way to see it, since the label shows key1).
+            -- Uninstall EUI hands the key back to what it did before.
+            EllesmereUI.NoteBinding(chord, GetBindingAction(chord))
             if not SetBinding(chord, action) then
-                -- Put the primary back. oldK2 was never cleared, so there is
-                -- nothing to restore for it.
-                if oldK1 then SetBinding(oldK1, action) end
                 Complain("Quickdraw: " .. (GetBindingText(chord) or chord)
                     .. " could not be bound.")
-            elseif stolenFrom then
-                EllesmereUI.Print("|cff0cd29fQuickdraw:|r took "
-                    .. (GetBindingText(chord) or chord) .. " from |cffffd100"
-                    .. BindingLabel(stolenFrom) .. "|r.")
+            else
+                -- A key of its own ends a share; a primary that menus share
+                -- stays with them, else it is let go.
+                Palette(palette).keyShare = nil
+                if oldK1 and oldK1 ~= chord and not HandOffKeys(palette, oldK1, nil) then
+                    SetBinding(oldK1, nil)
+                end
+                if stolenFrom then
+                    -- The menus that shared the key lose it with its holder
+                    local holder = PaletteOfAction(stolenFrom)
+                    local names = holder and SharerNames(holder)
+                    EllesmereUI.Print(EllesmereUI.COLOR_CODES.BRAND .. "Quickdraw:|r took "
+                        .. (GetBindingText(chord) or chord) .. " from |cffffd100"
+                        .. BindingLabel(stolenFrom) .. "|r"
+                        .. (names and (" (" .. EllesmereUI.Lf("and %1$s, which shared it", names) .. ")") or "")
+                        .. ".")
+                end
             end
         else
+            -- A key of its own (or none) ends a share.
+            Palette(palette).keyShare = nil
             -- Unbind: this one clears every key the palette holds, which is what
-            -- "unbind" means.
-            if oldK1 then SetBinding(oldK1, nil) end
-            if oldK2 then SetBinding(oldK2, nil) end
+            -- "unbind" means; keys menus share stay with them.
+            if not HandOffKeys(palette, oldK1, oldK2) then
+                if oldK1 then SetBinding(oldK1, nil) end
+                if oldK2 then SetBinding(oldK2, nil) end
+            end
         end
 
         SaveBindings(GetCurrentBindingSet())
@@ -243,6 +376,14 @@ initFrame:SetScript("OnEvent", function(self)
         local stolenFrom = chord and GetBindingAction(chord) or nil
         if stolenFrom == "" or stolenFrom == action then stolenFrom = nil end
 
+        -- A key another menu holds is shared rather than taken when the two
+        -- can never load in the same spec (Assign to Spec).
+        local holder = stolenFrom and PaletteOfAction(stolenFrom)
+        if holder and CanShareWith(palette, holder) then
+            ShareKey(palette, holder, chord)
+            return
+        end
+
         -- SetBinding takes a key from whatever holds it without a word, and the
         -- displaced binding is often something the user cares about and will
         -- not miss until they reach for it mid-fight. Asking first is the only
@@ -250,10 +391,22 @@ initFrame:SetScript("OnEvent", function(self)
         -- tells them what to go and put back, which is not the same thing.
         if stolenFrom and EllesmereUI.ShowConfirmPopup then
             local keyText = GetBindingText(chord) or chord
+            local message = EllesmereUI.Lf("%1$s is bound to \"%2$s\". Binding it to \"%3$s\" will leave that unbound.",
+                keyText, BindingLabel(stolenFrom), BindingLabel(action))
+            -- Another menu: the menus sharing its key lose it too, and the way
+            -- to keep the key on both.
+            if holder then
+                local names, count = SharerNames(holder)
+                if names then
+                    message = message .. "\n\n" .. (count == 1
+                        and EllesmereUI.Lf("%1$s shares it and will lose it too.", names)
+                        or EllesmereUI.Lf("%1$s share it and will lose it too.", names))
+                end
+                message = message .. "\n\n" .. EllesmereUI.L("Two action menus can share a keybind when Assign to Spec keeps them from ever loading in the same spec.")
+            end
             EllesmereUI:ShowConfirmPopup({
                 title       = "Key Already Bound",
-                message     = EllesmereUI.Lf("%1$s is bound to \"%2$s\". Binding it to \"%3$s\" will leave that unbound.",
-                    keyText, BindingLabel(stolenFrom), BindingLabel(action)),
+                message     = message,
                 confirmText = "Rebind",
                 cancelText  = "Keep",
                 -- Re-checked rather than trusted: the dialog sits open for as
@@ -307,8 +460,8 @@ initFrame:SetScript("OnEvent", function(self)
             local sig = PaletteKeySignature()
             if sig == lastKeySig then return end
             lastKeySig = sig
-            if EllesmereUI.InvalidatePageCache then EllesmereUI:InvalidatePageCache() end
-            if EllesmereUI.IsShown and EllesmereUI:IsShown() and EllesmereUI.RefreshPage then
+            EllesmereUI:InvalidatePageCache()
+            if EllesmereUI:IsShown() and EllesmereUI.RefreshPage then
                 EllesmereUI:RefreshPage(true)
             end
         end)
@@ -488,7 +641,10 @@ initFrame:SetScript("OnEvent", function(self)
                     or (slot.kind == "cycleworldmarker"
                         and "world marker, next on each press")
                     or (slot.kind == "randommount" and "mount")
+                    or (slot.kind == "randomhearth"
+                        and "random hearthstone, rolled again on each open")
                     or (slot.kind == "panel" and "interface panel")
+                    or (slot.kind == "equipmentset" and "equipment set")
                     or (slot.kind == "spec" and "specialization")
                     -- Same icon and same name as a fixed spec entry on the
                     -- character that made it, so the caption is the only place
@@ -523,13 +679,11 @@ initFrame:SetScript("OnEvent", function(self)
                 .. "\n|cff66ccffLeft-click to pick an action from a list."
                 .. "\nYou can also drop an action from the cursor here.|r")
         end
-        if EllesmereUI.ShowWidgetTooltip then
-            EllesmereUI.ShowWidgetTooltip(widget, text)
-        end
+        EllesmereUI.ShowWidgetTooltip(widget, text)
     end
 
     local function HidePreviewTooltip()
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end
 
     -- Place whatever is on the cursor. An empty cursor is not an error: a bare
@@ -594,12 +748,23 @@ initFrame:SetScript("OnEvent", function(self)
     local function SpellEntries()
         local out, seen = {}, {}
         local bank = Enum.SpellBookSpellBank.Player
+        -- WoW Forever: names that have lower ranks, and each spell's top rank.
+        local ranked, tops = {}, {}
 
-        local function Add(spellID, name, icon)
-            if type(spellID) ~= "number" or seen[spellID] or not name then return end
-            seen[spellID] = true
-            out[#out + 1] = { icon = icon, name = name,
-                              slot = { kind = "spell", id = spellID } }
+        local function Add(spellID, name, icon, rankText)
+            local key = rankText and ("#" .. tostring(spellID)) or spellID
+            if type(spellID) ~= "number" or seen[key] or not name then return end
+            seen[key] = true
+            local entry = { icon = icon, name = name,
+                            slot = { kind = "spell", id = spellID } }
+            -- A rank row casts exactly that rank, and sorts below its spell's
+            -- own row (sortName, rankNum: see the picker's sort).
+            if rankText then
+                entry.name = name .. " (" .. rankText .. ")"
+                entry.sortName, entry.rankNum = name, tonumber(rankText:match("%d+")) or 0
+                entry.slot.rankPinned = true
+            end
+            out[#out + 1] = entry
         end
 
         -- Dynamic Rez ahead of the spellbook itself, the way the Mount Journal's
@@ -629,14 +794,37 @@ initFrame:SetScript("OnEvent", function(self)
                 for i = li.itemIndexOffset + 1, li.itemIndexOffset + li.numSpellBookItems do
                     local info = C_SpellBook.GetSpellBookItemInfo(i, bank)
                     -- FutureSpell (a rank not learned yet) falls out here too:
-                    -- only Spell and Flyout are handled.
+                    -- only Spell and Flyout are handled. On WoW Forever the book
+                    -- holds every learned rank: the spell's own row follows the
+                    -- highest known rank, and each rank also gets a row that
+                    -- casts exactly that rank.
                     if info and not info.isPassive and not info.isOffSpec then
                         if info.itemType == Enum.SpellBookItemType.Spell then
+                            local rankText
+                            if EllesmereUI.IS_FOREVER then
+                                rankText = info.subName
+                                if not rankText or rankText == "" then
+                                    rankText = C_Spell.GetSpellSubtext(info.actionID)
+                                end
+                                if rankText == "" then rankText = nil end
+                            end
                             -- actionID, not spellID: for a spell actionID is the
                             -- BASE id while spellID is whatever override is up
                             -- right now, and the base is what the game resolves
-                            -- overrides from when the button fires.
-                            Add(info.actionID, info.name, info.iconID)
+                            -- overrides from when the button fires. A lower rank
+                            -- whose text has not loaded would only repeat its
+                            -- spell's row.
+                            if EllesmereUI.IS_FOREVER and C_SpellBook.IsSpellBookItemLowRank(i, bank) then
+                                if rankText then
+                                    Add(info.actionID, info.name, info.iconID, rankText)
+                                    ranked[info.name] = true
+                                end
+                            else
+                                Add(info.actionID, info.name, info.iconID)
+                                if rankText then
+                                    tops[#tops + 1] = { info.actionID, info.name, info.iconID, rankText }
+                                end
+                            end
                         elseif info.itemType == Enum.SpellBookItemType.Flyout then
                             -- A flyout is not castable itself, so its known
                             -- slots are offered as individual spells.
@@ -645,13 +833,18 @@ initFrame:SetScript("OnEvent", function(self)
                                 local spellID, _, isKnown, spellName =
                                     GetFlyoutSlotInfo(info.actionID, s)
                                 if isKnown then
-                                    Add(spellID, spellName, C_Spell.GetSpellTexture(spellID))
+                                    -- One icon only: the second return would land in rankText.
+                                    Add(spellID, spellName, (C_Spell.GetSpellTexture(spellID)))
                                 end
                             end
                         end
                     end
                 end
             end
+        end
+        -- The top rank of a spell with lower ones gets its own rank row too.
+        for _, t in ipairs(tops) do
+            if ranked[t[2]] then Add(t[1], t[2], t[3], t[4]) end
         end
         return out
     end
@@ -801,6 +994,14 @@ initFrame:SetScript("OnEvent", function(self)
 
     local function ToyEntries()
         local out = {}
+        -- A different owned hearthstone on every open, pinned ahead of the
+        -- collection the way the random mount leads the mounts. Named for what
+        -- the ENTRY is rather than for the toy it happens to draw right now.
+        do
+            local slot = { kind = "randomhearth" }
+            local icon = ns.SlotDisplay(slot)
+            out[1] = { icon = icon, name = "Random Hearthstone", slot = slot, pin = true }
+        end
         ScanToysUnfiltered(function()
             for i = 1, (C_ToyBox.GetNumFilteredToys() or 0) do
                 local itemID = C_ToyBox.GetToyFromIndex(i)
@@ -838,10 +1039,7 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end
         AddBlock(1, numAccount)
-        -- The global is nil on this client; 120 is the account block's size,
-        -- the same fallback the ClickCast macro list uses
-        -- (EUI_RaidFrames_ClickCast.lua:36).
-        AddBlock((MAX_ACCOUNT_MACROS or 120) + 1, numChar)
+        AddBlock(Constants.MacroConsts.MAX_ACCOUNT_MACROS + 1, numChar)
         return out
     end
 
@@ -922,9 +1120,10 @@ initFrame:SetScript("OnEvent", function(self)
 
     -- Profession POSITIONS (DynamicSpecEntries counterpart): the five
     -- GetProfessions slots as openers, then the same five as second abilities,
-    -- then the two primary slots as gathering specialization abilities.
+    -- then the two primary slots as gathering specialization abilities (retail
+    -- only: WoW Forever's professions have no specializations).
     -- Unlearned or inapplicable positions resolve to nothing and go dark under
-    -- Hide Unusable Entries (see Dynamic Profession in EllesmereUIQuickdraw).
+    -- Hide Unavailable Actions (see Dynamic Profession in EllesmereUIQuickdraw).
     local function DynamicProfessionEntries()
         local out = {}
         if not ns.ProfessionPositionName then return out end
@@ -938,7 +1137,7 @@ initFrame:SetScript("OnEvent", function(self)
             local icon = ns.SlotDisplay(slot)
             out[#out + 1] = { icon = icon, name = ns.ProfessionPositionName(i, true), slot = slot }
         end
-        for i = 1, 2 do
+        for i = 1, EllesmereUI.IS_FOREVER and 0 or 2 do
             local slot = { kind = "dynamicprofession", index = i, specialization = true }
             local icon = ns.SlotDisplay(slot)
             out[#out + 1] = {
@@ -1019,6 +1218,15 @@ initFrame:SetScript("OnEvent", function(self)
         return out
     end
 
+    local function EquipmentSetEntries()
+        local out = {}
+        for _, slot in ipairs(ns.EquipmentSetSlots()) do
+            local icon, name = ns.SlotDisplay(slot)
+            out[#out + 1] = { icon = icon, name = name, slot = slot }
+        end
+        return out
+    end
+
     -- Every palette this one may open. Not a list of things the game owns, so
     -- it is rebuilt on each use rather than cached: adding a palette or filling
     -- one in has to show up here without reopening the picker.
@@ -1067,6 +1275,8 @@ initFrame:SetScript("OnEvent", function(self)
         { key = "battlepet", label = "Battle Pets",  build = PetEntries },
         { key = "outfit",    label = "Outfits",      build = OutfitEntries,
           keepOrder = true },
+        { key = "equipmentset", label = "Equipment Sets",
+          build = EquipmentSetEntries },
         -- keepOrder on both: the markers run star to skull, the order every
         -- marker menu in the game shows. noSearch on both too -- a fixed
         -- handful of rows has nothing worth filtering, and the nav strip
@@ -1085,8 +1295,9 @@ initFrame:SetScript("OnEvent", function(self)
         { key = "spec",      label = "Specializations", build = AllSpecEntries,
           keepOrder = true, noSearch = true },
         -- keepOrder: Profession 1, Profession 2, Cooking, Fishing and
-        -- Archaeology in the fixed order the game lists them, then the same
-        -- five positions' second abilities. noSearch: ten rows.
+        -- Archaeology (First Aid on WoW Forever) in the fixed order the game
+        -- lists them, then the same five positions' second abilities.
+        -- noSearch: ten rows.
         { key = "profession", label = "Professions", build = DynamicProfessionEntries,
           keepOrder = true, noSearch = true },
         -- keepOrder: the panels run in the order the micro menu draws them,
@@ -1141,7 +1352,7 @@ initFrame:SetScript("OnEvent", function(self)
     local function EnsurePickerMenu()
         if pickerMenu then return pickerMenu end
 
-        local FONT = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath())
+        local FONT = (EllesmereUI.GetFontPath())
             or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
         local bgR  = EllesmereUI.DD_BG_R or 0.075
         local bgG  = EllesmereUI.DD_BG_G or 0.113
@@ -1168,7 +1379,7 @@ initFrame:SetScript("OnEvent", function(self)
         local mbg = menu:CreateTexture(nil, "BACKGROUND")
         mbg:SetAllPoints()
         mbg:SetColorTexture(bgR, bgG, bgB, bgA)
-        EllesmereUI.MakeBorder(menu, 1, 1, 1, brdA, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, brdA, mbg, nil, true)
 
         menu.title = EllesmereUI.MakeFont(menu, 12, nil, 1, 1, 1, 0.9)
         menu.title:SetPoint("TOP", menu, "TOP", 0, -7)
@@ -1225,7 +1436,7 @@ initFrame:SetScript("OnEvent", function(self)
         local sBg = menu.search:CreateTexture(nil, "BACKGROUND")
         sBg:SetAllPoints()
         sBg:SetColorTexture(0, 0, 0, 0.4)
-        EllesmereUI.MakeBorder(menu.search, 1, 1, 1, 0.10, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(menu.search, 1, 1, 1, 0.10, sBg)
         menu.searchPH = menu.search:CreateFontString(nil, "OVERLAY")
         menu.searchPH:SetFont(FONT, 11, "")
         menu.searchPH:SetTextColor(0.5, 0.5, 0.5, 0.6)
@@ -1358,7 +1569,7 @@ initFrame:SetScript("OnEvent", function(self)
             local bg = box:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints()
             bg:SetColorTexture(0, 0, 0, 0.4)
-            EllesmereUI.MakeBorder(box, 1, 1, 1, 0.10, EllesmereUI.PP)
+            EllesmereUI.MakeRoundedBorder(box, 1, 1, 1, 0.10, bg)
             return box
         end
 
@@ -1385,7 +1596,7 @@ initFrame:SetScript("OnEvent", function(self)
         local aBg = addBtn:CreateTexture(nil, "BACKGROUND")
         aBg:SetAllPoints()
         aBg:SetColorTexture(ACCENT.r, ACCENT.g, ACCENT.b, 0.20)
-        EllesmereUI.MakeBorder(addBtn, ACCENT.r, ACCENT.g, ACCENT.b, 0.7, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(addBtn, ACCENT.r, ACCENT.g, ACCENT.b, 0.7, aBg)
         local aTx = EllesmereUI.MakeFont(addBtn, 11, nil, 1, 1, 1, 0.9)
         aTx:SetPoint("CENTER")
         aTx:SetText(EllesmereUI.L("Add"))
@@ -1570,7 +1781,10 @@ initFrame:SetScript("OnEvent", function(self)
             if not cat.keepOrder then
                 table.sort(list, function(a, b)
                     if (a.pin or false) ~= (b.pin or false) then return a.pin == true end
-                    return a.name < b.name
+                    -- WoW Forever's lower ranks follow their spell's row, highest first.
+                    local an, bn = a.sortName or a.name, b.sortName or b.name
+                    if an ~= bn then return an < bn end
+                    return (a.rankNum or math.huge) > (b.rankNum or math.huge)
                 end)
             end
             pickerLists[cat.key] = list
@@ -1771,6 +1985,13 @@ initFrame:SetScript("OnEvent", function(self)
     -- Keep Blizzard's order and report anything over the menu cap.
     local function OutfitSlots()
         local out = ns.OutfitSlots and ns.OutfitSlots() or {}
+        local dropped = math.max(0, #out - MAX_SLOTS)
+        for i = #out, MAX_SLOTS + 1, -1 do out[i] = nil end
+        return out, dropped
+    end
+
+    local function EquipmentSetSlots()
+        local out = ns.EquipmentSetSlots()
         local dropped = math.max(0, #out - MAX_SLOTS)
         for i = #out, MAX_SLOTS + 1, -1 do out[i] = nil end
         return out, dropped
@@ -1986,6 +2207,7 @@ initFrame:SetScript("OnEvent", function(self)
         { label = "Pings",          build = PingSlots },
         { label = "Hearthstones",   build = HearthstoneSlots },
         { label = "Outfits",        build = OutfitSlots },
+        { label = "Equipment Sets", build = EquipmentSetSlots },
         { label = "Teleports",      build = TeleportSlots },
         { label = "Potions",        build = PotionSlots },
         { label = "Druid Forms",    build = FormSlots },
@@ -2133,6 +2355,10 @@ initFrame:SetScript("OnEvent", function(self)
         -- table.remove stops at the first hole.
         for i = 1, count do Palette(i) end
 
+        -- Keys the deleted palette shared stay with the palettes sharing them,
+        -- before the indexes move.
+        local handed = HandOffKeys(index, GetBindingKey(BINDING_PREFIX .. index))
+
         table.remove(p.palettes, index)
         Set("paletteCount", count - 1)
 
@@ -2162,6 +2388,13 @@ initFrame:SetScript("OnEvent", function(self)
                     end
                 end
             end
+            -- A shared key follows its holder down one index.
+            local share = tonumber(palette.keyShare)
+            if share == index then
+                palette.keyShare = nil
+            elseif share and share > index then
+                palette.keyShare = share - 1
+            end
         end
 
         -- Each action can hold TWO keys (see CommitKey), so the whole set is
@@ -2181,7 +2414,7 @@ initFrame:SetScript("OnEvent", function(self)
                 SetBinding(k, BINDING_PREFIX .. n)
             end
         end
-        if any then SaveBindings(GetCurrentBindingSet()) end
+        if any or handed then SaveBindings(GetCurrentBindingSet()) end
 
         -- Keep the editor pointed at the palette it was on, which now sits one
         -- index lower; deleting the edited palette itself falls to whichever
@@ -2240,7 +2473,7 @@ initFrame:SetScript("OnEvent", function(self)
 
     local function RebuildMenuRows()
         local m = EnsureMenuMenu()
-        local FONT = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath())
+        local FONT = (EllesmereUI.GetFontPath())
             or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
         local mH = 4
         local count = PaletteCount()
@@ -2421,7 +2654,10 @@ initFrame:SetScript("OnEvent", function(self)
 
     -- The anchor button, rebuilt with every page build (the menu above is
     -- not): the Profiles page's Active Profile dropdown look, verbatim.
+    -- Nothing during the search index prebuild: its row is a stand-in with no
+    -- frame to build on, and the row's own label is what the index lists.
     local function BuildMenuSelector(rgn)
+        if EllesmereUI._prebuilding then return end
         local PPQ = EllesmereUI.PanelPP
         local btn = CreateFrame("Button", nil, rgn)
         -- 170x30, the exact face BuildDropdownControl gives every standard
@@ -2432,9 +2668,10 @@ initFrame:SetScript("OnEvent", function(self)
         local bg = btn:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-        local brd = EllesmereUI.MakeBorder(btn, 1, 1, 1, EllesmereUI.DD_BRD_A, PPQ)
-        local lbl = EllesmereUI.MakeFont(btn, 13, nil, 1, 1, 1)
-        lbl:SetAlpha(EllesmereUI.DD_TXT_A)
+        local brd = EllesmereUI.MakeRoundedBorder(btn, 1, 1, 1, EllesmereUI.DD_BRD_A, bg)
+        -- The resting alpha is the text colour's, the channel the hover
+        -- colours below write, so a hover and leave land back on it.
+        local lbl = EllesmereUI.MakeFont(btn, 13, nil, 1, 1, 1, EllesmereUI.DD_TXT_A)
         lbl:SetJustifyH("LEFT")
         lbl:SetWordWrap(false)
         lbl:SetMaxLines(1)
@@ -2458,8 +2695,11 @@ initFrame:SetScript("OnEvent", function(self)
         btn:SetScript("OnClick", function()
             if Cfg("enabled") ~= true then return end
             local m = EnsureMenuMenu()
-            if m:IsShown() and m._anchor == btn then m:Hide() return end
-            m._anchor = btn
+            -- The same anchor only in the same dress: a page rebuild may dress
+            -- this button again (page reuse), and an open menu then re-anchors
+            -- to it as it would to a new button.
+            if m:IsShown() and m._anchor == btn and m._anchorGen == Pool.Gen(btn) then m:Hide() return end
+            m._anchor, m._anchorGen = btn, Pool.Gen(btn)
             m:ClearAllPoints()
             m:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -2)
             RebuildMenuRows()
@@ -2469,201 +2709,91 @@ initFrame:SetScript("OnEvent", function(self)
         return btn
     end
 
-    -- The Action Bars "Toggle Action Bar" keybind button, on the row's right
-    -- half: the button itself listens. Left-click arms it and the next key
-    -- press binds; right-click unbinds; Escape cancels; hiding the page (the
-    -- options window closes on entering combat) cancels too. Only the commit
-    -- differs from Action Bars: this edits the real EUI_RADIAL<n> binding
-    -- through CommitKey, theft dialog and all, not a saved key of our own.
-    -- The palette index is baked at build time like every other row here --
-    -- switching the edited menu rebuilds the page.
-    -- spec is nil for the palette's own keybind, which is the button this was
-    -- written for and still its default behaviour. The Select key passes one:
+    -- The shared keybind capture button, on the row's right half: left-click
+    -- arms it and the next key press binds; right-click unbinds; Escape
+    -- cancels; hiding the page (the options window closes on entering combat)
+    -- cancels too. By default it edits the real EUI_RADIAL<n> binding through
+    -- CommitKey, theft dialog and all, not a saved key of our own. The palette
+    -- index is baked at build time like every other row here -- switching the
+    -- edited menu rebuilds the page.
+    -- spec is nil for the palette's own keybind. The Select and Cancel keys
+    -- pass one:
     --
     --   read()          the chord currently held, or nil
     --   commit(chord)   store it; nil unbinds
     --   plainMouse      allow a bare left-click to bind BUTTON1
+    --   intro           what the key does, shown above the how-to-bind text
     --
-    -- plainMouse is the one real divergence, and it moves where the two
-    -- gestures live rather than adding one. The palette's key refuses bare left
-    -- and right clicks because they keep their widget meanings -- arm and
-    -- unbind -- and the Blizzard bindings page refuses them for the same
-    -- reason. A bare mouse button is precisely what a Select key is for, so
-    -- there the meaning follows the STATE instead of the button:
+    -- plainMouse moves where the two gestures live rather than adding one. The
+    -- palette's key refuses bare left and right clicks because they keep their
+    -- widget meanings -- arm and unbind -- and the Blizzard bindings page
+    -- refuses them for the same reason. A bare mouse button is precisely what
+    -- a Select key is for, so there the meaning follows the STATE instead of
+    -- the button:
     --
     --   resting     left arms the picker, right unbinds
     --   listening   any click is the chord, any key is the chord, Escape backs out
     --
     -- so BUTTON1 and BUTTON2 are both reachable and unbind is still one click.
+    -- The wheel stays uncapturable on purpose: a tick cannot be HELD, and hold
+    -- is the palette's whole input model -- key down opens, key up fires.
     local function BuildKeybindButton(rgn, spec)
-        local PPQ = EllesmereUI.PanelPP
-        local kbBtn = CreateFrame("Button", nil, rgn)
-        PPQ.Size(kbBtn, 126, 29)
-        PPQ.Point(kbBtn, "RIGHT", rgn, "RIGHT", -20, 0)
-        kbBtn:SetFrameLevel(rgn:GetFrameLevel() + 4)
-        kbBtn:RegisterForClicks("AnyUp")
-        local kbBg = EllesmereUI.SolidTex(kbBtn, "BACKGROUND", EllesmereUI.DD_BG_R,
-            EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-        kbBg:SetAllPoints()
-        kbBtn._border = EllesmereUI.MakeBorder(kbBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, PPQ)
-        local kbLbl = EllesmereUI.MakeFont(kbBtn, 12, nil, 1, 1, 1)
-        kbLbl:SetAlpha(EllesmereUI.DD_TXT_A)
-        kbLbl:SetPoint("CENTER")
-
+        -- Nothing during the search index prebuild, as BuildMenuSelector.
+        if EllesmereUI._prebuilding then return end
         local palette = editPalette
         local action = BINDING_PREFIX .. palette
-        local listening = false
-        local ReadKey = spec and spec.read or function() return GetBindingKey(action) end
-        local Commit = spec and spec.commit or function(chord) CommitKey(palette, chord) end
         local plainMouse = spec and spec.plainMouse
-        -- What the key IS, shown above the how-to-bind instructions: the
-        -- palette's own keybind row sits under a heading that already says,
-        -- but a spec-driven picker (the Select Key) has only its label.
-        local intro = spec and spec.intro
         -- BuildPage's own Disabled() is a local of that function and out of
         -- scope here, the same reason BuildMenuSelector reads Cfg directly.
-        -- A spec may widen the gate (the Select Key: also disabled while the
-        -- edited menu's Toggle Menu Open is off -- the key answers only
-        -- latched menus) and name the requirement for the disabled tooltip.
+        -- A spec may widen the gate and name the requirement for the disabled
+        -- tooltip.
         local Disabled = (spec and spec.disabled)
             or function() return Cfg("enabled") ~= true end
-        local disabledReason = (spec and spec.disabledReason) or "the module"
 
-        local function FormatKey(key)
-            if not key then return EllesmereUI.L("Not Bound") end
-            local parts = {}
-            for mod in key:gmatch("(%u+)%-") do
-                parts[#parts + 1] = mod:sub(1, 1) .. mod:sub(2):lower()
+        -- Right-click means two different things on a plainMouse picker
+        -- depending on whether it is armed, so it has to say which.
+        local tip = plainMouse
+            and EllesmereUI.L("Left-click to set a keybind, then press any key or\n"
+                .. "click any mouse button to use it.\n"
+                .. "Escape cancels. Right-click here to unbind.")
+            or EllesmereUI.L("Left-click to set a keybind.\nRight-click to unbind.")
+        -- The palette's own keybind row sits under a heading that already says
+        -- what the key is, but a spec-driven picker has only its label.
+        if spec and spec.intro then tip = EllesmereUI.L(spec.intro) .. "\n\n" .. tip end
+        -- A shared key (Assign to Spec) names the menus it is shared with.
+        if not spec then
+            local owner, names = ns.ShareOwner(palette), {}
+            if owner then
+                names[1] = MenuName(owner)
+            else
+                for _, s in ipairs(Sharers(palette)) do names[#names + 1] = MenuName(s) end
             end
-            parts[#parts + 1] = key:match("[^%-]+$") or key
-            return table.concat(parts, " + ")
+            if #names > 0 then
+                tip = EllesmereUI.Lf("Shared with %1$s.", table.concat(names, ", ")) .. "\n\n" .. tip
+            end
         end
 
-        -- Always AFTER the commit, never before it. Reading first and painting
-        -- the old key was the same answer for the palette's keybind -- a
-        -- CommitKey the user declines or combat refuses leaves the binding
-        -- alone, and one that lands rebuilds the whole page over this button --
-        -- but the Select key's commit only writes the profile, so a label
-        -- painted before it stayed a whole interaction behind the value: the
-        -- click that bound BUTTON1 still read "Not Bound", and the right-click
-        -- that unbound it still read BUTTON1. Reading after is correct for
-        -- both, because a refused commit leaves exactly what the pre-read was
-        -- there to preserve.
-        local function RefreshLabel()
-            kbLbl:SetText(FormatKey(ReadKey()))
-        end
-
-        kbBtn:SetScript("OnClick", function(self, button)
-            if Disabled() then return end
-            -- Mouse chords. OnKeyDown never fires for mouse buttons, so an
-            -- armed listener takes them from the click itself, through the
-            -- same conversion the keyboard path uses (GetConvertedKeyOrButton
-            -- maps "Button4" -> "BUTTON4" and so on). The extra buttons --
-            -- middle, Button4 and up -- bind bare or modified; left and right
-            -- bind only WITH a modifier held, since plain they keep their
-            -- widget meanings (left arms, right unbinds) -- the same rule the
-            -- Blizzard bindings page applies to mouse input. The wheel stays
-            -- uncapturable on purpose: a tick cannot be HELD, and hold is the
-            -- palette's whole input model -- key down opens, key up fires.
-            -- plainMouse takes every bare click while LISTENING as a chord,
-            -- left and right alike, which is what makes BUTTON1 and BUTTON2
-            -- reachable at all. It costs nothing: unbind moves to a right-click
-            -- from the resting state, which is where a user reaches for it
-            -- anyway, and Escape still backs out of an armed picker. Without
-            -- this the two most obvious Select keys are the two this widget
-            -- cannot take.
-            if listening and ((button ~= "LeftButton" and button ~= "RightButton")
-                or IsModifierKeyDown()
-                or plainMouse) then
-                listening = false
-                self:EnableKeyboard(false)
-                Commit(CreateKeyChordStringUsingMetaKeyState(
-                    GetConvertedKeyOrButton(button)))
-                RefreshLabel()
-                return
-            end
-            if button == "RightButton" then
-                if listening then
-                    listening = false
-                    self:EnableKeyboard(false)
-                end
-                Commit(nil)
-                RefreshLabel()
-                return
-            end
-            -- The extra mouse buttons only mean something while listening.
-            if button ~= "LeftButton" then return end
-            if listening then return end
-            if InCombatLockdown() then
+        local kbBtn = EllesmereUI.BuildKeybindButton(rgn, {
+            w = 126, h = 29, level = 4, mouse = true, plainMouse = plainMouse,
+            tooltip = tip,
+            disabled = Disabled,
+            disabledTip = (spec and spec.disabledReason) or "the module",
+            -- A menu sharing a key shows the key it shares.
+            get = (spec and spec.read) or function()
+                local k1, k2 = GetBindingKey(action)
+                if k1 or k2 then return k1, k2 end
+                local owner = ns.ShareOwner(palette)
+                if owner then return GetBindingKey(BINDING_PREFIX .. owner) end
+                return nil
+            end,
+            set = (spec and spec.commit) or function(chord) CommitKey(palette, chord) end,
+            canArm = function()
+                if not InCombatLockdown() then return true end
                 Complain("Quickdraw: keybinds can't be changed in combat.")
-                return
-            end
-            listening = true
-            kbLbl:SetText(EllesmereUI.L("Press a key..."))
-            self:EnableKeyboard(true)
-        end)
-
-        kbBtn:SetScript("OnKeyDown", function(self, key)
-            if not listening then self:SetPropagateKeyboardInput(true); return end
-            key = GetConvertedKeyOrButton(key)
-            -- Bare modifiers pass through so the user can hold them for the
-            -- chord; everything the binding system ignores does too.
-            if IsKeyPressIgnoredForBinding(key) then
-                self:SetPropagateKeyboardInput(true); return
-            end
-            self:SetPropagateKeyboardInput(false)
-            listening = false
-            self:EnableKeyboard(false)
-            if key ~= "ESCAPE" then
-                Commit(CreateKeyChordStringUsingMetaKeyState(key))
-            end
-            RefreshLabel()
-        end)
-
-        kbBtn:SetScript("OnEnter", function(self)
-            if Disabled() then
-                EllesmereUI.ShowWidgetTooltip(self,
-                    EllesmereUI.DisabledTooltip(disabledReason))
-                return
-            end
-            kbBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G,
-                EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA)
-            if kbBtn._border and kbBtn._border.SetColor then
-                kbBtn._border:SetColor(1, 1, 1, 0.3)
-            end
-            -- Right-click means two different things on a plainMouse picker
-            -- depending on whether it is armed, so it has to say which.
-            local tip = plainMouse
-                and EllesmereUI.L("Left-click to set a keybind, then press any key or\n"
-                    .. "click any mouse button to use it.\n"
-                    .. "Escape cancels. Right-click here to unbind.")
-                or EllesmereUI.L("Left-click to set a keybind.\nRight-click to unbind.")
-            if intro then tip = EllesmereUI.L(intro) .. "\n\n" .. tip end
-            EllesmereUI.ShowWidgetTooltip(self, tip)
-        end)
-        kbBtn:SetScript("OnLeave", function()
-            if listening then return end
-            kbBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G,
-                EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-            if kbBtn._border and kbBtn._border.SetColor then
-                kbBtn._border:SetColor(1, 1, 1, EllesmereUI.DD_BRD_A)
-            end
-            EllesmereUI.HideWidgetTooltip()
-        end)
-        kbBtn:SetScript("OnHide", function()
-            -- Closing the window mid-capture must cancel the capture AND hide
-            -- the tooltip: OnLeave skips the hide while listening and may not
-            -- fire, so it would linger.
-            if listening then
-                listening = false
-                kbBtn:EnableKeyboard(false)
-                RefreshLabel()
-            end
-            EllesmereUI.HideWidgetTooltip()
-        end)
-
-        if Disabled() then kbBtn:SetAlpha(0.4) end
-        RefreshLabel()
+                return false
+            end,
+        })
+        EllesmereUI.PanelPP.Point(kbBtn, "RIGHT", rgn, "RIGHT", -20, 0)
         rgn._lastInline = kbBtn
         return kbBtn
     end
@@ -2803,8 +2933,10 @@ initFrame:SetScript("OnEvent", function(self)
         end
     end
 
-    -- yPos is the running page offset; returns the height consumed.
+    -- yPos is the running page offset; returns the height consumed. The
+    -- search index prebuild only takes the height: the preview lists nothing.
     local function BuildPreview(parent, yPos)
+        if EllesmereUI._prebuilding then return PREVIEW_H end
         -- PanelPP, not PP: panel-context geometry snaps to the options window's
         -- own pixel grid, which is what every other options page uses.
         local PP = EllesmereUI.PanelPP
@@ -2817,6 +2949,10 @@ initFrame:SetScript("OnEvent", function(self)
 
         if not previewBlock then
             previewBlock = CreateFrame("Frame", nil, parent)
+            -- Held by this file across builds: out of its page's frame pool, so
+            -- no later dress of the page hands it out for another use, and the
+            -- live palette view built on it below stays as it is.
+            Pool.Keep(previewBlock)
             -- Opted out of the inline search (the RaidFrames overlays'
             -- _searchIgnore, same reason): the search re-anchors collected
             -- children with a single saved point against the WRAPPER it first
@@ -2894,14 +3030,12 @@ initFrame:SetScript("OnEvent", function(self)
             dim:EnableMouse(true)
             local dimTex = dim:CreateTexture(nil, "OVERLAY")
             dimTex:SetAllPoints()
-            dimTex:SetColorTexture(0.06, 0.08, 0.10, 0.70)
+            dimTex:SetColorTexture(0.077, 0.068, 0.058, 0.70)
             dim:SetScript("OnEnter", function(self)
-                if EllesmereUI.ShowWidgetTooltip then
-                    EllesmereUI.ShowWidgetTooltip(self, "Enable the module to edit action menus.")
-                end
+                EllesmereUI.ShowWidgetTooltip(self, "Enable the module to edit action menus.")
             end)
             dim:SetScript("OnLeave", function()
-                if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+                EllesmereUI.HideWidgetTooltip()
             end)
             previewBlock._dim = dim
         end
@@ -2951,28 +3085,6 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
-    --  Inline cog button beside a DualRow region, opening a BuildCogPopup.
-    --  The same shape the other option pages use (EUI_AuraBuffReminders_
-    --  Options.lua:588): parked left of the region's control, dim until
-    --  hovered, and handing itself to showFn as the popup's anchor.
-    ---------------------------------------------------------------------------
-    local function MakeCogBtn(rgn, showFn, anchorTo, iconPath)
-        local cogBtn = CreateFrame("Button", nil, rgn)
-        cogBtn:SetSize(26, 26)
-        cogBtn:SetPoint("RIGHT", anchorTo or rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = cogBtn
-        cogBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-        cogBtn:SetAlpha(0.4)
-        local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
-        cogTex:SetAllPoints()
-        cogTex:SetTexture(iconPath or EllesmereUI.COGS_ICON)
-        cogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-        cogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-        cogBtn:SetScript("OnClick", function(self) showFn(self) end)
-        return cogBtn
-    end
-
-    ---------------------------------------------------------------------------
     --  "Apply All Settings From" -- bulk copy between action menus, the Unit
     --  Frames main-frames row re-cut for menus.
     ---------------------------------------------------------------------------
@@ -2998,61 +3110,148 @@ initFrame:SetScript("OnEvent", function(self)
         EllesmereUI:RefreshPage(true)
     end
 
-    -- Centered label + action dropdown below the preview: lists the other
-    -- menus and copies FROM the chosen one onto the edited menu after a
-    -- confirm popup. getValue always returns the placeholder so the dropdown
-    -- stores nothing; the registered widget refresh snaps the label back
-    -- after each pick.
-    local function BuildApplyAllRow(parent, y)
+    -- "Assign to Spec": the specs the edited menu loads in (palette.specs, a
+    -- set of retail spec IDs; none is every spec), on the shared spec list
+    -- (EllesmereUI.SpecPickItems, the Resource Bars picker's rows: one per
+    -- class on WoW Forever, whose rows stand for every spec of the class).
+    -- Every pick writes at once, then CheckShares and Refresh. A pick that
+    -- breaks a share changes keybind buttons the page refresh leaves alone,
+    -- so the page rebuilds -- once the menu has closed (a rebuild closes it).
+    local function BuildSpecPair(row, ddW)
+        local palIdx = editPalette
+        local ALL = EllesmereUI.SPEC_PICK_ALL
+        local items, roles = EllesmereUI.SpecPickItems({ roles = true })
+        local cbDD, cbRefresh
+        local sharesBroken = false
+        cbDD, cbRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+            row, ddW, row:GetFrameLevel() + 2, items,
+            function(key)
+                local specs = ns.PaletteSpecs(palIdx)
+                if key == ALL then return specs == nil end
+                if roles[key] then return false end
+                local ids = EllesmereUI.IS_FOREVER and EllesmereUI.ForeverClassSpecIDs(key)
+                if ids then
+                    if not specs then return false end
+                    for i = 1, #ids do
+                        if not specs[ids[i]] then return false end
+                    end
+                    return true
+                end
+                return specs ~= nil and specs[key] == true
+            end,
+            function(key, val)
+                local pal = Palette(palIdx)
+                if not pal then return end
+                local role = roles[key]
+                if key == ALL or role then
+                    local set
+                    if role then
+                        set = {}
+                        for i = 1, #role do set[role[i]] = true end
+                    end
+                    pal.specs = set
+                    cbDD:Click()  -- close, as the Resource Bars picker does
+                else
+                    local set = pal.specs or {}
+                    local ids = EllesmereUI.IS_FOREVER and EllesmereUI.ForeverClassSpecIDs(key)
+                    if ids then
+                        for i = 1, #ids do set[ids[i]] = val and true or nil end
+                    else
+                        set[key] = val and true or nil
+                    end
+                    pal.specs = next(set) and set or nil
+                end
+                local broke = CheckShares()
+                Refresh()
+                if cbRefresh then cbRefresh() end
+                if broke then
+                    local open = EllesmereUI._openDropdownMenu
+                    if open and open:IsShown() then sharesBroken = true else RebuildPage() end
+                end
+            end,
+            nil, 10, true, nil,
+            function()
+                if sharesBroken then
+                    sharesBroken = false
+                    RebuildPage()
+                end
+            end,
+            { disabled = function() return Cfg("enabled") ~= true end, disabledTooltip = "the module" })
+        cbDD._ttText = EllesmereUI.L("Choose the specs this action menu works in.")
+        EllesmereUI.RegisterWidgetRefresh(cbRefresh)
+
+        local label = EllesmereUI.MakeFont(row, 14, nil, 1, 1, 1)
+        label:SetText(EllesmereUI.L("Assign to Spec"))
+        label:SetTextColor(1, 1, 1, 0.6)
+        return label, cbDD
+    end
+
+    -- The row below the preview: Assign to Spec, and with another menu to copy
+    -- from (withCopy) the Apply All Settings From pair beside it, both pairs
+    -- centred as one line (the mini frames' Apply All Settings From + Copy Look
+    -- From row). Apply All Settings From lists the other menus and copies FROM
+    -- the chosen one onto the edited menu after a confirm popup; its getValue
+    -- always returns the placeholder so the dropdown stores nothing, and the
+    -- registered widget refresh snaps the label back after each pick.
+    local function BuildApplyRow(parent, y, withCopy)
         local PPQ = EllesmereUI.PanelPP
         local curIdx = editPalette
-        local function NameOf(index)
-            local pal = Palette(index)
-            return (pal and pal.name) or AutoName(index)
-        end
-        local ddValues = { [""] = "Choose Menu..." }
-        local ddOrder = {}
-        for i = 1, PaletteCount() do
-            if i ~= curIdx then
-                ddValues[i] = NameOf(i)
-                ddOrder[#ddOrder + 1] = i
-            end
-        end
 
         local ROW_H = 50
+        -- Bespoke controls the search index does not list: its prebuild only
+        -- takes the height.
+        if EllesmereUI._prebuilding then return ROW_H end
         local contentPad = EllesmereUI.CONTENT_PAD or 45
         local rowFrame = CreateFrame("Frame", nil, parent)
         PPQ.Size(rowFrame, parent:GetWidth() - contentPad * 2, ROW_H)
         PPQ.Point(rowFrame, "TOPLEFT", parent, "TOPLEFT", contentPad, y)
 
-        local label = EllesmereUI.MakeFont(rowFrame, 14, nil, 1, 1, 1)
-        label:SetText(EllesmereUI.L("Apply All Settings From"))
-        label:SetTextColor(1, 1, 1, 0.6)
+        local DD_W, GAP, PAIR_GAP = 180, 12, 40
+        local specLabel, specDD = BuildSpecPair(rowFrame, DD_W)
+        local totalW = specLabel:GetStringWidth() + GAP + DD_W
 
-        local DD_W, GAP = 180, 12
-        local ddBtn = EllesmereUI.BuildDropdownControl(
-            rowFrame, DD_W, rowFrame:GetFrameLevel() + 2,
-            ddValues, ddOrder,
-            function() return "" end,
-            function(srcIdx)
-                if srcIdx == "" then return end
-                EllesmereUI:ShowConfirmPopup({
-                    title   = "Apply All Settings",
-                    message = EllesmereUI.Lf("Copy all settings from %1$s to %2$s?",
-                        NameOf(srcIdx), NameOf(curIdx)),
-                    disclaimer = "This overwrites this action menu's current settings. Its actions, name, and keybind are not changed.",
-                    confirmText = "Apply",
-                    cancelText  = "Cancel",
-                    onConfirm = function() CopyAllMenuSettings(srcIdx, curIdx) end,
-                })
-            end)
-        ddBtn._ttText = "Copy every setting from another action menu to this one."
-        EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
+        local label, ddBtn
+        if withCopy then
+            local ddValues = { [""] = "Choose Menu..." }
+            local ddOrder = {}
+            for i = 1, PaletteCount() do
+                if i ~= curIdx then
+                    ddValues[i] = MenuName(i)
+                    ddOrder[#ddOrder + 1] = i
+                end
+            end
 
-        -- Center the label + dropdown pair as one line
-        local totalW = label:GetStringWidth() + GAP + DD_W
-        label:SetPoint("LEFT", rowFrame, "CENTER", -totalW / 2, 0)
-        ddBtn:SetPoint("LEFT", label, "RIGHT", GAP, 0)
+            label = EllesmereUI.MakeFont(rowFrame, 14, nil, 1, 1, 1)
+            label:SetText(EllesmereUI.L("Apply All Settings From"))
+            label:SetTextColor(1, 1, 1, 0.6)
+
+            ddBtn = EllesmereUI.BuildDropdownControl(
+                rowFrame, DD_W, rowFrame:GetFrameLevel() + 2,
+                ddValues, ddOrder,
+                function() return "" end,
+                function(srcIdx)
+                    if srcIdx == "" then return end
+                    EllesmereUI:ShowConfirmPopup({
+                        title   = "Apply All Settings",
+                        message = EllesmereUI.Lf("Copy all settings from %1$s to %2$s?",
+                            MenuName(srcIdx), MenuName(curIdx)),
+                        disclaimer = "This overwrites this action menu's current settings. Its actions, name, and keybind are not changed.",
+                        confirmText = "Apply",
+                        cancelText  = "Cancel",
+                        onConfirm = function() CopyAllMenuSettings(srcIdx, curIdx) end,
+                    })
+                end)
+            ddBtn._ttText = "Copy every setting from another action menu to this one."
+            EllesmereUI.RegisterWidgetRefresh(function() ddBtn._refreshLabel() end)
+            totalW = totalW + PAIR_GAP + label:GetStringWidth() + GAP + DD_W
+        end
+
+        specLabel:SetPoint("LEFT", rowFrame, "CENTER", -totalW / 2, 0)
+        specDD:SetPoint("LEFT", specLabel, "RIGHT", GAP, 0)
+        if label then
+            label:SetPoint("LEFT", specDD, "RIGHT", PAIR_GAP, 0)
+            ddBtn:SetPoint("LEFT", label, "RIGHT", GAP, 0)
+        end
 
         return ROW_H
     end
@@ -3061,11 +3260,13 @@ initFrame:SetScript("OnEvent", function(self)
     --  Build Page
     ---------------------------------------------------------------------------
     local function BuildPage(pageName, parent, yOffset)
-        EnsureBindWatcher()
+        -- The search index prebuild leaves no page behind for the watcher to
+        -- keep current, so the watcher waits for the first live build.
+        if not EllesmereUI._prebuilding then EnsureBindWatcher() end
 
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local row, h
+        local _, row, h
 
         if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
         parent._showRowDivider = true
@@ -3142,8 +3343,8 @@ initFrame:SetScript("OnEvent", function(self)
             -- bespoke controls attached below. The selector is the custom
             -- Profiles-style dropdown whose rows carry the inline rename and
             -- delete buttons (panel-session state, never captured); the
-            -- keybind button is the Action Bars one, which does its own
-            -- listening and edits the real EUI_RADIAL<n> binding.
+            -- keybind button is the shared capture button, which does its
+            -- own listening and edits the real EUI_RADIAL<n> binding.
             { type="label", text="Editing Action Menu" },
             { type="label", text="Action Menu Keybind" })
         BuildMenuSelector(row._leftRegion)
@@ -3167,7 +3368,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- A label half, like the keybind row above: the control underneath
             -- is the same bespoke listening button, attached after the row.
             { type="label", text="Toggled Menu Select Action" },
-            { type="toggle", text="Toggle Menu Open", noCapture=true,
+            { type="toggle", text="Toggle Menu Open",
               disabled=function() return Disabled() or not HasSelectKey() end,
               disabledTooltip="a Toggled Menu Select Action keybind",
               tooltip="Keep this menu open when you let go of its keybind.\n"
@@ -3252,10 +3453,9 @@ initFrame:SetScript("OnEvent", function(self)
 
         y = y - BuildPreview(parent, y)
 
-        -- Hidden with a single menu: nothing to copy from.
-        if paletteCount > 1 then
-            y = y - BuildApplyAllRow(parent, y)
-        end
+        -- Assign to Spec, and beside it Apply All Settings From while there is
+        -- another menu to copy from.
+        y = y - BuildApplyRow(parent, y, paletteCount > 1)
 
         -----------------------------------------------------------------------
         --  LAYOUT
@@ -3276,12 +3476,11 @@ initFrame:SetScript("OnEvent", function(self)
         -- go stale.
         local layoutMode = ACfg("layout") or "ARC"
 
-        local layoutCogShow
         local layoutCogTitle, layoutCogRows
         if layoutMode == "GRID" then
             layoutCogTitle = "Grid Settings"
             layoutCogRows = {
-                { type="slider", label="Spacing", noCapture=true,
+                { type="slider", label="Spacing",
                   min=0, max=40, step=1,
                   disabled=Disabled, disabledTooltip="the module",
                   get=function() return ACfg("fanGap") or 10 end,
@@ -3290,94 +3489,68 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         row, h = W:DualRow(parent, y,
-            { type="dropdown", text="Layout", noCapture=true,
+            { type="dropdown", text="Layout",
               disabled=Disabled, disabledTooltip="the module",
               values=layoutValues, order=layoutOrder,
               getValue=function() return ACfg("layout") or "ARC" end,
               -- Rebuild, not Refresh: the cog beside this dropdown is loaded
               -- with the rows of the layout picked here.
               setValue=function(v) ASet("layout", v); RebuildPage() end },
-            { type="dropdown", text="Open At", noCapture=true,
+            { type="dropdown", text="Open At",
               disabled=Disabled, disabledTooltip="the module",
               values=centerValues, order=centerOrder,
               getValue=function() return ACfg("centerMode") or "CURSOR" end,
               setValue=function(v) ASet("centerMode", v); Refresh() end })
         do
-            -- No captureRegion: every row in the popup is per-menu
-            -- (noCapture), so there is nothing for Spec Overrides to bank.
             -- Only the GRID builds a layout cog.
             if layoutCogRows then
-                layoutCogShow = select(2, EllesmereUI.BuildCogPopup({
+                EllesmereUI.BuildInlineCog(row._leftRegion, {
                     title = layoutCogTitle,
                     rows = layoutCogRows,
-                }))
-                MakeCogBtn(row._leftRegion, layoutCogShow)
+                })
             end
 
             -- The X/Y offsets are the ONLY way to place the palette: the
             -- on-screen drag editor is gone, and this module is not yet
             -- registered with Unlock Mode. In cursor mode the palette opens
             -- wherever the mouse is, so both rows sit dead until Fixed
-            -- Position is picked. No captureRegion: both rows are stored per
-            -- palette, so neither may bank a per-spec override.
+            -- Position is picked.
             local fixedOnly = function()
                 return Disabled() or (ACfg("centerMode") or "CURSOR") ~= "SCREEN"
             end
-            local _, posCogShow = EllesmereUI.BuildCogPopup({
+            -- The cog disables with the offsets it opens, so the row still says they exist.
+            EllesmereUI.BuildInlineCog(row._rightRegion, {
                 title = "Fixed Position",
+                disabled = fixedOnly,
+                disabledTooltip = function() return Disabled() and "the module" or "Fixed Position mode" end,
                 rows = {
-                    { type="slider", label="X Offset", noCapture=true,
+                    { type="slider", label="X Offset",
                       min=-800, max=800, step=1,
                       disabled=fixedOnly, disabledTooltip="Fixed Position mode",
                       get=function() return ACfg("posX") or 0 end,
                       set=function(v) ASet("posX", v); Refresh() end },
-                    { type="slider", label="Y Offset", noCapture=true,
+                    { type="slider", label="Y Offset",
                       min=-600, max=600, step=1,
                       disabled=fixedOnly, disabledTooltip="Fixed Position mode",
                       get=function() return ACfg("posY") or 0 end,
                       set=function(v) ASet("posY", v); Refresh() end },
                 },
             })
-            local posCogBtn = MakeCogBtn(row._rightRegion, posCogShow)
-
-            -- The offsets are dead ground in cursor mode, so the cog that
-            -- opens them disables with them: the blocking-overlay pattern
-            -- (clicks eaten, disabled tooltip) rather than a hidden button,
-            -- so the row still says the settings exist.
-            local posCogBlock = CreateFrame("Frame", nil, posCogBtn)
-            posCogBlock:SetAllPoints()
-            posCogBlock:SetFrameLevel(posCogBtn:GetFrameLevel() + 10)
-            posCogBlock:EnableMouse(true)
-            posCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(posCogBtn, EllesmereUI.DisabledTooltip(
-                    Disabled() and "the module" or "Fixed Position mode"))
-            end)
-            posCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            local function UpdatePosCogDisabled()
-                if fixedOnly() then
-                    posCogBtn:SetAlpha(0.15); posCogBlock:Show()
-                else
-                    posCogBtn:SetAlpha(0.4); posCogBlock:Hide()
-                end
-            end
-            UpdatePosCogDisabled()
-            EllesmereUI.RegisterWidgetRefresh(UpdatePosCogDisabled)
         end
         y = y - h
 
         -----------------------------------------------------------------------
         --  Grid dials -- on the page only while the edited menu draws as a
         --  GRID, the same swap the arc and fan rows below make. Both are
-        --  per-menu (noCapture); the cog on Layout keeps the rest of the
-        --  grid's rows.
+        --  per-menu; the cog on Layout keeps the rest of the grid's rows.
         -----------------------------------------------------------------------
         if layoutMode == "GRID" then
             row, h = W:DualRow(parent, y,
-                { type="toggle", text="Auto Columns", noCapture=true,
+                { type="toggle", text="Auto Columns",
                   disabled=Disabled, disabledTooltip="the module",
                   getValue=function() return ACfg("gridAutoColumns") ~= false end,
                   setValue=function(v) ASet("gridAutoColumns", v); Refresh() end },
-                { type="slider", text="Grid Columns", noCapture=true,
+                { type="slider", text="Grid Columns",
                   -- The top of the travel is the slot cap, not an arbitrary
                   -- 8. A grid never draws more columns than it has entries,
                   -- so asking for the most a palette can ever hold is how you
@@ -3407,18 +3580,18 @@ initFrame:SetScript("OnEvent", function(self)
         if layoutMode == "ARC" then
             local arcRow
             arcRow, h = W:DualRow(parent, y,
-                { type="slider", text="Distance from Center", noCapture=true,
+                { type="slider", text="Distance from Center",
                   min=50, max=220, step=1,
                   disabled=Disabled, disabledTooltip="the module",
                   getValue=function() return ACfg("radius") or 100 end,
                   setValue=function(v) ASet("radius", v); Refresh() end },
-                { type="slider", text="Arc Span", noCapture=true,
+                { type="slider", text="Arc Span",
                   min=30, max=360, step=5,
                   disabled=Disabled, disabledTooltip="the module",
                   getValue=function() return ACfg("arcSpan") or 360 end,
                   setValue=function(v) ASet("arcSpan", v); Refresh() end })
             do
-                local _, rotCogShow = EllesmereUI.BuildCogPopup({
+                EllesmereUI.BuildInlineCog(arcRow._rightRegion, {
                     title = "Arc Rotation",
                     rows = {
                         -- 360 is a full turn, and rotating a full circle is
@@ -3427,7 +3600,7 @@ initFrame:SetScript("OnEvent", function(self)
                         -- point. Span edits close this popup (a page click
                         -- is a click outside it), so the predicate is fresh
                         -- on every open.
-                        { type="slider", label="Arc Rotation", noCapture=true,
+                        { type="slider", label="Arc Rotation",
                           min=-180, max=180, step=5,
                           disabled=function()
                               return Disabled() or (ACfg("arcSpan") or 360) >= 360
@@ -3437,7 +3610,6 @@ initFrame:SetScript("OnEvent", function(self)
                           set=function(v) ASet("arcRotation", v); Refresh() end },
                     },
                 })
-                MakeCogBtn(arcRow._rightRegion, rotCogShow)
             end
             y = y - h
         end
@@ -3445,20 +3617,20 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  Fan dials -- on the page only while the edited menu draws as a
         --  FAN, the same swap the arc row above makes. Both page values are
-        --  per-menu appearance, so both carry noCapture; the cog on Fan
-        --  Direction holds the rest of the strip's settings.
+        --  per-menu appearance; the cog on Fan Direction holds the rest of
+        --  the strip's settings.
         -----------------------------------------------------------------------
         if layoutMode == "FAN" then
             local fanRow
             fanRow, h = W:DualRow(parent, y,
-                { type="dropdown", text="Fan Direction", noCapture=true,
+                { type="dropdown", text="Fan Direction",
                   disabled=Disabled, disabledTooltip="the module",
                   values=orientValues, order=orientOrder,
                   getValue=function() return ACfg("fanOrientation") or "HORIZONTAL" end,
                   setValue=function(v) ASet("fanOrientation", v); Refresh() end },
                 -- How much of the strip is drawn at all. Neighbours past this
                 -- many steps are hidden rather than shrunk further.
-                { type="slider", text="Visible Icons", noCapture=true,
+                { type="slider", text="Visible Icons",
                   -- The whole strip, as the user sees it: an odd count, the
                   -- centre plus the same number each side. Stored as the
                   -- each-side WINDOW -- (total - 1) / 2 -- which is the
@@ -3468,31 +3640,28 @@ initFrame:SetScript("OnEvent", function(self)
                   getValue=function() return ((ACfg("fanVisible") or 2) * 2) + 1 end,
                   setValue=function(v) ASet("fanVisible", (v - 1) * 0.5); Refresh() end })
             do
-                -- No captureRegion: every row here is per-menu (noCapture),
-                -- so there is nothing for Spec Overrides to bank.
-                local _, fanCogShow = EllesmereUI.BuildCogPopup({
+                EllesmereUI.BuildInlineCog(fanRow._leftRegion, {
                     title = "Fan Settings",
                     rows = {
                         -- The strip's hover channel: the entry under the
                         -- pointer is the one a release fires, and pointing at
                         -- none of them selects nothing. The wheel scrolls the
                         -- strip either way.
-                        { type="toggle", label="Select Action with Mouse", noCapture=true,
+                        { type="toggle", label="Select Action with Mouse",
                           disabled=Disabled, disabledTooltip="the module",
                           get=function() return ACfg("fanMouseSelect") ~= false end,
                           set=function(v) ASet("fanMouseSelect", v); Refresh() end },
-                        { type="slider", label="Spacing", noCapture=true,
+                        { type="slider", label="Spacing",
                           min=0, max=40, step=1,
                           disabled=Disabled, disabledTooltip="the module",
                           get=function() return ACfg("fanGap") or 10 end,
                           set=function(v) ASet("fanGap", v); Refresh() end },
-                        { type="toggle", label="Invert Scroll", noCapture=true,
+                        { type="toggle", label="Invert Scroll",
                           disabled=Disabled, disabledTooltip="the module",
                           get=function() return ACfg("fanInvert") == true end,
                           set=function(v) ASet("fanInvert", v); Refresh() end },
                     },
                 })
-                MakeCogBtn(fanRow._leftRegion, fanCogShow)
             end
             y = y - h
         end
@@ -3508,23 +3677,23 @@ initFrame:SetScript("OnEvent", function(self)
         if builtWithNest then
             local nestRow
             nestRow, h = W:DualRow(parent, y,
-                { type="slider", text="Nest Distance", noCapture=true,
+                { type="slider", text="Nest Distance",
                   disabled=Disabled, disabledTooltip="the module",
                   tooltip="The gap between a nested menu's icons and the entry "
                       .."that opens it.",
                   min=0, max=160, step=1,
                   getValue=function() return ACfg("nestBand") or 40 end,
                   setValue=function(v) ASet("nestBand", v); Refresh() end },
-                { type="slider", text="Nest Icon Size", noCapture=true,
+                { type="slider", text="Nest Icon Size",
                   disabled=Disabled, disabledTooltip="the module",
                   min=0.4, max=1.0, step=0.05,
                   getValue=function() return ACfg("nestScale") or 0.8 end,
                   setValue=function(v) ASet("nestScale", v); Refresh() end })
             if layoutMode == "ARC" then
-                local _, nestCogShow = EllesmereUI.BuildCogPopup({
+                EllesmereUI.BuildInlineCog(nestRow._leftRegion, {
                     title = "Arc Nest Shape",
                     rows = {
-                        { type="dropdown", label="Nest Width", noCapture=true,
+                        { type="dropdown", label="Nest Width",
                           disabled=Disabled, disabledTooltip="the module",
                           tooltip="How far along the arc a nest may spread its entries."
                               .." Contained keeps it clear of the next nest either side,"
@@ -3536,7 +3705,7 @@ initFrame:SetScript("OnEvent", function(self)
                           order={ "NONE", "MIDPOINT" },
                           get=function() return ACfg("arcChildOverflow") or "NONE" end,
                           set=function(v) ASet("arcChildOverflow", v); Refresh() end },
-                        { type="slider", label="Max Nest Span", noCapture=true,
+                        { type="slider", label="Max Nest Span",
                           min=30, max=180, step=5,
                           disabled=Disabled, disabledTooltip="the module",
                           tooltip="The widest angle a nest's entries may spread over."
@@ -3546,9 +3715,8 @@ initFrame:SetScript("OnEvent", function(self)
                           set=function(v) ASet("arcChildMaxSpan", v); Refresh() end },
                     },
                 })
-                MakeCogBtn(nestRow._leftRegion, nestCogShow)
             elseif layoutMode == "GRID" then
-                local _, nestCogShow = EllesmereUI.BuildCogPopup({
+                EllesmereUI.BuildInlineCog(nestRow._leftRegion, {
                     title = "Grid Nest Style",
                     rows = {
                         --   Lane     a halo hugging the block, centered on the
@@ -3559,7 +3727,7 @@ initFrame:SetScript("OnEvent", function(self)
                         --            itself, the block faded behind them
                         -- A stored value from the retired Popout style reads
                         -- as Lane, here and in the module both.
-                        { type="dropdown", label="Grid Nest Style", noCapture=true,
+                        { type="dropdown", label="Grid Nest Style",
                           disabled=Disabled, disabledTooltip="the module",
                           values={ PERIMETER = "Lane", HALO = "Halo" },
                           order={ "PERIMETER", "HALO" },
@@ -3570,18 +3738,17 @@ initFrame:SetScript("OnEvent", function(self)
                           set=function(v) ASet("gridNestStyle", v); Refresh() end },
                     },
                 })
-                MakeCogBtn(nestRow._leftRegion, nestCogShow)
             end
             y = y - h
         end
 
         row, h = W:DualRow(parent, y,
-            { type="slider", text="Icon Size", noCapture=true,
+            { type="slider", text="Icon Size",
               disabled=Disabled, disabledTooltip="the module",
               min=24, max=72, step=1,
               getValue=function() return ACfg("iconSize") or 40 end,
               setValue=function(v) ASet("iconSize", v); Refresh() end },
-            { type="slider", text="Scale", noCapture=true,
+            { type="slider", text="Scale",
               disabled=Disabled, disabledTooltip="the module",
               min=0.5, max=2.0, step=0.01,
               getValue=function() return ACfg("scale") or 1.0 end,
@@ -3594,18 +3761,13 @@ initFrame:SetScript("OnEvent", function(self)
         _, h = W:SectionHeader(parent, "APPEARANCE", y); y = y - h
 
         row, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Cooldowns", noCapture=true,
+            { type="toggle", text="Show Cooldowns",
               disabled=Disabled, disabledTooltip="the module",
               getValue=function() return ACfg("showCooldowns") ~= false end,
               setValue=function(v) ASet("showCooldowns", v); Refresh() end },
-            { type="toggle", text="Dim Unusable Entries", noCapture=true,
+            { type="toggle", text="Dim Unusable Actions",
               disabled=Disabled, disabledTooltip="the module",
-              tooltip="Tint an entry that would do nothing right now: red when the "
-                      .."target is out of range, blue when you are short of the "
-                      .."resource, and gray when the game refuses it for any other "
-                      .."reason. Spells and items only -- the game reports every "
-                      .."toy as unusable, and a macro's usability depends on what "
-                      .."its body resolves to.",
+              tooltip="Dims any actions you can't use right now.",
               getValue=function() return ACfg("showUsability") ~= false end,
               setValue=function(v) ASet("showUsability", v); Refresh() end })
         y = y - h
@@ -3618,21 +3780,18 @@ initFrame:SetScript("OnEvent", function(self)
         -- is lit, and class outranks custom -- the module's SelectColor
         -- resolves the stored pair the same way.
         -- A label half, not a colorpicker: the custom swatch IS the picker.
+        -- The swatches are left out of the search index prebuild, whose row
+        -- is a stand-in with no frame to build on.
         row, h = W:DualRow(parent, y,
             { type="label", text="Selection Color" },
-            { type="toggle", text="Show Action Text Label", noCapture=true,
+            { type="toggle", text="Show Action Text Label",
               disabled=Disabled, disabledTooltip="the module",
               tooltip="Show the selected action's name next to the selected icon.",
               getValue=function() return ACfg("showActionText") == true end,
               setValue=function(v) ASet("showActionText", v); Refresh() end })
-        do
+        if not EllesmereUI._prebuilding then
             local rgn = row._leftRegion
             local PPQ = EllesmereUI.PanelPP
-            -- Per-menu values: the swatches' own BuildColorSwatch capture
-            -- self-registration is suppressed, the same reason every ASet
-            -- row carries noCapture -- there is nothing for Spec Overrides
-            -- to bank.
-            rgn._noCapture = true
 
             local customSwatch, updateCustom = EllesmereUI.BuildColorSwatch(
                 rgn, row:GetFrameLevel() + 3,
@@ -3742,19 +3901,16 @@ initFrame:SetScript("OnEvent", function(self)
 
         local wmRow
         wmRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Hide Unusable Entries", noCapture=true,
+            { type="toggle", text="Hide Unavailable Actions",
               disabled=Disabled, disabledTooltip="the module",
-              tooltip="Hide entries this character cannot use: another class's "
-                      .."specializations and spells, and macros this character "
-                      .."does not have. One shared menu then fits every "
-                      .."character. The menu editor always shows every entry.",
+              tooltip="Hides any actions not available to this character.",
               getValue=function() return ACfg("hideUnusable") ~= false end,
               setValue=function(v) ASet("hideUnusable", v); Refresh() end },
             -- Beside the filter rather than in ACTION MENU SETUP: both of
             -- these change what an entry does once the menu is drawn, and both
             -- are per menu. It also keeps this the last row of the section
             -- with no half of it empty.
-            { type="toggle", text="Toggle World Markers", noCapture=true,
+            { type="toggle", text="Toggle World Markers",
               disabled=Disabled, disabledTooltip="the module",
               tooltip="Use a world marker entry again to pick that marker "
                       .."back up. Off places the marker again, at the new "
@@ -3766,29 +3922,15 @@ initFrame:SetScript("OnEvent", function(self)
         y = y - h
 
         -- Inline cog on Toggle World Markers: the placed-marker pip opt-out.
-        if not EllesmereUI._prebuilding then
-            local rgn = wmRow._rightRegion
-            local _, wmCogShow = EllesmereUI.BuildCogPopup({
-                title = "World Marker Entries",
-                rows = {
-                    { type="toggle", label="Show Placed-Marker Pips",
-                      tooltip="Mark a world marker entry whose marker is on the ground with a small corner square, so you can see whether pressing it places or picks up.",
-                      get=function() return ACfg("worldMarkerPip") ~= false end,
-                      set=function(v) ASet("worldMarkerPip", v); Refresh() end },
-                },
-            })
-            local cogBtn = CreateFrame("Button", nil, rgn)
-            cogBtn:SetSize(26, 26)
-            cogBtn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-            rgn._lastInline = cogBtn
-            cogBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-            cogBtn:SetAlpha(0.4)
-            local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
-            cogTex:SetAllPoints(); cogTex:SetTexture(EllesmereUI.COGS_ICON)
-            cogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            cogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-            cogBtn:SetScript("OnClick", function(self) wmCogShow(self) end)
-        end
+        EllesmereUI.BuildInlineCog(wmRow._rightRegion, {
+            title = "World Marker Entries",
+            rows = {
+                { type="toggle", label="Show Placed-Marker Pips",
+                  tooltip="Mark a world marker entry whose marker is on the ground with a small corner square, so you can see whether pressing it places or picks up.",
+                  get=function() return ACfg("worldMarkerPip") ~= false end,
+                  set=function(v) ASet("worldMarkerPip", v); Refresh() end },
+            },
+        })
 
         _, h = W:Spacer(parent, y, 10); y = y - h
 

@@ -6,7 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local _, ns = ...
 
--- Upvalue aliases (populated by EllesmereUICooldownManager.lua)
+-- Upvalue aliases (populated by EllesmereUICooldownManager.lua and the EUI_CDM_*.lua files)
 local ECME                   = ns.ECME
 local barDataByKey           = ns.barDataByKey
 local cdmBarFrames           = ns.cdmBarFrames
@@ -117,6 +117,28 @@ ns.StoreVariantValue   = StoreVariantValue
 ns.ResolveVariantValue = ResolveVariantValue
 ns.IsVariantOf         = IsVariantOf
 
+-- WoW Forever: each rank of a spell is a spell ID of its own, and the ranks
+-- share the spell's name. Blizzard's Cooldown Manager shows a spell's ranks as
+-- one entry (the highest rank known), so a bar lists a spell once, under any
+-- of its ranks: list presence (FindVariantIndex below), the options normalize
+-- pass, the keep/drop pass and the picker's on-bar mark all match ranks by
+-- this name. nil off Forever. Names are client spell data, the same all
+-- session; a name the client has not loaded yet is not kept.
+local RankName
+if EllesmereUI.IS_FOREVER then
+    local names = {}
+    RankName = function(id)
+        if not _IsUsableSID(id) then return nil end
+        local n = names[id]
+        if n == nil then
+            n = C_Spell.GetSpellName(id)
+            if n then names[id] = n end
+        end
+        return n
+    end
+end
+ns.CDMRankName = RankName
+
 -------------------------------------------------------------------------------
 --  CDM category-set constants (Midnight's 9-value CooldownViewerCategory).
 --  CDM_ICON_CD_CATS: cooldown/utility icon categories (Essential, Utility,
@@ -189,7 +211,7 @@ local _buffAliasSeen = {}
 -- Learns every pairwise edge among {displaySID} union linkedList that this session
 -- hasn't already recorded. Ids are gated for secrecy/plausibility here so callers never
 -- need to; the session-cache early-out (mirrors _learnVariantBase in
--- EllesmereUICdmHooks.lua) keeps repeat observations of an already-known pairing from
+-- EUI_CDM_HookResolve.lua) keeps repeat observations of an already-known pairing from
 -- touching the profile table.
 function ns.LearnBuffVariantAlias(displaySID, linkedList)
     if type(linkedList) ~= "table" or #linkedList == 0 then return end
@@ -427,9 +449,10 @@ ns.EnumerateCDMViewerSpells = EnumerateCDMViewerSpells
 -- no-op. AddTrackedSpell/RemoveTrackedSpell delegate to these.
 
 --- Find an entry's index in a spell list. Positive IDs (real spells) match by
---- variant family (re-adding any variant is a no-op); negative IDs (trinkets
---- <= -13/-14, item presets <= -100) match by exact equality -- variant
---- resolution doesn't apply to injection markers.
+--- variant family (re-adding any variant is a no-op), then on WoW Forever by
+--- rank (RankName above); negative IDs (trinkets <= -13/-14, item presets
+--- <= -100) match by exact equality -- variant resolution doesn't apply to
+--- injection markers.
 local function FindVariantIndex(spellList, spellID)
     if type(spellList) ~= "table" or type(spellID) ~= "number" or spellID == 0 then
         return nil
@@ -439,6 +462,12 @@ local function FindVariantIndex(spellList, spellID)
             local existing = spellList[i]
             if _IsUsableSID(existing) and IsVariantOf(existing, spellID) then
                 return i
+            end
+        end
+        local name = RankName and RankName(spellID)
+        if name then
+            for i = 1, #spellList do
+                if RankName(spellList[i]) == name then return i end
             end
         end
     else
@@ -563,7 +592,7 @@ function ns.EnumerateCDMSettingsCatalog(wantSet)
     local okP, provider = pcall(settings.GetDataProvider, settings)
     if not okP or type(provider) ~= "table" then return nil end
     -- Read the already-built display table, never the getters that would
-    -- build it (see ns.CDMGetProviderDisplayData, EllesmereUICooldownManager.lua).
+    -- build it (see ns.CDMGetProviderDisplayData, EUI_CDM_Reconcile.lua).
     local ordered, infoByID = ns.CDMGetProviderDisplayData(provider)
     if not ordered then return nil end
     local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
@@ -596,6 +625,33 @@ function ns.EnumerateCDMSettingsCatalog(wantSet)
     return result
 end
 
+-- True when the picker's spell list for a CD/utility bar holds spellID (or a
+-- variant of it): a cooldown in Blizzard's Essential/Utility viewers or its
+-- settings catalog, talented or not (GetCDMSpellsForBar's own sources). Added
+-- by Spell ID, such a spell is drawn from Blizzard's frame, which never reads
+-- the custom-spell settings its menu writes. A spell set to Not Displayed is
+-- left out, as the list leaves it out: it has no Blizzard frame, so EUI draws
+-- its own and those settings work. Built per call (Add Custom Spell only).
+function ns.IsCDMTrackedCooldown(spellID)
+    if not _IsUsableSID(spellID) then return false end
+    local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+    local set = {}
+    local function Add(cdID, sid)
+        if _IsUsableSID(sid) then set[sid] = true end
+        local info = gci and _IsUsableSID(cdID) and gci(cdID)
+        if info then
+            if _IsUsableSID(info.spellID) then set[info.spellID] = true end
+            if _IsUsableSID(info.overrideSpellID) then set[info.overrideSpellID] = true end
+        end
+    end
+    for _, e in ipairs(EnumerateCDMViewerSpells(false)) do Add(e.cdID, e.sid) end
+    local catalog = ns.EnumerateCDMSettingsCatalog(ns.CDM_ICON_CD_CATS)
+    if catalog then
+        for _, ce in ipairs(catalog) do Add(ce.cdID, ce.sid) end
+    end
+    return ResolveVariantValue(set, spellID) == true
+end
+
 --- Returns array of { cdID, spellID, name, icon, cdmCat, cdmCatGroup, onEUIBar, isKnown },
 --- sorted by viewer order (Essential before Utility) then alpha.
 --- Walks Blizzard's CDM viewer pools (live frames), NOT the static category
@@ -608,12 +664,17 @@ function ns.GetCDMSpellsForBar(barKey, includeUntalented)
     local isBuffType = ns.IsBarBuffFamily and ns.IsBarBuffFamily(barKey) or false
 
     -- Variant-keyed lookup of spells already on THIS bar (for onEUIBar flag).
+    -- WoW Forever: plus their names, so a spell listed under another rank
+    -- reads as on the bar (RankName above).
     local ourPool = {}
+    local ourNames = RankName and {}
     local sd = ns.GetBarSpellData(barKey)
     if sd and sd.assignedSpells then
         for _, sid in ipairs(sd.assignedSpells) do
             if sid and sid ~= 0 then
                 StoreVariantValue(ourPool, sid, true, false)
+                local n = ourNames and RankName(sid)
+                if n then ourNames[n] = true end
             end
         end
     end
@@ -628,6 +689,7 @@ function ns.GetCDMSpellsForBar(barKey, includeUntalented)
         local tex  = C_Spell.GetSpellTexture(sid)
         if name then
             local isOnThisBar = (ResolveVariantValue(ourPool, sid) == true)
+                or (ourNames ~= nil and ourNames[name] == true)
             spells[#spells + 1] = {
                 cdID        = e.cdID,
                 spellID     = sid,
@@ -671,7 +733,8 @@ function ns.GetCDMSpellsForBar(barKey, includeUntalented)
                             -- Match live grouping so catalog spells sort beside learned peers.
                             cdmCat      = (evc and ce.category == evc.Utility) and 10000 or 0,
                             cdmCatGroup = "cooldown",
-                            onEUIBar    = (ResolveVariantValue(ourPool, ce.sid) == true),
+                            onEUIBar    = (ResolveVariantValue(ourPool, ce.sid) == true)
+                                or (ourNames ~= nil and ourNames[name] == true),
                             isKnown     = known,
                         }
                         StoreVariantValue(seenSid, ce.sid, true, false)
@@ -707,7 +770,8 @@ function ns.GetCDMSpellsForBar(barKey, includeUntalented)
                             icon        = tex,
                             cdmCat      = 0,  -- single buff viewer bucket
                             cdmCatGroup = "buff",
-                            onEUIBar    = (ResolveVariantValue(ourPool, ce.sid) == true),
+                            onEUIBar    = (ResolveVariantValue(ourPool, ce.sid) == true)
+                                or (ourNames ~= nil and ourNames[name] == true),
                             isKnown     = known,
                         }
                         StoreVariantValue(seenSid, ce.sid, true, false)
@@ -727,26 +791,6 @@ function ns.GetCDMSpellsForBar(barKey, includeUntalented)
 end
 
 -- (ns.GetTBBSpellPool removed -- TBB disabled pending rewrite)
-
---- Check if a cooldownID has a Blizzard CDM child (is "displayed")
-function ns.IsSpellDisplayedInCDM(barKey, cdID)
-    local BLIZZ_CDM_FRAMES = ns.BLIZZ_CDM_FRAMES
-    local blizzName = BLIZZ_CDM_FRAMES[barKey]
-    if not blizzName then return false end
-    local blizzFrame = _G[blizzName]
-    if not blizzFrame then return false end
-    for i = 1, blizzFrame:GetNumChildren() do
-        local child = select(i, blizzFrame:GetChildren())
-        if child then
-            local cid = child.cooldownID
-            if not cid and child.cooldownInfo then
-                cid = child.cooldownInfo.cooldownID
-            end
-            if cid == cdID then return true end
-        end
-    end
-    return false
-end
 
 --- One-time per-spec pass serving two purposes with the same logic: (1) legacy
 --- migration of pre-refactor "assignedSpells as content filter" on default
@@ -831,7 +875,11 @@ function ns.MigrateSpecToBarFilterModelV6()
     -- Step 2: build assignedSet from the LIVE bar list. Default bars
     -- (cooldowns/utility) contribute too -- their assignedSpells under the
     -- new model is "preferred order / explicit assignment" and stay visible.
+    -- WoW Forever: by name too (RankName above), custom spell IDs aside. A
+    -- frame reads as the highest rank known, while the layout can list any
+    -- rank of the spell.
     local assignedSet = {}
+    local assignedNames = RankName and {}
     for _, bd in ipairs(barList) do
         if bd.enabled and not bd.isGhostBar
            and bd.barType ~= "buffs" and bd.barType ~= "custom_buff"
@@ -841,6 +889,9 @@ function ns.MigrateSpecToBarFilterModelV6()
                 for _, sid in ipairs(bs.assignedSpells) do
                     if type(sid) == "number" and sid > 0 then
                         StoreVariantValue(assignedSet, sid, true, false)
+                        local n = assignedNames and not (bs.customSpellIDs and bs.customSpellIDs[sid])
+                            and RankName(sid)
+                        if n then assignedNames[n] = true end
                     end
                 end
             end
@@ -854,10 +905,14 @@ function ns.MigrateSpecToBarFilterModelV6()
     end
     if not ghostBs.assignedSpells then ghostBs.assignedSpells = {} end
 
+    -- WoW Forever: one ghost entry per spell, whatever its rank.
     local existingGhost = {}
+    local ghostNames = RankName and {}
     for _, sid in ipairs(ghostBs.assignedSpells) do
         if type(sid) == "number" and sid > 0 then
             StoreVariantValue(existingGhost, sid, true, false)
+            local n = ghostNames and RankName(sid)
+            if n then ghostNames[n] = true end
         end
     end
 
@@ -896,11 +951,13 @@ function ns.MigrateSpecToBarFilterModelV6()
     -- Walk the union, ghost anything that isn't already assigned or ghosted.
     local addedCount = 0
     for sid in pairs(sidUnion) do
-        local isAssigned = ResolveVariantValue(assignedSet, sid)
-        local isGhosted  = ResolveVariantValue(existingGhost, sid)
+        local name = RankName and RankName(sid)
+        local isAssigned = ResolveVariantValue(assignedSet, sid) or (name and assignedNames[name])
+        local isGhosted  = ResolveVariantValue(existingGhost, sid) or (name and ghostNames[name])
         if not isAssigned and not isGhosted then
             ghostBs.assignedSpells[#ghostBs.assignedSpells + 1] = sid
             StoreVariantValue(existingGhost, sid, true, false)
+            if name then ghostNames[name] = true end
             addedCount = addedCount + 1
         end
     end
@@ -1236,6 +1293,44 @@ function ns.IsCollidedBuffSid(sid)
     return ns.CollidedBuffSids()[sid] == true
 end
 
+--- Buff slots claimed by cooldownID instead of spellID: collided pairs, and
+--- tracked trinket proc rows (EquipSlotTracked). A trinket row reads no spellID
+--- while its proc is down, so a sid claim can neither route it after a reload
+--- nor be told apart from an equipment use-spell by the prune; its cooldownID
+--- is fixed per equipment slot, so the usual cooldownID drift does not apply.
+local function IsTrackedTrinketRow(cdID)
+    local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+    local info = gci and gci(cdID)
+    local cat = info and info.category
+    if type(cat) ~= "number" or (issecretvalue and issecretvalue(cat)) then return false end
+    return cat == (Enum and Enum.CooldownViewerCategory
+        and Enum.CooldownViewerCategory.EquipSlotTracked or 8)
+end
+
+function ns.ClaimBuffByCdID(sid, cdID)
+    if type(cdID) ~= "number" or cdID <= 0 then return false end
+    return IsTrackedTrinketRow(cdID) or ns.IsCollidedBuffSid(sid)
+end
+
+-- Claiming a trinket row by cooldownID drops any spellID claim of it (a bar
+-- entry or a hosted marker), so it never shows twice. Collided pairs keep
+-- theirs: that spellID also names the twin slot.
+local function DropTrinketSidClaims(cdID, sid)
+    if type(sid) ~= "number" or sid <= 0 or not IsTrackedTrinketRow(cdID)
+       or ns.IsCollidedBuffSid(sid) then return end
+    local p = ECME.db.profile
+    if not (p and p.cdmBars and p.cdmBars.bars) then return end
+    for _, b in ipairs(p.cdmBars.bars) do
+        if b.barType ~= "custom_buff" then
+            if ns.IsBarBuffFamily(b) then
+                ns.RemoveSpellFromBar(b.key, sid)
+            else
+                ns.RemoveSpellFromBar(b.key, ns.HostedBuffMarker(sid))
+            end
+        end
+    end
+end
+
 -- Runtime hot-path gate: true only when the current spec's buffs store holds at least
 -- one "c"..cooldownID key. Cached by store-table identity, so a spec/profile swap
 -- (different store table) recomputes for free with no explicit invalidation hook.
@@ -1562,6 +1657,8 @@ local _cdmSpellCacheDirty = true
 
 function ns.MarkCDMSpellCacheDirty()
     _cdmSpellCacheDirty = true
+    -- Buff Stacks' eligibility (EUI_CDM_CdBuffStacks.lua, loaded later).
+    if ns.CdBuffStacksInvalidate then ns.CdBuffStacksInvalidate() end
 end
 
 local function RebuildCDMSpellCaches()
@@ -1613,12 +1710,6 @@ function ns.IsSpellKnownInCDM(spellID)
     if not spellID or spellID <= 0 then return false end
     RebuildCDMSpellCaches()
     return _knownSpellSet[spellID] == true
-end
-
-function ns.IsSpellInAnyCDMCategory(spellID)
-    if not spellID or spellID <= 0 then return false end
-    RebuildCDMSpellCaches()
-    return _allSpellSet[spellID] == true
 end
 
 --- Add a preset group to a bar. custom_buff bars: adds ALL spell IDs as plain
@@ -1750,10 +1841,46 @@ function ns.AddTrackedSpell(barKey, id)
     ns._spellOrderDirty = true
 
     if sd.removedSpells then sd.removedSpells[id] = nil end
+    -- Picked from the picker: the entry is the preset's own (an entry the reseed
+    -- listed for Blizzard's row of this item stood for that row alone).
+    if sd.nativeItems then sd.nativeItems[id] = nil end
 
     local frame = cdmBarFrames[barKey]
     if frame then frame._blizzCache = nil; frame._prevVisibleCount = nil end
     if ns.RebuildSpellRouteMap then ns.RebuildSpellRouteMap() end
+    if ns.QueueReanchor then ns.QueueReanchor() end
+    return true
+end
+
+--- An item entry leaving a CD/utility bar by a user removal: one Blizzard's own
+--- row can render under (a potion or healthstone, the preset's nativeCategory) is
+--- ghosted like a racial, so the row routes to the ghost bar and stays hidden
+--- instead of coming back at the next reseed; the next add from the picker
+--- un-ghosts it (AddTrackedSpell's sweep). Any mark that the entry stood for
+--- Blizzard's row goes with it. Nothing for every other entry.
+function ns.NoteItemEntryRemoved(sd, key)
+    if not ns.IsItemPresetKey(key) then return end
+    if sd and sd.nativeItems then sd.nativeItems[key] = nil end
+    local pr = ns.ItemPresetForKey(key)
+    if not (pr and pr.nativeCategory) then return end
+    local gsd = ns.GetBarSpellData(ns.GHOST_CD_BAR_KEY)
+    if not gsd then return end
+    if not gsd.assignedSpells then gsd.assignedSpells = {} end
+    for _, g in ipairs(gsd.assignedSpells) do
+        if g == key then return end
+    end
+    gsd.assignedSpells[#gsd.assignedSpells + 1] = key
+end
+
+--- An entry the reseed listed for Blizzard's own row of an item (sd.nativeItems)
+--- picked again from the picker: it becomes the preset's own entry, whose frame
+--- stands in once Blizzard's row is gone. False for any other entry.
+function ns.AdoptNativeItemEntry(barKey, key)
+    local sd = ns.GetBarSpellData(barKey)
+    if not (sd and sd.nativeItems and sd.nativeItems[key]) then return false end
+    sd.nativeItems[key] = nil
+    if next(sd.nativeItems) == nil then sd.nativeItems = nil end
+    ns._spellOrderDirty = true
     if ns.QueueReanchor then ns.QueueReanchor() end
     return true
 end
@@ -1764,22 +1891,28 @@ end
 --- a cd-claim MARKER (ns.CdClaimMarker, distinct negative id per cooldownID)
 --- sidesteps that while reusing AddTrackedSpell's plumbing unchanged, and
 --- gives the claim a real assignedSpells index (drags/reorders/removes like
---- any entry). Collision-gated: non-collided buffs keep the sid path
---- (survives talent swaps). Never valid on the default "buffs" bar, which
---- enumerates the live viewer pool directly, never assignedSpells.
-function ns.AddTrackedBuffByCdID(barKey, cdID)
-    if type(cdID) ~= "number" or cdID <= 0 or barKey == "buffs" then return false end
-    return ns.AddTrackedSpell(barKey, ns.CdClaimMarker(cdID))
-end
-
-function ns.RemoveTrackedBuffCdID(barKey, cdID)
-    if type(cdID) ~= "number" then return false end
-    -- RemoveSpellFromBar doesn't itself trigger route/reanchor; caller must.
-    local removed = ns.RemoveSpellFromBar(barKey, ns.CdClaimMarker(cdID))
-    if not removed then return false end
-    if ns.RebuildSpellRouteMap then ns.RebuildSpellRouteMap() end
-    if ns.QueueReanchor then ns.QueueReanchor() end
-    return true
+--- any entry). Gated by ns.ClaimBuffByCdID: every other buff keeps the sid
+--- path (survives talent swaps). The default "buffs" bar enumerates the live
+--- viewer pool, never assignedSpells, so adding a slot to it releases every
+--- other buff bar's claim on that slot instead.
+function ns.AddTrackedBuffByCdID(barKey, cdID, sid)
+    if type(cdID) ~= "number" or cdID <= 0 then return false end
+    DropTrinketSidClaims(cdID, sid)
+    local marker = ns.CdClaimMarker(cdID)
+    if barKey == "buffs" then
+        local p = ECME.db.profile
+        if p and p.cdmBars and p.cdmBars.bars then
+            for _, b in ipairs(p.cdmBars.bars) do
+                if b.key ~= "buffs" and b.barType ~= "custom_buff" and IsBarBuffFamily(b) then
+                    ns.RemoveSpellFromBar(b.key, marker)
+                end
+            end
+        end
+        if ns.RebuildSpellRouteMap then ns.RebuildSpellRouteMap() end
+        if ns.QueueReanchor then ns.QueueReanchor() end
+        return true
+    end
+    return ns.AddTrackedSpell(barKey, marker)
 end
 
 --- Place a BUFF on a CD/utility bar. HOSTED: RebuildSpellRouteMap diverts its
@@ -1787,8 +1920,11 @@ end
 --- the layout when active / a placeholder when inactive -- like the buffs bar,
 --- just on CD/util. Blizzard's CDM stays the source of truth, so auras, DoTs,
 --- totems and pet-summons all work with no detection code. NOT a custom
---- injected spell -- Phase 3 must never draw its own frame for it. Additive:
---- only our own data table is written (variant-keyed).
+--- injected spell -- Phase 3 draws no frame of its own over Blizzard's; only a
+--- Custom Spell ID Blizzard does not track (customSpellIDs tag, no hosted frame
+--- or placeholder on the bar) is drawn by an aura icon of ours
+--- (EUI_CDM_AuraIcons.lua). Additive: only our own data table is written
+--- (variant-keyed).
 function ns.AddBuffToCDUtilBar(barKey, spellID)
     if type(spellID) ~= "number" or spellID <= 0 then return false end
     local sd = ns.GetBarSpellData(barKey)
@@ -1872,26 +2008,17 @@ end
 --- AddTrackedSpell's plumbing unchanged. Collision-gated by the caller:
 --- non-collided buffs keep AddBuffToCDUtilBar's sid path (survives talent
 --- swaps).
-function ns.AddHostedBuffByCdID(barKey, cdID)
+function ns.AddHostedBuffByCdID(barKey, cdID, sid)
     if type(cdID) ~= "number" or cdID <= 0 then return false end
     local sd = ns.GetBarSpellData(barKey)
     if not sd then return false end
+    DropTrinketSidClaims(cdID, sid)
     -- Empty-table sentinel: ResolveSpellSettings' hostedFrame gate
-    -- (EllesmereUICdmHooks.lua) short-circuits on this table being non-nil to
+    -- (EUI_CDM_HookResolve.lua) short-circuits on this table being non-nil to
     -- skip pricier frame-flag checks. A cd-claimed hosted buff resolves its
     -- own "c"..cooldownID key independently -- only the table's existence matters.
     sd.hostedBuffSpellIDs = sd.hostedBuffSpellIDs or {}
     return ns.AddTrackedSpell(barKey, ns.CdClaimMarker(cdID))
-end
-
-function ns.RemoveHostedBuffByCdID(barKey, cdID)
-    if type(cdID) ~= "number" then return false end
-    -- RemoveSpellFromBar doesn't itself trigger route/reanchor; caller must.
-    local removed = ns.RemoveSpellFromBar(barKey, ns.CdClaimMarker(cdID))
-    if not removed then return false end
-    if ns.RebuildSpellRouteMap then ns.RebuildSpellRouteMap() end
-    if ns.QueueReanchor then ns.QueueReanchor() end
-    return true
 end
 
 --- Remove a tracked spell by index. Routes positive viewer spells to the
@@ -1934,6 +2061,17 @@ function ns.RemoveTrackedSpell(barKey, idx)
             for variantID, primaryID in pairs(sd.customSpellGroups) do
                 if primaryID == removedID then sd.customSpellGroups[variantID] = nil end
             end
+        end
+        -- An Empty Slot's id is never reused (NewEmptySlotMarker), so its own
+        -- settings entry (its Talent Conditions) goes with it.
+        if removedID and ns.IsEmptySlotMarker(removedID) then
+            local store = ns.GetSpellSettingsStore(barKey)
+            if store then store[removedID] = nil end
+        end
+        -- An item preset Blizzard's own row can render under: ghosted like a
+        -- racial (ns.NoteItemEntryRemoved), CD/utility bars only.
+        if removedID and not IsBarBuffFamily(barKey) then
+            ns.NoteItemEntryRemoved(sd, removedID)
         end
 
         -- Route to the ghost CD bar so frames stay routed but hidden. Buff-family bars
@@ -2075,9 +2213,7 @@ function ns.RemoveCDMBar(key)
             -- Deletion shifts every later bar's array index, so captured
             -- override paths into cdmBars.bars would point at the WRONG bars.
             -- Drop them all (users re-capture) -- honest beats corrupt.
-            if EllesmereUI.SpecOverrides_OnCDMBarsRestructured then
-                EllesmereUI.SpecOverrides_OnCDMBarsRestructured()
-            end
+            EllesmereUI.SpecOverrides_OnCDMBarsRestructured()
 
             -- Free all spells (don't ghost them): delete the bar's spell data
             -- from every spec of the ACTIVE profile only -- other profiles own
@@ -2093,9 +2229,7 @@ function ns.RemoveCDMBar(key)
                 end
             end
 
-            if EllesmereUI and EllesmereUI.UnregisterUnlockElement then
-                EllesmereUI:UnregisterUnlockElement("CDM_" .. key)
-            end
+            EllesmereUI:UnregisterUnlockElement("CDM_" .. key)
             -- Re-register remaining bars to update linkedKeys
             RegisterCDMUnlockElements()
             -- Reanchor so frames re-route to the ghost bar (or wherever)
@@ -2153,8 +2287,8 @@ function ns.PruneEquipmentBuffRows()
     -- Second proof source, viewer-independent: an EQUIPPED item vouches for
     -- its own use-spell (GetItemSpell). Covers rows whose native viewer entry
     -- is gone (untracked in Blizzard's CDM) while the item is still worn.
-    local gis = (C_Item and C_Item.GetItemSpell) or GetItemSpell
-    if gis and GetInventoryItemID then
+    local gis = C_Item.GetItemSpell
+    if GetInventoryItemID then
         for slot = 1, 19 do
             local itemID = GetInventoryItemID("player", slot)
             if itemID then

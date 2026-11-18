@@ -13,7 +13,6 @@ local PP         = EllesmereUI.PanelPP
 local SolidTex   = EllesmereUI.SolidTex
 local MakeFont   = EllesmereUI.MakeFont
 local MakeBorder = EllesmereUI.MakeBorder
-local lerp       = EllesmereUI.lerp
 local ELLESMERE_GREEN = EllesmereUI.ELLESMERE_GREEN
 
 -- Button visual constants
@@ -35,13 +34,21 @@ local BTN_TXT_HA = EllesmereUI.BTN_TXT_HA
 -- colours = { bg_r,bg_g,bg_b,bg_a, bg_hr,bg_hg,bg_hb,bg_ha,
 --             brd_r,brd_g,brd_b,brd_a, brd_hr,brd_hg,brd_hb,brd_ha,
 --             txt_r,txt_g,txt_b,txt_a, txt_hr,txt_hg,txt_hb,txt_ha }
-local function MakeStyledButton(btn, text, fontSize, colours, onClick)
+-- square (optional): the square outline, for a window that is square by design.
+local function MakeStyledButton(btn, text, fontSize, colours, onClick, square)
     local c = colours
     local bg  = SolidTex(btn, "BACKGROUND", c[1], c[2], c[3], c[4])
     bg:SetAllPoints()
-    local brd = MakeBorder(btn, c[9], c[10], c[11], c[12], PP)
+    local brd
+    if square then
+        brd = MakeBorder(btn, c[9], c[10], c[11], c[12], PP)
+    else
+        brd = EllesmereUI.MakeRoundedBorder(btn, c[9], c[10], c[11], c[12], bg)
+    end
     local lbl = MakeFont(btn, fontSize, nil, c[17], c[18], c[19])
-    lbl:SetAlpha(c[20])
+    -- The resting alpha lives in the text colour, as the hover scripts below set it
+    -- (a region alpha on top would multiply with it after the first hover).
+    lbl:SetTextColor(c[17], c[18], c[19], c[20])
     lbl:SetPoint("CENTER")
     lbl:SetText(EllesmereUI.L(text))
     btn:SetScript("OnEnter", function()
@@ -74,6 +81,134 @@ EllesmereUI.MakeStyledButton = MakeStyledButton
 EllesmereUI.WB_COLOURS       = WB_COLOURS
 EllesmereUI.RB_COLOURS       = RB_COLOURS
 
+-------------------------------------------------------------------------------
+--  One-time tip callout
+-------------------------------------------------------------------------------
+-- A dark box with the accent border, a message, an Okay button and an arrow
+-- pointing at what it explains (the options sidebar's Unlock Mode tip, Unlock
+-- Mode's own first-open tip, the bag sidebar's category tip). Built hidden:
+-- the caller anchors (and, on UIParent, scales) it and shows it, faded in by
+-- EllesmereUI.ShowTipCallout. Okay hides it, then runs opts.onOkay (where the
+-- caller stores its seen flag).
+-- opts: width, height (nil = fit the content: textTop, the text, gap, the
+-- button and btnBottom), text (already translated, so the call site keeps its
+-- literal key for the locale extractor),
+-- onOkay, arrow ("top", the default: the box sits below its target; "bottom":
+-- the box sits above it; "left": the box sits right of it), arrowOffset (px
+-- along that edge from its centre), pp (default PanelPP), strata (default FULLSCREEN_DIALOG; false
+-- keeps the parent's), level (default 200), font (a path; default the panel
+-- font), fontFlags (with font; default none), fontSize (12), textTop (17),
+-- textInset (30), spacing (6), gap (12, text to button with a fitted height),
+-- bgAlpha (1), btnW (86), btnH (26), btnBottom (13), btnFontSize (11).
+local TIP_BG_R, TIP_BG_G, TIP_BG_B = 0.077, 0.068, 0.058
+local TIP_ARROW = 16
+
+local function TipArrowTex(holder, layer, sub, size, r, g, b, a)
+    local t = holder:CreateTexture(nil, layer, nil, sub)
+    t:SetSize(size, size)
+    t:SetPoint("CENTER")
+    t:SetColorTexture(r, g, b, a)
+    t:SetRotation(math.rad(45))
+    if t.SetSnapToPixelGrid then t:SetSnapToPixelGrid(false); t:SetTexelSnappingBias(0) end
+    return t
+end
+
+function EllesmereUI.BuildTipCallout(parent, opts)
+    local pp = opts.pp or PP
+    local strata = opts.strata
+    if strata == nil then strata = "FULLSCREEN_DIALOG" end
+    local accent = EllesmereUI.ELLESMERE_GREEN
+    local ar, ag, ab = accent.r, accent.g, accent.b
+    local bgA = opts.bgAlpha or 1
+    local w = opts.width
+
+    local tip = CreateFrame("Frame", nil, parent)
+    if strata then tip:SetFrameStrata(strata) end
+    tip:SetFrameLevel(opts.level or 200)
+    tip:SetWidth(w)
+    tip:EnableMouse(true)
+    tip:Hide()
+    local tipBg = SolidTex(tip, "BACKGROUND", TIP_BG_R, TIP_BG_G, TIP_BG_B, bgA)
+    tipBg:SetAllPoints()
+    EllesmereUI.MakeRoundedBorder(tip, ar, ag, ab, 0.25, tipBg)
+
+    -- The arrow: a rotated square whose inner half the box edge clips away
+    local off = opts.arrowOffset or 0
+    local clip = CreateFrame("Frame", nil, tip)
+    if strata then clip:SetFrameStrata(strata) end
+    clip:SetFrameLevel(tip:GetFrameLevel() + 10)
+    clip:SetClipsChildren(true)
+    local holder = CreateFrame("Frame", nil, clip)
+    holder:SetFrameLevel(clip:GetFrameLevel() + 1)
+    holder:SetSize(TIP_ARROW + 4, TIP_ARROW + 4)
+    if opts.arrow == "left" then
+        clip:SetSize(TIP_ARROW, TIP_ARROW * 2)
+        clip:SetPoint("RIGHT", tip, "LEFT", 1, off)
+        holder:SetPoint("CENTER", clip, "RIGHT", 0, 0)
+    elseif opts.arrow == "bottom" then
+        clip:SetSize(TIP_ARROW * 2, TIP_ARROW)
+        clip:SetPoint("TOP", tip, "BOTTOM", off, 1)
+        holder:SetPoint("CENTER", clip, "TOP", 0, 0)
+    else
+        clip:SetSize(TIP_ARROW * 2, TIP_ARROW)
+        clip:SetPoint("BOTTOM", tip, "TOP", off, -1)
+        holder:SetPoint("CENTER", clip, "BOTTOM", 0, 0)
+    end
+    TipArrowTex(holder, "ARTWORK", 7, TIP_ARROW + 2, ar, ag, ab, 0.18)
+    TipArrowTex(holder, "OVERLAY", 6, TIP_ARROW, TIP_BG_R, TIP_BG_G, TIP_BG_B, bgA)
+
+    local size = opts.fontSize or 12
+    local msg
+    if opts.font then
+        msg = tip:CreateFontString(nil, "OVERLAY")
+        msg:SetFont(opts.font, size, opts.fontFlags or "")
+        msg:SetTextColor(1, 1, 1, 0.85)
+    else
+        msg = MakeFont(tip, size, nil, 1, 1, 1, 0.85)
+    end
+    local textTop = opts.textTop or 17
+    msg:SetPoint("TOP", tip, "TOP", 0, -textTop)
+    msg:SetWidth(w - (opts.textInset or 30))
+    msg:SetJustifyH("CENTER")
+    msg:SetSpacing(opts.spacing or 6)
+    msg:SetText(opts.text)
+
+    local btnH, btnBottom = opts.btnH or 26, opts.btnBottom or 13
+    local h = opts.height
+    if not h then
+        h = math.ceil(textTop + msg:GetStringHeight() + (opts.gap or 12) + btnH + btnBottom)
+    end
+    pp.Size(tip, w, h)
+
+    local ok = CreateFrame("Button", nil, tip)
+    ok:SetSize(opts.btnW or 86, btnH)
+    ok:SetPoint("BOTTOM", tip, "BOTTOM", 0, btnBottom)
+    local onOkay = opts.onOkay
+    MakeStyledButton(ok, "Okay", opts.btnFontSize or 11, RB_COLOURS, function()
+        tip:Hide()
+        if onOkay then onOkay() end
+    end)
+    return tip
+end
+
+-- Shows a tip callout with a 0.3 s fade in (its OnUpdate ends with the fade).
+local function TipFadeIn(self, dt)
+    local t = self._fadeT + dt
+    if t >= 0.3 then
+        self:SetAlpha(1)
+        self:SetScript("OnUpdate", nil)
+        return
+    end
+    self._fadeT = t
+    self:SetAlpha(t / 0.3)
+end
+function EllesmereUI.ShowTipCallout(tip)
+    tip._fadeT = 0
+    tip:SetAlpha(0)
+    tip:Show()
+    tip:SetScript("OnUpdate", TipFadeIn)
+end
+
 -- Global disabled-widget tooltip: "This option requires ___ to be enabled". requirement = human-readable name ("Show Class Power", "a non-None slot"). state = "enabled" (default) or "disabled" picks the trailing verb.
 local function DisabledTooltip(requirement, state)
     -- Already a whole sentence: skip the wrapper but still translate it (the
@@ -91,6 +226,10 @@ EllesmereUI.DisabledTooltip = DisabledTooltip
 --  Shared Tooltip  (single frame, lazily created, reused by all widgets)
 -------------------------------------------------------------------------------
 local tooltipFrame
+-- The region the tooltip shows for (weak: never keeps it alive). The options page
+-- pool reads it to drop the tooltip of a region it reset under the cursor.
+local tooltipOwner = setmetatable({}, { __mode = "v" })
+function EllesmereUI._WidgetTooltipOwner() return tooltipOwner[1] end
 
 local function GetTooltipFrame()
     if not tooltipFrame then
@@ -101,8 +240,12 @@ local function GetTooltipFrame()
         local bg = tooltipFrame:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         tooltipFrame.bg = bg
-        MakeBorder(tooltipFrame, 1, 1, 1, 0.15, PP)
-        tooltipFrame.text = MakeFont(tooltipFrame, 10, nil, 1, 1, 1, 0.80)
+        tooltipFrame._brd = EllesmereUI.MakeRoundedBorder(tooltipFrame, 1, 1, 1, 0.15, bg)
+        -- The panel font as a font family: the tooltip also shows friends' names
+        -- and notes, whose scripts the panel font may lack.
+        tooltipFrame.text = tooltipFrame:CreateFontString(nil, "OVERLAY")
+        EllesmereUI.SetFontFamily(tooltipFrame.text, EllesmereUI.EXPRESSWAY, 10, "", false)
+        tooltipFrame.text:SetTextColor(1, 1, 1, 0.80)
         tooltipFrame.text:SetPoint("TOPLEFT", 8, -8)
         tooltipFrame.text:SetPoint("TOPRIGHT", -8, -8)
         tooltipFrame.text:SetWordWrap(true)
@@ -144,6 +287,7 @@ local function ShowWidgetTooltip(label, text, opts)
     -- text may be a function for dynamic text; resolved after suppression checks so it isn't called when nothing will show.
     if type(text) == "function" then text = text() end
     local tt = GetTooltipFrame()
+    tooltipOwner[1] = label
     local MAX_W = 250
     local PAD = 8  -- horizontal padding each side (matches text anchor insets)
     if opts and opts.width then
@@ -245,6 +389,8 @@ local function ShowWidgetTooltip(label, text, opts)
             end
         end
     end
+    -- Sized and placed after its show: the outline seats on whole pixels again.
+    tt._brd:Fit()
     -- Cancel an in-progress fade-out so its OnFinished doesn't hide us
     if tt._fadeOutAG then tt._fadeOutAG:Stop() end
     if tt._fadeAG then tt._fadeAG:Stop() end
@@ -261,8 +407,10 @@ local function ShowWidgetTooltip(label, text, opts)
 end
 
 local function HideWidgetTooltip(instant)
-    local tt = GetTooltipFrame()
-    if not tt:IsShown() then return end
+    -- Never shown yet: nothing to hide, and nothing is built for it.
+    local tt = tooltipFrame
+    tooltipOwner[1] = nil
+    if not (tt and tt:IsShown()) then return end
     if tt._fadeOutAG then tt._fadeOutAG:Stop() end
     if tt._fadeAG then tt._fadeAG:Stop() end
     if instant then
@@ -305,7 +453,7 @@ end
 local function ResolveThemeColor(theme)
     theme = EllesmereUI._ResolveFactionTheme(theme)
     if theme == "Class Colored" then
-        local clr = EllesmereUI.CLASS_COLOR_MAP[EllesmereUI._playerClass]
+        local clr = EllesmereUI.GetRawClassColor(EllesmereUI._playerClass)
         if clr then return clr.r, clr.g, clr.b end
         return EllesmereUI.DEFAULT_ACCENT_R, EllesmereUI.DEFAULT_ACCENT_G, EllesmereUI.DEFAULT_ACCENT_B
     elseif theme == "Custom Color" then
@@ -340,78 +488,13 @@ local function UpdateAccentElements(r, g, b)
     end
 end
 
---- Accent color transition state
-local ACCENT_FADE_DURATION, ACCENT_REFRESH_INTERVAL = 0.5, 0.067  -- ~15fps for widget refreshes
-local accentFadeFrom = { r = 0, g = 0, b = 0 }
-local accentFadeTo   = { r = 0, g = 0, b = 0 }
-local accentFadeProgress = 1  -- 1 = done
-local accentRefreshAccum = 0
-local accentGCFrame, accentGCDelay  -- reused for deferred GC after fade
-local accentFadeTicker = CreateFrame("Frame")
-accentFadeTicker:Hide()
-accentFadeTicker:SetScript("OnUpdate", function(self, elapsed)
-    accentFadeProgress = accentFadeProgress + elapsed / ACCENT_FADE_DURATION
-    if accentFadeProgress >= 1 then
-        accentFadeProgress = 1
-        self:Hide()
-        ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b = accentFadeTo.r, accentFadeTo.g, accentFadeTo.b
-        UpdateAccentElements(accentFadeTo.r, accentFadeTo.g, accentFadeTo.b)
-        -- Fast-path refresh only: widget callbacks re-read the accent. NEVER force-rebuild (RefreshPage(true)) here -- a full teardown+rebuild in one frame hitches the renderer into a visible blink, and UpdateAccentElements already snapped every one-time element.
-        for i = 1, #EllesmereUI._widgetRefreshList do EllesmereUI._widgetRefreshList[i]() end
-        -- Deferred full GC, 2 frames out: collecting in the same frame as the transition completion hitches the renderer into a visible blink; by frame +2 the GC is the only work in the tick.
-        if not accentGCFrame then
-            accentGCFrame = CreateFrame("Frame")
-        end
-        accentGCDelay = 2
-        accentGCFrame:SetScript("OnUpdate", function(gcSelf)
-            accentGCDelay = accentGCDelay - 1
-            if accentGCDelay <= 0 then
-                gcSelf:SetScript("OnUpdate", nil)
-                collectgarbage("collect")
-            end
-        end)
-        return
-    end
-    local t = accentFadeProgress  -- smooth ease-in-out
-    t = t < 0.5 and (2 * t * t) or (1 - (-2 * t + 2) * (-2 * t + 2) / 2)
-    local r = lerp(accentFadeFrom.r, accentFadeTo.r, t)
-    local g = lerp(accentFadeFrom.g, accentFadeTo.g, t)
-    local b = lerp(accentFadeFrom.b, accentFadeTo.b, t)
-    ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b = r, g, b
-    -- RegAccent elements (sidebar, tabs, footer) are cheap: every frame.
-    UpdateAccentElements(r, g, b)
-    -- Widget refreshes (toggles, sliders, checkboxes) are heavier: throttled.
-    accentRefreshAccum = accentRefreshAccum + elapsed
-    if accentRefreshAccum >= ACCENT_REFRESH_INTERVAL then
-        accentRefreshAccum = 0
-        for i = 1, #EllesmereUI._widgetRefreshList do EllesmereUI._widgetRefreshList[i]() end
-    end
-end)
-
---- Internal: apply accent with animated transition (for theme switches)
-local function ApplyAccentAnimated(r, g, b)
-    accentFadeFrom.r, accentFadeFrom.g, accentFadeFrom.b = ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b
-    accentFadeTo.r, accentFadeTo.g, accentFadeTo.b = r, g, b
-    accentFadeProgress = 0
-    accentRefreshAccum = 0
-
-    -- Invalidate cached popups so they rebuild with the new accent
-    EllesmereUI._InvalidateConfirmPopup()
-
-    -- OnUpdate lerps ELLESMERE_GREEN and refreshes widgets each tick
-    accentFadeTicker:Show()
-end
-
 --- Internal: apply accent instantly (for color picker dragging, resets, etc.)
 local function ApplyAccentLive(r, g, b)
-    accentFadeTicker:Hide()  -- stop any running transition
-    accentFadeProgress = 1
-
     -- Canonical colour table updated in place, then registered one-time elements
     ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b = r, g, b
     UpdateAccentElements(r, g, b)
 
-    -- Cached popups rebuild with the new accent
+    -- The cached confirm popup repaints its accent parts
     EllesmereUI._InvalidateConfirmPopup()
 
     -- Fast path only; a full rebuild would churn memory
@@ -490,7 +573,7 @@ function EllesmereUI.ResolveProfileAccent(profileData)
     local acc = profileData and profileData.euiAccent
     -- 1) per-profile
     if acc and acc.useClass then
-        local c = EllesmereUI.CLASS_COLOR_MAP[EllesmereUI._playerClass]
+        local c = EllesmereUI.GetRawClassColor(EllesmereUI._playerClass)
         if c then return true, c.r, c.g, c.b end
     end
     if acc and acc.custom then
@@ -499,7 +582,7 @@ function EllesmereUI.ResolveProfileAccent(profileData)
     end
     -- 2) frozen global root -- ONLY when the profile has no explicit euiAccent. An explicit per-profile opt-out (useClass=false, no custom yet) must NOT fall through to the global class color; it drops to the global custom/theme terminal below, matching the displayed Custom swatch state.
     if (not acc) and EllesmereUIDB and EllesmereUIDB.useClassAccentColor then
-        local c = EllesmereUI.CLASS_COLOR_MAP[EllesmereUI._playerClass]
+        local c = EllesmereUI.GetRawClassColor(EllesmereUI._playerClass)
         if c then return true, c.r, c.g, c.b end
     end
     local gca = EllesmereUIDB and EllesmereUIDB.customAccentColor
@@ -522,7 +605,7 @@ end
 
 --- Class color for the current player
 EllesmereUI.GetPlayerClassColor = function()
-    local clr = EllesmereUI.CLASS_COLOR_MAP[EllesmereUI._playerClass]
+    local clr = EllesmereUI.GetRawClassColor(EllesmereUI._playerClass)
     if clr then return clr.r, clr.g, clr.b end
     return EllesmereUI.DEFAULT_ACCENT_R, EllesmereUI.DEFAULT_ACCENT_G, EllesmereUI.DEFAULT_ACCENT_B
 end
@@ -544,163 +627,1131 @@ end
 
 -------------------------------------------------------------------------------
 --  ShowContextMenu(anchor, items, opts)
---  Shared pooled context menu used by Blizz UI Enhanced (character sheet gear-set cog, etc.). Pops up at the cursor.
+--  Shared pooled menu: the M+ Run Summary picker, the WoW Forever threat meter,
+--  the Macros page. Pops up at the cursor.
 --  items = { { text = "Foo", onClick = fn, isDisabled = fn? }, ... }
+--  Opt-in item forms:
+--    "---"               a separator line
+--    isActive = true     accent label on a highlight while not hovered
+--    tooltip = "..."     widget tooltip while hovered
+--    children = { ... }  a submenu of items, opened on hover (arrow on the row)
+--    isInput = true      a number box: getValue() fills it, Enter hands
+--                        setValue(v) the whole number, floored at min (or 1)
+--    icon = texture      a cropped 16px icon before the label
+--    noLoc = true        the label as given (no L())
+--    desc = "..."        a small grey line under the label (as given, no L())
 --  opts (optional): below = true hangs the menu off `anchor`'s bottom-left edge
 --  instead of the cursor (the dropdown placement of the options widgets);
 --  minWidth widens the menu to the anchor's width so it reads as a dropdown.
---  Behavior: click-outside-to-dismiss (polled ~10hz); a second call from the same
---  anchor while its menu is open closes it (toggle); auto-closes on combat entry so
---  insecure clicks can't taint protected paths while lockdown is active.
+--  above = true opens it upward, right edges aligned with `anchor` (growing
+--  up from the cursor without one). look = "meter" is the Damage Meters header
+--  menu's look: 22px rows, 11px plain (shadowless) labels, no inner padding,
+--  the context-menu background and the Blizz UI Enhanced popup-menu border.
+--  look = "meterForever" is its WoW Forever variant: the panel in WoW
+--  Forever's dropdown art and gold lit labels (the meter look's panel on a
+--  client without the art). fontKey sets the labels in that module's font,
+--  through ApplyModuleFont unless the look keeps plain labels (else the
+--  global font). scaleToAnchor = true gives the menu the anchor's effective
+--  scale, for a list under a field of the options panel at its Window Scale
+--  (a menu without children: submenus keep scale 1). pickOnDown = true makes
+--  rows act on the press, so a pick lands before a focused edit box drops its
+--  focus on the mouse down. noPoll = true leaves out the click-outside poll,
+--  for a list its owner closes itself (one under an edit box, closed by the
+--  box's focus loss).
+--  Behavior: click-outside-to-dismiss (polled ~10hz unless noPoll); a second
+--  call from the same anchor while its menu is open closes it (toggle);
+--  auto-closes on combat entry so insecure clicks can't taint protected paths
+--  while lockdown is active. One menu is open at a time: ContextMenuOwner()
+--  returns its anchor, CloseContextMenu() closes it.
 -------------------------------------------------------------------------------
-local _ctxMenu
-local function ShowContextMenu(anchor, items, opts)
-    local PP_L = EllesmereUI.PP
-    if not _ctxMenu then
-        _ctxMenu = CreateFrame("Frame", nil, UIParent)
-        _ctxMenu:SetFrameStrata("FULLSCREEN_DIALOG")
-        _ctxMenu:SetFrameLevel(200)
-        _ctxMenu:SetClampedToScreen(true)
-        _ctxMenu:EnableMouse(true)
+local CTX_ARROW = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow.png"
+-- Row metrics and dressing per look. Each look keeps its own panels: the
+-- popup-menu border replaces a panel's own border for good.
+local CTX_LOOKS = {
+    default = { rowH = 26, sepH = 7, pad = 4, size = 12, minW = 140, textPad = 40,
+                left = 10, right = -10 },
+    meter   = { rowH = 22, sepH = 7, pad = 0, size = 11, minW = 100, textPad = 50,
+                left = 8, right = -18, noWrap = true, ctxBg = true, popupBorder = true,
+                plainFont = true },
+    -- atlas: the panel's art in place of its fill and borders (drawn past
+    -- its edges); lit: the hovered and active label colour.
+    meterForever = { rowH = 22, sepH = 7, pad = 0, size = 11, minW = 100, textPad = 50,
+                left = 8, right = -18, noWrap = true, ctxBg = true, popupBorder = true,
+                plainFont = true, atlas = "common-dropdown-bg", lit = { r = 1, g = 0.82, b = 0 } },
+}
+local _ctxPanels = {}  -- look -> its top-level panel
+local _ctxOpen         -- the top-level panel on screen, if any
+local CtxShowSub
 
-        local RS = EllesmereUI.RESKIN or {}
-        local bg = _ctxMenu:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        bg:SetColorTexture(RS.BG_R or 0.067, RS.BG_G or 0.067, RS.BG_B or 0.067, RS.QT_ALPHA or 0.97)
-        _ctxMenu._bg = bg
+local function CtxRoot(panel)
+    return panel._root or panel
+end
 
-        if PP_L and PP_L.CreateBorder then
-            PP_L.CreateBorder(_ctxMenu, 1, 1, 1, RS.BRD_ALPHA or 0.18, 1)
-        end
-
-        _ctxMenu._items = {}
-        _ctxMenu._elapsed = 0
-
-        -- Throttled click-outside poll (~10hz)
-        _ctxMenu._pollClickOff = function(self, dt)
-            self._elapsed = self._elapsed + dt
-            if self._elapsed < 0.1 then return end
-            self._elapsed = 0
-            -- A click on the owner is left to the owner: its OnClick reaches
-            -- ShowContextMenu with the menu still open and toggles it closed.
-            local owner = self._owner
-            if not self:IsMouseOver() and IsMouseButtonDown("LeftButton")
-               and not (owner and owner.IsMouseOver and owner:IsMouseOver()) then
-                self:Hide()
-            end
-        end
-
-        _ctxMenu:HookScript("OnHide", function(self)
-            self:SetScript("OnUpdate", nil)
-            self._owner = nil
-        end)
-
-        -- Combat entry closes the menu to avoid tainting protected paths.
-        _ctxMenu:RegisterEvent("PLAYER_REGEN_DISABLED")
-        _ctxMenu:SetScript("OnEvent", function(self) self:Hide() end)
+-- Lit: hovered or active.
+local function CtxPaint(row, lit)
+    row._hl:SetColorTexture(1, 1, 1, lit and (EllesmereUI.DD_ITEM_HL_A or 0.08) or 0)
+    local EG = lit and (row._panel._look.lit or EllesmereUI.ELLESMERE_GREEN)
+    if EG then
+        row._lbl:SetTextColor(EG.r, EG.g, EG.b, 1)
+    else
+        row._lbl:SetTextColor(1, 1, 1, 1)
     end
+end
 
-    -- Toggle: the owner's click while its own menu is open closes it.
-    if anchor and _ctxMenu:IsShown() and _ctxMenu._owner == anchor then
-        _ctxMenu:Hide()
+local function CtxRowEnter(row)
+    local sub = row._panel._sub
+    if row._disabled then
+        if sub then sub:Hide() end
         return
     end
-    _ctxMenu._owner = anchor
+    local item = row._item
+    CtxPaint(row, true)
+    if item.tooltip then
+        CtxRoot(row._panel)._tip = true
+        EllesmereUI.ShowWidgetTooltip(row, item.tooltip)
+    end
+    if item.children then
+        CtxShowSub(row, item.children)
+    elseif sub then
+        sub:Hide()
+    end
+end
+
+local function CtxRowLeave(row)
+    if row._disabled then return end
+    local item = row._item
+    if item.tooltip then
+        CtxRoot(row._panel)._tip = nil
+        EllesmereUI.HideWidgetTooltip()
+    end
+    CtxPaint(row, item.isActive)
+    -- A submenu stays open while the pointer moved into it.
+    local sub = row._panel._sub
+    if sub and item.children and not (sub:IsShown() and sub:IsMouseOver()) then
+        sub:Hide()
+    end
+end
+
+local function CtxRowClick(row)
+    local item = row._item
+    if row._disabled or item.children then return end
+    CtxRoot(row._panel):Hide()
+    if item.onClick then item.onClick() end
+end
+
+-- pickOnDown menus act on the press: a focused edit box drops its focus on
+-- a mouse down outside it, before the row's click could land.
+local function CtxRowDown(row, button)
+    if button == "LeftButton" and CtxRoot(row._panel)._pickOnDown then CtxRowClick(row) end
+end
+
+local function CtxBoxCommit(box)
+    local item = box:GetParent()._item
+    local v = math.max(item.min or 1, math.floor(box:GetNumber() + 0.5))
+    box:SetNumber(v)
+    if item.setValue then item.setValue(v) end
+    box:ClearFocus()
+end
+
+local function CtxBoxEscape(box)
+    box:ClearFocus()
+end
+
+-- Combat closes a menu: the event is registered only while it is shown.
+local function CtxPanelShown(self)
+    self:RegisterEvent("PLAYER_REGEN_DISABLED")
+end
+
+local function CtxPanelHidden(self)
+    self:SetScript("OnUpdate", nil)
+    -- Hidden along with UIParent (Alt-Z, a cinematic): a styled look closes
+    -- for real; the default look stays shown and keeps its combat close.
+    if self:IsShown() and self._look ~= CTX_LOOKS.default then self:Hide() end
+    if not self:IsShown() then self:UnregisterEvent("PLAYER_REGEN_DISABLED") end
+    self._owner = nil
+    self._src = nil
+    local rows = self._items
+    for i = 1, #rows do
+        local box = rows[i]._box
+        if box then box:ClearFocus() end
+    end
+    if self._sub then self._sub:Hide() end
+    if _ctxOpen == self then _ctxOpen = nil end
+    if self._tip then
+        self._tip = nil
+        EllesmereUI.HideWidgetTooltip()
+    end
+end
+
+-- Unregister first: hiding a panel that is already invisible fires no OnHide.
+local function CtxPanelEvent(self)
+    self:UnregisterEvent("PLAYER_REGEN_DISABLED")
+    self:Hide()
+end
+
+-- Throttled click-outside poll (~10hz), set on the top-level panel while shown.
+local function CtxPoll(self, dt)
+    self._elapsed = self._elapsed + dt
+    if self._elapsed < 0.1 then return end
+    self._elapsed = 0
+    if self:IsMouseOver() or not IsMouseButtonDown("LeftButton") then return end
+    -- A click on the owner is left to the owner: its OnClick reaches
+    -- ShowContextMenu with the menu still open and toggles it closed.
+    local owner = self._owner
+    if owner and owner.IsMouseOver and owner:IsMouseOver() then return end
+    local sub = self._sub
+    while sub and sub:IsShown() do
+        if sub:IsMouseOver() then return end
+        sub = sub._sub
+    end
+    self:Hide()
+end
+
+local function CtxNewPanel(look, level)
+    local RS = EllesmereUI.RESKIN or {}
+    local p = CreateFrame("Frame", nil, UIParent)
+    p:Hide()
+    p:SetFrameStrata("FULLSCREEN_DIALOG")
+    p:SetFrameLevel(200 + level * 10)
+    p:SetClampedToScreen(true)
+    p:EnableMouse(true)
+    local bg = p:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(RS.BG_R or 0.067, RS.BG_G or 0.067, RS.BG_B or 0.067,
+        look.ctxBg and (RS.CTX_ALPHA or 0.95) or (RS.QT_ALPHA or 0.97))
+    p._bg = bg
+    local PP_L = EllesmereUI.PP
+    if look.atlas and C_Texture.GetAtlasInfo(look.atlas) then
+        local art = p:CreateTexture(nil, "BACKGROUND", nil, -1)
+        art:SetAtlas(look.atlas)
+        art:SetPoint("TOPLEFT", p, "TOPLEFT", -10, 7)
+        art:SetPoint("BOTTOMRIGHT", p, "BOTTOMRIGHT", 10, -13)
+        art:SetAlpha(0.925)
+        bg:SetColorTexture(0, 0, 0, 0)
+        p._art = art
+    elseif look == CTX_LOOKS.default then
+        -- The plain right-click menu is rounded; the meter looks follow the
+        -- Blizzard popup menu border (CtxLayout).
+        p._brd = EllesmereUI.MakeRoundedBorder(p, 1, 1, 1, RS.BRD_ALPHA or 0.18, bg)
+    elseif PP_L and PP_L.CreateBorder then
+        PP_L.CreateBorder(p, 1, 1, 1, RS.BRD_ALPHA or 0.18, 1)
+    end
+    p._look, p._level = look, level
+    p._items = {}
+    p._elapsed = 0
+    p:SetScript("OnShow", CtxPanelShown)
+    p:SetScript("OnHide", CtxPanelHidden)
+    p:SetScript("OnEvent", CtxPanelEvent)
+    return p
+end
+
+local function CtxRow(panel, i)
+    local row = panel._items[i]
+    if row then return row end
+    local look = panel._look
+    row = CreateFrame("Button", nil, panel)
+    local hl = row:CreateTexture(nil, "BACKGROUND", nil, 1)
+    hl:SetAllPoints()
+    row._hl = hl
+    local lbl = row:CreateFontString(nil, "OVERLAY")
+    lbl:SetPoint("RIGHT", row, "RIGHT", look.right, 0)   -- LEFT: per item in CtxLayout
+    lbl:SetJustifyH("LEFT")
+    if look.noWrap then lbl:SetWordWrap(false) end
+    row._lbl = lbl
+    row._panel = panel
+    row:SetScript("OnEnter", CtxRowEnter)
+    row:SetScript("OnLeave", CtxRowLeave)
+    row:SetScript("OnClick", CtxRowClick)
+    row:SetScript("OnMouseDown", CtxRowDown)
+    panel._items[i] = row
+    return row
+end
+
+-- Separator line, submenu arrow, number box and item icon: made on a row's
+-- first need.
+local function CtxSep(row)
+    local sep = row._sep
+    if not sep then
+        sep = row:CreateTexture(nil, "ARTWORK")
+        sep:SetHeight(1)
+        sep:SetPoint("LEFT", row, "LEFT", 6, 0)
+        sep:SetPoint("RIGHT", row, "RIGHT", -6, 0)
+        sep:SetColorTexture(1, 1, 1, 0.12)
+        row._sep = sep
+    end
+    return sep
+end
+
+local function CtxArrow(row)
+    local arrow = row._arrow
+    if not arrow then
+        arrow = row:CreateTexture(nil, "ARTWORK")
+        arrow:SetTexture(CTX_ARROW)
+        arrow:SetSize(19, 19)
+        arrow:SetPoint("RIGHT", row, "RIGHT", -2, 0)
+        arrow:SetRotation(math.pi / 2)
+        row._arrow = arrow
+    end
+    return arrow
+end
+
+local function CtxBox(row, fontPath, outline)
+    local box = row._box
+    if not box then
+        box = CreateFrame("EditBox", nil, row)
+        box:SetSize(50, 18)
+        box:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+        box:SetFrameLevel(row:GetFrameLevel() + 3)
+        box:SetFont(fontPath, 10, outline)
+        box:SetTextColor(1, 1, 1, 0.9)
+        box:SetJustifyH("CENTER")
+        local bg = box:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetColorTexture(0, 0, 0, 0.4)
+        box:SetAutoFocus(false)
+        box:SetNumeric(true)
+        box:SetMaxLetters(5)
+        box:SetScript("OnEnterPressed", CtxBoxCommit)
+        box:SetScript("OnEscapePressed", CtxBoxEscape)
+        row._box = box
+    end
+    box:SetFont(fontPath, 10, outline)
+    return box
+end
+
+-- the x on a row with onRemove: its own button, so the row's click still picks
+local function CtxRemove(row)
+    local rm = row._rm
+    if not rm then
+        rm = CreateFrame("Button", nil, row)
+        rm:SetSize(16, 16)
+        rm:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+        rm:SetFrameLevel(row:GetFrameLevel() + 2)
+        rm.icon = rm:CreateTexture(nil, "OVERLAY")
+        rm.icon:SetAllPoints()
+        rm.icon:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-close.png")
+        rm.icon:SetAlpha(0.45)
+        -- the row stays lit under its x, and the menu closing takes the x's tip with it
+        rm:SetScript("OnEnter", function(self)
+            self.icon:SetAlpha(1)
+            local r = self:GetParent()
+            CtxPaint(r, true)
+            local tip = r._item.removeTip
+            if tip then
+                CtxRoot(r._panel)._tip = true
+                EllesmereUI.ShowWidgetTooltip(self, tip)
+            end
+        end)
+        rm:SetScript("OnLeave", function(self)
+            self.icon:SetAlpha(0.45)
+            local r = self:GetParent()
+            CtxRoot(r._panel)._tip = nil
+            EllesmereUI.HideWidgetTooltip()
+            CtxPaint(r, r._item.isActive)
+        end)
+        rm:SetScript("OnClick", function(self)
+            local r = self:GetParent()
+            local fn = r._item.onRemove
+            EllesmereUI.HideWidgetTooltip()
+            CtxRoot(r._panel):Hide()
+            fn()
+        end)
+        row._rm = rm
+    end
+    return rm
+end
+
+local function CtxIcon(row)
+    local icon = row._icon
+    if not icon then
+        icon = row:CreateTexture(nil, "ARTWORK")
+        icon:SetSize(16, 16)
+        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        row._icon = icon
+    end
+    return icon
+end
+
+-- the small line under a label, made on first need
+local function CtxDesc(row)
+    local d = row._desc
+    if not d then
+        d = row:CreateFontString(nil, "OVERLAY")
+        d:SetJustifyH("LEFT")
+        d:SetWordWrap(false)
+        row._desc = d
+    end
+    return d
+end
+
+local function CtxLayout(panel, items, minW, fontKey)
+    local look = panel._look
+    if look.popupBorder and not panel._art and EllesmereUI._applyBlizzardConfiguredBorder
+       and C_AddOns.IsAddOnLoaded("EllesmereUIBlizzardSkin") then
+        pcall(EllesmereUI._applyBlizzardConfiguredBorder, panel, "popupMenu", 1)
+    end
+    local L, size = EllesmereUI.L, look.size
+    local fontPath, outline
+    if fontKey then
+        fontPath, outline = EllesmereUI.GetFontPath(fontKey), EllesmereUI.GetFontOutlineFlag(fontKey)
+    else
+        fontPath = (EllesmereUI.GetFontPath()) or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+        outline  = (EllesmereUI.GetFontOutlineFlag()) or ""
+    end
 
     -- Hide pooled rows past the current item count
-    for _, btn in ipairs(_ctxMenu._items) do btn:Hide() end
+    local rows = panel._items
+    for i = 1, #rows do rows[i]:Hide() end
 
-    local ITEM_H = 26
-    local MENU_PAD = 4
-    local fontPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath()) or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
-    local outline  = (EllesmereUI.GetFontOutlineFlag and EllesmereUI.GetFontOutlineFlag()) or ""
-
-    if not _ctxMenu._measureFS then
-        _ctxMenu._measureFS = _ctxMenu:CreateFontString(nil, "OVERLAY")
+    local mfs = panel._measureFS
+    if not mfs then
+        mfs = panel:CreateFontString(nil, "OVERLAY")
+        panel._measureFS = mfs
     end
-    local mfs = _ctxMenu._measureFS
-    mfs:SetFont(fontPath, 12, outline)
-    local maxTextW = 0
+    mfs:SetFont(fontPath, size, outline)
+    local widest = 0
+    local iconW = 0
     for _, item in ipairs(items) do
-        mfs:SetText(EllesmereUI.L(item.text or ""))
-        local w = mfs:GetStringWidth() or 0
-        if w > maxTextW then maxTextW = w end
+        if type(item) == "table" then
+            mfs:SetText(item.noLoc and item.text or L(item.text or ""))
+            local w = mfs:GetStringWidth() or 0
+            if item.onRemove then w = w + 20 end
+            if w > widest then widest = w end
+            if item.desc then
+                mfs:SetFont(fontPath, size - 2, outline)
+                mfs:SetText(item.desc)
+                w = mfs:GetStringWidth() or 0
+                if w > widest then widest = w end
+                mfs:SetFont(fontPath, size, outline)
+            end
+            if item.icon then iconW = 22 end
+        end
     end
     mfs:SetText("")
     mfs:Hide()
 
-    local MENU_W = math.max((opts and opts.minWidth) or 140, maxTextW + 40)
-    local EG = EllesmereUI.ELLESMERE_GREEN
-    local hlAlpha = EllesmereUI.DD_ITEM_HL_A or 0.08
-
+    local pad = look.pad
+    local width = math.max(minW or look.minW, widest + look.textPad + iconW)
+    local y = pad
     for i, item in ipairs(items) do
-        local btn = _ctxMenu._items[i]
-        if not btn then
-            btn = CreateFrame("Button", nil, _ctxMenu)
-            local hl = btn:CreateTexture(nil, "BACKGROUND", nil, 1)
-            hl:SetAllPoints()
-            btn._hl = hl
-            local lbl = btn:CreateFontString(nil, "OVERLAY")
-            lbl:SetPoint("LEFT", btn, "LEFT", 10, 0)
-            lbl:SetPoint("RIGHT", btn, "RIGHT", -10, 0)
-            lbl:SetJustifyH("LEFT")
-            btn._lbl = lbl
-            _ctxMenu._items[i] = btn
-        end
-        btn:SetSize(MENU_W - MENU_PAD * 2, ITEM_H)
-        btn:ClearAllPoints()
-        btn:SetPoint("TOPLEFT", _ctxMenu, "TOPLEFT", MENU_PAD, -(MENU_PAD + (i - 1) * ITEM_H))
-        btn._hl:SetColorTexture(1, 1, 1, 0)
-        btn._lbl:SetFont(fontPath, 12, outline)
-        btn._lbl:SetText(EllesmereUI.L(item.text or ""))
-
-        local disabled = item.isDisabled and item.isDisabled()
-        if disabled then
-            btn._lbl:SetTextColor(0.4, 0.4, 0.4, 0.5)
-            btn._onClick = nil
-            btn:SetScript("OnClick", nil)
-            btn:SetScript("OnEnter", function() btn._lbl:SetTextColor(0.4, 0.4, 0.4, 0.5) end)
-            btn:SetScript("OnLeave", function() btn._lbl:SetTextColor(0.4, 0.4, 0.4, 0.5) end)
+        local row = CtxRow(panel, i)
+        local lbl = row._lbl
+        -- A row keeps the shadow a module font primed it with; clear it on
+        -- the plain path.
+        if fontKey and not look.plainFont then
+            EllesmereUI.ApplyModuleFont(lbl, fontPath, size, fontKey, outline)
+            row._primed = true
         else
-            btn._lbl:SetTextColor(1, 1, 1, 1)
-            btn._onClick = item.onClick
-            btn:SetScript("OnClick", function()
-                _ctxMenu:Hide()
-                if btn._onClick then btn._onClick() end
-            end)
-            btn:SetScript("OnEnter", function()
-                btn._hl:SetColorTexture(1, 1, 1, hlAlpha)
-                if EG then
-                    btn._lbl:SetTextColor(EG.r, EG.g, EG.b, 1)
-                else
-                    btn._lbl:SetTextColor(1, 1, 1, 1)
-                end
-            end)
-            btn:SetScript("OnLeave", function()
-                btn._hl:SetColorTexture(1, 1, 1, 0)
-                btn._lbl:SetTextColor(1, 1, 1, 1)
-            end)
+            if row._primed then
+                EllesmereUI.PrimeFontShadow(lbl, false)
+                row._primed = nil
+            end
+            lbl:SetFont(fontPath, size, outline)
         end
-        btn:Show()
+        row._hl:SetColorTexture(1, 1, 1, 0)
+        if row._sep then row._sep:Hide() end
+        if row._arrow then row._arrow:Hide() end
+        if row._box then row._box:Hide() end
+        if row._icon then row._icon:Hide() end
+        if row._rm then row._rm:Hide() end
+        if row._desc then row._desc:Hide() end
+        local desc = type(item) == "table" and item.desc
+        -- The label starts past the item's icon.
+        lbl:SetPoint("LEFT", row, "LEFT", look.left + ((type(item) == "table" and item.icon) and 22 or 0), desc and 6 or 0)
+        lbl:SetPoint("RIGHT", row, "RIGHT", look.right, desc and 6 or 0)
+        local h = desc and look.rowH + 10 or look.rowH
+        if item == "---" then
+            h = look.sepH
+            row._item, row._disabled = nil, true
+            lbl:SetText("")
+            CtxSep(row):Show()
+            row:EnableMouse(false)
+        else
+            row._item = item
+            lbl:SetText(item.noLoc and item.text or L(item.text or ""))
+            if desc then
+                local d = CtxDesc(row)
+                d:SetFont(fontPath, size - 2, outline)
+                d:SetPoint("TOPLEFT", lbl, "BOTTOMLEFT", 0, -3)
+                d:SetPoint("RIGHT", row, "RIGHT", look.right, 0)
+                d:SetText(desc)
+                d:SetTextColor(1, 1, 1, (item.isDisabled and item.isDisabled()) and 0.25 or 0.5)
+                d:Show()
+            end
+            if item.icon then
+                local ic = CtxIcon(row)
+                ic:SetPoint("LEFT", row, "LEFT", look.left, 0)
+                ic:SetTexture(item.icon)
+                ic:Show()
+            end
+            if item.isInput then
+                row._disabled = true
+                lbl:SetTextColor(1, 1, 1, 1)
+                row:EnableMouse(false)
+                local box = CtxBox(row, fontPath, outline)
+                box:SetNumber(item.getValue and item.getValue() or 0)
+                box:Show()
+            else
+                local disabled = item.isDisabled and item.isDisabled()
+                row._disabled = disabled
+                row:EnableMouse(true)
+                if item.children then
+                    local arrow = CtxArrow(row)
+                    arrow:SetVertexColor(1, 1, 1, disabled and 0.2 or 0.75)
+                    arrow:Show()
+                end
+                if disabled then
+                    lbl:SetTextColor(0.4, 0.4, 0.4, 0.5)
+                else
+                    CtxPaint(row, item.isActive)
+                end
+                if item.onRemove and not disabled then CtxRemove(row):Show() end
+            end
+        end
+        row:SetSize(width - pad * 2, h)
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", panel, "TOPLEFT", pad, -y)
+        row:Show()
+        y = y + h
+    end
+    panel:SetSize(width, y + pad)
+end
+
+-- Beside the row, flipped to its left when it would run off the screen.
+CtxShowSub = function(row, children)
+    local parent = row._panel
+    local sub = parent._sub
+    if not sub then
+        sub = CtxNewPanel(parent._look, parent._level + 1)
+        sub._root = CtxRoot(parent)
+        parent._sub = sub
+    end
+    -- Already showing this row's items: nothing changes while a menu is open.
+    if sub:IsShown() and sub._src == children and sub._srcRow == row then return end
+    CtxLayout(sub, children, nil, CtxRoot(parent)._fontKey)
+    sub._src, sub._srcRow = children, row
+    sub:ClearAllPoints()
+    local right, screen = row:GetRight(), UIParent:GetRight()
+    if right and screen and right + sub:GetWidth() > screen then
+        sub:SetPoint("TOPRIGHT", row, "TOPLEFT", 0, 0)
+    else
+        sub:SetPoint("TOPLEFT", row, "TOPRIGHT", 0, 0)
+    end
+    sub:Show()
+    if sub._brd then sub._brd:Fit() end
+end
+
+local function ShowContextMenu(anchor, items, opts)
+    -- Toggle: the owner's click while its own menu is open closes it.
+    if anchor and _ctxOpen and _ctxOpen._owner == anchor then
+        _ctxOpen:Hide()
+        return
+    end
+    local look = CTX_LOOKS[opts and opts.look] or CTX_LOOKS.default
+    local panel = _ctxPanels[look]
+    if not panel then
+        panel = CtxNewPanel(look, 0)
+        _ctxPanels[look] = panel
+    end
+    if _ctxOpen and _ctxOpen ~= panel then _ctxOpen:Hide() end
+    if panel._sub then panel._sub:Hide() end
+    panel._owner = anchor
+    panel._fontKey = opts and opts.fontKey
+    panel._pickOnDown = opts and opts.pickOnDown
+    -- The menu takes the anchor's effective scale (scaleToAnchor) or scale 1,
+    -- before the layout and the cursor placement; a new scale snaps its border
+    -- again. The applied scale is remembered: GetScale reads back a float32,
+    -- which most ratios never equal.
+    local menuScale = (opts and opts.scaleToAnchor and anchor)
+        and anchor:GetEffectiveScale() / UIParent:GetEffectiveScale() or 1
+    if (panel._menuScale or 1) ~= menuScale then
+        panel._menuScale = menuScale
+        panel:SetScale(menuScale)
+        if not panel._brd then EllesmereUI.PP.SetBorderSize(panel, 1) end
     end
 
-    _ctxMenu:SetSize(MENU_W, MENU_PAD * 2 + #items * ITEM_H)
+    CtxLayout(panel, items, opts and opts.minWidth, panel._fontKey)
 
-    _ctxMenu:ClearAllPoints()
+    panel:ClearAllPoints()
     if opts and opts.below and anchor then
         -- Dropdown placement: under the anchor, left edges aligned (screen
         -- clamping still applies).
-        _ctxMenu:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -2)
+        panel:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -2)
+    elseif opts and opts.above and anchor then
+        panel:SetPoint("BOTTOMRIGHT", anchor, "TOPRIGHT", 0, 0)
     else
         -- Position at cursor
-        local scale = _ctxMenu:GetEffectiveScale()
+        local scale = panel:GetEffectiveScale()
         local cx, cy = GetCursorPosition()
-        _ctxMenu:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", cx / scale, cy / scale)
+        panel:SetPoint((opts and opts.above) and "BOTTOMLEFT" or "TOPLEFT",
+            UIParent, "BOTTOMLEFT", cx / scale, cy / scale)
     end
-    _ctxMenu:Show()
+    _ctxOpen = panel
+    panel:Show()
+    -- Already shown for another owner: no OnShow, so the outline seats here.
+    if panel._brd then panel._brd:Fit() end
 
-    _ctxMenu._elapsed = 0
-    _ctxMenu:SetScript("OnUpdate", _ctxMenu._pollClickOff)
+    if opts and opts.noPoll then
+        panel:SetScript("OnUpdate", nil)   -- the owner closes it
+    else
+        panel._elapsed = 0
+        panel:SetScript("OnUpdate", CtxPoll)
+    end
 end
 
 EllesmereUI.ShowContextMenu = ShowContextMenu
+
+-- The open menu's anchor (nil when none is open or it sits at the cursor).
+function EllesmereUI.ContextMenuOwner()
+    return _ctxOpen and _ctxOpen._owner
+end
+
+function EllesmereUI.CloseContextMenu()
+    if _ctxOpen then _ctxOpen:Hide() end
+end
+
+-------------------------------------------------------------------------------
+--  Unit display names. WoW Forever characters carry a surname, which
+--  UnitName hands back as its second value (retail: the realm), and
+--  Blizzard's own frames show "First Last". Pass UnitName's two returns in:
+--      EllesmereUI.WithSurname(UnitName(unit))
+--  Retail gets the first value back unchanged. A secret name (protected
+--  content) comes back as is, first name only: it cannot be inspected or
+--  joined. Your own surname follows Blizzard's show-surname preference unless
+--  ignorePreference is set.
+--  Joined names are cached per name pair, so repaints build no strings.
+-------------------------------------------------------------------------------
+do
+    local IS_FOREVER = EllesmereUI.IS_FOREVER == true
+    local SEP = Constants and Constants.CharacterNameSeparatorConsts
+        and Constants.CharacterNameSeparatorConsts.CHARACTERNAME_SURNAME_SEPARATOR or " "
+    local joined = {}   -- [name][surname] = the display string
+
+    function EllesmereUI.WithSurname(name, surname, ignorePreference)
+        if not IS_FOREVER then return name end
+        if issecretvalue(name) or issecretvalue(surname) then return name end
+        if type(name) ~= "string" or type(surname) ~= "string" or surname == "" then return name end
+        local PI = C_PlayerInfo
+        if not ignorePreference and PI and PI.ShouldDisplaySurname and not PI.ShouldDisplaySurname() then
+            local myName, mySurname = (UnitNameUnmodified or UnitName)("player")
+            if name == myName and surname == mySurname then return name end
+        end
+        local row = joined[name]
+        if not row then row = {}; joined[name] = row end
+        local full = row[surname]
+        if not full then
+            local tail = SEP .. surname
+            -- Some units already carry it in the first value.
+            full = (name:sub(-#tail) == tail) and name or (name .. tail)
+            row[surname] = full
+        end
+        return full
+    end
+
+    -- True for your own unit on WoW Forever while Blizzard's "My Surname" (UnitSurnameOwn)
+    -- is off, when your name is your first name alone: the [name:last] and [target:last]
+    -- tags show nothing for it, so "[name:first] [name:last]" reads as the first name.
+    function EllesmereUI.OwnSurnameHidden(unit)
+        if not IS_FOREVER or not unit then return false end
+        local PI = C_PlayerInfo
+        if not (PI and PI.ShouldDisplaySurname) or PI.ShouldDisplaySurname() then return false end
+        local isMe = UnitIsUnit(unit, "player")
+        if issecretvalue(isMe) then return false end
+        return isMe == true
+    end
+
+    -- Name Format, on every client:
+    --     EllesmereUI.ShortName(name, mode)
+    -- "first" / "last" keep one word, "abbr" turns every word but the last into
+    -- an initial ("Illidan Stormrage" -> "I. Stormrage") and a number (a
+    -- Character Count) keeps that many characters. Any other mode, nil and
+    -- "full" included, keeps the whole name, as does a secret or non-string
+    -- name. Words split at spaces and at the surname separator. Each mode caches
+    -- 256 names, so repaints build no strings.
+    --     EllesmereUI.IsNameFormat(mode)
+    -- True for a mode that changes names (a module keys its own per-mode
+    -- tables on these).
+    --     EllesmereUI.Utf8Prefix(text, n)
+    -- The first n characters of a plain string, or the string itself when it
+    -- has n or fewer.
+    do
+        local floor = math.floor
+        local short = { first = {}, last = {}, abbr = {} }   -- [mode][name] = short form
+        local count = { first = 0, last = 0, abbr = 0 }
+        local sepPat = (SEP ~= " " and SEP ~= "") and SEP:gsub("%W", "%%%0") or nil
+
+        local function Utf8Prefix(text, n)
+            local bytes, i, chars = #text, 1, 0
+            while i <= bytes do
+                if chars == n then return text:sub(1, i - 1) end
+                local b = text:byte(i)
+                i = i + ((b < 128 and 1) or (b < 224 and 2) or (b < 240 and 3) or 4)
+                chars = chars + 1
+            end
+            return text
+        end
+        EllesmereUI.Utf8Prefix = Utf8Prefix
+
+        local function IsCount(mode)
+            return type(mode) == "number" and mode >= 1 and mode == floor(mode)
+        end
+        function EllesmereUI.IsNameFormat(mode)
+            return short[mode] ~= nil or IsCount(mode)
+        end
+
+        function EllesmereUI.ShortName(name, mode)
+            if issecretvalue(name) or type(name) ~= "string" then return name end
+            local cache = short[mode]
+            if not cache then
+                -- A Character Count gets its cache on first use.
+                if not IsCount(mode) then return name end
+                cache = {}
+                short[mode], count[mode] = cache, 0
+            end
+            local s = cache[name]
+            if s then return s end
+            local words = sepPat and name:gsub(sepPat, " ") or name
+            if mode == "first" then
+                s = words:match("^%s*(%S+)")
+            elseif mode == "last" then
+                s = words:match("(%S+)%s*$")
+            elseif mode == "abbr" then
+                local parts = {}
+                for word in words:gmatch("%S+") do parts[#parts + 1] = word end
+                if #parts >= 2 then
+                    for i = 1, #parts - 1 do
+                        parts[i] = Utf8Prefix(parts[i], 1) .. "."
+                    end
+                    s = table.concat(parts, " ")
+                end
+            else
+                -- No trailing space where the cut lands between two words.
+                s = Utf8Prefix(words, mode):match("^(.-)%s*$")
+            end
+            s = s or name
+            if count[mode] >= 256 then wipe(cache); count[mode] = 0 end
+            cache[name] = s
+            count[mode] = count[mode] + 1
+            return s
+        end
+
+        -- The Name Format a unit's name takes:
+        --     mode = EllesmereUI.UnitNameFormat(mode, unit)
+        -- WoW Forever: First Name and Last Name part a character's name from
+        -- its surname, so they shape players' names only; a mob's, an NPC's or
+        -- a pet's name stays whole ("Rot Hide Gnoll" never reads "Rot"). Any
+        -- other mode, and a nil unit (an options preview), comes back as given.
+        -- Retail returns every mode as given: its player names are one word,
+        -- so there these two modes only ever shorten other names.
+        function EllesmereUI.UnitNameFormat(mode, unit)
+            if IS_FOREVER and unit and (mode == "first" or mode == "last") then
+                local isPlayer = UnitIsPlayer(unit)
+                if issecretvalue(isPlayer) or not isPlayer then return nil end
+            end
+            return mode
+        end
+
+        -- The Name Format choices, for every dropdown that sets one:
+        --     values, order, getValue, setValue = EllesmereUI.NameFormatMenu(get, set, opts)
+        -- get() returns the saved value; set(v) receives "first", "last",
+        -- "full", "abbr" or a number. The Character Count entry opens a number
+        -- popup and saves the number, which the dropdown then reads as "N
+        -- Characters". A pick goes through setValue. opts (optional): onSaved
+        -- runs after a count is saved, for a control the page refresh does not
+        -- reach; enemies, for a text that can show enemy names, warns on retail
+        -- that the game keeps those whole in restricted content (a popup after
+        -- a pick, a red line in the count popup). Options pages only.
+        --     EllesmereUI.NameFormatCogRow(get, set, opts)
+        -- A settings-cog dropdown row over the same; "full" arrives as nil.
+        -- opts.label replaces the row's "Name Format", opts.tooltip shows on
+        -- its dropdown.
+        local LABELS = { first = "First Name", last = "Last Name", full = "Full Name", abbr = "Abbreviated" }
+        local ORDER = { "full", "first", "last", "abbr", "custom" }
+        local MAX_COUNT = 99
+        -- Wide enough for "Character Count" and its pencil on one line.
+        local MENU_W = 160
+        -- A saved count's label, made when a dropdown reads it.
+        local COUNT_LABEL = { __index = function(_, k)
+            if IsCount(k) then return EllesmereUI.Lf("%1$d Characters", k) end
+        end }
+        local function ParseCount(text)
+            local n = tonumber(text)
+            if n and n <= MAX_COUNT and IsCount(n) then return n end
+        end
+        local function EnemyNote()
+            return EllesmereUI.L("Enemies' names will still show their full names in restricted content (M+/Raid).")
+        end
+        function EllesmereUI.NameFormatMenu(get, set, opts)
+            local onSaved = opts and opts.onSaved
+            local warn = opts and opts.enemies and not EllesmereUI.IS_FOREVER
+            local function Edit()
+                local cur = get()
+                EllesmereUI:ShowInputPopup({
+                    title = EllesmereUI.L("Character Count"),
+                    message = EllesmereUI.L("Names show at most this many characters."),
+                    redWarning = warn and EnemyNote() or nil,
+                    placeholder = "1 - " .. MAX_COUNT,
+                    initialText = IsCount(cur) and tostring(cur) or "",
+                    numeric = true,
+                    maxLetters = #tostring(MAX_COUNT),
+                    validate = function(text)
+                        if not ParseCount(text) then
+                            return EllesmereUI.Lf("Enter a number from %1$d to %2$d.", 1, MAX_COUNT)
+                        end
+                    end,
+                    onConfirm = function(text)
+                        local n = ParseCount(text)
+                        if not n then return end
+                        set(n)
+                        if onSaved then onSaved() end
+                        EllesmereUI:RefreshPage()
+                    end,
+                })
+            end
+            local function SetValue(v)
+                local old = get()
+                set(v)
+                if warn and v ~= "full" and v ~= old then
+                    EllesmereUI:ShowConfirmPopup({ title = "Name Format", message = EnemyNote(),
+                        confirmText = "Okay", hideCancel = true })
+                end
+            end
+            local values = EllesmereUI.TextTags.MenuValues(LABELS, Edit,
+                { text = "Character Count", selected = function() return IsCount(get()) end })
+            return setmetatable(values, COUNT_LABEL), ORDER, function() return get() or "full" end, SetValue
+        end
+        EllesmereUI.NAME_FORMAT_MENU_W = MENU_W
+        function EllesmereUI.NameFormatCogRow(get, set, opts)
+            local values, order, getValue, setValue = EllesmereUI.NameFormatMenu(get,
+                function(v) set((v ~= "full") and v or nil) end, opts)
+            return { type = "dropdown", label = opts and opts.label or "Name Format",
+                tooltip = opts and opts.tooltip, values = values, order = order,
+                ddWidth = MENU_W, get = getValue, set = setValue }
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
+--  Threat % text paint (WoW Forever only; nil on retail, where no caller runs).
+--      EllesmereUI.PaintThreatPct(fs, pct, status, isTanking, colorByThreat)
+--  Pass UnitDetailedThreatSituation's first three returns. The percent can be
+--  secret and goes straight to SetFormattedText. Colour: white when
+--  colorByThreat is off; the status colour while status is readable; else the
+--  isTanking fold between the has-aggro and low-threat colours; else white.
+--  Only the plain white mode is remembered per font string (never a value).
+--      EllesmereUI.PaintThreatGap(fs, text, ahead, colorOn, aheadC, behindC)
+--  The Threat Gap text: the formatted gap in aheadC or behindC by who leads,
+--  or white while colorOn is off (the same white memory).
+-------------------------------------------------------------------------------
+if EllesmereUI.IS_FOREVER then
+    local aggR, aggG, aggB, lowR, lowG, lowB, fold
+    local white  -- [fs] = true while its last paint was plain white (weak keys)
+
+    local function PaintWhite(fs)
+        if not white then white = setmetatable({}, { __mode = "k" }) end
+        if white[fs] then return end
+        white[fs] = true
+        fs:SetTextColor(1, 1, 1)
+    end
+
+    function EllesmereUI.PaintThreatPct(fs, pct, status, isTanking, colorByThreat)
+        fs:SetFormattedText("%.0f%%", pct)
+        if not colorByThreat then return PaintWhite(fs) end
+        if type(status) == "number" and not issecretvalue(status) then
+            fs:SetTextColor(GetThreatStatusColor(status))
+        elseif type(isTanking) == "boolean" then
+            if not fold then
+                aggR, aggG, aggB = GetThreatStatusColor(3)
+                lowR, lowG, lowB = GetThreatStatusColor(0)
+                fold = C_CurveUtil.EvaluateColorValueFromBoolean
+            end
+            fs:SetTextColor(fold(isTanking, aggR, lowR), fold(isTanking, aggG, lowG), fold(isTanking, aggB, lowB))
+        else
+            return PaintWhite(fs)
+        end
+        if white and white[fs] then white[fs] = nil end
+    end
+
+    function EllesmereUI.PaintThreatGap(fs, text, ahead, colorOn, aheadC, behindC)
+        fs:SetText(text)
+        if not colorOn then return PaintWhite(fs) end
+        local c = ahead and aheadC or behindC
+        fs:SetTextColor(c.r, c.g, c.b)
+        if white and white[fs] then white[fs] = nil end
+    end
+end -- IS_FOREVER
+
+-------------------------------------------------------------------------------
+--  Controller support: ConsolePort interop and Blizzard's native gamepad
+--  pointer. This header is the one comment in the suite that names that addon;
+--  call sites say "controller cursor". The public cursor API of the addon is
+--  the only thing used (its `ConsolePort` global, looked up live on every call
+--  so load order never matters). Mouse/keyboard players pay one table lookup
+--  or one C call at an edge that already runs (open, show, click, Escape):
+--  nothing here registers an event, runs an OnUpdate or ticker, creates a
+--  frame or writes SavedVariables unless a controller signal is present or
+--  a feature follows PadConnected() through WatchPad (its three events stay
+--  registered only while a watcher exists).
+--    PadCP()                the controller UI addon's API table, or nil
+--    PadNative()            Blizzard's gamepad is the active input right now
+--    PadInUse()             PadCP() or PadNative(): the controller signal
+--    PadConnected()         gamepad support is on and a controller is
+--                           connected (not the last input: no mouse flicker)
+--    PadModeOn()            what the controller hides follow: WoW Forever's
+--                           Gamepad interface style, elsewhere PadConnected()
+--    WatchPad(owner, fn)    fn(padOn) once per burst of PadModeOn() edges
+--    UnwatchPad(owner)      stop following; the last one drops the events
+--    PadGamepadUI()         WoW Forever's Gamepad interface style is on
+--    RaiseGamePadCursor()   gamepad pointer on at a user-requested open
+--    RegisterPadFrame(f)    a NAMED, hidden window root we own joins the
+--                           controller cursor, once (never HUD frames)
+--    PadHint(f, attr, v)    controller-cursor node attribute on OUR frame
+--    PadCursorShown()       the controller cursor is on screen
+--    PadFocus(node)         move the controller cursor onto node
+--    OverlayParent()        parent for nameless screen-level overlays
+--    TrackOverlay(f)        keep the overlay layer shown while f is
+-------------------------------------------------------------------------------
+do
+    local IS_FOREVER = EllesmereUI.IS_FOREVER == true
+
+    local function PadCP()
+        local cp = _G.ConsolePort
+        if type(cp) == "table" and cp.AddInterfaceCursorFrame then return cp end
+    end
+
+    -- The active-device query Blizzard documents beside GAME_PAD_ACTIVE_CHANGED;
+    -- false while the mouse or keyboard was the last input.
+    local function PadNative()
+        return IsUsingGamepad() and C_GamePad.IsEnabled() or false
+    end
+
+    local function PadInUse()
+        return PadCP() ~= nil or PadNative()
+    end
+
+    -- Connected, not in use: gamepad support is on (the GamePadEnable CVar)
+    -- and a device reports a raw state, so touching the mouse never changes
+    -- it. Read live; a feature that follows it registers through WatchPad
+    -- below, never on the device events itself.
+    local function PadConnected()
+        if not C_GamePad.IsEnabled() then return false end
+        for _, id in ipairs(C_GamePad.GetAllDeviceIDs()) do
+            if C_GamePad.GetDeviceRawState(id) then return true end
+        end
+        return false
+    end
+
+    -- Forever's Gamepad interface style replaces the free pointer with D-pad
+    -- navigation; read live (no event), false on retail. It gates what a
+    -- controller cannot drive. A hook of ours on a Blizzard frame is no reason
+    -- to stand down under it (the style's navigation runs its entry points
+    -- securely and calls frame callbacks through securecallfunction), but a
+    -- Blizzard menu whose owner drives a gamepad binding group is never opened
+    -- from addon code there (the Minimap's tracking button).
+    local function PadGamepadUI()
+        if not IS_FOREVER then return false end
+        local style, types = C_InputInterfaceStyle, Enum.InputDeviceInterfaceType
+        return style ~= nil and types ~= nil and style.GetCurrentStyle() == types.Gamepad
+    end
+
+    -- What the controller hides (Global Settings > Gamepad) follow. On WoW
+    -- Forever its Gamepad interface style: Blizzard's own gamepad bars and cast
+    -- bar show only under it, so a controller left connected during keyboard and
+    -- mouse play hides nothing. Elsewhere a connected controller.
+    local function PadModeOn()
+        if IS_FOREVER then return PadGamepadUI() end
+        return PadConnected()
+    end
+
+    EllesmereUI.PadCP        = PadCP
+    EllesmereUI.PadNative    = PadNative
+    EllesmereUI.PadInUse     = PadInUse
+    EllesmereUI.PadConnected = PadConnected
+    EllesmereUI.PadGamepadUI = PadGamepadUI
+    EllesmereUI.PadModeOn    = PadModeOn
+
+    -- Following PadModeOn(): one shared watcher for every feature that hides
+    -- or shows something with the controller. Its frame is built at the first
+    -- WatchPad and holds its events only while at least one watcher exists:
+    -- GAME_PAD_CONNECTED / GAME_PAD_DISCONNECTED and the GamePadEnable
+    -- CVAR_UPDATE, or on WoW Forever the interface style's
+    -- INPUT_DEVICE_INTERFACE_TRANSITION (the style reads right one frame later,
+    -- when the flush runs). Edges come in bursts (a reconnect is DISCONNECTED
+    -- then CONNECTED, a second pad adds its own, the CVar can land beside them),
+    -- so a burst arms ONE flush next frame that reads PadModeOn() once and calls
+    -- every watcher's fn(padOn). WatchPad never calls fn itself: the caller
+    -- reads PadModeOn() when it starts watching. Watching again replaces fn.
+    do
+        -- The style transition, where the client knows it (an unknown event
+        -- name errors at registration).
+        local STYLE_EVENT = IS_FOREVER and not (C_EventUtils and C_EventUtils.IsEventValid
+            and not C_EventUtils.IsEventValid("INPUT_DEVICE_INTERFACE_TRANSITION"))
+            and "INPUT_DEVICE_INTERFACE_TRANSITION" or nil
+        local watchers, watchFrame, flushArmed, flushOwners
+
+        local function FlushPad()
+            flushArmed = nil
+            if next(watchers) == nil then return end
+            -- Snapshot first: a watcher may watch or unwatch while this runs.
+            local n = 0
+            for owner in pairs(watchers) do
+                n = n + 1
+                flushOwners[n] = owner
+            end
+            local on = PadModeOn()
+            -- One failing watcher must not stop the rest (or strand the
+            -- snapshot slots): report it and carry on.
+            for i = 1, n do
+                local fn = watchers[flushOwners[i]]
+                flushOwners[i] = nil
+                if fn then
+                    local ok, err = pcall(fn, on)
+                    if not ok then geterrorhandler()(err) end
+                end
+            end
+        end
+
+        local function OnPadEdge(_, event, name)
+            -- CVAR_UPDATE fires for every cvar, dozens of times at login.
+            if event == "CVAR_UPDATE" and name ~= "GamePadEnable" then return end
+            if flushArmed then return end
+            flushArmed = true
+            C_Timer.After(0, FlushPad)
+        end
+
+        function EllesmereUI.WatchPad(owner, fn)
+            if owner == nil or not fn then return end
+            if not watchFrame then
+                watchers, flushOwners = {}, {}
+                watchFrame = CreateFrame("Frame")
+                watchFrame:SetScript("OnEvent", OnPadEdge)
+            end
+            if next(watchers) == nil then
+                if IS_FOREVER then
+                    if STYLE_EVENT then watchFrame:RegisterEvent(STYLE_EVENT) end
+                else
+                    watchFrame:RegisterEvent("GAME_PAD_CONNECTED")
+                    watchFrame:RegisterEvent("GAME_PAD_DISCONNECTED")
+                    watchFrame:RegisterEvent("CVAR_UPDATE")
+                end
+            end
+            watchers[owner] = fn
+        end
+
+        function EllesmereUI.UnwatchPad(owner)
+            if not watchers or owner == nil or watchers[owner] == nil then return end
+            watchers[owner] = nil
+            if next(watchers) == nil then watchFrame:UnregisterAllEvents() end
+        end
+    end
+
+    -- Blizzard's own open-edge call (ShowUIPanel, the pause menu, single bags).
+    -- Never turned off here: Back/Escape (CloseAllWindows) owns that edge. The
+    -- controller UI addon drives the pointer itself, so it is left alone then.
+    function EllesmereUI.RaiseGamePadCursor()
+        if not CanAutoSetGamePadCursorControl(true) then return end
+        if PadCP() or PadGamepadUI() then return end
+        SetGamePadCursorControl(true)
+    end
+
+    -- Registration is remembered by name in the addon's saved data, so only
+    -- stable global names; register once, while hidden, after the frame's last
+    -- SetScript of OnShow/OnHide (the addon hooks those). Never remove one.
+    local padRoots
+    local POOL = EllesmereUI._Pool   -- the core's pool table (EllesmereUI_PixelPerfect.lua)
+    function EllesmereUI.RegisterPadFrame(f)
+        if not f or not f:GetName() then return end
+        -- The addon hooks OnShow/OnHide once, and so does the escape-close
+        -- registration (RegisterEscapeClose): on a frame of the options page pool
+        -- those scripts survive the pool's resets, with or without the addon, so
+        -- the code that dresses the frame sets them on its first dress only (dev
+        -- mode reports a later one).
+        if POOL and POOL.ExemptScripts then POOL.ExemptScripts(f, "OnShow", "OnHide") end
+        local cp = PadCP()
+        if not cp then return end
+        if not padRoots then padRoots = {} end
+        if padRoots[f] then return end
+        padRoots[f] = true
+        cp:AddInterfaceCursorFrame(f)
+    end
+
+    -- nodeignore / nodepass / nodepriority / hidekeyboard ... (v nil = true)
+    function EllesmereUI.PadHint(f, attr, v)
+        if not f or not PadCP() then return end
+        if f:IsProtected() and InCombatLockdown() then return end
+        if v == nil then v = true end
+        f:SetAttribute(attr, v)
+    end
+
+    -- A hand-built modal popup of ours (a named dimmer over its panel) joins the
+    -- controller cursor and answers controller Back from its first open with a
+    -- controller in use; until then nothing is registered or hooked. The panel
+    -- stays a blocker without being a cursor stop, closeBtn is what the
+    -- controller's cancel button presses, and onEscape (nil = hide the dimmer) is
+    -- what Back runs. Call it just before the dimmer's Show (the Cooldown
+    -- Manager's popups, the Talent Conditions picker).
+    function EllesmereUI.PadPopupOpen(dimmer, panel, closeBtn, onEscape)
+        if dimmer._padReg or not EllesmereUI.PadInUse() then return end
+        dimmer._padReg = true
+        EllesmereUI.PadHint(panel, "nodepass")
+        if closeBtn then panel.CloseButton = closeBtn end
+        EllesmereUI.RegisterEscapeClose(dimmer, { padOnly = true, onEscape = onEscape })
+    end
+
+    function EllesmereUI.PadCursorShown()
+        local cp = PadCP()
+        return (cp and cp:IsCursorActive()) and true or false
+    end
+
+    -- Only while the cursor is already on screen; a no-op otherwise.
+    function EllesmereUI.PadFocus(node)
+        local cp = PadCP()
+        if cp and node then cp:SetCursorNodeIfActive(node) end
+    end
+
+    -- Overlay layer: nameless screen-level overlays (dropdown lists, cog
+    -- popups, click-away catchers) cannot join the controller cursor, so while
+    -- the controller UI addon is loaded they hang off one named full-screen
+    -- layer that is shown exactly while one of them is. Without it the parent
+    -- is UIParent and nothing else happens. Show/Hide/SetShown are post-hooked
+    -- on the overlay (not OnShow: a child of a hidden layer never fires it, and
+    -- dropdowns SetScript their OnShow/OnHide later).
+    local layer, overlayOpen, overlayTracked
+
+    local function OverlaySync(f)
+        if f:IsShown() and f:GetParent() == layer then
+            overlayOpen[f] = true
+        else
+            overlayOpen[f] = nil
+        end
+        if next(overlayOpen) then
+            if not layer:IsShown() then layer:Show() end
+        elseif layer:IsShown() then
+            layer:Hide()
+        end
+    end
+
+    function EllesmereUI.OverlayParent()
+        if layer then return layer end
+        if not PadCP() then return UIParent end
+        layer = CreateFrame("Frame", "EllesmereUI_PadOverlayLayer", UIParent)
+        layer:SetAllPoints(UIParent)
+        layer:Hide()
+        overlayOpen, overlayTracked = {}, {}
+        EllesmereUI._overlayLayer = layer
+        EllesmereUI.RegisterPadFrame(layer)
+        return layer
+    end
+
+    -- Every frame parented to OverlayParent() must be tracked (create it
+    -- hidden, then call this after its scripts are set). No-op for any frame
+    -- not parented to the layer.
+    function EllesmereUI.TrackOverlay(f)
+        if not layer or not f or overlayTracked[f] or f:GetParent() ~= layer then return end
+        overlayTracked[f] = true
+        hooksecurefunc(f, "Show", OverlaySync)
+        hooksecurefunc(f, "Hide", OverlaySync)
+        hooksecurefunc(f, "SetShown", OverlaySync)
+        OverlaySync(f)
+    end
+end

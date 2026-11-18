@@ -3,20 +3,27 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  EUI_RaidFrames_Stock.lua
 --
 --  Blizzard Style / Classic WoW UI on the raid frames: raid and party buttons
---  (party in its "Raid Frames" layout), Friendly Boss, Extra Frames and the
---  options preview. The stock per-frame edge stands in for the EllesmereUI
---  border, the stock target and aggro highlights for the EllesmereUI target
---  and threat borders, and Classic draws the stock health/power divider.
---  Every other EllesmereUI feature is untouched.
+--  (party in its "Raid Frames" layout), Friendly Boss, Extra Frames, Pet
+--  Frames and the options preview. The stock per-frame edge stands in for
+--  the EllesmereUI border, the stock target and aggro highlights for the
+--  EllesmereUI target and threat borders, and Classic draws the stock
+--  health/power divider. Every other EllesmereUI feature is untouched.
 --
 --  Built only under a stock style (the latch, ns.RF_Style, is in the main
 --  file): the EllesmereUI look never reaches any of this. Helpers take the
 --  owner frame and `st`, the table that holds its state -- the FFD entry of a
---  header button (never a key on the button itself), or the frame itself for
---  frames this module creates (Friendly Boss, the preview). All paint is
---  event-driven through the callers' existing edges; nothing here ticks.
+--  raid or party button (never a key on the button itself), or the frame
+--  itself for the frames on the Friendly Boss visuals (Friendly Boss, the
+--  Beside Owner pets) and the preview. The one exception: the pet header's
+--  buttons are made by the pet header, yet keep this state on the frame
+--  like the rest of their Friendly Boss visuals. All paint is event-driven
+--  through the callers' existing edges; nothing here ticks.
 -------------------------------------------------------------------------------
 local _, ns = ...
+-- The options page pool's table (EllesmereUI_PixelPerfect.lua makes it; the
+-- options addon fills it in place): read through this file local, never the
+-- public slot.
+local POOL = EllesmereUI._Pool
 
 local WHITE = "Interface\\Buttons\\WHITE8X8"
 
@@ -81,6 +88,10 @@ function ns.RF_StockBuild(owner, st, power)
     if st.stockEdge or not (ns.RF_Stock and ns.RF_Stock()) then return end
     local PP = EllesmereUI.PP or EllesmereUI.PanelPP
     if not PP then return end
+    -- On the Buff / Debuff Manager preview's replica (a frame of the options
+    -- page pool, EllesmereUI_FramePool.lua) these pieces are pooled with it and
+    -- handed out again by its next build; on every other owner a plain new frame.
+    local CreateFrame = POOL.CreateFrame
     local classic = ns.RF_Classic()
     -- The edge rides the EllesmereUI base border's level (+8): above the
     -- health, absorbs and dispel overlay, under the raised hover border and
@@ -275,9 +286,11 @@ function ns.RF_SeedStock(p, styleKey)
     p.cellSpacing, p.groupSpacing = 0, 0
     if rawget(p, "partyCellSpacing") ~= nil then p.partyCellSpacing = 0 end
     -- The stock raid role art, and the stock absorb looks (Classic's with
-    -- the opacity its dropdown pairs with it).
+    -- the opacity its dropdown pairs with it; each with the Blizzard Glow
+    -- Line its pick sets: on for Default Blizz Frames, off for Classic's).
     SeedBoth(p, "roleIconStyle", "classicCircle")
     SeedBoth(p, "absorbStyle", classic and "blizzard" or "blizzardModern")
+    SeedBoth(p, "absorbGlowLine", not classic)
     if classic then SeedBoth(p, "absorbOpacity", 90) end
     SeedBoth(p, "healAbsorbStyle", classic and "blizzard" or "healBlizzModern")
 end
@@ -524,7 +537,8 @@ function ns._KitAboveFlush()
         ns._LayoutPartyFrames()
     end
 end
-function ns.RF_KitBmView(inds)
+-- noPublish: the options preview's pass, which must not re-space the live frames.
+function ns.RF_KitBmView(inds, noPublish)
     local out = {}
     local chainMode = ns.RFC_BmChainMode
     local prof = ns.db and ns.db.profile
@@ -562,7 +576,7 @@ function ns.RF_KitBmView(inds)
     end
     -- Publish the lines above the frame (the frame spacing and the Friendly
     -- Boss attach reserve them); a change relays once, above only.
-    if anyIcon ~= ns._kitAboveIcon or maxSq ~= ns._kitAboveSq then
+    if not noPublish and (anyIcon ~= ns._kitAboveIcon or maxSq ~= ns._kitAboveSq) then
         local was = ns.RF_KitAboveUnits(prof)
         ns._kitAboveIcon, ns._kitAboveSq = anyIcon, maxSq
         if mode == "ABOVE" and ns.RF_KitAboveUnits(prof) ~= was and not ns._kitAbovePending then
@@ -644,7 +658,9 @@ function ns.RF_PartyDims(s)
     local w = s.partyFrameWidth or s.frameWidth or 125
     local h = s.partyFrameHeight or s.frameHeight or 60
     local res = ns.RF_PtReserve and ns.RF_PtReserve(s, h) or 0
-    return w + res, h, s.partyCellSpacing or s.cellSpacing or 2, res
+    local spacing = s.partyCellSpacing or s.cellSpacing or 2
+    if ns.RF_CompactOn(s, true) then spacing = ns.RF_OnePixel(true) end
+    return w + res, h, spacing, res
 end
 
 -- Friendly Boss "Show in Dungeons" beside the party container under the kit:
@@ -716,7 +732,9 @@ end
 
 local function SetArt(tex, a)
     if a.atlas then
-        tex:SetAtlas(a.atlas)       -- sized by the seat pass, never useAtlasSize
+        -- The retail art on every client (WoW Forever swaps the frame's
+        -- atlas); sized by the seat pass, never useAtlasSize.
+        EllesmereUI.StockAtlas(tex, a.atlas)
     else
         tex:SetTexture(a.file)
     end
@@ -791,20 +809,18 @@ local function SetLevel(frame, lvl)
     if frame and frame:GetFrameLevel() ~= lvl then frame:SetFrameLevel(lvl) end
 end
 
--- Preview frames have no anchor closures: the kit pass places their name,
--- role and ready check itself (every refresh re-anchors them first).
+-- Preview frames have no anchor closures: the kit pass places their
+-- texts (with the settings they were painted with), role and ready check
+-- itself (every refresh re-anchors them first).
 local function PreviewSpots(f, s, g)
-    local nm = f._nameText
-    if nm and nm:IsShown() then
-        nm:SetWidth(g.name.w)
-        nm:SetHeight(0)
-        ns.RF_KitSpot(g.name, nm, f, s.nameOffsetX, s.nameOffsetY)
-        nm:SetJustifyH("LEFT"); nm:SetJustifyV(g.name.jv)
-        local txt = nm:GetText()
-        nm:SetText("")
-        nm:SetText(txt or "")
+    if f._txL then ns.RF_TextLayout(f, f._txS) end
+    if f._roleIcon then
+        ns.RF_KitSpot(g.role, f._roleIcon, f, s.roleIconOffsetX, s.roleIconOffsetY)
+        if f._roleIcon._roleText then
+            f._roleIcon._roleText:ClearAllPoints()
+            f._roleIcon._roleText:SetPoint(g.role.p, f._roleIcon, g.role.p, 0, 0)
+        end
     end
-    if f._roleIcon then ns.RF_KitSpot(g.role, f._roleIcon, f, s.roleIconOffsetX, s.roleIconOffsetY) end
     if f._readyCheck and f.kitPortrait then
         ns.RF_KitSpot(g.rc, f._readyCheck, f.kitPortrait, s.readyCheckOffsetX, s.readyCheckOffsetY)
     end
@@ -904,15 +920,16 @@ function ns.RF_KitBuild(owner, st, health, power, bdr)
     st._kitHov, st._kitSel = hov, sel
 
     -- Blizzard: the stock rounded masks and bevel, on the bars themselves
-    -- (the mana mask shapes the bar's own background too).
+    -- (the mana mask shapes the bar's own background too). The retail masks
+    -- on every client, like the art (WoW Forever redrew these names).
     if K.health.mask then
         local hm = health:CreateMaskTexture()
-        hm:SetAtlas(K.health.mask)
+        EllesmereUI.StockMask(hm, K.health.mask)
         st.kitHMask = hm
         if K.bevel then st.kitHShade = MakeBevel(health, hm) end
         if power and K.power.mask then
             local pm = power:CreateMaskTexture()
-            pm:SetAtlas(K.power.mask)
+            EllesmereUI.StockMask(pm, K.power.mask)
             st.kitPMask = pm
             local pbg = st.powerBg or st._powerBg
             if pbg then pbg:AddMaskTexture(pm) end
@@ -947,13 +964,12 @@ function ns.RF_ApplyPartyKit(owner, st, s, unit, force)
             Seat(owner, st, g)
             st.kitG, st.kitPx = g, px
             -- The spots scale with the frame: re-run what reads them.
-            if st.AnchorNameText then st.AnchorNameText() end
+            if st.AnchorTexts then st.AnchorTexts() end
             if st.AnchorRoleIcon then st.AnchorRoleIcon() end
             if st.AnchorReadyCheck then st.AnchorReadyCheck() end
-            if st.AnchorHealthText then st.AnchorHealthText() end
-            if st.AnchorHealAbsorbText then st.AnchorHealAbsorbText() end
             ns.RF_KitLeader(st, s)
-            if st._nameText and s then PreviewSpots(owner, s, g) end
+            -- A preview frame is its own state (RF_KitBuild(f, f, ...)).
+            if owner == st and s then PreviewSpots(owner, s, g) end
         end
     end
     -- Levels follow the owner (a party strata change rebuilds child levels):

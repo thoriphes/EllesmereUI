@@ -11,6 +11,12 @@ if not EllesmereUI._ModuleNS["EllesmereUIBags"] then return end  -- module disab
 -- file is LoadOnDemand and only builds the options page).
 local db = EllesmereUI._bagsDB
 
+-- Page reuse: the frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua, the options addon's first file), which hands a
+-- kept page its previous build's frames back reset to new; on any other
+-- parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
 initFrame:SetScript("OnEvent", function(self)
@@ -29,6 +35,8 @@ initFrame:SetScript("OnEvent", function(self)
                 local W = EllesmereUI.Widgets
                 local y = yOffset
                 local h, _
+                -- The Bags module namespace: its bank display resolver
+                local BagsNS = EllesmereUI._ModuleNS["EllesmereUIBags"]
 
                 local function RefreshBank()
                     local bank = _G.EUI_BankFrame
@@ -37,7 +45,7 @@ initFrame:SetScript("OnEvent", function(self)
 
                 -- Info label
                 do
-                    local fontPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("bags")) or "Fonts\\FRIZQT__.TTF"
+                    local fontPath = (EllesmereUI.GetFontPath("bags")) or "Fonts\\FRIZQT__.TTF"
                     local infoFrame = CreateFrame("Frame", nil, parent)
                     infoFrame:SetSize(parent:GetWidth(), 34)
                     infoFrame:SetPoint("TOP", parent, "TOP", 0, y - 10)
@@ -56,6 +64,34 @@ initFrame:SetScript("OnEvent", function(self)
                     line2:SetText(EllesmereUI.L("Window scale, icon zoom and item level settings are shared with the Bags page."))
                     y = y - 50
                 end
+
+                _, h = W:SectionHeader(parent, "DISPLAY", y); y = y - h
+
+                -- Bank Display: a view over bankListView + bankCompactView (List wins when both are set)
+                _, h = W:DualRow(parent, y,
+                    { type="dropdown", text="Bank Display",
+                      tooltip="How items are arranged in the bank window.",
+                      values = { grid="Grid", list="List", compact="Compact" },
+                      order  = { "grid", "list", "compact" },
+                      getValue=function() return BagsNS.BankDisplayMode(db.profile) end,
+                      setValue=function(v)
+                          if v == BagsNS.BankDisplayMode(db.profile) then return end
+                          db.profile.bankListView = (v == "list")
+                          db.profile.bankCompactView = (v == "compact")
+                          -- Bags page rows depend on this; rebuild it on next visit
+                          EllesmereUI:InvalidateModulePageCache("EllesmereUIBags")
+                          -- Hide Empty Slots When Grouped greys in List View
+                          EllesmereUI:RefreshPage()
+                          EllesmereUI:ShowConfirmPopup({
+                              title       = "Reload Required",
+                              message     = "Bank display changed. A UI reload is needed to apply.",
+                              confirmText = "Reload Now",
+                              cancelText  = "Later",
+                              reload      = true,
+                          })
+                      end },
+                    EllesmereUI.BlankRowCfg()
+                ); y = y - h
 
                 _, h = W:SectionHeader(parent, "GROUPING", y); y = y - h
 
@@ -105,16 +141,83 @@ initFrame:SetScript("OnEvent", function(self)
                     { type="toggle", text="Hide Empty Slots When Grouped",
                       tooltip="While either grouping toggle is on, drop the trailing block of empty slots so the view only shows items. Turn this off to keep the free slots visible for depositing.",
                       disabled = function()
-                          return not (db.profile.bankNestByExpansion or db.profile.bankGroupByCategory)
+                          return db.profile.bankListView == true
+                              or not (db.profile.bankNestByExpansion or db.profile.bankGroupByCategory)
                       end,
-                      disabledTooltip = "Turn on Nest by Expansion or Group by Category first; the flat view has nowhere to move empty slots to.",
+                      disabledTooltip = function()
+                          if db.profile.bankListView == true then
+                              return "The List View never shows empty slots."
+                          end
+                          return "Turn on Nest by Expansion or Group by Category first; the flat view has nowhere to move empty slots to."
+                      end,
+                      rawTooltip = true,
                       getValue=function() return db.profile.bankHideEmptyWhenNested == true end,
                       setValue=function(v)
                           db.profile.bankHideEmptyWhenNested = v and true or false
                           RefreshBank()
                       end },
-                    { type="label", text="" }
+                    EllesmereUI.BlankRowCfg()
                 ); y = y - h
+
+                -- auto deposit/withdraw (not on wow forever: no warband bank there).
+                -- account-wide, so a shared profile never moves anyone's gold
+                local AutoGold = BagsNS and BagsNS.AutoGold
+                if AutoGold then
+                    _, h = W:SectionHeader(parent, "WARBAND GOLD", y); y = y - h
+                    local goldRow
+                    goldRow, h = W:DualRow(parent, y,
+                        { type="toggle", text="Auto Deposit/Withdraw",
+                          tooltip="When you open the bank, gold moves between this character and your warband bank so the character keeps the Amount. Gold above it is deposited, and gold missing is withdrawn, as far as the warband bank holds it. Applies to all characters.",
+                          getValue=function() return AutoGold.Enabled() end,
+                          setValue=function(v)
+                              AutoGold.Set("bagAutoGold", v and true or nil)
+                              EllesmereUI:RefreshPage()
+                          end },
+                        { type="input", text="Amount", inputStyle="popup", inputJustify="CENTER", placeholder="Amount", inputWidth=110,
+                          tooltip="The gold each character keeps on hand when the bank opens. Leave it empty to move nothing.",
+                          disabled=function() return not AutoGold.Enabled() end,
+                          disabledTooltip="Turn on Auto Deposit/Withdraw first.",
+                          getValue=function()
+                              local g = AutoGold.Target()
+                              return g and tostring(g) or ""
+                          end,
+                          setValue=function(text)
+                              -- Digits only, so 5,000 and 5000g read as 5000; empty clears it.
+                              local g = tonumber((text or ""):gsub("%D", ""), 10)
+                              AutoGold.Set("bagAutoGoldAmount", g and math.min(g, 9999999) or nil)
+                          end }
+                    ); y = y - h
+                    do
+                        EllesmereUI.BuildInlineCog(goldRow._leftRegion, {
+                            title = "Auto Deposit/Withdraw",
+                            disabled = function() return not AutoGold.Enabled() end,
+                            disabledTooltip = "Auto Deposit/Withdraw",
+                            rows = {
+                                { type="toggle", label="Post Result to Chat",
+                                  tooltip="Posts a chat line with the amount each time gold is deposited or withdrawn.",
+                                  get=function() return AutoGold.ChatEnabled() end,
+                                  set=function(v) AutoGold.Set("bagAutoGoldChat", v and true or nil) end },
+                            },
+                        })
+                    end
+                end
+
+                -- offline bank. account-wide, like the data it saves
+                local Offline = BagsNS and BagsNS.Offline
+                if Offline then
+                    _, h = W:SectionHeader(parent, "OFFLINE BANK", y); y = y - h
+                    _, h = W:DualRow(parent, y,
+                        { type="toggle", text="Offline Bank",
+                          tooltip=EllesmereUI.IS_FOREVER
+                              and "Saves each character's bags and bank when you see them. Use the person button by the bags or bank title to see another character's bags or bank, and Bank in the bags sidebar for their bank, from anywhere. Applies to all characters."
+                              or "Saves each character's bags and bank, and the warband bank, when you see them. Use the person button by the bags or bank title to see another character's bags or bank, and Bank in the bags sidebar for their bank or the warband bank, from anywhere. Applies to all characters.",
+                          getValue=function() return Offline.Enabled() end,
+                          setValue=function(v) Offline.Set("bagOfflineBank", v) end },
+                        -- The item counts in tooltips that read the same saved inventories
+                        -- are switched in Blizzard Skins+ > Tooltips & Menus > Tooltip Extras.
+                        EllesmereUI.BlankRowCfg()
+                    ); y = y - h
+                end
 
                 _, h = W:Spacer(parent, y, 20); y = y - h
                 return math.abs(y)
@@ -140,177 +243,66 @@ initFrame:SetScript("OnEvent", function(self)
                 if bags.RefreshInventory then bags:RefreshInventory() end
             end
 
-            -- Reposition info label
-            do
-                local fontPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("bags")) or "Fonts\\FRIZQT__.TTF"
-                local infoFrame = CreateFrame("Frame", nil, parent)
-                infoFrame:SetSize(parent:GetWidth(), 34)
-                infoFrame:SetPoint("TOP", parent, "TOP", 0, y - 10)
-                infoFrame._isSpacer = true
-                local line1 = infoFrame:CreateFontString(nil, "OVERLAY")
-                line1:SetFont(fontPath, 15, "")
-                line1:SetTextColor(1, 1, 1, 0.75)
-                line1:SetPoint("TOP", infoFrame, "TOP", 0, 0)
-                line1:SetJustifyH("CENTER")
-                line1:SetText(EllesmereUI.L("Reposition this element with Shift+Click and Drag."))
-                local line2 = infoFrame:CreateFontString(nil, "OVERLAY")
-                line2:SetFont(fontPath, 15, "")
-                line2:SetTextColor(1, 1, 1, 0.75)
-                line2:SetPoint("TOP", line1, "BOTTOM", 0, -2)
-                line2:SetJustifyH("CENTER")
-                line2:SetText(EllesmereUI.L("Drag categories on bag sidebar to reposition, group or ungroup."))
-                y = y - 50
+            -- slot size / spacing: the sliders fire every step while dragging,
+            -- so the windows lay out once per frame at most
+            local relayoutQueued = false
+            local function Relayout()
+                relayoutQueued = false
+                ResetAndRefreshBagLayout()
+                local bank = _G.EUI_BankFrame
+                if bank and bank:IsVisible() and bank.RefreshBank then bank:RefreshBank() end
+            end
+            local function RelayoutSoon()
+                if relayoutQueued then return end
+                relayoutQueued = true
+                C_Timer.After(0, Relayout)
             end
 
-            ---------------------------------------------------------------------------
-            --  DISPLAY
-            ---------------------------------------------------------------------------
-            _, h = W:SectionHeader(parent, "DISPLAY", y); y = y - h
-
-            -- Window Scale | Icon Zoom (crops the item-icon border; applies to
-            -- bag AND bank item icons. Paired with Window Scale as both are
-            -- display-appearance sliders; no per-item size control exists.)
-            _, h = W:DualRow(parent, y,
-                { type="slider", text="Window Scale", min=50, max=150, step=5,
-                  tooltip="Scale of the bag and bank windows.",
-                  getValue=function() return math.floor((db.profile.bagScale or 1) * 100 + 0.5) end,
-                  setValue=function(v)
-                      db.profile.bagScale = v / 100
-                      local s = v / 100
-                      if _G.EUI_Bags then _G.EUI_Bags:SetScale(s) end
-                      if _G.EUI_BagsReagent then _G.EUI_BagsReagent:SetScale(s) end
-                      if _G.EUI_BagsWindow then _G.EUI_BagsWindow:SetScale(s) end
-                      if _G.EUI_Bank and _G.EUI_Bank:IsVisible() then _G.EUI_Bank:SetScale(s) end
-                  end },
-                { type="slider", text="Icon Zoom", min=0, max=0.20, step=0.01,
-                  tooltip="Crops the border of every item icon in bags and bank. 0 shows the full icon.",
-                  getValue=function() return db.profile.bagItemIconZoom or 0.08 end,
-                  setValue=function(v)
-                      db.profile.bagItemIconZoom = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshIconZoom then _G.EUI_Bags:RefreshIconZoom() end
-                      local bank = _G.EUI_BankFrame
-                      if bank and bank.RefreshIconZoom then bank:RefreshIconZoom() end
-                  end }
-            ); y = y - h
-
-            -- Hide Categories with 0 Items | Auto-Size to Fit
-            _, h = W:DualRow(parent, y,
-                { type="toggle", text="Hide Categories with 0 Items",
-                  tooltip="Hide sidebar categories that have no items in them.",
-                  getValue=function() return db.profile.bagHideEmptyCategories ~= false end,
-                  setValue=function(v)
-                      db.profile.bagHideEmptyCategories = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end },
-                { type="toggle", text="Auto-Size to Fit",
-                  tooltip="Grow the bag window (more columns + taller, keeping its shape) so all of the active tab's slots are visible without scrolling. It only grows while open -- switching to a bigger tab enlarges it, smaller tabs keep the size -- and resets when you close the bags. Never smaller than your normal size.",
-                  getValue=function() return db.profile.bagAutoSize == true end,
-                  setValue=function(v)
-                      db.profile.bagAutoSize = v
-                      ResetAndRefreshBagLayout()
-                  end }
-            ); y = y - h
-
-            -- Merge Duplicate Items | Desaturate Junk Items (display effect; moved
-            -- up from EXTRAS so no row sits half-empty)
-            _, h = W:DualRow(parent, y,
-                { type="toggle", text="Merge Duplicate Items",
-                  tooltip="Show copies of the same item that sit in separate bag slots as one icon with their counts added together. Turn this off to keep every slot separate, for example when you deliberately split stacks. Merging is always paused while the mail, trade, auction house, bank or guild bank window is open, since those take one bag slot at a time.",
-                  getValue=function() return db.profile.bagMergeDuplicates ~= false end,
-                  setValue=function(v)
-                      db.profile.bagMergeDuplicates = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end },
-                { type="toggle", text="Desaturate Junk Items",
-                  tooltip="Display junk items in a greyed-out style.",
-                  getValue=function() return db.profile.bagDesaturateJunkItems == true end,
-                  setValue=function(v)
-                      db.profile.bagDesaturateJunkItems = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end }
-            ); y = y - h
-
-            -- Split Set Gear by Set | Show Set Name on Gear (+ inline cog: Text Size)
-            local setNameRow
-            setNameRow, h = W:DualRow(parent, y,
-                { type="toggle", text="Split Set Gear by Set",
-                  tooltip="Show one sub-category per equipment set (named after the set) nested under Item Set Gear. Gear in several sets goes to the first one.",
-                  getValue=function() return db.profile.bagSplitSetGearBySet == true end,
-                  setValue=function(v)
-                      db.profile.bagSplitSetGearBySet = v
-                      -- Re-resolves the selected view by stable key (indices shift)
-                      if _G.EUI_Bags and _G.EUI_Bags.InvalidateSetCategories then
-                          _G.EUI_Bags.InvalidateSetCategories()
-                      elseif _G.EUI_CategoryManager then
-                          _G.EUI_CategoryManager:OnEquipmentSetsChanged()
-                      end
-                      if _G.EUI_Bags and _G.EUI_Bags.UpdateSetEventRegistration then _G.EUI_Bags.UpdateSetEventRegistration() end
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end },
-                { type="toggle", text="Show Set Name on Gear",
-                  tooltip="Display the equipment set's name at the bottom of bag items that belong to one of your equipment sets.",
-                  getValue=function() return db.profile.bagShowSetGearName == true end,
-                  setValue=function(v)
-                      db.profile.bagShowSetGearName = v
-                      if _G.EUI_Bags and _G.EUI_Bags.UpdateSetEventRegistration then _G.EUI_Bags.UpdateSetEventRegistration() end
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                      EllesmereUI:RefreshPage()  -- refresh the cog's disabled state
-                  end }
-            ); y = y - h
-
-            -- Inline cog (RESIZE) on Show Set Name on Gear: text size
-            if not EllesmereUI._prebuilding then
-                local _, snCogShow = EllesmereUI.BuildCogPopup({
-                    title = "Set Name Text Options",
-                    rows = {
-                        { type="slider", label="Text Size", min=7, max=14, step=1,
-                          get=function() return db.profile.bagSetNameFontSize or 9 end,
-                          set=function(v)
-                              db.profile.bagSetNameFontSize = v
-                              if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
-                          end },
-                    },
-                })
-                local rightRgn = setNameRow._rightRegion
-                local snCog = CreateFrame("Button", nil, rightRgn)
-                snCog:SetSize(26, 26)
-                snCog:SetPoint("RIGHT", rightRgn._control, "LEFT", -8, 0)
-                snCog:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
-                local snCogTex = snCog:CreateTexture(nil, "OVERLAY")
-                snCogTex:SetAllPoints()
-                snCogTex:SetTexture(EllesmereUI.RESIZE_ICON)
-                local function snCogOff() return db.profile.bagShowSetGearName ~= true end
-                snCog:SetAlpha(snCogOff() and 0.15 or 0.4)
-                snCog:SetScript("OnEnter", function(self)
-                    if snCogOff() then
-                        EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip("Show Set Name on Gear"))
-                    else self:SetAlpha(0.7) end
-                end)
-                snCog:SetScript("OnLeave", function(self)
-                    self:SetAlpha(snCogOff() and 0.15 or 0.4)
-                    EllesmereUI.HideWidgetTooltip()
-                end)
-                snCog:SetScript("OnClick", function(self)
-                    if not snCogOff() then snCogShow(self) end
-                end)
-                local snBlock = CreateFrame("Frame", nil, snCog)
-                snBlock:SetAllPoints(); snBlock:SetFrameLevel(snCog:GetFrameLevel() + 10); snBlock:EnableMouse(true)
-                snBlock:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(snCog, EllesmereUI.DisabledTooltip("Show Set Name on Gear"))
-                end)
-                snBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                if snCogOff() then snBlock:Show() else snBlock:Hide() end
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    if snCogOff() then snCog:SetAlpha(0.15); snBlock:Show()
-                    else snCog:SetAlpha(0.4); snBlock:Hide() end
-                end)
+            local BagsNS = EllesmereUI._ModuleNS["EllesmereUIBags"]
+            -- Bag Style value: "grid" | "list" | "compact" (any other saved value reads as Grid)
+            local function BagDisplayValue()
+                local m = db.profile.bagDisplayMode
+                return (m == "list" or m == "compact") and m or "grid"
             end
+            -- The Display sections are only built while the bags or the bank use
+            -- that display: Grid and Compact share one, List has its own.
+            local bagList = BagDisplayValue() == "list"
+            local anyGrid = not bagList or db.profile.bankListView ~= true
+            local anyList = bagList or db.profile.bankListView == true
+            -- Slot Size, Slot Spacing and Slot Background only draw in Grid and
+            -- Compact: they grey out while the bags and the bank both use List
+            local function NoSlotGrid()
+                return BagDisplayValue() == "list" and BagsNS.BankDisplayMode(db.profile) == "list"
+            end
+            local NO_SLOT_GRID = "This option requires the Grid or Compact display in the bags or the bank"
 
-            -- Default Bag Type | Show BoE / Warbound Text (+ inline cog: Text Size)
-            local bindRow
-            bindRow, h = W:DualRow(parent, y,
-                { type="dropdown", text="Default Bag Type",
-                  tooltip="Which view bags (and the bank) open to by default. The bank has no MultiBag view, so MultiBag opens the bank to OneBank.",
+            ---------------------------------------------------------------------------
+            --  LAYOUT
+            ---------------------------------------------------------------------------
+            _, h = W:SectionHeader(parent, "LAYOUT", y); y = y - h
+
+            -- Bag Style | Default Selected Bag | Window Scale | Frame Strata |
+            -- Slot Size | Slot Spacing | Auto-Size to Fit (not in List) |
+            -- Background Color | Background Opacity | Slot Background, two per row
+            local layoutSlots = {
+                { type="dropdown", text="Bag Style",
+                  values = { grid="Grid", list="List", compact="Compact" },
+                  order  = { "grid", "list", "compact" },
+                  getValue=function() return BagDisplayValue() end,
+                  setValue=function(v)
+                      if v == BagDisplayValue() then return end
+                      db.profile.bagDisplayMode = v
+                      EllesmereUI:RefreshPage(true)
+                      EllesmereUI:ShowConfirmPopup({
+                          title       = "Reload Required",
+                          message     = "Bag display changed. A UI reload is needed to apply.",
+                          confirmText = "Reload Now",
+                          cancelText  = "Later",
+                          reload      = true,
+                      })
+                  end },
+                { type="dropdown", text="Default Selected Bag",
+                  tooltip="Which view bags open to by default.",
                   values = { all="All Items", onebag="OneBag", multibag="MultiBag" },
                   order  = { "all", "onebag", "multibag" },
                   getValue=function()
@@ -325,148 +317,279 @@ initFrame:SetScript("OnEvent", function(self)
                       end
                       EllesmereUI:RefreshPage()
                   end },
-                { type="toggle", text="Show BoE / Warbound Text",
-                  tooltip="Display Binds on Equipped / Warbound until Equipped on equipment items in your bags and bank.",
-                  getValue=function() return db.profile.bagDisplayBindType end,
+                { type="slider", text="Window Scale", min=50, max=150, step=5,
+                  getValue=function() return math.floor((db.profile.bagScale or 1) * 100 + 0.5) end,
                   setValue=function(v)
-                      db.profile.bagDisplayBindType = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                      db.profile.bagScale = v / 100
+                      local s = v / 100
+                      if _G.EUI_Bags then _G.EUI_Bags:SetScale(s) end
+                      if _G.EUI_BagsReagent then _G.EUI_BagsReagent:SetScale(s) end
+                      if _G.EUI_BagsWindow then _G.EUI_BagsWindow:SetScale(s) end
                       local bank = _G.EUI_BankFrame
-                      if bank and bank.RefreshBank then bank:RefreshBank() end
-                      EllesmereUI:RefreshPage()  -- refresh the cog's disabled state
+                      if bank and bank:IsVisible() then bank:SetScale(s) end
+                  end },
+                -- Unset reads the retired Allow Windows Over Bags (BagFrameStrata)
+                { type="dropdown", text="Frame Strata",
+                  tooltip="Controls the order that overlapping elements display in. Set higher to show above other elements.",
+                  values = EllesmereUI.FRAME_STRATA_LABELS,
+                  order = EllesmereUI.FRAME_STRATA_ORDER_BASE,
+                  getValue=function() return BagsNS.BagFrameStrata() end,
+                  setValue=function(v)
+                      db.profile.bagFrameStrata = v
+                      if _G.EUI_Bags and _G.EUI_Bags.ApplyWindowLayering then
+                          _G.EUI_Bags:ApplyWindowLayering()
+                      end
+                  end },
+                { type="slider", text="Slot Size", min=24, max=56, step=1,
+                  tooltip="Size of each item slot in bags and bank.",
+                  disabled=NoSlotGrid, disabledTooltip=NO_SLOT_GRID,
+                  getValue=function() return db.profile.bagSlotSize or 34 end,
+                  setValue=function(v)
+                      db.profile.bagSlotSize = v
+                      RelayoutSoon()
+                  end },
+                { type="slider", text="Slot Spacing", min=0, max=12, step=1,
+                  tooltip="Space between item slots in bags and bank.",
+                  disabled=NoSlotGrid, disabledTooltip=NO_SLOT_GRID,
+                  getValue=function() return db.profile.bagSlotSpacing or 4 end,
+                  setValue=function(v)
+                      db.profile.bagSlotSpacing = v
+                      RelayoutSoon()
+                  end },
+            }
+            -- The List display has no Auto-Size to Fit (its rows take the grip-set width)
+            if not bagList then
+                layoutSlots[#layoutSlots + 1] = { type="toggle", text="Auto-Size to Fit",
+                  -- WoW Forever and the Compact display fit the content, with no normal-size floor
+                  tooltip=(EllesmereUI.IS_FOREVER or db.profile.bagDisplayMode == "compact")
+                      and "Grow the bag window (more columns + taller, keeping its shape) so all of the active tab's slots are visible without scrolling. It only grows while open -- switching to a bigger tab enlarges it, smaller tabs keep the size -- and resets when you close the bags."
+                      or "Grow the bag window (more columns + taller, keeping its shape) so all of the active tab's slots are visible without scrolling. It only grows while open -- switching to a bigger tab enlarges it, smaller tabs keep the size -- and resets when you close the bags. Never smaller than your normal size.",
+                  getValue=function() return db.profile.bagAutoSize == true end,
+                  setValue=function(v)
+                      db.profile.bagAutoSize = v
+                      ResetAndRefreshBagLayout()
+                      EllesmereUI:RefreshPage()  -- the Auto-Size cog follows it
                   end }
-            ); y = y - h
+            end
+            -- background color/opacity and slot background, same for bags and bank
+            local function ApplyBackgrounds()
+                local bags, bank = _G.EUI_Bags, _G.EUI_BankFrame
+                if bags then BagsNS.ApplyWindowBackground(bags.bg, bags.bgOverlay) end
+                if bank then BagsNS.ApplyWindowBackground(bank._bg, bank._bgOverlay) end
+            end
+            layoutSlots[#layoutSlots + 1] = { type="colorpicker", text="Background Color", hasAlpha=true,
+                tooltip="The tint over the bag and bank window backgrounds. Its opacity sets how strong the tint is.",
+                getValue=function()
+                    local c = db.profile.bagBgColor
+                    if c then return c.r, c.g, c.b, c.a or 0.25 end
+                    return 0, 0, 0, 0.25
+                end,
+                setValue=function(r, g, b, a)
+                    db.profile.bagBgColor = { r = r, g = g, b = b, a = a }
+                    ApplyBackgrounds()
+                end }
+            layoutSlots[#layoutSlots + 1] = { type="slider", text="Background Opacity", min=0, max=100, step=5,
+                tooltip="How see-through the bag and bank window backgrounds are. Items, the header and the sidebar stay as they are.",
+                getValue=function() return db.profile.bagBgOpacity or 100 end,
+                setValue=function(v)
+                    db.profile.bagBgOpacity = v
+                    ApplyBackgrounds()
+                end }
+            layoutSlots[#layoutSlots + 1] = { type="colorpicker", text="Slot Background", hasAlpha=true,
+                tooltip="The color and opacity of empty item slots in the bags and bank.",
+                disabled=NoSlotGrid, disabledTooltip=NO_SLOT_GRID,
+                getValue=function()
+                    local c = db.profile.bagSlotBgColor
+                    if c then return c.r, c.g, c.b, c.a or 1 end
+                    return 1, 1, 1, 1
+                end,
+                setValue=function(r, g, b, a)
+                    db.profile.bagSlotBgColor = { r = r, g = g, b = b, a = a }
+                    -- the picker fires every frame while dragging: retint, don't re-lay out
+                    BagsNS.RetintSlotBackgrounds()
+                end }
+            -- Each slot's half of its row, by the slot's label: the inline cogs hang on them
+            local slotRgn = {}
+            for i = 1, #layoutSlots, 2 do
+                local left, right = layoutSlots[i], layoutSlots[i + 1]
+                local row
+                row, h = W:DualRow(parent, y, left, right or EllesmereUI.BlankRowCfg()); y = y - h
+                slotRgn[left.text] = row._leftRegion
+                if right then slotRgn[right.text] = row._rightRegion end
+            end
 
-            -- Inline cog (RESIZE) on Show BoE / Warbound Text: text size
-            -- Skipped during the hidden search pre-build: that pass swaps the
-            -- widget factory for the frameless absorber, so DualRow returns a
-            -- plain table and CreateFrame/SetPoint against its regions throw.
-            -- Nothing is lost from the index -- cog popup rows are not search
-            -- entries, and the host rows were already registered by DualRow.
-            -- Same for every region-chrome block below.
-            if not EllesmereUI._prebuilding then
-                local _, btCogShow = EllesmereUI.BuildCogPopup({
-                    title = "BoE / Warbound Text Options",
+            do
+                -- Inline cog on Window Scale: Anchor to Nearest Corner, for the bag
+                -- and bank windows in every display (on unless turned off).
+                EllesmereUI.BuildInlineCog(slotRgn["Window Scale"], {
+                    title = "Window Options",
                     rows = {
-                        { type="slider", label="Text Size", min=8, max=16, step=1,
-                          get=function() return db.profile.bagBindTypeFontSize or 11 end,
+                        { type="toggle", label="Anchor to Nearest Corner",
+                          tooltip="The bag and bank windows hold the screen corner nearest them, so they grow and shrink toward it.",
+                          get=function() return db.profile.bagAnchorCorner ~= false end,
                           set=function(v)
-                              db.profile.bagBindTypeFontSize = v
-                              if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
-                              local bank = _G.EUI_BankFrame
-                              if bank and bank.RefreshTextSizes then bank:RefreshTextSizes() end
+                              db.profile.bagAnchorCorner = v and true or false
+                              BagsNS.WindowCornerChanged()
                           end },
                     },
                 })
-                local rightRgn = bindRow._rightRegion
-                local btCog = CreateFrame("Button", nil, rightRgn)
-                btCog:SetSize(26, 26)
-                btCog:SetPoint("RIGHT", rightRgn._control, "LEFT", -8, 0)
-                btCog:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
-                local btCogTex = btCog:CreateTexture(nil, "OVERLAY")
-                btCogTex:SetAllPoints()
-                btCogTex:SetTexture(EllesmereUI.RESIZE_ICON)
-                local function btCogOff() return not db.profile.bagDisplayBindType end
-                btCog:SetAlpha(btCogOff() and 0.15 or 0.4)
-                btCog:SetScript("OnEnter", function(self)
-                    if btCogOff() then
-                        EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip("Show BoE / Warbound Text"))
-                    else self:SetAlpha(0.7) end
-                end)
-                btCog:SetScript("OnLeave", function(self)
-                    self:SetAlpha(btCogOff() and 0.15 or 0.4)
-                    EllesmereUI.HideWidgetTooltip()
-                end)
-                btCog:SetScript("OnClick", function(self)
-                    if not btCogOff() then btCogShow(self) end
-                end)
-                local btBlock = CreateFrame("Frame", nil, btCog)
-                btBlock:SetAllPoints(); btBlock:SetFrameLevel(btCog:GetFrameLevel() + 10); btBlock:EnableMouse(true)
-                btBlock:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(btCog, EllesmereUI.DisabledTooltip("Show BoE / Warbound Text"))
-                end)
-                btBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                if btCogOff() then btBlock:Show() else btBlock:Hide() end
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    if btCogOff() then btCog:SetAlpha(0.15); btBlock:Show()
-                    else btCog:SetAlpha(0.4); btBlock:Hide() end
-                end)
             end
 
-            -- Category Title Size | Show Item Level (+ inline cog: Gear Track Rank)
-            local ilvlRow
-            ilvlRow, h = W:DualRow(parent, y,
-                { type="slider", text="Category Title Size", min=8, max=16, step=1,
-                  tooltip="Font size for category titles in the sidebar and content grid.",
-                  getValue=function() return db.profile.bagCatTitleSize or 11 end,
+            -- Inline cog on Auto-Size to Fit: Shrink (follow the active tab down
+            -- while open) and Max Height, the height cap as a share of the screen.
+            -- Unset keeps the built-in 95% (and, outside WoW Forever and the
+            -- Compact display, the normal-size floor); a set value wins over both.
+            local autoSizeRgn = slotRgn["Auto-Size to Fit"]
+            if autoSizeRgn then
+                EllesmereUI.BuildInlineCog(autoSizeRgn, {
+                    disabled = function() return db.profile.bagAutoSize ~= true end,
+                    disabledTooltip = "Auto-Size to Fit",
+                    title = "Auto-Size Options",
+                    rows = {
+                        { type="toggle", label="Shrink",
+                          tooltip="Also shrink the bag window while it is open, when the active tab needs less room.",
+                          get=function() return db.profile.bagAutoSizeShrink == true end,
+                          set=function(v)
+                              db.profile.bagAutoSizeShrink = v and true or nil
+                              ResetAndRefreshBagLayout()
+                          end },
+                        { type="slider", label="Max Height (% of Screen)", min=30, max=95, step=5,
+                          get=function() return db.profile.bagAutoSizeMaxPct or 95 end,
+                          set=function(v)
+                              -- the top of the range is the built-in cap: nothing saved
+                              db.profile.bagAutoSizeMaxPct = v < 95 and v or nil
+                              RelayoutSoon()  -- the slider fires every step while dragging
+                          end },
+                    },
+                })
+            end
+
+            ---------------------------------------------------------------------------
+            --  CATEGORIES
+            ---------------------------------------------------------------------------
+            _, h = W:SectionHeader(parent, "CATEGORIES", y); y = y - h
+
+            -- Show Pinned Items | Show Recent Items (each with inline cog for OneBag)
+            local pinRecRow
+            pinRecRow, h = W:DualRow(parent, y,
+                { type="toggle", text="Show Pinned Items",
+                  tooltip="Show the Pinned Items category in the sidebar and content grid.",
+                  getValue=function() return db.profile.bagShowPinnedItems ~= false end,
                   setValue=function(v)
-                      db.profile.bagCatTitleSize = v
+                      db.profile.bagShowPinnedItems = v
                       if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                      EllesmereUI:RefreshPage()
                   end },
-                { type="toggle", text="Show Item Level",
-                  tooltip="Display item levels on equipment items in the inventory.",
-                  getValue=function() return db.profile.showItemlevelInBags ~= false end,
+                { type="toggle", text="Show Recent Items",
+                  tooltip="Show the Recent Items category in the sidebar and content grid for newly acquired items.",
+                  getValue=function() return db.profile.bagShowRecentItems ~= false end,
                   setValue=function(v)
-                      db.profile.showItemlevelInBags = v
+                      db.profile.bagShowRecentItems = v
                       if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                      EllesmereUI:RefreshPage()  -- refresh the cog's disabled state
+                      EllesmereUI:RefreshPage()
                   end }
             ); y = y - h
 
-            -- Inline cog on Show Item Level (right region): Show Gear Track Rank
-            -- (gated by Show Item Level; the rank only renders when ilvl is shown).
-            if not EllesmereUI._prebuilding then
-                local _, ilCogShow = EllesmereUI.BuildCogPopup({
-                    title = "Item Level Options",
+            -- Inline cog for Show Pinned Items
+            do
+                EllesmereUI.BuildInlineCog(pinRecRow._leftRegion, {
+                    chain = false,
+                    disabled = function() return db.profile.bagShowPinnedItems == false end,
+                    disabledTooltip = "Show Pinned Items",
+                    title = "Pinned Items Options",
                     rows = {
-                        { type="toggle", label="Show Gear Track Rank",
-                          get=function() return db.profile.bagShowTrackRank or false end,
+                        { type="toggle", label="Show in OneBag/MultiBag",
+                          get=function() return db.profile.bagPinnedInOneBag ~= false end,
                           set=function(v)
-                              db.profile.bagShowTrackRank = v
+                              db.profile.bagPinnedInOneBag = v
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end },
+                        { type="toggle", label="Hide Items in Their Categories",
+                          tooltip="Pinned items show only in Pinned Items, not in their categories or Recent Items.",
+                          get=function() return db.profile.bagHidePinnedInCategories == true end,
+                          set=function(v)
+                              db.profile.bagHidePinnedInCategories = v
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end },
+                        { type="toggle", label="Dim Items in OneBag/MultiBag",
+                          tooltip="Dims pinned items in their bag slots, since they also show in Pinned Items.",
+                          disabled=function() return db.profile.bagPinnedInOneBag == false end,
+                          disabledTooltip="Show in OneBag/MultiBag",
+                          get=function() return db.profile.bagDimPinnedInOneBag == true end,
+                          set=function(v)
+                              db.profile.bagDimPinnedInOneBag = v
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end },
+                        -- Account-wide, on unless turned off: only the off state is stored.
+                        { type="toggle", label="Pins per Character",
+                          tooltip="Each character keeps its own pinned items, starting from the shared ones.",
+                          get=function() return not (EllesmereUIDB and EllesmereUIDB.bagPinsPerCharacter == false) end,
+                          set=function(v)
+                              if not EllesmereUIDB then return end
+                              if v then
+                                  EllesmereUIDB.bagPinsPerCharacter = nil
+                              else
+                                  EllesmereUIDB.bagPinsPerCharacter = false
+                              end
                               if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
                           end },
                     },
                 })
-                local rightRgn = ilvlRow._rightRegion
-                local ilCog = CreateFrame("Button", nil, rightRgn)
-                ilCog:SetSize(26, 26)
-                ilCog:SetPoint("RIGHT", rightRgn._control, "LEFT", -8, 0)
-                ilCog:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
-                local ilCogTex = ilCog:CreateTexture(nil, "OVERLAY")
-                ilCogTex:SetAllPoints()
-                ilCogTex:SetTexture(EllesmereUI.COGS_ICON)
-                local function ilCogOff() return db.profile.showItemlevelInBags == false end
-                ilCog:SetAlpha(ilCogOff() and 0.15 or 0.4)
-                ilCog:SetScript("OnEnter", function(self)
-                    if ilCogOff() then
-                        EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip("Show Item Level"))
-                    else self:SetAlpha(0.7) end
-                end)
-                ilCog:SetScript("OnLeave", function(self)
-                    self:SetAlpha(ilCogOff() and 0.15 or 0.4)
-                    EllesmereUI.HideWidgetTooltip()
-                end)
-                ilCog:SetScript("OnClick", function(self)
-                    if not ilCogOff() then ilCogShow(self) end
-                end)
-                local ilBlock = CreateFrame("Frame", nil, ilCog)
-                ilBlock:SetAllPoints(); ilBlock:SetFrameLevel(ilCog:GetFrameLevel() + 10); ilBlock:EnableMouse(true)
-                ilBlock:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(ilCog, EllesmereUI.DisabledTooltip("Show Item Level"))
-                end)
-                ilBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                if ilCogOff() then ilBlock:Show() else ilBlock:Hide() end
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    if ilCogOff() then ilCog:SetAlpha(0.15); ilBlock:Show()
-                    else ilCog:SetAlpha(0.4); ilBlock:Hide() end
-                end)
             end
 
-            -- Enabled Categories | Enabled Currencies
-            local catCurrRow
-            catCurrRow, h = W:DualRow(parent, y,
+            -- Inline cog for Show Recent Items: "Show in OneBag"
+            do
+                EllesmereUI.BuildInlineCog(pinRecRow._rightRegion, {
+                    chain = false,
+                    disabled = function() return db.profile.bagShowRecentItems == false end,
+                    disabledTooltip = "Show Recent Items",
+                    title = "Recent Items Options",
+                    rows = {
+                        { type="toggle", label="Show in OneBag/MultiBag",
+                          get=function() return db.profile.bagRecentInOneBag == true end,
+                          set=function(v)
+                              db.profile.bagRecentInOneBag = v
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end },
+                        { type="toggle", label="Show Clear Button",
+                          get=function() return db.profile.bagShowRecentClear == true end,
+                          set=function(v)
+                              db.profile.bagShowRecentClear = v
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end },
+                        { type="toggle", label="New Items Only",
+                          tooltip="Only lists items you were not already carrying. Gear, mail and trades always list.",
+                          get=function() return db.profile.bagRecentNewOnly == true end,
+                          set=function(v)
+                              db.profile.bagRecentNewOnly = v
+                              if v and _G.EUI_Bags and _G.EUI_Bags.SeedRecentCopies then _G.EUI_Bags.SeedRecentCopies() end
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end },
+                        { type="toggle", label="Show Picked-Up Amount",
+                          tooltip="Recent Items shows one entry per item, with the amount you picked up.",
+                          get=function() return db.profile.bagRecentShowGained == true end,
+                          set=function(v)
+                              db.profile.bagRecentShowGained = v
+                              -- Sums stop while off: drop them, so a later switch-on starts clean
+                              if not v and _G.EUI_Bags and _G.EUI_Bags._recentGained then wipe(_G.EUI_Bags._recentGained) end
+                              if v and _G.EUI_Bags and _G.EUI_Bags.SeedRecentCopies then _G.EUI_Bags.SeedRecentCopies() end
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end },
+                    },
+                })
+            end
+
+            -- Enabled Categories | Hide Categories with 0 Items
+            local catRow
+            catRow, h = W:DualRow(parent, y,
                 { type="label", text="Enabled Categories" },
-                { type="label", text="Enabled Currencies" }
+                { type="toggle", text="Hide Categories with 0 Items",
+                  tooltip="Hide sidebar categories that have no items in them.",
+                  getValue=function() return db.profile.bagHideEmptyCategories ~= false end,
+                  setValue=function(v)
+                      db.profile.bagHideEmptyCategories = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end }
             ); y = y - h
 
             -- Enabled Categories dropdown (left side)
@@ -475,11 +598,12 @@ initFrame:SetScript("OnEvent", function(self)
                 -- list follows split-mode toggles and set changes without a page rebuild.
                 local function BuildCatItems()
                     local catItems = {}
-                    if _G.EUI_CategoryManager then
-                        local cats = _G.EUI_CategoryManager:GetCategories()
-                        for ci, cat in ipairs(cats) do
-                            -- isEquipSet excluded: per-character keys, governed by the split toggle instead
-                            if not cat.isCatchAll and not cat.isPinned and not cat.isRecent and not cat.isReagentBag and not cat.isEquipSet then
+                    local mgr = _G.EUI_CategoryManager
+                    if mgr then
+                        -- The categories that can be turned off (the sidebar's Delete
+                        -- turns off the same default ones)
+                        for _, cat in ipairs(mgr:GetCategories()) do
+                            if mgr:CanDisableCategory(cat) then
                                 catItems[#catItems + 1] = { key = cat._defaultName, label = cat.name }
                             end
                         end
@@ -488,7 +612,7 @@ initFrame:SetScript("OnEvent", function(self)
                 end
 
                 if #BuildCatItems() > 0 then
-                    local leftRgn = catCurrRow._leftRegion
+                    local leftRgn = catRow._leftRegion
                     local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
                         leftRgn, 210, leftRgn:GetFrameLevel() + 2,
                         BuildCatItems,
@@ -517,7 +641,583 @@ initFrame:SetScript("OnEvent", function(self)
                 end
             end
 
-            -- Enabled Currencies dropdown (right side)
+            -- Hide 'Add Category' Tab | Split Set Gear by Set
+            _, h = W:DualRow(parent, y,
+                { type="toggle", text="Hide 'Add Category' Tab",
+                  tooltip="Hides the Add Category button at the bottom of the bag sidebar.",
+                  getValue=function() return db.profile.bagHideAddCategory or false end,
+                  setValue=function(v)
+                      db.profile.bagHideAddCategory = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end },
+                { type="toggle", text="Split Set Gear by Set",
+                  tooltip="Show one sub-category per equipment set (named after the set) nested under Item Set Gear. Gear in several sets goes to the first one.",
+                  getValue=function() return db.profile.bagSplitSetGearBySet == true end,
+                  setValue=function(v)
+                      db.profile.bagSplitSetGearBySet = v
+                      -- Re-resolves the selected view by stable key (indices shift)
+                      if _G.EUI_Bags and _G.EUI_Bags.InvalidateSetCategories then
+                          _G.EUI_Bags.InvalidateSetCategories()
+                      elseif _G.EUI_CategoryManager then
+                          _G.EUI_CategoryManager:OnEquipmentSetsChanged()
+                      end
+                      if _G.EUI_Bags and _G.EUI_Bags.UpdateSetEventRegistration then _G.EUI_Bags.UpdateSetEventRegistration() end
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end }
+            ); y = y - h
+
+            -- Category Title Size (also on the Fonts page) | Hide Sidebar Icons When Collapsed
+            _, h = W:DualRow(parent, y,
+                { type="slider", text="Category Title Size", min=8, max=16, step=1,
+                  tooltip="Font size for the category titles above your items.",
+                  getValue=function() return db.profile.bagCatTitleSize or 11 end,
+                  setValue=function(v)
+                      db.profile.bagCatTitleSize = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end },
+                { type="toggle", text="Hide Sidebar Icons When Collapsed",
+                  tooltip="Hides a collapsed sidebar; its expand arrow sits by the Inventory title.",
+                  getValue=function() return db.profile.bagHideSidebarIconsCollapsed == true end,
+                  setValue=function(v)
+                      db.profile.bagHideSidebarIconsCollapsed = v and true or false
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end }
+            ); y = y - h
+
+            _, h = W:DualRow(parent, y,
+                { type="toggle", text="Categorize Reagent Bag Items",
+                  tooltip="Files reagent bag items under their item categories, in All Items and on the category tabs. The Reagent Bag entry still lists the bag.",
+                  getValue=function() return db.profile.bagCategorizeReagents == true end,
+                  setValue=function(v)
+                      db.profile.bagCategorizeReagents = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end },
+                EllesmereUI.BlankRowCfg()
+            ); y = y - h
+
+            if anyGrid then
+                ---------------------------------------------------------------------------
+                --  DISPLAY (GRID / COMPACT)
+                ---------------------------------------------------------------------------
+                _, h = W:SectionHeader(parent, "DISPLAY (GRID / COMPACT)", y); y = y - h
+
+                -- Show Item Level: Never / Default Colors / Custom Colored (+ the Gear
+                -- Track Rank cog and an inline swatch left of it, live only under
+                -- Custom Colored) | Item Level Text Size. A view over the saved keys:
+                -- showItemlevelInBags (false = Never) and itemlevelUseCustomColor
+                -- (Custom Colored); viewing the page writes nothing.
+                local function IlvlMode()
+                    if db.profile.showItemlevelInBags == false then return "never" end
+                    return db.profile.itemlevelUseCustomColor and "custom" or "default"
+                end
+                local ilvlRow
+                ilvlRow, h = W:DualRow(parent, y,
+                    { type="dropdown", text="Show Item Level",
+                      tooltip="Display item levels on equipment items in the inventory, in their usual colors or in one color of your choice.",
+                      values={ never = "Never", default = "Default Colors", custom = "Custom Colored" },
+                      order={ "never", "default", "custom" },
+                      getValue=IlvlMode,
+                      setValue=function(v)
+                          local p = db.profile
+                          p.showItemlevelInBags = v ~= "never"
+                          if v ~= "never" then p.itemlevelUseCustomColor = v == "custom" end
+                          -- The first Custom Colored pick starts from white.
+                          if v == "custom" and not p.itemlevelCustomColor then
+                              p.itemlevelCustomColor = { r = 1, g = 1, b = 1 }
+                          end
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          EllesmereUI:RefreshPage()  -- the swatch's and the cog's disabled states
+                      end },
+                    { type="slider", text="Item Level Text Size", min=8, max=16, step=1,
+                      tooltip="Font size for item level numbers on equipment items.",
+                      getValue=function() return db.profile.itemlevelFontSize or 12 end,
+                      setValue=function(v)
+                          db.profile.itemlevelFontSize = v
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
+                          local bank = _G.EUI_BankFrame
+                          if bank and bank.RefreshTextSizes then bank:RefreshTextSizes() end
+                      end }
+                ); y = y - h
+
+                -- Show Item Level's inlines: the cog nearest the control (Show Gear
+                -- Track Rank, live while item levels show: the rank only renders
+                -- beside them), then the Custom Colored swatch left of it.
+                do
+                    local rgn = ilvlRow._leftRegion
+                    EllesmereUI.BuildInlineCog(rgn, {
+                        disabled = function() return db.profile.showItemlevelInBags == false end,
+                        disabledTooltip = "Show Item Level",
+                        title = "Item Level Options",
+                        rows = {
+                            { type="toggle", label="Show Gear Track Rank",
+                              get=function() return db.profile.bagShowTrackRank or false end,
+                              set=function(v)
+                                  db.profile.bagShowTrackRank = v
+                                  if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                              end },
+                        },
+                    })
+
+                    if not EllesmereUI._prebuilding then
+                        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
+                            function()
+                                local c = db.profile.itemlevelCustomColor
+                                if c then return c.r, c.g, c.b, 1 end
+                                return 1, 1, 1, 1
+                            end,
+                            function(r, g, b)
+                                db.profile.itemlevelCustomColor = { r = r, g = g, b = b }
+                                if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                            end, false, 20)
+                        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+                        rgn._lastInline = swatch
+                        local swatchBlock = CreateFrame("Frame", nil, swatch)
+                        swatchBlock:SetAllPoints()
+                        swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
+                        swatchBlock:EnableMouse(true)
+                        swatchBlock:SetScript("OnEnter", function()
+                            EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("This option requires Show Item Level to be set to Custom Colored"))
+                        end)
+                        swatchBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                        local function UpdateIlvlSwatch()
+                            local off = IlvlMode() ~= "custom"
+                            swatch:SetAlpha(off and 0.3 or 1)
+                            swatchBlock:SetShown(off)
+                        end
+                        UpdateIlvlSwatch()
+                        EllesmereUI.RegisterWidgetRefresh(UpdateIlvlSwatch)
+                        EllesmereUI.RegisterWidgetRefresh(updateSwatch)
+                    end
+                end
+
+                -- Show BoE / Warbound Text (+ inline cog: Text Size) | Item Count Text Size
+                local bindRow
+                bindRow, h = W:DualRow(parent, y,
+                    { type="toggle", text="Show BoE / Warbound Text",
+                      tooltip="Display Binds on Equipped / Warbound until Equipped on equipment items in your bags and bank.",
+                      getValue=function() return db.profile.bagDisplayBindType end,
+                      setValue=function(v)
+                          db.profile.bagDisplayBindType = v
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          local bank = _G.EUI_BankFrame
+                          if bank and bank.RefreshBank then bank:RefreshBank() end
+                          EllesmereUI:RefreshPage()  -- refresh the cog's disabled state
+                      end },
+                    { type="slider", text="Item Count Text Size", min=8, max=16, step=1,
+                      tooltip="Font size for stack counts, keystone levels, and dungeon abbreviations.",
+                      getValue=function() return db.profile.bagCountFontSize or 11 end,
+                      setValue=function(v)
+                          db.profile.bagCountFontSize = v
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
+                          local bank = _G.EUI_BankFrame
+                          if bank and bank.RefreshTextSizes then bank:RefreshTextSizes() end
+                      end }
+                ); y = y - h
+
+                -- Inline cog (RESIZE) on Show BoE / Warbound Text: text size
+                -- Skipped during the hidden search pre-build: that pass swaps the
+                -- widget factory for the frameless absorber, so DualRow returns a
+                -- plain table and CreateFrame/SetPoint against its regions throw.
+                -- Nothing is lost from the index -- cog popup rows are not search
+                -- entries, and the host rows were already registered by DualRow.
+                -- Same for every region-chrome block below.
+                do
+                    EllesmereUI.BuildInlineCog(bindRow._leftRegion, {
+                        chain = false,
+                        disabled = function() return not db.profile.bagDisplayBindType end,
+                        disabledTooltip = "Show BoE / Warbound Text",
+                        title = "BoE / Warbound Text Options",
+                        rows = {
+                            { type="slider", label="Text Size", min=8, max=16, step=1,
+                              get=function() return db.profile.bagBindTypeFontSize or 11 end,
+                              set=function(v)
+                                  db.profile.bagBindTypeFontSize = v
+                                  if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
+                                  local bank = _G.EUI_BankFrame
+                                  if bank and bank.RefreshTextSizes then bank:RefreshTextSizes() end
+                              end },
+                        },
+                    })
+                end
+
+                -- Show Set Name on Gear (+ inline cog: Text Size) | Nest by Expansion:
+                -- bags only, so not built while only the bank uses this display
+                if not bagList then
+                    local setNameRow
+                    setNameRow, h = W:DualRow(parent, y,
+                        { type="toggle", text="Show Set Name on Gear",
+                          tooltip="Display the equipment set's name at the bottom of bag items that belong to one of your equipment sets.",
+                          getValue=function() return db.profile.bagShowSetGearName == true end,
+                          setValue=function(v)
+                              db.profile.bagShowSetGearName = v
+                              if _G.EUI_Bags and _G.EUI_Bags.UpdateSetEventRegistration then _G.EUI_Bags.UpdateSetEventRegistration() end
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                              EllesmereUI:RefreshPage()  -- refresh the cog's disabled state
+                          end },
+                        { type="toggle", text="Nest by Expansion",
+                          tooltip="In the All Items bag view, show each category's items under indented expansion sub-headers (newest expansions first), even when everything in that category is from one expansion.",
+                          getValue=function() return db.profile.bagNestByExpansion == true end,
+                          setValue=function(v)
+                              db.profile.bagNestByExpansion = v and true or false
+                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          end }
+                    ); y = y - h
+
+                    -- Inline cog (RESIZE) on Show Set Name on Gear: text size
+                    do
+                        EllesmereUI.BuildInlineCog(setNameRow._leftRegion, {
+                            chain = false,
+                            disabled = function() return db.profile.bagShowSetGearName ~= true end,
+                            disabledTooltip = "Show Set Name on Gear",
+                            title = "Set Name Text Options",
+                            rows = {
+                                { type="slider", label="Text Size", min=7, max=14, step=1,
+                                  get=function() return db.profile.bagSetNameFontSize or 9 end,
+                                  set=function(v)
+                                      db.profile.bagSetNameFontSize = v
+                                      if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
+                                  end },
+                            },
+                        })
+                    end
+                end
+            end
+
+            if anyList then
+                ---------------------------------------------------------------------------
+                --  DISPLAY (LIST)
+                ---------------------------------------------------------------------------
+                _, h = W:SectionHeader(parent, "DISPLAY (LIST)", y); y = y - h
+
+                -- Left Gap | Right Gap | Row Height | Text Size | Round Icons |
+                -- Section Gold Value | Split by Type | Hide Row Stripes, two per row.
+                -- Section Gold Value and Split by Type are bags only, so they drop
+                -- out while only the bank uses the List display.
+                local listSlots = {
+                    { type="slider", text="Left Gap", min=0, max=50, step=1,
+                      tooltip="Empty space between this side of the bag and bank lists and their rows.",
+                      getValue=function() return db.profile.bagListGapL or 15 end,
+                      setValue=function(v)
+                          db.profile.bagListGapL = v
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          local bank = _G.EUI_BankFrame
+                          if bank and bank.RefreshBank then bank:RefreshBank() end
+                      end },
+                    { type="slider", text="Right Gap", min=0, max=50, step=1,
+                      tooltip="Empty space between this side of the bag and bank lists and their rows.",
+                      getValue=function() return db.profile.bagListGapR or 23 end,
+                      setValue=function(v)
+                          db.profile.bagListGapR = v
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          local bank = _G.EUI_BankFrame
+                          if bank and bank.RefreshBank then bank:RefreshBank() end
+                      end },
+                    { type="slider", text="Row Height", min=16, max=32, step=1,
+                      tooltip="Height of each row in the bag and bank lists. Icons shrink to fit short rows.",
+                      getValue=function() return db.profile.bagListRowHeight or 24 end,
+                      setValue=function(v)
+                          db.profile.bagListRowHeight = v
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          local bank = _G.EUI_BankFrame
+                          if bank and bank.RefreshBank then bank:RefreshBank() end
+                      end },
+                    -- Also on the Fonts page (List Text Size)
+                    { type="slider", text="Text Size", min=8, max=16, step=1,
+                      tooltip="Text size of the bag and bank lists.",
+                      getValue=function() return db.profile.bagListFontSize or 11 end,
+                      setValue=function(v)
+                          db.profile.bagListFontSize = v
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          local bank = _G.EUI_BankFrame
+                          if bank and bank.RefreshBank then bank:RefreshBank() end
+                      end },
+                    { type="toggle", text="Round Icons",
+                      tooltip="Show the item icons in the bag and bank lists as circles instead of squares.",
+                      getValue=function() return db.profile.bagListRoundIcons == true end,
+                      setValue=function(v)
+                          db.profile.bagListRoundIcons = v and true or false
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                          local bank = _G.EUI_BankFrame
+                          if bank and bank.RefreshBank then bank:RefreshBank() end
+                      end },
+                }
+                local splitSlot
+                if bagList then
+                    listSlots[#listSlots + 1] = { type="toggle", text="Section Gold Value",
+                      tooltip="Show the total vendor sell price of each section's items next to its count in the bag list.",
+                      getValue=function() return db.profile.bagListSectionValue == true end,
+                      setValue=function(v)
+                          db.profile.bagListSectionValue = v and true or false
+                          if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                      end }
+                    splitSlot = #listSlots + 1
+                    listSlots[splitSlot] = { type="label", text="Split by Type",
+                      tooltip="In the list, group the checked kinds of items under sub-headers by armor type, weapon type, or profession and material. Group Gear by Slot sorts the gear in its categories by slot instead." }
+                end
+                listSlots[#listSlots + 1] = { type="toggle", text="Hide Row Stripes",
+                  tooltip="Remove the shading on every other row in the bag and bank lists.",
+                  getValue=function() return db.profile.bagListHideStripes == true end,
+                  setValue=function(v)
+                      db.profile.bagListHideStripes = v and true or false
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                      local bank = _G.EUI_BankFrame
+                      if bank and bank.RefreshBank then bank:RefreshBank() end
+                  end }
+                local splitRow, splitLeft
+                for i = 1, #listSlots, 2 do
+                    local row
+                    row, h = W:DualRow(parent, y, listSlots[i], listSlots[i + 1] or EllesmereUI.BlankRowCfg()); y = y - h
+                    if splitSlot == i or splitSlot == i + 1 then splitRow, splitLeft = row, splitSlot == i end
+                end
+
+                -- Split by Type checkbox dropdown: a view over the three split toggles
+                if splitRow and not EllesmereUI._prebuilding then
+                    local splitRgn = splitLeft and splitRow._leftRegion or splitRow._rightRegion
+                    local SPLIT_TYPES = {
+                        { key = "bagListSplitArmor",       label = "Armor" },
+                        { key = "bagListSplitWeapons",     label = "Weapons" },
+                        { key = "bagListSplitProfessions", label = "Professions" },
+                    }
+                    local splitDD, splitDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                        splitRgn, 210, splitRgn:GetFrameLevel() + 2, SPLIT_TYPES,
+                        function(key) return db.profile[key] == true end,
+                        function(key, v)
+                            db.profile[key] = v and true or false
+                            if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                        end, nil, 10)
+                    PP.Point(splitDD, "RIGHT", splitRgn, "RIGHT", -20, 0)
+                    splitRgn._control = splitDD
+                    splitRgn._lastInline = nil
+                    EllesmereUI.RegisterWidgetRefresh(splitDDRefresh)
+                end
+            end
+
+            ---------------------------------------------------------------------------
+            --  EXTRAS (every display)
+            ---------------------------------------------------------------------------
+            _, h = W:SectionHeader(parent, "EXTRAS", y); y = y - h
+
+            -- Merge Duplicate Items | Group Gear by Slot (+ inline cog: Compact Slot Groups)
+            local gearRow
+            gearRow, h = W:DualRow(parent, y,
+                { type="toggle", text="Merge Duplicate Items",
+                  tooltip="Show copies of the same item in separate bag slots as one icon or row, with their counts added together. Gear is never merged, and OneBag and MultiBag always show every slot. Merging pauses while the mail, trade, auction house, vendor, bank or guild bank window is open.",
+                  getValue=function() return db.profile.bagMergeDuplicates ~= false end,
+                  setValue=function(v)
+                      db.profile.bagMergeDuplicates = v and true or false
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end },
+                { type="toggle", text="Group Gear by Slot",
+                  tooltip="In The Armory and the Weapons / Trinkets, Armor, and Item Set Gear category views, group items under equip-slot sub-headers (Head, Shoulders, Chest, Cosmetic, ...). Does not add sidebar views.",
+                  disabled=function()
+                      local dc = db.profile.bagDisabledCategories
+                      return dc and dc["Armor"] == true
+                  end,
+                  disabledTooltip="Armor",
+                  getValue=function() return db.profile.bagArmoryGroupBySlot == true end,
+                  setValue=function(v)
+                      db.profile.bagArmoryGroupBySlot = v and true or false
+                      ResetAndRefreshBagLayout()
+                      EllesmereUI:RefreshPage()
+                  end }
+            ); y = y - h
+
+            -- Inline cog for Group Gear by Slot: Compact Slot Groups. Grid display
+            -- only, so not built for any other Bag Style.
+            if BagDisplayValue() == "grid" then
+                local function SlotCogState()
+                    local dc = db.profile.bagDisabledCategories
+                    if dc and dc["Armor"] == true then return true, "Armor" end
+                    if db.profile.bagArmoryGroupBySlot ~= true then
+                        return true, "Group Gear by Slot"
+                    end
+                    return false
+                end
+                local gearRgn = gearRow._rightRegion
+                EllesmereUI.BuildInlineCog(gearRgn, {
+                    anchorTo = gearRgn._control,
+                    disabled = function() return (SlotCogState()) end,
+                    disabledTooltip = function() local _, why = SlotCogState(); return why end,
+                    title = "Armory Slot Group Options",
+                    rows = {
+                        { type="toggle", label="Compact Slot Groups",
+                          tooltip="Place smaller Armory slot groups beside each other and fill the unused end of each row with empty-slot blocks. Large groups still use full rows.",
+                          get=function() return db.profile.bagCompactArmorySlotGroups == true end,
+                          set=function(v)
+                              db.profile.bagCompactArmorySlotGroups = v and true or false
+                              ResetAndRefreshBagLayout()
+                          end },
+                    },
+                })
+            end
+
+            -- Junk Item Visuals | Quality Item Border
+            local junkRow
+            junkRow, h = W:DualRow(parent, y,
+                { type="label", text="Junk Item Visuals",
+                  tooltip="Choose how junk items look in the bags and bank." },
+                { type="toggle", text="Quality Item Border",
+                  tooltip="Draw a border in the item's quality color around item icons in the bags and bank. Round list icons have no border.",
+                  getValue=function() return db.profile.bagQualityBorder ~= false end,
+                  setValue=function(v)
+                      db.profile.bagQualityBorder = v and true or false
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                      if _G.EUI_BagsReagent and _G.EUI_BagsReagent.RefreshInventory then _G.EUI_BagsReagent:RefreshInventory() end
+                      if _G.EUI_BagsWindow and _G.EUI_BagsWindow.RefreshBags then _G.EUI_BagsWindow:RefreshBags() end
+                      local bank = _G.EUI_BankFrame
+                      if bank and bank.RefreshBank then bank:RefreshBank() end
+                  end }
+            ); y = y - h
+
+            -- Junk Item Visuals dropdown (left side). The coin badge is drawn
+            -- only by the bag window's Grid and Compact displays, so the List
+            -- display lists Desaturate alone.
+            if not EllesmereUI._prebuilding then
+                local JUNK_VISUALS = {
+                    { key = "bagDesaturateJunkItems", label = "Desaturate",
+                      tooltip = "Display junk items in a greyed-out style." },
+                }
+                if not bagList then
+                    JUNK_VISUALS[2] = { key = "bagShowJunkCoin", label = "Show Coin Icon",
+                      tooltip = "Show a coin on the corner of each junk item's icon." }
+                end
+                local junkRgn = junkRow._leftRegion
+                local junkDD, junkDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    junkRgn, 210, junkRgn:GetFrameLevel() + 2, JUNK_VISUALS,
+                    function(key) return db.profile[key] == true end,
+                    function(key, v)
+                        db.profile[key] = v and true or false
+                        if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                        local bank = _G.EUI_BankFrame
+                        if bank and bank.RefreshBank then bank:RefreshBank() end
+                    end, nil, 10)
+                PP.Point(junkDD, "RIGHT", junkRgn, "RIGHT", -20, 0)
+                junkRgn._control = junkDD
+                junkRgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(junkDDRefresh)
+            end
+
+            -- Bag Top Bar Icons (+ inline cog: Sort to Bottom) | Gold Tracking and History (+ inline cog: Show Coins)
+            local iconsRow
+            iconsRow, h = W:DualRow(parent, y,
+                { type="label", text="Bag Top Bar Icons",
+                  tooltip="Choose which icons show in the bag window's top bar; the Junk Icon is the Junk Marker." },
+                { type="toggle", text="Gold Tracking and History",
+                  tooltip="Track and display gold amounts from all your characters on hover.",
+                  getValue=function() return EllesmereUI.GetGoldLedger().IsTracking() end,
+                  setValue=function(v)
+                      EllesmereUI.GetGoldLedger().SetTracking(v)
+                      EllesmereUI:RefreshPage()  -- the Gold Tracking Options cog follows it
+                  end }
+            ); y = y - h
+
+            -- Bag Top Bar Icons dropdown (left side), its Sort Options cog to the left
+            do
+                local leftRgn = iconsRow._leftRegion
+                if not EllesmereUI._prebuilding then
+                    local TOP_BAR_ICONS = {
+                        { key = "bagShowBagsIcon", label = "Bags Icon" },
+                        { key = "bagShowJunkIcon", label = "Junk Icon" },
+                        { key = "bagShowQuickIcon", label = "Quick Actions Icon" },
+                        { key = "bagShowSortIcon", label = "Sort Icon" },
+                    }
+                    if EllesmereUI.IS_FOREVER then
+                        TOP_BAR_ICONS[#TOP_BAR_ICONS + 1] = { key = "bagShowKeyringIcon", label = "Keyring Icon" }
+                    end
+                    local iconsDD, iconsDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                        leftRgn, 210, leftRgn:GetFrameLevel() + 2, TOP_BAR_ICONS,
+                        function(key) return db.profile[key] ~= false end,
+                        function(key, v)
+                            db.profile[key] = v and true or false
+                            local bags = _G.EUI_Bags
+                            if bags and bags.SyncHeaderIcons then
+                                if key == "bagShowJunkIcon" then
+                                    -- The Junk category exists only while the Junk Marker is
+                                    -- on: rebuild the categories and re-resolve the selected
+                                    -- view by stable key
+                                    bags.InvalidateSetCategories()
+                                    bags:SyncHeaderIcons()
+                                    bags:RefreshInventory()
+                                    -- An open bank greys (or stops greying) its junk too
+                                    local bank = _G.EUI_BankFrame
+                                    if bank then bank:RefreshBank() end
+                                    -- WoW Forever's Junk Items window lists marked items only while the marker is on
+                                    _G.EUI_CategoryManager:OnJunkChanged()
+                                else
+                                    bags:SyncHeaderIcons()
+                                end
+                            end
+                            EllesmereUI:RefreshPage()  -- the Sort Options cog follows Sort Icon
+                        end, nil, 10)
+                    PP.Point(iconsDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+                    leftRgn._control = iconsDD
+                    leftRgn._lastInline = nil
+                    EllesmereUI.RegisterWidgetRefresh(iconsDDRefresh)
+                end
+
+                EllesmereUI.BuildInlineCog(leftRgn, {
+                    disabled = function() return db.profile.bagShowSortIcon == false end,
+                    disabledTooltip = "Sort Icon",
+                    title = "Sort Options",
+                    rows = {
+                        { type="toggle", label="Sort to Bottom",
+                          tooltip="Sorting normally packs your items into the first free slots, at the top of the grid. Turn this on to pack them into the last slots instead, so the empty slots end up at the top. The item order itself does not change. This affects the OneBag, MultiBag and bank views -- category views fill their own grid with no gaps, so there is nothing to move. MultiBag and the bank use Blizzard's own sorting, so while this is on it also flips Blizzard's cleanup direction; turning it back off restores the direction you had.",
+                          get=function() return db.profile.bagSortToBottom == true end,
+                          set=function(v)
+                              v = v and true or false
+                              local p = db.profile
+                              if v == (p.bagSortToBottom == true) then return end
+                              -- MultiBag and the bank sort through Blizzard, whose
+                              -- fill direction is a real game setting shared with
+                              -- their Clean Up button. Stash the player's own value
+                              -- on the way in so switching back off restores it
+                              -- instead of leaving ours behind.
+                              if C_Container.SetSortBagsRightToLeft and C_Container.GetSortBagsRightToLeft then
+                                  if v then
+                                      p.bagSortBlizzRTLWas = C_Container.GetSortBagsRightToLeft() and true or false
+                                      C_Container.SetSortBagsRightToLeft(false)
+                                  elseif p.bagSortBlizzRTLWas ~= nil then
+                                      C_Container.SetSortBagsRightToLeft(p.bagSortBlizzRTLWas)
+                                      p.bagSortBlizzRTLWas = nil
+                                  end
+                              end
+                              p.bagSortToBottom = v
+                          end },
+                    },
+                })
+
+                -- Gold Tracking and History's cog: Show Coins, the coins of the gold summary
+                EllesmereUI.BuildInlineCog(iconsRow._rightRegion, {
+                    disabled = function() return not EllesmereUI.GetGoldLedger().IsTracking() end,
+                    disabledTooltip = "Gold Tracking and History",
+                    title = "Gold Tracking Options",
+                    rows = {
+                        { type="dropdown", label="Show Coins", ddWidth=190,
+                          tooltip="The coins the gold summary shows for each character.",
+                          values={ gold="Only Gold", silver="Gold and Silver", copper="Gold, Silver and Copper" },
+                          order={ "gold", "silver", "copper" },
+                          get=function() return db.profile.bagGoldCoins end,
+                          set=function(v) db.profile.bagGoldCoins = v end },
+                    },
+                })
+            end
+
+            -- Enabled Currencies | Icon Zoom
+            local currRow
+            currRow, h = W:DualRow(parent, y,
+                { type="label", text="Enabled Currencies" },
+                { type="slider", text="Icon Zoom", min=0, max=0.20, step=0.01,
+                  tooltip="Crops the border of every item icon in bags and bank. 0 shows the full icon.",
+                  getValue=function() return db.profile.bagItemIconZoom or 0.08 end,
+                  setValue=function(v)
+                      db.profile.bagItemIconZoom = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshIconZoom then _G.EUI_Bags:RefreshIconZoom() end
+                      local bank = _G.EUI_BankFrame
+                      if bank and bank.RefreshIconZoom then bank:RefreshIconZoom() end
+                  end }
+            ); y = y - h
+
+            -- Enabled Currencies dropdown (left side)
             if not EllesmereUI._prebuilding then
                 local currencyItems = {}
                 if C_CurrencyInfo and C_CurrencyInfo.GetCurrencyListSize then
@@ -609,9 +1309,9 @@ initFrame:SetScript("OnEvent", function(self)
                 end
 
                 if #currencyItems > 0 then
-                    local rightRgn = catCurrRow._rightRegion
+                    local leftRgn = currRow._leftRegion
                     local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-                        rightRgn, 210, rightRgn:GetFrameLevel() + 2,
+                        leftRgn, 210, leftRgn:GetFrameLevel() + 2,
                         currencyItems,
                         -- Tracked currencies are per character (the module owns
                         -- the accessor and its first-use seeding; see
@@ -642,392 +1342,74 @@ initFrame:SetScript("OnEvent", function(self)
                                 end)
                             end
                         end, nil, 10, true)
-                    PP.Point(cbDD, "RIGHT", rightRgn, "RIGHT", -20, 0)
-                    rightRgn._control = cbDD
-                    rightRgn._lastInline = nil
+                    PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+                    leftRgn._control = cbDD
+                    leftRgn._lastInline = nil
                     EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
                 end
             end
 
-            -- Item Count Text Size | Item Level Text Size
+            -- Stack Splitter
             _, h = W:DualRow(parent, y,
-                { type="slider", text="Item Count Text Size", min=8, max=16, step=1,
-                  tooltip="Font size for stack counts, keystone levels, and dungeon abbreviations.",
-                  getValue=function() return db.profile.bagCountFontSize or 11 end,
-                  setValue=function(v)
-                      db.profile.bagCountFontSize = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
-                      local bank = _G.EUI_BankFrame
-                      if bank and bank.RefreshTextSizes then bank:RefreshTextSizes() end
-                  end },
-                { type="slider", text="Item Level Text Size", min=8, max=16, step=1,
-                  tooltip="Font size for item level numbers on equipment items.",
-                  getValue=function() return db.profile.itemlevelFontSize or 12 end,
-                  setValue=function(v)
-                      db.profile.itemlevelFontSize = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
-                      local bank = _G.EUI_BankFrame
-                      if bank and bank.RefreshTextSizes then bank:RefreshTextSizes() end
-                  end }
-            ); y = y - h
-
-            ---------------------------------------------------------------------------
-            --  EXTRAS
-            ---------------------------------------------------------------------------
-            _, h = W:SectionHeader(parent, "EXTRAS", y); y = y - h
-
-            -- Show Sort Icon (+ inline cog: Sort to Bottom) | Gold Tracking and History
-            local sortRow
-            sortRow, h = W:DualRow(parent, y,
-                { type="toggle", text="Show Sort Icon",
-                  tooltip="Display the sort button in the bag header.",
-                  getValue=function() return db.profile.bagShowSortIcon ~= false end,
-                  setValue=function(v)
-                      db.profile.bagShowSortIcon = v
-                      if _G.EUI_Bags and _G.EUI_Bags._sortBtn then
-                          if v then
-                              _G.EUI_Bags._sortBtn:Show()
-                              if _G.EUI_Bags._bagsBtn then
-                                  _G.EUI_Bags._bagsBtn:ClearAllPoints()
-                                  _G.EUI_Bags._bagsBtn:SetPoint("RIGHT", _G.EUI_Bags._sortBtn, "LEFT", -6, 0)
-                              end
-                          else
-                              _G.EUI_Bags._sortBtn:Hide()
-                              if _G.EUI_Bags._bagsBtn and _G.EUI_Bags._searchBox then
-                                  _G.EUI_Bags._bagsBtn:ClearAllPoints()
-                                  _G.EUI_Bags._bagsBtn:SetPoint("RIGHT", _G.EUI_Bags._searchBox, "LEFT", -13, 0)
-                              end
-                          end
-                      end
-                      EllesmereUI:RefreshPage()  -- refresh the cog's disabled state
-                  end },
-                { type="toggle", text="Gold Tracking and History",
-                  tooltip="Track and display gold amounts from all your characters on hover.",
-                  getValue=function() return db.profile.enableGoldTracking ~= false end,
-                  setValue=function(v) db.profile.enableGoldTracking = v end }
-            ); y = y - h
-
-            -- Inline cog for Show Sort Icon: "Sort to Bottom"
-            if not EllesmereUI._prebuilding then
-                local _, sortCogShow = EllesmereUI.BuildCogPopup({
-                    title = "Sort Options",
-                    rows = {
-                        { type="toggle", label="Sort to Bottom",
-                          tooltip="Sorting normally packs your items into the first free slots, at the top of the grid. Turn this on to pack them into the last slots instead, so the empty slots end up at the top. The item order itself does not change. This affects the OneBag, MultiBag and bank views -- category views fill their own grid with no gaps, so there is nothing to move. MultiBag and the bank use Blizzard's own sorting, so while this is on it also flips Blizzard's cleanup direction; turning it back off restores the direction you had.",
-                          get=function() return db.profile.bagSortToBottom == true end,
-                          set=function(v)
-                              v = v and true or false
-                              local p = db.profile
-                              if v == (p.bagSortToBottom == true) then return end
-                              -- MultiBag and the bank sort through Blizzard, whose
-                              -- fill direction is a real game setting shared with
-                              -- their Clean Up button. Stash the player's own value
-                              -- on the way in so switching back off restores it
-                              -- instead of leaving ours behind.
-                              if C_Container.SetSortBagsRightToLeft and C_Container.GetSortBagsRightToLeft then
-                                  if v then
-                                      p.bagSortBlizzRTLWas = C_Container.GetSortBagsRightToLeft() and true or false
-                                      C_Container.SetSortBagsRightToLeft(false)
-                                  elseif p.bagSortBlizzRTLWas ~= nil then
-                                      C_Container.SetSortBagsRightToLeft(p.bagSortBlizzRTLWas)
-                                      p.bagSortBlizzRTLWas = nil
-                                  end
-                              end
-                              p.bagSortToBottom = v
-                          end },
-                    },
-                })
-                local leftRgn = sortRow._leftRegion
-                local stCog = CreateFrame("Button", nil, leftRgn)
-                stCog:SetSize(26, 26)
-                stCog:SetPoint("RIGHT", leftRgn._control, "LEFT", -8, 0)
-                stCog:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-                local stCogTex = stCog:CreateTexture(nil, "OVERLAY")
-                stCogTex:SetAllPoints()
-                stCogTex:SetTexture(EllesmereUI.COGS_ICON)
-                local function stCogOff() return db.profile.bagShowSortIcon == false end
-                stCog:SetAlpha(stCogOff() and 0.15 or 0.4)
-                stCog:SetScript("OnEnter", function(self)
-                    if stCogOff() then
-                        EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip("Show Sort Icon"))
-                    else self:SetAlpha(0.7) end
-                end)
-                stCog:SetScript("OnLeave", function(self)
-                    self:SetAlpha(stCogOff() and 0.15 or 0.4)
-                    EllesmereUI.HideWidgetTooltip()
-                end)
-                stCog:SetScript("OnClick", function(self)
-                    if not stCogOff() then sortCogShow(self) end
-                end)
-                local stBlock = CreateFrame("Frame", nil, stCog)
-                stBlock:SetAllPoints(); stBlock:SetFrameLevel(stCog:GetFrameLevel() + 10); stBlock:EnableMouse(true)
-                stBlock:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(stCog, EllesmereUI.DisabledTooltip("Show Sort Icon"))
-                end)
-                stBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                if stCogOff() then stBlock:Show() else stBlock:Hide() end
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    if stCogOff() then stCog:SetAlpha(0.15); stBlock:Show()
-                    else stCog:SetAlpha(0.4); stBlock:Hide() end
-                end)
-            end
-
-            -- Show Pinned Items | Show Recent Items (each with inline cog for OneBag)
-            local pinRecRow
-            pinRecRow, h = W:DualRow(parent, y,
-                { type="toggle", text="Show Pinned Items",
-                  tooltip="Show the Pinned Items category in the sidebar and content grid.",
-                  getValue=function() return db.profile.bagShowPinnedItems ~= false end,
-                  setValue=function(v)
-                      db.profile.bagShowPinnedItems = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                      EllesmereUI:RefreshPage()
-                  end },
-                { type="toggle", text="Show Recent Items",
-                  tooltip="Show the Recent Items category in the sidebar and content grid for newly acquired items.",
-                  getValue=function() return db.profile.bagShowRecentItems ~= false end,
-                  setValue=function(v)
-                      db.profile.bagShowRecentItems = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                      EllesmereUI:RefreshPage()
-                  end }
-            ); y = y - h
-
-            -- Inline cog for Show Pinned Items: "Show in OneBag"
-            if not EllesmereUI._prebuilding then
-                local _, pinCogShow = EllesmereUI.BuildCogPopup({
-                    title = "Pinned Items Options",
-                    rows = {
-                        { type="toggle", label="Show in OneBag/MultiBag",
-                          get=function() return db.profile.bagPinnedInOneBag ~= false end,
-                          set=function(v)
-                              db.profile.bagPinnedInOneBag = v
-                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                          end },
-                    },
-                })
-                local leftRgn = pinRecRow._leftRegion
-                local pcCog = CreateFrame("Button", nil, leftRgn)
-                pcCog:SetSize(26, 26)
-                pcCog:SetPoint("RIGHT", leftRgn._control, "LEFT", -8, 0)
-                pcCog:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-                local pcCogTex = pcCog:CreateTexture(nil, "OVERLAY")
-                pcCogTex:SetAllPoints()
-                pcCogTex:SetTexture(EllesmereUI.COGS_ICON)
-                local function pcCogOff() return db.profile.bagShowPinnedItems == false end
-                pcCog:SetAlpha(pcCogOff() and 0.15 or 0.4)
-                pcCog:SetScript("OnEnter", function(self)
-                    if pcCogOff() then
-                        EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip("Show Pinned Items"))
-                    else self:SetAlpha(0.7) end
-                end)
-                pcCog:SetScript("OnLeave", function(self)
-                    self:SetAlpha(pcCogOff() and 0.15 or 0.4)
-                    EllesmereUI.HideWidgetTooltip()
-                end)
-                pcCog:SetScript("OnClick", function(self)
-                    if not pcCogOff() then pinCogShow(self) end
-                end)
-                local pcBlock = CreateFrame("Frame", nil, pcCog)
-                pcBlock:SetAllPoints(); pcBlock:SetFrameLevel(pcCog:GetFrameLevel() + 10); pcBlock:EnableMouse(true)
-                pcBlock:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(pcCog, EllesmereUI.DisabledTooltip("Show Pinned Items"))
-                end)
-                pcBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                if pcCogOff() then pcBlock:Show() else pcBlock:Hide() end
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    if pcCogOff() then pcCog:SetAlpha(0.15); pcBlock:Show()
-                    else pcCog:SetAlpha(0.4); pcBlock:Hide() end
-                end)
-            end
-
-            -- Inline cog for Show Recent Items: "Show in OneBag"
-            if not EllesmereUI._prebuilding then
-                local _, recentCogShow = EllesmereUI.BuildCogPopup({
-                    title = "Recent Items Options",
-                    rows = {
-                        { type="toggle", label="Show in OneBag/MultiBag",
-                          get=function() return db.profile.bagRecentInOneBag == true end,
-                          set=function(v)
-                              db.profile.bagRecentInOneBag = v
-                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                          end },
-                        { type="toggle", label="Show Clear Button",
-                          get=function() return db.profile.bagShowRecentClear == true end,
-                          set=function(v)
-                              db.profile.bagShowRecentClear = v
-                              if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                          end },
-                    },
-                })
-                local rightRgn = pinRecRow._rightRegion
-                local rcCog = CreateFrame("Button", nil, rightRgn)
-                rcCog:SetSize(26, 26)
-                rcCog:SetPoint("RIGHT", rightRgn._control, "LEFT", -8, 0)
-                rcCog:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
-                local rcCogTex = rcCog:CreateTexture(nil, "OVERLAY")
-                rcCogTex:SetAllPoints()
-                rcCogTex:SetTexture(EllesmereUI.COGS_ICON)
-                local function rcCogOff() return db.profile.bagShowRecentItems == false end
-                rcCog:SetAlpha(rcCogOff() and 0.15 or 0.4)
-                rcCog:SetScript("OnEnter", function(self)
-                    if rcCogOff() then
-                        EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip("Show Recent Items"))
-                    else self:SetAlpha(0.7) end
-                end)
-                rcCog:SetScript("OnLeave", function(self)
-                    self:SetAlpha(rcCogOff() and 0.15 or 0.4)
-                    EllesmereUI.HideWidgetTooltip()
-                end)
-                rcCog:SetScript("OnClick", function(self)
-                    if not rcCogOff() then recentCogShow(self) end
-                end)
-                local rcBlock = CreateFrame("Frame", nil, rcCog)
-                rcBlock:SetAllPoints(); rcBlock:SetFrameLevel(rcCog:GetFrameLevel() + 10); rcBlock:EnableMouse(true)
-                rcBlock:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(rcCog, EllesmereUI.DisabledTooltip("Show Recent Items"))
-                end)
-                rcBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                if rcCogOff() then rcBlock:Show() else rcBlock:Hide() end
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    if rcCogOff() then rcCog:SetAlpha(0.15); rcBlock:Show()
-                    else rcCog:SetAlpha(0.4); rcBlock:Hide() end
-                end)
-            end
-
-            -- Show Pinned & Recent Tips | Hide 'Add Category' Tab
-            _, h = W:DualRow(parent, y,
-                { type="toggle", text="Show Pinned & Recent Tips",
-                  tooltip="Show helpful tip text on Pinned Items and Recent Items category headers.",
-                  getValue=function() return db.profile.bagShowPinRecentTips ~= false end,
-                  setValue=function(v)
-                      db.profile.bagShowPinRecentTips = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end },
-                { type="toggle", text="Hide 'Add Category' Tab",
-                  tooltip="Hides the Add Category button at the bottom of the bag sidebar.",
-                  getValue=function() return db.profile.bagHideAddCategory or false end,
-                  setValue=function(v)
-                      db.profile.bagHideAddCategory = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end }
-            ); y = y - h
-
-            -- Move Bags Without Shift | Nest by Expansion
-            _, h = W:DualRow(parent, y,
-                { type="toggle", text="Move Bags Without Shift",
-                  tooltip="When enabled, left-click dragging the bag window will move it without needing to hold Shift.",
-                  getValue=function() return db.profile.bagMoveNoShift or false end,
-                  setValue=function(v)
-                      db.profile.bagMoveNoShift = v
-                  end },
-                { type="toggle", text="Nest by Expansion",
-                  tooltip="In the All Items bag view, show each category's items under indented expansion sub-headers (newest expansions first), even when everything in that category is from one expansion.",
-                  getValue=function() return db.profile.bagNestByExpansion == true end,
-                  setValue=function(v)
-                      db.profile.bagNestByExpansion = v and true or false
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end }
-            ); y = y - h
-
-            -- Hide OneBag Warning | Hide Randomize Button
-            _, h = W:DualRow(parent, y,
-                { type="toggle", text="Hide OneBag/MultiBag Warning",
-                  tooltip="Hide the warning text at the top of the OneBag and MultiBag views.",
-                  getValue=function() return db.profile.bagHideOneBagWarning == true end,
-                  setValue=function(v)
-                      db.profile.bagHideOneBagWarning = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end },
-                { type="toggle", text="Hide OneBag Randomize Button",
-                  tooltip="Hide the randomize (dice) button in the OneBag view.",
-                  getValue=function() return db.profile.bagHideRandomize == true end,
-                  setValue=function(v)
-                      db.profile.bagHideRandomize = v
-                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
-                  end }
-            ); y = y - h
-
-            -- Group Armory by Slot (+ inline cog: Compact Slot Groups)
-            local armoryRow
-            armoryRow, h = W:DualRow(parent, y,
-                { type="toggle", text="Group Armory by Slot",
-                  tooltip="In The Armory and the Weapons / Trinkets, Armor, and Item Set Gear category views, group items under equip-slot sub-headers (Head, Shoulders, Chest, Cosmetic, ...). Does not add sidebar views.",
-                  disabled=function()
-                      local dc = db.profile.bagDisabledCategories
-                      return dc and dc["Armor"] == true
-                  end,
-                  disabledTooltip="Armor",
-                  getValue=function() return db.profile.bagArmoryGroupBySlot == true end,
-                  setValue=function(v)
-                      db.profile.bagArmoryGroupBySlot = v and true or false
-                      ResetAndRefreshBagLayout()
-                      EllesmereUI:RefreshPage()
-                  end },
                 { type="toggle", text="Stack Splitter",
                   tooltip="Also use the split dialog with Auto Split in OneBag, MultiBag, the reagent bag, the bank and the guild bank, replacing Blizzard's split popup there. All Items and category views always use it.",
                   getValue=function() return db.profile.bagStackSplitter == true end,
-                  setValue=function(v) db.profile.bagStackSplitter = v and true or false end }
+                  setValue=function(v) db.profile.bagStackSplitter = v and true or false end },
+                { type="toggle", text="Open Bags with Character Window",
+                  tooltip="The bags automatically open when the character window is opened and close again when the character window is closed.",
+                  getValue=function() return db.profile.bagOpenWithCharacter == true end,
+                  setValue=function(v)
+                      db.profile.bagOpenWithCharacter = v and true or false
+                      BagsNS.ToggleBagsWithCharacterFrame()
+                  end }
             ); y = y - h
 
-            -- Inline cog for Group Armory by Slot: compact layout
-            if not EllesmereUI._prebuilding then
-                local _, armoryCogShow = EllesmereUI.BuildCogPopup({
-                    title = "Armory Slot Group Options",
-                    rows = {
-                        { type="toggle", label="Compact Slot Groups",
-                          tooltip="Place smaller Armory slot groups beside each other and fill the unused end of each row with empty-slot blocks. Large groups still use full rows.",
-                          get=function() return db.profile.bagCompactArmorySlotGroups == true end,
-                          set=function(v)
-                              db.profile.bagCompactArmorySlotGroups = v and true or false
-                              ResetAndRefreshBagLayout()
-                          end },
-                    },
-                })
-                local leftRgn = armoryRow._leftRegion
-                local armoryCog = CreateFrame("Button", nil, leftRgn)
-                armoryCog:SetSize(26, 26)
-                armoryCog:SetPoint("RIGHT", leftRgn._control, "LEFT", -8, 0)
-                leftRgn._lastInline = armoryCog
-                armoryCog:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-                local armoryCogTex = armoryCog:CreateTexture(nil, "OVERLAY")
-                armoryCogTex:SetAllPoints()
-                armoryCogTex:SetTexture(EllesmereUI.COGS_ICON)
-                local function ArmoryCogState()
-                    local dc = db.profile.bagDisabledCategories
-                    if dc and dc["Armor"] == true then return true, "Armor" end
-                    if db.profile.bagArmoryGroupBySlot ~= true then
-                        return true, "Group Armory by Slot"
-                    end
-                    return false
-                end
-                armoryCog:SetAlpha(ArmoryCogState() and 0.15 or 0.4)
-                armoryCog:SetScript("OnEnter", function(self)
-                    local off, reason = ArmoryCogState()
-                    if off then
-                        EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip(reason))
-                    else self:SetAlpha(0.7) end
-                end)
-                armoryCog:SetScript("OnLeave", function(self)
-                    self:SetAlpha(ArmoryCogState() and 0.15 or 0.4)
-                    EllesmereUI.HideWidgetTooltip()
-                end)
-                armoryCog:SetScript("OnClick", function(self)
-                    if not ArmoryCogState() then armoryCogShow(self) end
-                end)
-                local armoryBlock = CreateFrame("Frame", nil, armoryCog)
-                armoryBlock:SetAllPoints(); armoryBlock:SetFrameLevel(armoryCog:GetFrameLevel() + 10); armoryBlock:EnableMouse(true)
-                armoryBlock:SetScript("OnEnter", function()
-                    local _, reason = ArmoryCogState()
-                    EllesmereUI.ShowWidgetTooltip(armoryCog, EllesmereUI.DisabledTooltip(reason))
-                end)
-                armoryBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                if ArmoryCogState() then armoryBlock:Show() else armoryBlock:Hide() end
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    if ArmoryCogState() then armoryCog:SetAlpha(0.15); armoryBlock:Show()
-                    else armoryCog:SetAlpha(0.4); armoryBlock:Hide() end
-                end)
+            -- Auto Open Bags | Auto Close Bags: absent or true = selected
+            local autoRow
+            autoRow, h = W:DualRow(parent, y,
+                { type="label", text="Auto Open Bags" },
+                { type="label", text="Auto Close Bags" }
+            ); y = y - h
+            local function AutoWindowsDropdown(rgn, setting)
+                local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    rgn, 210, rgn:GetFrameLevel() + 2,
+                    BagsNS.BAG_AUTO_WINDOWS,
+                    function(key) return BagsNS.BagAutoWindowOn(setting, key) end,
+                    function(key, v)
+                        local t = db.profile[setting]
+                        if not t then t = {}; db.profile[setting] = t end
+                        if v then t[key] = nil else t[key] = false end
+                    end)
+                PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+                rgn._control = cbDD
+                rgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
             end
+            AutoWindowsDropdown(autoRow._leftRegion, "bagAutoOpenWindows")
+            AutoWindowsDropdown(autoRow._rightRegion, "bagAutoCloseWindows")
+
+            -- Slot Count Format | Separate Reagent Slots
+            _, h = W:DualRow(parent, y,
+                { type="dropdown", text="Slot Count Format",
+                  tooltip="Show used or free inventory slots.",
+                  values={ used_total="Used / Total", free_total="Free / Total", free="Free" },
+                  order={ "used_total", "free_total", "free" },
+                  getValue=function()
+                      local v = db.profile.bagSlotCountFormat
+                      return (v == "free_total" or v == "free") and v or "used_total"
+                  end,
+                  setValue=function(v)
+                      db.profile.bagSlotCountFormat = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end },
+                EllesmereUI.IS_FOREVER and EllesmereUI.BlankRowCfg() or { type="toggle", text="Separate Reagent Slots",
+                  tooltip="Show reagent bag slots on a separate line.",
+                  getValue=function() return db.profile.bagSeparateReagentSlots == true end,
+                  setValue=function(v)
+                      db.profile.bagSeparateReagentSlots = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end }
+            ); y = y - h
 
             _, h = W:Spacer(parent, y, 20); y = y - h
             return math.abs(y)
@@ -1045,14 +1427,39 @@ initFrame:SetScript("OnEvent", function(self)
                     EllesmereUI.Lite.DeepMergeDefaults(p, bdb._profileDefaults)
                 end
             end
+            if _G.EUI_Bags and _G.EUI_Bags.ApplyWindowLayering then
+                _G.EUI_Bags:ApplyWindowLayering()
+            end
             -- Wipe per-character data from root DB
             if EllesmereUIDB then
                 EllesmereUIDB.bagPinnedItems = nil
+                EllesmereUI.ClearCharField("bagPinned")
+                EllesmereUIDB.bagPinsPerCharacter = nil
                 EllesmereUIDB.bagItemAssignments = nil
+                EllesmereUIDB.bagJunkPrev = nil
+                -- Legacy gold stores: they stay on disk until a gold module loads and absorbs them.
                 EllesmereUIDB.characterGold = nil
+                EllesmereUIDB.dataBarsGold = nil
                 EllesmereUIDB.warbandGold = nil
-                EllesmereUIDB.bagCurrencyByChar = nil
+                EllesmereUI.ClearCharField("bagCurrency")
+                -- offline bank: its switches and every saved inventory (the tooltip
+                -- counts' row stands on the Blizzard Skins+ page; the saved
+                -- inventories they read are this module's, so this reset ends them too)
+                EllesmereUIDB.bagOfflineBank = nil
+                EllesmereUIDB.bagTooltipCounts = nil
+                -- auto deposit/withdraw
+                EllesmereUIDB.bagAutoGold = nil
+                EllesmereUIDB.bagAutoGoldAmount = nil
+                EllesmereUIDB.bagAutoGoldChat = nil
             end
+            local bagsNS = EllesmereUI._ModuleNS and EllesmereUI._ModuleNS["EllesmereUIBags"]
+            local Offline = bagsNS and bagsNS.Offline
+            if Offline then
+                Offline.Wipe()
+                Offline.Sync()
+                Offline.SyncButton()
+            end
+            if bagsNS and bagsNS.AutoGold then bagsNS.AutoGold.Sync() end
             EllesmereUI:InvalidatePageCache()
         end,
     })

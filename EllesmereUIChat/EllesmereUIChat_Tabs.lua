@@ -60,9 +60,17 @@ local CLASSIC_TAB_H    = 32
 local CLASSIC_CLIP_UP  = CLASSIC_TAB_H - 26   -- the dock manager is 26 tall
 local CLASSIC_LABEL_Y  = -5                   -- the sheet's label seat
 local CLASSIC_IDLE_A   = 0.75                 -- an unselected tab's art
+-- WoW Forever: ghosts wear the kit's bronze tab (EllesmereUIChat_Forever.lua)
+-- at their own height, the strip's clip raised to fit it like Classic's.
+local function FvTabs() return ns.ChatForever and ns.ChatForever() end
+local FV_TAB_H   = 28
+local FV_CLIP_UP = FV_TAB_H - 26
+local FV_LABEL_Y = -2
+local FV_LABEL_Y_HEAVY = -1   -- Border Style Heavy Bronze: the heavy tab's label seat
 
 local function TabHeight()
     if ClassicTabs() then return CLASSIC_TAB_H end
+    if FvTabs() then return FV_TAB_H end
     return DB().tabHeight or 24
 end
 
@@ -70,9 +78,9 @@ local function TabFontPath()
     local cfg = DB()
     local fontKey = cfg.tabFont or "__global"
     if fontKey == "__global" then
-        return (EUI.GetFontPath and EUI.GetFontPath("chat")) or STANDARD_TEXT_FONT
+        return (EUI.GetFontPath("chat")) or STANDARD_TEXT_FONT
     end
-    return (EUI.ResolveFontName and EUI.ResolveFontName(fontKey)) or STANDARD_TEXT_FONT
+    return (EUI.ResolveFontName(fontKey)) or STANDARD_TEXT_FONT
 end
 
 -- Outline flag for the tab labels: the chat module's own resolver first (the Chat
@@ -80,7 +88,7 @@ end
 -- then the module font entry, then none.
 local function TabFontFlag()
     return (ECHAT.GetOutlineFlag and ECHAT.GetOutlineFlag())
-        or (EUI.GetFontOutlineFlag and EUI.GetFontOutlineFlag("chat")) or ""
+        or (EUI.GetFontOutlineFlag("chat")) or ""
 end
 
 -- Resolve a color table honoring the shared custom/accent/class mode keys.
@@ -161,6 +169,11 @@ local floatGhosts = {} -- per-window-id ghosts for undocked windows
 local lcaLib
 local function TabAlerting(tab)
     if tab.alerting then return true end
+    -- Retail since 12.1.5 and WoW Forever keep the alert state off the tab,
+    -- so a tainted message filter cannot taint it, and never write
+    -- tab.alerting: ChatFrameUtil.IsTabAlerting is its reader there.
+    local util = ChatFrameUtil
+    if util and util.IsTabAlerting and util.IsTabAlerting(tab) then return true end
     lcaLib = lcaLib or (LibStub and LibStub("LibChatAnims", true))
     return lcaLib and lcaLib:IsAlerting(tab) and true or false
 end
@@ -296,8 +309,9 @@ end
 --  path ever touches an art texture's alpha slot.
 -------------------------------------------------------------------------------
 local function SuppressTabRegions(tab)
-    for i = 1, select("#", tab:GetRegions()) do
-        local region = select(i, tab:GetRegions())
+    local regions = { tab:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         -- GetAlpha reads secret on chat-roleset widgets in lockdown; a
         -- secret skips the compare and re-asserts.
         local a = region and region.SetAlpha and region:GetAlpha()
@@ -316,8 +330,9 @@ end
 -- chat is hidden) and skips every tab with nothing recorded.
 local stockTabRegionsOff = setmetatable({}, { __mode = "k" })
 local function StockHideTabRegions(tab)
-    for i = 1, select("#", tab:GetRegions()) do
-        local region = select(i, tab:GetRegions())
+    local regions = { tab:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         local a = region and region.SetAlpha and region:GetAlpha()
         if a and not stockTabRegionsOff[region]
             and ((issecretvalue and issecretvalue(a)) or a ~= 0) then
@@ -331,8 +346,9 @@ local function StockRestoreTabRegions(tab)
     local d = CFD(tab)
     if not d.stockRegionsOff then return end
     d.stockRegionsOff = nil
-    for i = 1, select("#", tab:GetRegions()) do
-        local region = select(i, tab:GetRegions())
+    local regions = { tab:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and stockTabRegionsOff[region] then
             stockTabRegionsOff[region] = nil
             region:SetAlpha(1)
@@ -398,6 +414,13 @@ local function StyleGhost(g, isActive)
         g._clL:SetAlpha(a)
         g._clM:SetAlpha(a)
         g._clR:SetAlpha(a)
+        return
+    end
+
+    -- WoW Forever: the kit's bronze tab, warm while selected. Typography
+    -- stays the user's.
+    if FvTabs() then
+        ECHAT.FV_StyleGhost(g, isActive)
         return
     end
 
@@ -496,6 +519,36 @@ end
 -------------------------------------------------------------------------------
 --  Float ghost refresh (file-scope, explicit args: no per-refresh closure).
 -------------------------------------------------------------------------------
+-- Float ghosts arm the geometry follower themselves -- the strip's motion
+-- catcher only covers the dock band, and the armed follower is what makes
+-- this window's panel (and the text frame anchored inside it) follow a native
+-- tab drag per-frame instead of freezing until the next deferred pass.
+-- Motion-only + full propagation: the tab beneath keeps its tooltip, clicks,
+-- and the drag itself. The propagation calls are blocked in combat on every
+-- frame, so a ghost first built in combat stays mouse-less (clicks and hover
+-- reach the tab; only the follower waits) until combat ends.
+local function ArmGhostMouse(g)
+    g._mouseArmed = true
+    if not g.SetMouseClickEnabled then return end
+    g:SetMouseClickEnabled(false)
+    g:SetMouseMotionEnabled(true)
+    if g.SetPropagateMouseClicks then g:SetPropagateMouseClicks(true) end
+    if g.SetPropagateMouseMotion then g:SetPropagateMouseMotion(true) end
+    g:SetScript("OnEnter", function()
+        if ECHAT.FollowArm then ECHAT.FollowArm() end
+        if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
+    end)
+    g:SetScript("OnLeave", function()
+        if ECHAT.FollowRelease then ECHAT.FollowRelease() end
+    end)
+end
+
+local function ArmPendingGhosts()
+    for _, g in pairs(floatGhosts) do
+        if not g._mouseArmed then ArmGhostMouse(g) end
+    end
+end
+
 local function RefreshFloatGhost(cf, height, fontPath, fontSize, padX, labelY, seen)
     local id = cf:GetID()
     local tab = _G[cf:GetName() .. "Tab"]
@@ -504,27 +557,14 @@ local function RefreshFloatGhost(cf, height, fontPath, fontSize, padX, labelY, s
     local g = floatGhosts[id]
     if not g then
         g = BuildGhost()
-        -- Float ghosts arm the geometry follower themselves -- the
-        -- strip's motion catcher only covers the dock band, and the
-        -- armed follower is what makes this window's panel (and the
-        -- text frame anchored inside it) follow a native tab drag
-        -- per-frame instead of freezing until the next deferred pass.
-        -- Motion-only + full propagation: the tab beneath keeps its
-        -- tooltip, clicks, and the drag itself.
-        if g.SetMouseClickEnabled then
-            g:SetMouseClickEnabled(false)
-            g:SetMouseMotionEnabled(true)
-            if g.SetPropagateMouseClicks then g:SetPropagateMouseClicks(true) end
-            if g.SetPropagateMouseMotion then g:SetPropagateMouseMotion(true) end
-            g:SetScript("OnEnter", function()
-                if ECHAT.FollowArm then ECHAT.FollowArm() end
-                if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
-            end)
-            g:SetScript("OnLeave", function()
-                if ECHAT.FollowRelease then ECHAT.FollowRelease() end
-            end)
-        end
         floatGhosts[id] = g
+    end
+    if not g._mouseArmed then
+        if InCombatLockdown() then
+            ns.CombatQueue.Defer(ArmPendingGhosts, ArmPendingGhosts)
+        else
+            ArmGhostMouse(g)
+        end
     end
     if g:GetParent() ~= d.bg then g:SetParent(d.bg) end
     local isTemp = cf.isTemporary and true or false
@@ -575,8 +615,10 @@ local function PositionStrip()
     local gdm = _G.GeneralDockManager
     if not gdm then return end
     strip:ClearAllPoints()
-    -- Classic's full-height tabs reach above the 26px dock: raise the clip.
-    strip:SetPoint("TOPLEFT", gdm, "TOPLEFT", 0, ClassicTabs() and CLASSIC_CLIP_UP or 0)
+    -- Classic's full-height tabs (and WoW Forever's) reach above the 26px
+    -- dock: raise the clip.
+    strip:SetPoint("TOPLEFT", gdm, "TOPLEFT", 0,
+        ClassicTabs() and CLASSIC_CLIP_UP or (FvTabs() and FV_CLIP_UP) or 0)
     strip:SetPoint("BOTTOMRIGHT", gdm, "BOTTOMRIGHT", 0, 0)
     -- Never re-show over an engaged full hide or passthrough: their
     -- remember-restores own the reveal.
@@ -597,16 +639,19 @@ local function RefreshNow()
     local fontSize = cfg.tabFontSize or 11
     local fontFlag = TabFontFlag()
     local padX = cfg.tabInnerPaddingX or 12
-    local labelY = ClassicTabs() and CLASSIC_LABEL_Y or 0
+    local labelY = ClassicTabs() and CLASSIC_LABEL_Y
+        or (FvTabs() and (ns.ChatFvHeavy() and FV_LABEL_Y_HEAVY or FV_LABEL_Y)) or 0
 
     -- The chat panel extends left of ChatFrame1 by its inset while Blizzard's
     -- dock starts at the frame edge; the FIRST ghost (and the strip's clip
     -- rect) stretch left to the panel edge so the row lines up with the
     -- panel. Visual-only: the extra pixels have no tab under them. Deferred
     -- numeric rect reads, the module's shipped-safe class. The stock styles
-    -- draw no panel, so their tabs stay exactly where Blizzard puts them.
+    -- draw no panel, so their tabs stay exactly where Blizzard puts them;
+    -- WoW Forever draws one, its first tab standing tabX in from its frame.
     local leftExtend = 0
-    if not (ns.ChatStock and ns.ChatStock()) then
+    local fvTabs = FvTabs()
+    if not (ns.ChatStock and ns.ChatStock()) or fvTabs then
         local cf1 = _G.ChatFrame1
         local bg1 = cf1 and CFD(cf1).bg
         local firstCF = GENERAL_CHAT_DOCK and GENERAL_CHAT_DOCK.DOCKED_CHAT_FRAMES
@@ -615,6 +660,7 @@ local function RefreshNow()
         local bgLeft = bg1 and bg1:GetLeft()
         local tabLeft = firstTab and firstTab:GetLeft()
         if bgLeft and tabLeft then
+            if fvTabs then bgLeft = bgLeft + ECHAT.FV.tabX end
             local delta = bgLeft - tabLeft
             if delta < 0 and delta > -60 then leftExtend = delta end
         end
@@ -622,7 +668,7 @@ local function RefreshNow()
     if leftExtend ~= 0 then
         local gdm = _G.GeneralDockManager
         if gdm then
-            strip:SetPoint("TOPLEFT", gdm, "TOPLEFT", leftExtend, 0)
+            strip:SetPoint("TOPLEFT", gdm, "TOPLEFT", leftExtend, fvTabs and FV_CLIP_UP or 0)
         end
     end
 
@@ -673,9 +719,9 @@ local function RefreshNow()
                 local nativeGap = isScrolling and not seenScrolling and 0 or 1
                 if isScrolling then seenScrolling = true end
                 local leftInset = count == 1 and leftExtend or 0
-                -- Classic ghosts span their tab exactly (the sheet carries its
-                -- own margins), so no spacing compensation there.
-                if count > 1 and not ECHAT.ExtendBgBehindTabs(cfg) and not ClassicTabs() then
+                -- Classic and WoW Forever ghosts span their tab exactly (their
+                -- art carries its own margins), so no spacing compensation there.
+                if count > 1 and not ECHAT.ExtendBgBehindTabs(cfg) and not ClassicTabs() and not FvTabs() then
                     leftInset = tabGap - nativeGap
                 end
 
@@ -732,15 +778,15 @@ local function RefreshNow()
                 local isActive = cf == selected
                 StyleGhost(g, isActive)
                 -- Blizzard's own alert state is authoritative here: their
-                -- handler sets tab.alerting the moment a flash-worthy
-                -- message hits a hidden window (including the message that
-                -- CREATES a conversation window -- our ghost is born one
-                -- pass later and would miss the observer's flash), and
-                -- clears it on select. Read through TabAlerting, never
-                -- tab.alerting directly: under a LibChatAnims embedder the
-                -- field stays nil forever, and this mirror then STOPPED the
-                -- flash the observer lane had just started -- whisper alerts
-                -- died within one tab pass whenever such an addon was loaded.
+                -- handler sets it the moment a flash-worthy message hits a
+                -- hidden window (including the message that CREATES a
+                -- conversation window -- our ghost is born one pass later
+                -- and would miss the observer's flash), and clears it on
+                -- select. Read through TabAlerting, never tab.alerting
+                -- directly: under a LibChatAnims embedder, and on WoW
+                -- Forever, the field stays nil forever, and this mirror then
+                -- STOPPED the flash the observer lane had just started --
+                -- whisper alerts died within one tab pass.
                 if isActive then
                     g:StopFlash()
                 elseif TabAlerting(tab) then
@@ -978,8 +1024,8 @@ local function OnTabMessage(cf, event)
         return
     end
     -- A conversation window CREATED by this message has no ghost yet; the
-    -- queued refresh above builds it and the tab.alerting mirror in the
-    -- refresh starts its flash.
+    -- queued refresh above builds it and the alert mirror (TabAlerting) in
+    -- the refresh starts its flash.
     local g = GhostFor(cf)
     if g and g:IsShown() then g:StartFlash() end
 end

@@ -50,9 +50,9 @@ local function ResolveTheme()
     T.bgR, T.bgG, T.bgB, T.bgA = 0.08, 0.08, 0.08, 0.92
     T.insetR, T.insetG, T.insetB, T.insetA = 0.04, 0.04, 0.04, 0.85
     T.brdR, T.brdG, T.brdB, T.brdA = 0.2, 0.2, 0.2, 1
-    T.fontPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("blizzardSkin"))
+    T.fontPath = (EllesmereUI.GetFontPath("blizzardSkin"))
         or EllesmereUI._font or STANDARD_TEXT_FONT
-    T.fontFlag = (EllesmereUI.GetFontOutlineFlag and EllesmereUI.GetFontOutlineFlag("blizzardSkin")) or ""
+    T.fontFlag = (EllesmereUI.GetFontOutlineFlag("blizzardSkin")) or ""
     T.fontShadow = (T.fontFlag == "")
         and (not EllesmereUI.GetFontUseShadow or EllesmereUI.GetFontUseShadow("blizzardSkin"))
 end
@@ -72,10 +72,16 @@ local function AddBorder(frame)
     if c and c.SetFrameLevel then c:SetFrameLevel(frame:GetFrameLevel()) end
 end
 
-local function MakeText(parent, size, r, g, b)
+-- family: a text that shows other players' writing (house and owner names)
+-- takes the font as a font family, which draws the scripts the font lacks.
+local function MakeText(parent, size, r, g, b, family)
     local fs = parent:CreateFontString(nil, "OVERLAY")
-    if EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, T.fontShadow) end
-    fs:SetFont(T.fontPath, size, T.fontFlag or "")
+    if family then
+        EllesmereUI.SetFontFamily(fs, T.fontPath, size, T.fontFlag or "", T.fontShadow)
+    else
+        EllesmereUI.PrimeFontShadow(fs, T.fontShadow)
+        fs:SetFont(T.fontPath, size, T.fontFlag or "")
+    end
     fs:SetTextColor(r or 1, g or 1, b or 1, 1)
     return fs
 end
@@ -207,7 +213,7 @@ local function BuildList()
     ResolveTheme()
     local f = CreateFrame("Frame", "EllesmereUI_HouseVisitFrame", UIParent)
     f:SetFrameStrata("DIALOG")
-    f:SetScale((EllesmereUI.GetPopupScale and EllesmereUI.GetPopupScale()) or 1)
+    f:SetScale((EllesmereUI.GetPopupScale()) or 1)
     f:SetWidth(FRAME_W)
     f:SetHeight(HEADER_H + 10 + MAX_ROWS * (ROW_H + ROW_GAP) + 6)
     f:SetPoint("CENTER", UIParent, "CENTER", 0, 80)
@@ -233,7 +239,7 @@ local function BuildList()
     hline:SetPoint("BOTTOMRIGHT", header, "BOTTOMRIGHT", 0, 0)
     hline:SetHeight(1)
 
-    titleText = MakeText(header, 14)
+    titleText = MakeText(header, 14, nil, nil, nil, true)
     titleText:SetPoint("LEFT", header, "LEFT", 12, 0)
     titleText:SetPoint("RIGHT", header, "RIGHT", -34, 0)
     titleText:SetJustifyH("LEFT")
@@ -256,12 +262,12 @@ local function BuildList()
         row:SetPoint("TOPRIGHT", f, "TOPRIGHT", -8, y)
         Panel(row, true)
 
-        row.name = MakeText(row, 13)
+        row.name = MakeText(row, 13, nil, nil, nil, true)
         row.name:SetPoint("TOPLEFT", row, "TOPLEFT", 10, -7)
         row.name:SetPoint("RIGHT", row, "RIGHT", -100, 0)
         row.name:SetJustifyH("LEFT")
 
-        row.info = MakeText(row, 11, 0.65, 0.65, 0.65)
+        row.info = MakeText(row, 11, 0.65, 0.65, 0.65, true)
         row.info:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 10, 7)
         row.info:SetPoint("RIGHT", row, "RIGHT", -100, 0)
         row.info:SetJustifyH("LEFT")

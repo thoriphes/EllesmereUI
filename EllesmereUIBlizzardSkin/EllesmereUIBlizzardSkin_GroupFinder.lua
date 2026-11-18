@@ -29,13 +29,17 @@ local ADDON_NAME, ns = ...
 local EUI = EllesmereUI
 local issecretvalue = issecretvalue or function() return false end
 
--- Weak-keyed external state (prevents tainting Blizzard frames) ----------------
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+-- Shared primitives from the window engine (loads before this file).
+local WSkin = ns.WSkin
+-- Our per-frame state lives in our OWN weak table: the engine's uses the same
+-- generic keys (border, skinned, bg, x ...) for its own skins, so a shared
+-- table would let whichever skinner runs second silently no-op on a frame both
+-- touch. The engine's table is read for one key only: the Modern backdrop
+-- AdoptShell files there (modernBg).
+local FFD, GetFFD = EllesmereUI.NewFrameData()
+local EngineFFD = WSkin.FFD
+local Theme, ResolveTheme = WSkin.Theme, WSkin.ResolveTheme
+local SolidTex, FadeRegions = WSkin.SolidTex, WSkin.FadeRegions
 
 -------------------------------------------------------------------------------
 --  Enable gate. Independent toggle, default on (not tied to any master reskin).
@@ -45,32 +49,7 @@ local function SkinEnabled()
         and not (EllesmereUI.BlizzWindowSkinsKilled and EllesmereUI.BlizzWindowSkinsKilled())
 end
 
--------------------------------------------------------------------------------
---  Theme tokens. Resolved once at apply time; the accent is theme-driven and
---  re-registered via RegAccent so it tracks the user's accent color live.
--------------------------------------------------------------------------------
-local Theme = {}
-local function ResolveTheme()
-    local EG = (EUI and EUI.ELLESMERE_GREEN) or { r = 0.047, g = 0.824, b = 0.616 }
-    Theme.accR, Theme.accG, Theme.accB = EG.r or 0.047, EG.g or 0.824, EG.b or 0.616
-    -- Neutral dark gray glass (no color cast).
-    Theme.bgR, Theme.bgG, Theme.bgB, Theme.bgA = 0.08, 0.08, 0.08, 0.92
-    -- Darker gray for nested insets so sub-panels melt into the main backdrop.
-    Theme.insetR, Theme.insetG, Theme.insetB, Theme.insetA = 0.04, 0.04, 0.04, 0.85
-    -- Panel border (matches CharacterSheet grey).
-    Theme.brdR, Theme.brdG, Theme.brdB, Theme.brdA = 0.2, 0.2, 0.2, 1
-    Theme.fontPath = (EUI and EUI.GetFontPath and EUI.GetFontPath("blizzardSkin")) or STANDARD_TEXT_FONT
-end
-
-local function SolidTex(parent, layer, r, g, b, a, sublevel)
-    if EUI and EUI.SolidTex and sublevel == nil then
-        return EUI.SolidTex(parent, layer, r, g, b, a)
-    end
-    local t = parent:CreateTexture(nil, layer, nil, sublevel)
-    t:SetColorTexture(r, g, b, a)
-    return t
-end
-
+-- Unlike WSkin.AddBorder: OVERLAY/7 strips at the default container level.
 local function AddBorder(frame, r, g, b, a)
     if GetFFD(frame).border then return end
     local PP = EUI and (EUI.PanelPP or EUI.PP)
@@ -78,22 +57,6 @@ local function AddBorder(frame, r, g, b, a)
         PP.CreateBorder(frame, r or Theme.brdR, g or Theme.brdG, b or Theme.brdB, a or Theme.brdA, 1, "OVERLAY", 7)
         GetFFD(frame).border = true
     end
-end
-
--------------------------------------------------------------------------------
---  FadeRegions: alpha-out every direct texture region on a frame (+ NineSlice).
---  `keep` is a set of texture objects to leave alone. Visual-only, no Hide().
--------------------------------------------------------------------------------
-local function FadeRegions(frame, keep)
-    if not frame or frame:IsForbidden() then return end
-    local regions = { frame:GetRegions() }
-    for i = 1, #regions do
-        local r = regions[i]
-        if r and r.IsObjectType and r:IsObjectType("Texture") and not (keep and keep[r]) then
-            r:SetAlpha(0)
-        end
-    end
-    if frame.NineSlice then FadeRegions(frame.NineSlice, keep) end
 end
 
 -- Frames we have skinned; re-flattened whenever Blizzard repaints (tab switch,
@@ -118,10 +81,9 @@ local function Restrip()
                 if d.leftWash then k[d.leftWash] = true end
                 if d.leftSep then k[d.leftSep] = true end
             end
-            -- The Modern flat backdrop (AdoptShell) lives in the ENGINE's FFD,
-            -- not ours -- protect it too, or every restrip blanks the Modern
-            -- style's only background on this window.
-            local ed = ns.WSkin and ns.WSkin.FFD and ns.WSkin.FFD[frame]
+            -- AdoptShell's Modern flat backdrop (the style's only background)
+            -- lives in the ENGINE's table.
+            local ed = EngineFFD[frame]
             if ed and ed.modernBg then
                 k = k or {}
                 k[ed.modernBg] = true
@@ -147,9 +109,8 @@ local function SkinAtlasPanel(frame)
     if d.topBar then keep[d.topBar] = true end
     if d.leftWash then keep[d.leftWash] = true end
     if d.leftSep then keep[d.leftSep] = true end
-    -- Spare the engine-owned Modern flat backdrop (see Restrip).
-    local ed0 = ns.WSkin and ns.WSkin.FFD and ns.WSkin.FFD[frame]
-    if ed0 and ed0.modernBg then keep[ed0.modernBg] = true end
+    local ed = EngineFFD[frame]
+    if ed and ed.modernBg then keep[ed.modernBg] = true end
     FadeRegions(frame, keep)
     Register(frame, true)
     if not d.bg then
@@ -322,8 +283,9 @@ local function SkinCheckbox(cb)
     local d = GetFFD(cb)
     if d.skinned then return end
     d.skinned = true
-    for i = 1, select("#", cb:GetRegions()) do
-        local r = select(i, cb:GetRegions())
+    local regions = { cb:GetRegions() }
+    for i = 1, #regions do
+        local r = regions[i]
         if r and r.IsObjectType and r:IsObjectType("Texture") and r.SetTexture then
             r:SetTexture("")
         end
@@ -435,25 +397,8 @@ local function SkinScrollBar(sb)
     end
 end
 
--- Close (X) button -> strip art, draw the house close glyph.
-local function SkinCloseButton(btn)
-    if not btn or btn:IsForbidden() then return end
-    local d = GetFFD(btn)
-    if d.x then return end
-    if btn.SetNormalTexture then btn:SetNormalTexture("") end
-    if btn.SetPushedTexture then btn:SetPushedTexture("") end
-    if btn.SetHighlightTexture then btn:SetHighlightTexture("") end
-    if btn.SetDisabledTexture then btn:SetDisabledTexture("") end
-    FadeRegions(btn)
-    local x = btn:CreateTexture(nil, "OVERLAY")
-    x:SetAtlas("uitools-icon-close")
-    x:SetSize(14, 14)
-    x:SetPoint("CENTER", -2, 0)
-    x:SetVertexColor(1, 1, 1, 0.75)
-    d.x = x
-    btn:HookScript("OnEnter", function() if d.x then d.x:SetVertexColor(1, 1, 1, 1) end end)
-    btn:HookScript("OnLeave", function() if d.x then d.x:SetVertexColor(1, 1, 1, 0.75) end end)
-end
+-- Close (X) button -> strip art, draw the house close glyph (the engine's).
+local SkinCloseButton = WSkin.CloseButton
 
 -- PVEFrame bottom tab -> CharacterSheet tab pattern (bg + accent underline when
 -- active). Visuals driven by UpdateTabVisuals (reads PVEFrame.selectedTab).
@@ -461,8 +406,9 @@ local function SkinTab(tab)
     if not tab or tab:IsForbidden() then return end
     local d = GetFFD(tab)
     if d.bg then return end
-    for j = 1, select("#", tab:GetRegions()) do
-        local r = select(j, tab:GetRegions())
+    local regions = { tab:GetRegions() }
+    for j = 1, #regions do
+        local r = regions[j]
         if r and r:IsObjectType("Texture") then
             r:SetTexture("")
             if r.SetAtlas then r:SetAtlas("") end
@@ -517,7 +463,7 @@ local function SkinTab(tab)
         if wsk.RegisterAccentUnderline then wsk.RegisterAccentUnderline(underline) end
     else
         underline:SetColorTexture(Theme.accR, Theme.accG, Theme.accB, 1)
-        if EUI and EUI.RegAccent then EUI.RegAccent({ type = "solid", obj = underline, a = 1 }) end
+        EUI.RegAccent({ type = "solid", obj = underline, a = 1 })
     end
     underline:Hide()
     d.underline = underline
@@ -552,8 +498,6 @@ local function UpdateTabVisuals()
             if d.activeHL then d.activeHL:SetShown(isActive) end
         end
     end
-    -- Registered lazily: the engine file loads after this one, so ns.WSkin
-    -- is only reachable at runtime.
     if not _gfLooksHooked and ns.WSkin and ns.WSkin.OnLooksChanged then
         _gfLooksHooked = true
         ns.WSkin.OnLooksChanged(UpdateTabVisuals)
@@ -877,32 +821,6 @@ local function UpdateLFGCategorySelection()
     end
 end
 
--- Refresh button -> strip art, draw the house white UI-RefreshButton glyph (desaturated
--- + white vertex, 0.9 -> 1 on hover). Matches the Auction House refresh button.
-local function SkinRefreshGlyph(rb)
-    if not rb or rb:IsForbidden() then return end
-    local d = GetFFD(rb)
-    if d.glyph then return end
-    if not (C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("UI-RefreshButton")) then return end
-    for i = 1, select("#", rb:GetRegions()) do
-        local r = select(i, rb:GetRegions())
-        if r and r.IsObjectType and r:IsObjectType("Texture") then r:SetAlpha(0) end
-    end
-    for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetHighlightTexture", "GetDisabledTexture" }) do
-        local t = rb[g] and rb[g](rb)
-        if t and t.SetAlpha then t:SetAlpha(0) end
-    end
-    local glyph = rb:CreateTexture(nil, "OVERLAY")
-    glyph:SetAtlas("UI-RefreshButton", false)
-    glyph:SetSize(16, 16)
-    glyph:SetPoint("CENTER")
-    glyph:SetDesaturated(true)
-    glyph:SetVertexColor(1, 1, 1, 0.9)
-    d.glyph = glyph
-    rb:HookScript("OnEnter", function() glyph:SetVertexColor(1, 1, 1, 1) end)
-    rb:HookScript("OnLeave", function() glyph:SetVertexColor(1, 1, 1, 0.9) end)
-end
-
 local function Skin_LFGList()
     if not LFGListFrame then return end
 
@@ -941,12 +859,15 @@ local function Skin_LFGList()
         if SP.ResultsInset then FadeInset(SP.ResultsInset) end
         if SP.SearchBox then SkinEditBox(SP.SearchBox) end
         if SP.FilterButton then SkinButton(SP.FilterButton) end
-        if SP.RefreshButton then SkinRefreshGlyph(SP.RefreshButton) end
+        if SP.RefreshButton then WSkin.RefreshGlyph(SP.RefreshButton) end
         if SP.BackButton then SkinButton(SP.BackButton) end
         if SP.BackToGroupButton then SkinButton(SP.BackToGroupButton) end
         if SP.SignUpButton then SkinButton(SP.SignUpButton) end
         if SP.ScrollBar then SkinScrollBar(SP.ScrollBar) end
-        if SP.FilterButton and SP.FilterButton.ResetButton then SkinCloseButton(SP.FilterButton.ResetButton) end
+        -- The active-filter X, as on every other filter dropdown: it straddles
+        -- the filter button's top edge, above the button's border.
+        local reset = SP.FilterButton and SP.FilterButton.ResetButton
+        if reset then WSkin.FilterResetX(reset, SP.FilterButton) end
     end
 
     local EC = LFGListFrame.EntryCreation
@@ -972,13 +893,17 @@ local function Skin_LFGList()
         end
     end
 
-    -- ApplicationViewer sits under PVEFrame's protected tree; plain SetAlpha/
-    -- CreateTexture writes taint it the same way SetMovable did (see Shifter.lua).
+    -- The applicant viewer stays Blizzard's, like the search result rows: its
+    -- updates run secret-value compares in Blizzard's code, and with this skin
+    -- applied they error for raid leaders ("compare a secret number"; which
+    -- write carries the taint is not pinned down). The viewer sits in
+    -- PVEFrame's protected tree, so IsProtected() is true here and the block
+    -- below does not run.
     local AV = LFGListFrame.ApplicationViewer
     if AV and not AV:IsProtected() then
         SkinPanel(AV, { noBg = true, noBorder = true })
         if AV.Inset then FadeInset(AV.Inset) end
-        if AV.RefreshButton then SkinRefreshGlyph(AV.RefreshButton) end
+        if AV.RefreshButton then WSkin.RefreshGlyph(AV.RefreshButton) end
         if AV.RemoveEntryButton then SkinButton(AV.RemoveEntryButton) end
         if AV.EditButton then SkinButton(AV.EditButton) end
         if AV.BrowseGroupsButton then SkinButton(AV.BrowseGroupsButton) end
@@ -1478,8 +1403,8 @@ end
 -- Blizzard has no docking relationship between CharacterFrame and PVEFrame (Dungeons &
 -- Raids); both anchor near the same default screen position, so opening one while the
 -- other is open overlaps them. Any addon that docks its own panel to PVEFrame's edge
--- (e.g. RaiderIO's Mythic+ panel) is unaware of CharacterFrame, so it gets partially
--- covered by CharacterFrame in turn. PVEFrame is PROTECTED (it parents the LFGList
+-- is unaware of CharacterFrame, so that panel gets partially covered by CharacterFrame
+-- in turn. PVEFrame is PROTECTED (it parents the LFGList
 -- applicant viewer, which throws on tainted secret-value comparisons -- see
 -- EllesmereUIQoL_Shifter.lua's SecureSetPoint), so it is never repositioned here;
 -- CharacterFrame is not protected, so it docks beside PVEFrame instead. Reading
@@ -1493,7 +1418,7 @@ local function CharacterFrameIsUserPinned()
 end
 
 -- Third-party panels known to dock themselves beside PVEFrame with no awareness of
--- CharacterFrame (RaiderIO's Mythic+/profile panel, confirmed via /fstack). Checked by
+-- CharacterFrame (a Mythic+ profile panel, confirmed via /fstack). Checked by
 -- name -- cheap and reliable -- instead of scanning every frame in the UI: that
 -- approach kept missing the actual frame, once matched CharacterFrame's own child and
 -- produced a circular anchor, and was slow enough on its own to cause a visible hitch.
@@ -1567,7 +1492,7 @@ local function DockCharacterFrame()
         expectedEdgeAbs = rightEdgeAbs + PVE_DOCK_MARGIN * cs
     end
 
-    -- PVEFrame's own internal layout re-anchors it (and RaiderIO's tooltip) repeatedly
+    -- PVEFrame's own internal layout re-anchors it (and a docked companion) repeatedly
     -- while it settles, and Shifter re-applies CharacterFrame's own saved/temp position
     -- on every scale step -- both re-trigger this constantly. Skip the write only when
     -- CharacterFrame's ACTUAL current edge already matches where we'd put it -- not by
@@ -1593,7 +1518,7 @@ local function DockCharacterFrame()
     -- the flag already true) -- restore the PRIOR value rather than hardcoding false,
     -- or we'd clear it while still nested inside that call, letting Shifter's own
     -- SetPoint hook see it false and recurse.
-    local shifterFFD = EllesmereUI._GetFFD and EllesmereUI._GetFFD(cf)
+    local shifterFFD = EllesmereUI._GetFFD(cf)
     local prevIgnoreSP = shifterFFD and shifterFFD._shIgnoreSP
     if shifterFFD then shifterFFD._shIgnoreSP = true end
     cf:ClearAllPoints()
@@ -1633,22 +1558,12 @@ local function InstallPVEDockHooks()
     -- FindOutermostFrame is cheap now (named lookups, not a frame scan). Deferring a
     -- SetPoint-triggered re-dock to next frame (e.g. if Blizzard's layout system
     -- repositions CharacterFrame again after it's already rendering) is exactly what
-    -- shows one frame at the wrong position before snapping into place. Blizzard's OWN
-    -- UIParentPanelManager treats CharacterFrame and PVEFrame as part of the same
-    -- "managed panel" group, and repositions CharacterFrame itself (via its own
-    -- SetPoint calls) whenever PVEFrame opens -- the exact native behavior this whole
-    -- feature works around. Left alone, every one of those calls also re-triggers
-    -- Shifter's saved-position restore (if CharacterFrame has one) AND our own dock,
-    -- and each of THOSE writes reads to Blizzard's manager as "a managed panel moved,"
-    -- so it reasserts itself again -- three systems endlessly re-triggering each other.
-    -- Opting out permanently (rather than only while PVEFrame is open) closes this for
-    -- good: CharacterFrame's position is already fully covered by our own dock logic,
-    -- Shifter's saved/temp positions, and the native-default capture/restore below, so
-    -- there's no case left where Blizzard's automatic management is actually needed.
-    -- ignoreFramePositionManager is the sanctioned opt-out -- already used the same way
-    -- for the loot windows in EllesmereUIQoL_Shifter.lua.
-    _G.CharacterFrame.ignoreFramePositionManager = true
-
+    -- shows one frame at the wrong position before snapping into place. Blizzard's
+    -- panel manager treats CharacterFrame and PVEFrame as one managed group and
+    -- repositions CharacterFrame itself whenever PVEFrame opens; the SetPoint hook
+    -- below re-docks it, and the dock's own re-entry guard (plus Shifter's) keeps
+    -- that from looping. No field is written on CharacterFrame: the managed-frame
+    -- opt-out flag is read only by the HUD's managed frame system, never for panels.
     _G.CharacterFrame:HookScript("OnShow", DockCharacterFrame)
     hooksecurefunc(_G.CharacterFrame, "SetPoint", DockCharacterFrame)
 

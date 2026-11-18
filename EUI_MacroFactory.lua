@@ -1,143 +1,16 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
 --  EUI_MacroFactory.lua
---  Builds the Macro Factory UI for the Quality of Life options page.
---  Called by BuildQoLPage via EllesmereUI.BuildMacroFactory(parent, y, PP)
+--  The Macro Factory: the macro definitions and the macro writer, the
+--  resident item macro upkeep, and the UI the Quality of Life options page
+--  builds through EllesmereUI.BuildMacroFactory(parent, y, PP) while its
+--  card is open (EllesmereUI.ParkMacroFactory while it is closed).
 -------------------------------------------------------------------------------
 
--------------------------------------------------------------------------------
---  Dynamic Health Recovery (disabled -- kept for future use)
--------------------------------------------------------------------------------
---[[ DYNAMIC_HEALTH_RECOVERY
-local EUI_HEALTH_MACRO_NAME = "EUI_Health"
-
-local HEALTH_RECOVERY_STONES = { 5512, 224464 }
-local HEALTH_RECOVERY_POTS = {
-    241304, 241305,
-}
-
-local function HealthMacroItemCount(itemID)
-    return GetItemCount(itemID, false) or 0
-end
-
-local function CollectHealthRecoveryItems()
-    local items = {}
-    for _, itemID in ipairs(HEALTH_RECOVERY_STONES) do
-        if HealthMacroItemCount(itemID) > 0 then
-            items[#items + 1] = itemID
-            if #items >= #HEALTH_RECOVERY_STONES then
-                break
-            end
-        end
-    end
-    for _, itemID in ipairs(HEALTH_RECOVERY_POTS) do
-        if HealthMacroItemCount(itemID) > 0 then
-            items[#items + 1] = itemID
-            break
-        end
-    end
-    return items
-end
-
-local function HealthRecoverySequenceKey(items)
-    return table.concat(items, ",")
-end
-
-local function GetHealthMacroDB()
-    if not EllesmereUIDB then EllesmereUIDB = {} end
-    if not EllesmereUIDB.macroFactory then EllesmereUIDB.macroFactory = {} end
-    if not EllesmereUIDB.macroFactory[EUI_HEALTH_MACRO_NAME] then
-        EllesmereUIDB.macroFactory[EUI_HEALTH_MACRO_NAME] = {}
-    end
-    return EllesmereUIDB.macroFactory[EUI_HEALTH_MACRO_NAME]
-end
-
-local lastHealthRecoveryKey = nil
-local healthMacroPendingUpdate = false
-
-local function ApplyHealthRecoveryMacro(items)
-    items = items or CollectHealthRecoveryItems()
-    local key = HealthRecoverySequenceKey(items)
-
-    local idx = GetMacroIndexByName(EUI_HEALTH_MACRO_NAME)
-    if idx == 0 then
-        lastHealthRecoveryKey = key
-        healthMacroPendingUpdate = false
-        return
-    end
-
-    if InCombatLockdown() then
-        if key ~= lastHealthRecoveryKey then
-            healthMacroPendingUpdate = true
-        end
-        return
-    end
-
-    if key == lastHealthRecoveryKey then
-        healthMacroPendingUpdate = false
-        return
-    end
-
-    EditMacro(idx, nil, nil, EllesmereUI.BuildHealthRecoveryMacroBody(GetHealthMacroDB(), items))
-    lastHealthRecoveryKey = key
-    healthMacroPendingUpdate = false
-end
-
-function EllesmereUI.BuildHealthRecoveryMacroBody(db, items)
-    db = db or {}
-    items = items or CollectHealthRecoveryItems()
-    local lines = {}
-
-    if db.showTooltip ~= false then
-        local tip = (items[1] and ("item:" .. items[1])) or "Recuperate"
-        lines[#lines + 1] = "#showtooltip " .. tip
-    end
-
-    lines[#lines + 1] = "/stopcasting"
-    lines[#lines + 1] = "/cast [nocombat] Recuperate"
-
-    if #items > 0 then
-        local seqParts = {}
-        for _, itemID in ipairs(items) do
-            seqParts[#seqParts + 1] = "item:" .. itemID
-        end
-        lines[#lines + 1] = "/castsequence [@player,combat] reset=combat "
-            .. table.concat(seqParts, ", ")
-    end
-
-    if #lines == 0 then return "" end
-    return table.concat(lines, "\n")
-end
-
-do
-    local f = CreateFrame("Frame")
-    local bagPending = false
-    f:RegisterEvent("PLAYER_LOGIN")
-    f:RegisterEvent("PLAYER_ENTERING_WORLD")
-    f:RegisterEvent("PLAYER_REGEN_ENABLED")
-    f:RegisterEvent("BAG_UPDATE")
-    f:SetScript("OnEvent", function(_, event)
-        if event == "PLAYER_REGEN_ENABLED" then
-            if healthMacroPendingUpdate then
-                healthMacroPendingUpdate = false
-                ApplyHealthRecoveryMacro()
-            end
-            return
-        end
-        if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
-            C_Timer.After(1, ApplyHealthRecoveryMacro)
-            return
-        end
-        if bagPending then return end
-        bagPending = true
-        C_Timer.After(0.5, function()
-            bagPending = false
-            ApplyHealthRecoveryMacro()
-        end)
-    end)
-end
-DYNAMIC_HEALTH_RECOVERY]]
-
+-- The options page pool's table (EllesmereUI_PixelPerfect.lua makes it; the
+-- options addon fills it in place): read through this file local, never the
+-- public slot.
+local POOL = EllesmereUI._Pool
 
 -------------------------------------------------------------------------------
 --  Set Focus extras -- auto raid marker, ping and group announce
@@ -165,18 +38,595 @@ local FOCUS_MARK_COORDS = {
 -- keep their own descriptive label -- picking one variant's name would be arbitrary --
 -- run through L(). noRequest: when true, skip the async load request (used by the
 -- refresh path, where the initial build already requested the uncached item).
+-- An option of one item, or of several that share a name (nameItem), shows the
+-- client's own item name once it has loaded.
 local function OptionDisplayName(opt, noRequest)
     local ids = opt.items
-    if ids and #ids == 1 then
-        local n = C_Item.GetItemInfo(ids[1])
+    local id = opt.nameItem or (ids and #ids == 1 and ids[1])
+    if id then
+        local n = C_Item.GetItemInfo(id)
         if n then return n end
-        if not noRequest then C_Item.RequestLoadItemDataByID(ids[1]) end
+        if not noRequest then C_Item.RequestLoadItemDataByID(id) end
     end
     return EllesmereUI.L(opt.label)
 end
 
+-- Page reuse (EllesmereUIOptions/EllesmereUI_FramePool.lua): the owner of the
+-- section's kept frames. On a kept page the section and its event frame are
+-- kept, so a Quality of Life page pass and a spec change dress the same frames
+-- again, and what the section builds under them comes back from the pool reset
+-- to new.
+local MF = {}
+
+-------------------------------------------------------------------------------
+--  Macro definitions (general; the spec sets live in the builder)
+-------------------------------------------------------------------------------
+local GENERAL_DEFS = {
+    {
+        name = "EUI_Potion",
+        icon = "Interface\\Icons\\inv_potion_54",
+        label = "Potion",
+        -- SEASON UPDATE: the season's combat potions, each option an item's ranks best first
+        -- (the IDs EllesmereUI_BuffPresets.lua lists too). One /use line per item: these six
+        -- options fill 228 of the macro's 255 characters.
+        checkboxes = {
+            { key = "opt1", label = "Fleeting Light's Potential", items = {245898, 245897} },
+            { key = "opt2", label = "Light's Potential",          items = {241308, 241309} },
+            { key = "opt3", label = "Fleeting Recklessness",      items = {245902, 245903} },
+            { key = "opt4", label = "Recklessness",               items = {241288, 241289} },
+            { key = "opt5", label = "Fleeting Liquid Luster",     items = {274764, 274763} },
+            { key = "opt6", label = "Liquid Luster",              items = {271887, 271886} },
+        },
+    },
+    {
+        name = "EUI_Health",
+        icon = "Interface\\Icons\\inv_potion_131",
+        label = "Health / Recuperate (Combat Based)",
+        spells = {1231418}, -- Recuperate (universal campfire self-heal)
+        -- Line order is the priority: the first potion in bags is the one used.
+        -- Concentrated Silvermoon r2 > r1, then Silvermoon r2 > r1.
+        -- SEASON UPDATE: the season's health potions, here and in fixedTooltip.
+        fixedBody = "/stopcasting\n/cast [nocombat] {1}\n/use [combat] item:271884\n/use [combat] item:271883\n/use [combat] item:241304\n/use [combat] item:241305",
+        fixedTooltip = "item:271884",
+    },
+    {
+        name = "EUI_Food",
+        icon = "Interface\\Icons\\inv_misc_food_73cinnamonroll",
+        label = "Food",
+        -- SEASON UPDATE: the expansion's food and drink (a new patch can add more).
+        checkboxes = {
+            { key = "opt1", label = "Conjured Mana Bun",          items = {113509} },
+            { key = "opt2", label = "Fairbreeze Feast",           items = {260262} },
+            { key = "opt3", label = "Silvermoon Soiree Spread",   items = {260263} },
+            { key = "opt4", label = "Quel'Danas Rations",         items = {260264} },
+            { key = "opt5", label = "Mana Lily Tea",              items = {242297} },
+            { key = "opt6", label = "Springrunner Sparkling",     items = {260260} },
+            { key = "opt7", label = "Tranquility Bloom Tea",      items = {1226196} },
+            { key = "opt8", label = "Sanguithorn Tea",            items = {242299} },
+            { key = "opt9", label = "Azeroot Tea",                items = {242301} },
+            { key = "opt10", label = "Argentleaf Tea",            items = {242298} },
+            { key = "opt11", label = "Everspring Water",          items = {260259} },
+        },
+    },
+    {
+        name = "EUI_Trinket1",
+        icon = "Interface\\Icons\\inv_jewelry_trinketpvp_01",
+        label = "Trinket 1",
+        fixedBody = "/use 13",
+        fixedTooltip = "13",
+    },
+    {
+        name = "EUI_Trinket2",
+        icon = "Interface\\Icons\\inv_jewelry_trinketpvp_02",
+        label = "Trinket 2",
+        fixedBody = "/use 14",
+        fixedTooltip = "14",
+    },
+    {
+        name = "EUI_Focus",
+        icon = "Interface\\Icons\\ability_hunter_focusedaim",
+        macroIcon = 236203,
+        label = "Set Focus",
+        fixedBody = "/focus [@mouseover,exists,nodead] []",
+        -- Each toggle stands alone: any combination is valid, and with all
+        -- three off the macro body is byte-for-byte what it has always been.
+        extraToggles = {
+            { key = "autoMark", label = "Auto Mark Focus" },
+            { key = "ping",     label = "Ping Focus" },
+            { key = "announce", label = "Announce Focus" },
+        },
+        -- Independent of the toggles above -- pick the marker whenever, it
+        -- only takes effect once Auto Mark is on.
+        extraChoices = {
+            { key = "markIcon", label = "Focus Marker", default = FOCUS_DEFAULT_MARK },
+        },
+        extraBody = function(db)
+            if not (db.autoMark or db.ping or db.announce) then return nil end
+            -- Every trailing command acts on the focus, so bail out when none
+            -- was acquired rather than marking, pinging or announcing whatever
+            -- happens to be targeted.
+            local lines = { "/stopmacro [@focus,noexists]" }
+            local mark = db.markIcon
+            if not FOCUS_MARK_COORDS[mark] then mark = FOCUS_DEFAULT_MARK end
+            if db.autoMark then
+                -- `~` is the 12.0.7 macro extension that declines to overwrite
+                -- a marker a group member already placed.
+                lines[#lines + 1] = "/tm [@focus] ~" .. mark
+            end
+            if db.ping then
+                -- Numeric alias (3 = On My Way): the word forms resolve through
+                -- localized PING_TYPE_* globals and only match on English clients.
+                lines[#lines + 1] = "/ping [@focus] 3"
+            end
+            if db.announce then
+                -- %f is the built-in chat substitution for the focus unit's
+                -- name. The marker icon is only advertised when Auto Mark is
+                -- on -- otherwise the message would name a marker nothing set.
+                -- The one player-visible word: localized at bake time so the
+                -- party message reads in the user's language (macro text is
+                -- baked when written, so a later game-language switch keeps
+                -- the old wording until a toggle is touched -- inherent to
+                -- macros).
+                local focusWord = (EllesmereUI.L("Focus")) or "Focus"
+                lines[#lines + 1] = db.autoMark
+                    and ("/p " .. focusWord .. ": {rt" .. mark .. "} %f")
+                    or ("/p " .. focusWord .. ": %f")
+            end
+            return table.concat(lines, "\n")
+        end,
+    },
+}
+
+-- WoW Forever: its own item macros (best first) and, instead of spec sets, class macros.
+local CLASS_DEFS = {}
+
+if EllesmereUI.IS_FOREVER == true then
+    local function Options(list)
+        local cbs = {}
+        for i, e in ipairs(list) do
+            cbs[i] = { key = "opt" .. i, label = e[2], items = type(e[1]) == "table" and e[1] or { e[1] }, nameItem = e[3] }
+        end
+        return cbs
+    end
+    local CREATE_WHEN_OUT = { key = "createWhenOut", label = "Create When Out" }
+    local trinkets = {}
+    for _, def in ipairs(GENERAL_DEFS) do
+        if def.name == "EUI_Trinket1" or def.name == "EUI_Trinket2" then trinkets[#trinkets + 1] = def end
+    end
+    local healthstones = { unpack(EllesmereUI.FOREVER_HEALTHSTONES) }
+    healthstones[#healthstones + 1] = 5512
+
+    GENERAL_DEFS = {
+        {
+            name = "EUI_Food", icon = "Interface\\Icons\\inv_misc_food_73cinnamonroll", label = "Food",
+            ownedOnly = true, maxLines = 1,
+            checkboxes = Options({
+                {22895, "Conjured Cinnamon Roll"}, {8076, "Conjured Sweet Roll"}, {8075, "Conjured Sourdough"},
+                {1487, "Conjured Pumpernickel"}, {1114, "Conjured Rye"}, {1113, "Conjured Bread"},
+                {5349, "Conjured Muffin"},
+                -- Vendor food by required level, most healing first (Forever's vendor fish heal more).
+                {{8950, 8952, 8932, 8953, 8948, 8957}, "Vendor Food (Level 45)"},
+                {{21552, 4601, 4599, 3927, 4602, 4608}, "Vendor Food (Level 35)"},
+                {{4594, 4544, 3771, 1707, 4539, 4607}, "Vendor Food (Level 25)"},
+                {{4593, 4542, 3770, 422, 4538, 4606}, "Vendor Food (Level 15)"},
+                {{4592, 4541, 2287, 414, 4537, 4605}, "Vendor Food (Level 5)"},
+                {{787, 4540, 117, 2070, 4536, 4604}, "Vendor Food (Level 1)"},
+            }),
+        },
+        {
+            name = "EUI_Drink", icon = "Interface\\Icons\\inv_drink_18", label = "Drink",
+            ownedOnly = true, maxLines = 1,
+            checkboxes = Options({
+                {8079, "Conjured Crystal Water"}, {8078, "Conjured Sparkling Water"}, {8077, "Conjured Mineral Water"},
+                {3772, "Conjured Spring Water"}, {2136, "Conjured Purified Water"}, {2288, "Conjured Fresh Water"},
+                {5350, "Conjured Water"}, {{8766, 287964}, "Morning Glory Dew", 8766},
+                {1645, "Moonberry Juice"}, {1708, "Sweet Nectar"}, {1205, "Melon Juice"},
+                {1179, "Ice Cold Milk"}, {159, "Refreshing Spring Water"},
+            }),
+        },
+        {
+            name = "EUI_Healthstone", icon = "Interface\\Icons\\inv_stone_04", label = "Healthstone",
+            ownedOnly = true,
+            checkboxes = { { key = "opt1", label = "Healthstone", items = healthstones } },
+        },
+        {
+            name = "EUI_HealingPotion", icon = "Interface\\Icons\\inv_potion_54", label = "Heal Potion",
+            ownedOnly = true,
+            checkboxes = Options({
+                {13446, "Major Healing Potion"}, {3928, "Superior Healing Potion"}, {1710, "Greater Healing Potion"},
+                {929, "Healing Potion"}, {858, "Lesser Healing Potion"}, {118, "Minor Healing Potion"},
+            }),
+        },
+        {
+            name = "EUI_ManaPotion", icon = "Interface\\Icons\\inv_potion_76", label = "Mana Potion",
+            ownedOnly = true,
+            checkboxes = Options({
+                {13444, "Major Mana Potion"}, {13443, "Superior Mana Potion"}, {6149, "Greater Mana Potion"},
+                {3827, "Mana Potion"}, {3385, "Lesser Mana Potion"}, {2455, "Minor Mana Potion"},
+            }),
+        },
+        trinkets[1],
+        trinkets[2],
+    }
+
+    local CLASS_MACROS = {
+        -- Using these stones is a cast, so the /cast after the /use fails while one is held.
+        WARLOCK = {
+            {
+                name = "EUI_Soulstone", icon = "Interface\\Icons\\inv_misc_orb_04", label = "Soulstone",
+                ownedOnly = true, maxLines = 1, mouseoverFirst = true, friendlyTargetKey = "friendlyTarget",
+                createRanks = { {693, 5232}, {20752, 16892}, {20755, 16893}, {20756, 16895}, {20757, 16896} },
+                extraToggles = { { key = "friendlyTarget", label = "Friendly Target, Else Self" }, CREATE_WHEN_OUT },
+                checkboxes = Options({
+                    {16896, "Major Soulstone"}, {16895, "Greater Soulstone"}, {16893, "Soulstone"},
+                    {16892, "Lesser Soulstone"}, {5232, "Minor Soulstone"},
+                }),
+            },
+            {
+                name = "EUI_Firestone", icon = "Interface\\Icons\\inv_misc_gem_bloodstone_02", label = "Firestone",
+                ownedOnly = true, maxLines = 1, imbue = true,
+                createRanks = { {6366, 1254}, {17951, 13699}, {17952, 13700}, {17953, 13701} },
+                extraToggles = { CREATE_WHEN_OUT },
+                checkboxes = Options({
+                    {13701, "Major Firestone"}, {13700, "Greater Firestone"}, {13699, "Firestone"},
+                    {1254, "Lesser Firestone"},
+                }),
+            },
+            {
+                name = "EUI_Spellstone", icon = "Interface\\Icons\\inv_misc_gem_sapphire_01", label = "Spellstone",
+                ownedOnly = true, maxLines = 1, imbue = true,
+                createRanks = { {2362, 5522}, {17727, 13602}, {17728, 13603} },
+                extraToggles = { CREATE_WHEN_OUT },
+                checkboxes = Options({
+                    {13603, "Major Spellstone"}, {13602, "Greater Spellstone"}, {5522, "Spellstone"},
+                }),
+            },
+        },
+        MAGE = {
+            {
+                -- No Create When Out: a gem's use is instant, so the /cast could fire on the same press.
+                name = "EUI_ManaGem", icon = "Interface\\Icons\\inv_misc_gem_ruby_01", label = "Mana Gem",
+                ownedOnly = true, maxLines = 1,
+                checkboxes = Options({
+                    {8008, "Mana Ruby"}, {8007, "Mana Citrine"}, {5513, "Mana Jade"}, {5514, "Mana Agate"},
+                }),
+            },
+        },
+    }
+    local _, playerClass = UnitClass("player")
+    CLASS_DEFS = CLASS_MACROS[playerClass] or CLASS_DEFS
+end
+
+-------------------------------------------------------------------------------
+--  DB helper (shared across all buttons and event handlers)
+-------------------------------------------------------------------------------
+local function GetMacroDB(macroName)
+    if not EllesmereUIDB then EllesmereUIDB = {} end
+    if not EllesmereUIDB.macroFactory then EllesmereUIDB.macroFactory = {} end
+    if not EllesmereUIDB.macroFactory[macroName] then EllesmereUIDB.macroFactory[macroName] = {} end
+    return EllesmereUIDB.macroFactory[macroName]
+end
+
+-- Priority order for a checkbox macro. Keeps a saved db.order and appends any option
+-- added since it was saved (so a new option never wipes a user's custom order); builds
+-- the default 1..n order when none is saved. A saved order already n long is returned as is.
+local function EnsureOrder(db, n)
+    local order = db.order
+    if type(order) == "table" and #order == n then return order end
+    if type(order) ~= "table" then order = {} end
+    local seen, clean = {}, {}
+    for _, idx in ipairs(order) do
+        if type(idx) == "number" and idx >= 1 and idx <= n and not seen[idx] then
+            seen[idx] = true; clean[#clean + 1] = idx
+        end
+    end
+    for i = 1, n do
+        if not seen[i] then clean[#clean + 1] = i end
+    end
+    db.order = clean
+    return clean
+end
+
+-------------------------------------------------------------------------------
+--  Macro body generation
+-------------------------------------------------------------------------------
+local function GetFirstAvailableItemID(def, db)
+    if not def.checkboxes then return nil end
+    local cbs = def.checkboxes
+    local order = EnsureOrder(db, #cbs)
+    for _, idx in ipairs(order) do
+        local cb = cbs[idx]
+        if cb and db[cb.key] ~= false then
+            for _, itemID in ipairs(cb.items) do
+                if (C_Item.GetItemCount(itemID, false) or 0) > 0 then
+                    return itemID
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Set from PLAYER_LEVEL_UP's argument: UnitLevel can still read the old level then.
+local knownPlayerLevel
+
+local function IsItemUsable(itemID)
+    if (C_Item.GetItemCount(itemID, false) or 0) == 0 then return false end
+    -- Uncached item info: treat as usable rather than drop an item from the bags.
+    local minLevel = select(5, C_Item.GetItemInfo(itemID))
+    return not minLevel or minLevel <= math.max(knownPlayerLevel or 0, UnitLevel("player") or 0)
+end
+
+-- The enabled items in priority order that are usable now, and the first enabled item.
+local function GetUsableItemIDs(def, db)
+    local usable, firstEnabled = {}, nil
+    local cbs = def.checkboxes
+    for _, idx in ipairs(EnsureOrder(db, #cbs)) do
+        local cb = cbs[idx]
+        if cb and db[cb.key] ~= false then
+            for _, itemID in ipairs(cb.items) do
+                firstEnabled = firstEnabled or itemID
+                if IsItemUsable(itemID) then usable[#usable + 1] = itemID end
+            end
+        end
+    end
+    return usable, firstEnabled
+end
+
+-- createRanks: { Create spell, stone it makes }, lowest first; /cast by name casts the top rank.
+local function GetKnownCreateSpell(def, db)
+    if not (def.createRanks and db.createWhenOut) then return nil end
+    for i = #def.createRanks, 1, -1 do
+        local rank = def.createRanks[i]
+        if C_SpellBook.IsSpellKnown(rank[1]) then return rank[1], rank[2] end
+    end
+    return nil
+end
+
+-- Replace {n} placeholders in a macro string with the client-localized name of
+-- the nth entry in def.spells, resolved from its spell ID via C_Spell.GetSpellInfo.
+-- Spec macros store spell IDs instead of hard-coded English names because /cast
+-- only accepts the client's own language; this makes them work on any locale.
+-- Returns nil if a referenced spell's data is not cached yet (kicks off an async
+-- load so a later refresh completes it); callers skip the macro write on nil.
+local function ResolveSpellTokens(text, spells)
+    if not text then return nil end
+    if not spells or not text:find("{%d+}") then return text end
+    local missing = false
+    local out = text:gsub("{(%d+)}", function(n)
+        local id = spells[tonumber(n)]
+        if not id then return "{" .. n .. "}" end
+        local info = C_Spell.GetSpellInfo(id)
+        if info and info.name then return info.name end
+        C_Spell.RequestLoadSpellData(id)
+        missing = true
+        return ""
+    end)
+    if missing then return nil end
+    return out
+end
+
+-- /use lines for usable items only; nil while the Create spell's name is not cached.
+local function BuildOwnedOnlyBody(def, db)
+    local ids, firstEnabled = GetUsableItemIDs(def, db)
+    if not firstEnabled then return "" end
+    local tail = def.imbue and "\n/use 16" or ""
+    local spellID, createdItem = GetKnownCreateSpell(def, db)
+    if spellID then
+        local name = ResolveSpellTokens("{1}", { spellID })
+        if not name then return nil end
+        tail = tail .. "\n/cast " .. name
+    end
+    if #ids == 0 then ids = { createdItem or firstEnabled } end
+    local body = db.showTooltip ~= false and ("#showtooltip item:" .. ids[1] .. "\n") or ""
+    local cond = def.friendlyTargetKey and db[def.friendlyTargetKey] and "[@target,help,nodead][@player] " or ""
+    -- Click-cast runs macro bodies as written, so the hovered frame has to be in the macro itself.
+    if def.mouseoverFirst then cond = "[@mouseover,help,nodead]" .. (cond ~= "" and cond or "[] ") end
+    local lines = {}
+    local size = #body + #tail
+    for _, itemID in ipairs(ids) do
+        local line = "/use " .. cond .. "item:" .. itemID
+        size = size + #line + (#lines > 0 and 1 or 0)
+        if size > 255 then break end
+        lines[#lines + 1] = line
+        if #lines == def.maxLines then break end
+    end
+    return body .. table.concat(lines, "\n") .. tail
+end
+
+local function GetMacroInventoryKey(def, db)
+    if def.ownedOnly then return BuildOwnedOnlyBody(def, db) end
+    return GetFirstAvailableItemID(def, db)
+end
+
+local function BuildMacroBody(def, db)
+    if def.ownedOnly then
+        return BuildOwnedOnlyBody(def, db)
+    elseif def.checkboxes then
+        local cbs = def.checkboxes
+        local order = EnsureOrder(db, #cbs)
+
+        -- Collect all enabled items
+        local availItems = {}
+        local firstItemID
+        for _, idx in ipairs(order) do
+            local cb = cbs[idx]
+            if cb and db[cb.key] ~= false then
+                for _, itemID in ipairs(cb.items) do
+                    if not firstItemID then firstItemID = itemID end
+                    availItems[#availItems + 1] = itemID
+                end
+            end
+        end
+
+        if #availItems == 0 and not firstItemID then return "" end
+
+        local body = ""
+        if db.showTooltip ~= false then
+            local tipID = GetFirstAvailableItemID(def, db) or firstItemID
+            if tipID then body = "#showtooltip item:" .. tipID .. "\n" end
+        end
+        local lines = {}
+        for _, itemID in ipairs(availItems) do
+            lines[#lines + 1] = "/use item:" .. itemID
+        end
+        if #lines == 0 then return "" end
+        return body .. table.concat(lines, "\n")
+    elseif def.fixedBody then
+        local fbody = ResolveSpellTokens(def.fixedBody, def.spells)
+        if fbody == nil then return nil end -- spell data not cached; skip write
+        local body = ""
+        if db.showTooltip ~= false and def.fixedTooltip then
+            local tip = ResolveSpellTokens(def.fixedTooltip, def.spells)
+            if tip == nil then return nil end
+            body = "#showtooltip " .. tip .. "\n"
+        elseif db.showTooltip ~= false then
+            body = "#showtooltip\n"
+        end
+        -- Optional trailing lines driven by the def's own extra toggles. Returns
+        -- nil when every toggle is off, leaving the body untouched.
+        if def.extraBody then
+            local extra = def.extraBody(db)
+            if extra and extra ~= "" then
+                return body .. fbody .. "\n" .. extra
+            end
+        end
+        return body .. fbody
+    end
+    return ""
+end
+
+-- Pick the icon stored on the created WoW macro. Single-spell / item macros
+-- keep the "?" placeholder so the game shows a live icon from their
+-- #showtooltip line. Multi-spell combo macros have no #showtooltip to derive
+-- from, so they'd show a bare "?" -- give them their first spell's texture.
+local function ResolveMacroIcon(def)
+    if def.macroIcon then return def.macroIcon end
+    if def.spells and def.fixedBody and not def.fixedTooltip then
+        local tex = def.spells[1] and C_Spell.GetSpellTexture(def.spells[1])
+        if tex then return tex end
+    end
+    return "INV_MISC_QUESTIONMARK"
+end
+
+-- What each item macro was last written for this session: retail's first item, Forever's body.
+local lastAvailableItems = {}
+
+local function WriteMacro(idx, def, db)
+    local body = BuildMacroBody(def, db)
+    if not body then return end
+    if select(3, GetMacroInfo(idx)) ~= body then EditMacro(idx, nil, nil, body) end
+    if def.checkboxes then lastAvailableItems[def.name] = GetMacroInventoryKey(def, db) end
+end
+
+local queueKeys = {}
+
+local function UpdateMacro(def, db)
+    local idx = GetMacroIndexByName(def.name)
+    if idx ~= 0 then
+        if InCombatLockdown() then
+            -- One pending write per macro: it reads the settings and the bags
+            -- again when it runs, so a later change in the same fight needs no
+            -- second one.
+            local key = queueKeys[def.name]
+            if not key then
+                key = "MacroFactory:" .. def.name
+                queueKeys[def.name] = key
+            end
+            if EllesmereUI.CombatQueue.Has(key) then return end
+            EllesmereUI.CombatQueue.Defer(key, function()
+                local i = GetMacroIndexByName(def.name)
+                if i == 0 then return end
+                WriteMacro(i, def, GetMacroDB(def.name))
+            end)
+        else
+            WriteMacro(idx, def, db)
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
+--  Item macro upkeep. An item macro (Potion, Food) names the first item of its
+--  list still in your bags on its #showtooltip line, so a bag change can move
+--  it. Resident, built or not: armed once the session's macros are in (its
+--  first loading screen, or the first macro update, whichever finds one of
+--  these macros first) and by the factory when it creates one; a pass that
+--  finds none left (deleted in the game's macro window) disarms it. On WoW
+--  Forever a level-up also counts (required levels), and a learned spell while
+--  a stone macro has Create When Out on. Nothing listens without Quality of
+--  Life or for a player with no such macro.
+-------------------------------------------------------------------------------
+local ITEM_DEFS = {}
+for i = 1, #GENERAL_DEFS do
+    if GENERAL_DEFS[i].checkboxes then ITEM_DEFS[#ITEM_DEFS + 1] = GENERAL_DEFS[i] end
+end
+for i = 1, #CLASS_DEFS do
+    ITEM_DEFS[#ITEM_DEFS + 1] = CLASS_DEFS[i]
+end
+
+local itemUpkeep = CreateFrame("Frame")
+
+local function SyncSpellUpkeep()
+    for i = 1, #CLASS_DEFS do
+        local def = CLASS_DEFS[i]
+        if def.createRanks and GetMacroIndexByName(def.name) ~= 0 and GetMacroDB(def.name).createWhenOut then
+            itemUpkeep:RegisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
+            return
+        end
+    end
+    itemUpkeep:UnregisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
+end
+
+local function ArmItemUpkeep()
+    itemUpkeep:RegisterEvent("BAG_UPDATE_DELAYED")
+    itemUpkeep:RegisterEvent("PLAYER_REGEN_ENABLED")
+    if EllesmereUI.IS_FOREVER then itemUpkeep:RegisterEvent("PLAYER_LEVEL_UP") end
+    SyncSpellUpkeep()
+end
+
+local function ItemUpkeepPass()
+    local any = false
+    for i = 1, #ITEM_DEFS do
+        local def = ITEM_DEFS[i]
+        if GetMacroIndexByName(def.name) ~= 0 then
+            any = true
+            local db = GetMacroDB(def.name)
+            if GetMacroInventoryKey(def, db) ~= lastAvailableItems[def.name] then
+                UpdateMacro(def, db)
+            end
+        end
+    end
+    if any then SyncSpellUpkeep() else itemUpkeep:UnregisterAllEvents() end
+end
+
+itemUpkeep:SetScript("OnEvent", function(self, event, arg1)
+    if event == "PLAYER_LEVEL_UP" then knownPlayerLevel = arg1 end
+    if event == "BAG_UPDATE_DELAYED" or event == "PLAYER_REGEN_ENABLED"
+       or event == "PLAYER_LEVEL_UP" or event == "LEARNED_SPELL_IN_SKILL_LINE" then
+        ItemUpkeepPass()
+        return
+    end
+    -- PLAYER_ENTERING_WORLD and UPDATE_MACROS: one look each.
+    self:UnregisterEvent(event)
+    if not EllesmereUI._ModuleNS["EllesmereUIQoL"] then return end
+    if self:IsEventRegistered("BAG_UPDATE_DELAYED") then return end
+    for i = 1, #ITEM_DEFS do
+        if GetMacroIndexByName(ITEM_DEFS[i].name) ~= 0 then
+            ArmItemUpkeep()
+            ItemUpkeepPass()
+            return
+        end
+    end
+end)
+itemUpkeep:RegisterEvent("PLAYER_ENTERING_WORLD")
+itemUpkeep:RegisterEvent("UPDATE_MACROS")
 
 function EllesmereUI.BuildMacroFactory(parent, startY, PP)
+    -- The options frame pool: this file is resident, and the options addon
+    -- (whose Quality of Life page is the only caller of this builder) fills
+    -- the table in place when it loads.
+    local Pool = POOL
+    local CreateFrame = Pool.CreateFrame
     local ICON_SIZE = 40
     local ICON_GAP = 40
     local ICONS_PER_ROW = 4
@@ -184,121 +634,9 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
     local SPEC_ICON_GAP = 70
     local FIRST_ICON_Y = -34
     local ROW_STRIDE = 66
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath() or STANDARD_TEXT_FONT
+    local fontPath = EllesmereUI.GetFontPath() or STANDARD_TEXT_FONT
     local EG = EllesmereUI.ELLESMERE_GREEN
     local y = startY
-
-    ---------------------------------------------------------------------------
-    --  Macro definitions
-    ---------------------------------------------------------------------------
-    local GENERAL_DEFS = {
-        {
-            name = "EUI_Potion",
-            icon = "Interface\\Icons\\inv_potion_54",
-            label = "Potion",
-            checkboxes = {
-                { key = "opt1", label = "Fleeting Light's Potential", items = {245898, 245897} },
-                { key = "opt2", label = "Light's Potential",          items = {241308, 241309} },
-                { key = "opt3", label = "Fleeting Recklessness",      items = {245902, 245903} },
-                { key = "opt4", label = "Recklessness",               items = {241288, 241289} },
-            },
-        },
-        {
-            name = "EUI_Health",
-            icon = "Interface\\Icons\\inv_potion_131",
-            label = "Health / Recuperate (Combat Based)",
-            spells = {1231418}, -- Recuperate (universal campfire self-heal)
-            -- Line order is the priority: the first potion in bags is the one used.
-            -- Concentrated Silvermoon r2 > r1, then Silvermoon r2 > r1.
-            fixedBody = "/stopcasting\n/cast [nocombat] {1}\n/use [combat] item:271884\n/use [combat] item:271883\n/use [combat] item:241304\n/use [combat] item:241305",
-            fixedTooltip = "item:271884",
-        },
-        {
-            name = "EUI_Food",
-            icon = "Interface\\Icons\\inv_misc_food_73cinnamonroll",
-            label = "Food",
-            checkboxes = {
-                { key = "opt1", label = "Conjured Mana Bun",          items = {113509} },
-                { key = "opt2", label = "Fairbreeze Feast",           items = {260262} },
-                { key = "opt3", label = "Silvermoon Soiree Spread",   items = {260263} },
-                { key = "opt4", label = "Quel'Danas Rations",         items = {260264} },
-                { key = "opt5", label = "Mana Lily Tea",              items = {242297} },
-                { key = "opt6", label = "Springrunner Sparkling",     items = {260260} },
-                { key = "opt7", label = "Tranquility Bloom Tea",      items = {1226196} },
-                { key = "opt8", label = "Sanguithorn Tea",            items = {242299} },
-                { key = "opt9", label = "Azeroot Tea",                items = {242301} },
-                { key = "opt10", label = "Argentleaf Tea",            items = {242298} },
-                { key = "opt11", label = "Everspring Water",          items = {260259} },
-            },
-        },
-        {
-            name = "EUI_Trinket1",
-            icon = "Interface\\Icons\\inv_jewelry_trinketpvp_01",
-            label = "Trinket 1",
-            fixedBody = "/use 13",
-            fixedTooltip = "13",
-        },
-        {
-            name = "EUI_Trinket2",
-            icon = "Interface\\Icons\\inv_jewelry_trinketpvp_02",
-            label = "Trinket 2",
-            fixedBody = "/use 14",
-            fixedTooltip = "14",
-        },
-        {
-            name = "EUI_Focus",
-            icon = "Interface\\Icons\\ability_hunter_focusedaim",
-            macroIcon = 236203,
-            label = "Set Focus",
-            fixedBody = "/focus [@mouseover,exists,nodead] []",
-            -- Each toggle stands alone: any combination is valid, and with all
-            -- three off the macro body is byte-for-byte what it has always been.
-            extraToggles = {
-                { key = "autoMark", label = "Auto Mark Focus" },
-                { key = "ping",     label = "Ping Focus" },
-                { key = "announce", label = "Announce Focus" },
-            },
-            -- Independent of the toggles above -- pick the marker whenever, it
-            -- only takes effect once Auto Mark is on.
-            extraChoices = {
-                { key = "markIcon", label = "Focus Marker", default = FOCUS_DEFAULT_MARK },
-            },
-            extraBody = function(db)
-                if not (db.autoMark or db.ping or db.announce) then return nil end
-                -- Every trailing command acts on the focus, so bail out when none
-                -- was acquired rather than marking, pinging or announcing whatever
-                -- happens to be targeted.
-                local lines = { "/stopmacro [@focus,noexists]" }
-                local mark = db.markIcon
-                if not FOCUS_MARK_COORDS[mark] then mark = FOCUS_DEFAULT_MARK end
-                if db.autoMark then
-                    -- `~` is the 12.0.7 macro extension that declines to overwrite
-                    -- a marker a group member already placed.
-                    lines[#lines + 1] = "/tm [@focus] ~" .. mark
-                end
-                if db.ping then
-                    -- Numeric alias (3 = On My Way): the word forms resolve through
-                    -- localized PING_TYPE_* globals and only match on English clients.
-                    lines[#lines + 1] = "/ping [@focus] 3"
-                end
-                if db.announce then
-                    -- %f is the built-in chat substitution for the focus unit's
-                    -- name. The marker icon is only advertised when Auto Mark is
-                    -- on -- otherwise the message would name a marker nothing set.
-                    -- The one player-visible word: localized at bake time so the
-                    -- party message reads in the user's language (macro text is
-                    -- baked when written, so a later game-language switch keeps
-                    -- the old wording until a toggle is touched -- inherent to
-                    -- macros).
-                    local focusWord = (EllesmereUI.L and EllesmereUI.L("Focus")) or "Focus"
-                    lines[#lines + 1] = db.autoMark
-                        and ("/p " .. focusWord .. ": {rt" .. mark .. "} %f")
-                        or ("/p " .. focusWord .. ": %f")
-                end
-                return table.concat(lines, "\n")
-            end,
-        },
-    }
 
     ---------------------------------------------------------------------------
     --  Spec macro definitions (keyed by specID)
@@ -626,183 +964,15 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
     local activeClassName = UnitClass("player") or "Unknown"
     -- All spec macro bodies use spell-ID {n} tokens (localized at build time via
     -- ResolveSpellTokens), so they work on every client locale.
-    local activeSpecDefs = activeSpecID and SPEC_DEFS[activeSpecID] or {}
-
-    ---------------------------------------------------------------------------
-    --  DB helper (shared across all buttons and event handlers)
-    ---------------------------------------------------------------------------
-    local function GetMacroDB(macroName)
-        if not EllesmereUIDB then EllesmereUIDB = {} end
-        if not EllesmereUIDB.macroFactory then EllesmereUIDB.macroFactory = {} end
-        if not EllesmereUIDB.macroFactory[macroName] then EllesmereUIDB.macroFactory[macroName] = {} end
-        return EllesmereUIDB.macroFactory[macroName]
-    end
-
-    ---------------------------------------------------------------------------
-    --  Macro body generation
-    ---------------------------------------------------------------------------
-    local function GetFirstAvailableItemID(def, db)
-        if not def.checkboxes then return nil end
-        local cbs = def.checkboxes
-        local order = db.order
-        if not order or #order < #cbs then
-            order = {}
-            for i = 1, #cbs do order[i] = i end
-        end
-        for _, idx in ipairs(order) do
-            local cb = cbs[idx]
-            if cb and db[cb.key] ~= false then
-                for _, itemID in ipairs(cb.items) do
-                    if (GetItemCount(itemID, false) or 0) > 0 then
-                        return itemID
-                    end
-                end
-            end
-        end
-        return nil
-    end
-
-    local function GetMacroInventoryKey(def, db)
-        if def.healthRecovery then
-            return lastHealthRecoveryKey or HealthRecoverySequenceKey(CollectHealthRecoveryItems())
-        end
-        return GetFirstAvailableItemID(def, db)
-    end
-
-    -- Replace {n} placeholders in a macro string with the client-localized name of
-    -- the nth entry in def.spells, resolved from its spell ID via C_Spell.GetSpellInfo.
-    -- Spec macros store spell IDs instead of hard-coded English names because /cast
-    -- only accepts the client's own language; this makes them work on any locale.
-    -- Returns nil if a referenced spell's data is not cached yet (kicks off an async
-    -- load so a later refresh completes it); callers skip the macro write on nil.
-    local function ResolveSpellTokens(text, spells)
-        if not text then return nil end
-        if not spells or not text:find("{%d+}") then return text end
-        local missing = false
-        local out = text:gsub("{(%d+)}", function(n)
-            local id = spells[tonumber(n)]
-            if not id then return "{" .. n .. "}" end
-            local info = C_Spell.GetSpellInfo(id)
-            if info and info.name then return info.name end
-            C_Spell.RequestLoadSpellData(id)
-            missing = true
-            return ""
-        end)
-        if missing then return nil end
-        return out
-    end
-
-    local function BuildMacroBody(def, db)
-        if def.checkboxes then
-            local cbs = def.checkboxes
-            local order = db.order
-            if not order or #order < #cbs then
-                order = {}
-                for i = 1, #cbs do order[i] = i end
-            end
-
-            -- Collect all enabled items
-            local availItems = {}
-            local firstItemID
-            for _, idx in ipairs(order) do
-                local cb = cbs[idx]
-                if cb and db[cb.key] ~= false then
-                    for _, itemID in ipairs(cb.items) do
-                        if not firstItemID then firstItemID = itemID end
-                        availItems[#availItems + 1] = itemID
-                    end
-                end
-            end
-
-            if #availItems == 0 and not firstItemID then return "" end
-
-            local body = ""
-            if db.showTooltip ~= false then
-                local tipID = GetFirstAvailableItemID(def, db) or firstItemID
-                if tipID then body = "#showtooltip item:" .. tipID .. "\n" end
-            end
-            local lines = {}
-            for _, itemID in ipairs(availItems) do
-                lines[#lines + 1] = "/use item:" .. itemID
-            end
-            if #lines == 0 then return "" end
-            return body .. table.concat(lines, "\n")
-        elseif def.healthRecovery then
-            return EllesmereUI.BuildHealthRecoveryMacroBody(db, nil)
-        elseif def.fixedBody then
-            local fbody = ResolveSpellTokens(def.fixedBody, def.spells)
-            if fbody == nil then return nil end -- spell data not cached; skip write
-            local body = ""
-            if db.showTooltip ~= false and def.fixedTooltip then
-                local tip = ResolveSpellTokens(def.fixedTooltip, def.spells)
-                if tip == nil then return nil end
-                body = "#showtooltip " .. tip .. "\n"
-            elseif db.showTooltip ~= false then
-                body = "#showtooltip\n"
-            end
-            -- Optional trailing lines driven by the def's own extra toggles. Returns
-            -- nil when every toggle is off, leaving the body untouched.
-            if def.extraBody then
-                local extra = def.extraBody(db)
-                if extra and extra ~= "" then
-                    return body .. fbody .. "\n" .. extra
-                end
-            end
-            return body .. fbody
-        end
-        return ""
-    end
-
-    -- Pick the icon stored on the created WoW macro. Single-spell / item macros
-    -- keep the "?" placeholder so the game shows a live icon from their
-    -- #showtooltip line. Multi-spell combo macros have no #showtooltip to derive
-    -- from, so they'd show a bare "?" -- give them their first spell's texture.
-    local function ResolveMacroIcon(def)
-        if def.macroIcon then return def.macroIcon end
-        if def.spells and def.fixedBody and not def.fixedTooltip then
-            local tex = def.spells[1] and C_Spell.GetSpellTexture(def.spells[1])
-            if tex then return tex end
-        end
-        return "INV_MISC_QUESTIONMARK"
-    end
-
-    local pendingMacroUpdates = {}
-
-    local function UpdateMacro(def, db)
-        if def.healthRecovery then
-            ApplyHealthRecoveryMacro()
-            return
-        end
-        local idx = GetMacroIndexByName(def.name)
-        if idx ~= 0 then
-            if InCombatLockdown() then
-                pendingMacroUpdates[def.name] = true
-            else
-                local body = BuildMacroBody(def, db)
-                if body then EditMacro(idx, nil, nil, body) end
-            end
-        end
-    end
-
-    local function ProcessPendingMacroUpdates()
-        for macroName in pairs(pendingMacroUpdates) do
-            local mdef = nil
-            for _, def in ipairs(GENERAL_DEFS) do
-                if def.name == macroName then
-                    mdef = def
-                    break
-                end
-            end
-            if mdef then
-                local idx = GetMacroIndexByName(mdef.name)
-                if idx ~= 0 then
-                    local db = GetMacroDB(mdef.name)
-                    local body = BuildMacroBody(mdef, db)
-                    if body then EditMacro(idx, nil, nil, body) end
-                end
-            end
-            pendingMacroUpdates[macroName] = nil
-        end
+    local activeSpecDefs, rightTitle, emptyText
+    if EllesmereUI.IS_FOREVER then
+        activeSpecDefs = CLASS_DEFS
+        rightTitle = activeClassName .. " " .. EllesmereUI.L("Macro Factory")
+        emptyText = EllesmereUI.Lf("No class macros for %1$s", activeClassName)
+    else
+        activeSpecDefs = activeSpecID and SPEC_DEFS[activeSpecID] or {}
+        rightTitle = (activeSpecName or EllesmereUI.L("Spec")) .. " " .. activeClassName .. " " .. EllesmereUI.L("Macro Factory")
+        emptyText = EllesmereUI.L("No spec macros for ") .. (activeSpecName or EllesmereUI.L("this spec"))
     end
 
     ---------------------------------------------------------------------------
@@ -816,13 +986,23 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
     local maxRows = math.max(generalRows, MAX_SPEC_VISIBLE_ROWS)
     local SECTION_H = 102 + ROW_STRIDE * (maxRows - 1)
 
-    local container = CreateFrame("Frame", nil, parent)
+    -- On a kept page (a pool host) the section is one frame for the session:
+    -- each build dresses it again (its reset is the old section's teardown).
+    -- A page built anew gets a new section, as everything on it is new.
+    local keep = Pool.Managed(parent)
+    local container = keep and Pool.Kept(MF, "section", "Frame", parent) or CreateFrame("Frame", nil, parent)
+    -- The right-click menu still open on the previous build closes with it,
+    -- also when its icon is not dressed again (a shorter spec list leaves
+    -- that button, and the menu it owns, out of this build).
+    if keep and MF.openMenu then
+        if MF.openMenu:IsShown() then MF.openMenu:Hide() end
+        MF.openMenu = nil
+    end
     container:SetSize(parent:GetWidth(), SECTION_H)
     container:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y)
 
     local halfW = parent:GetWidth() / 2
     local allMacroButtons = {}
-    local lastAvailableItems = {}
 
     -- Center divider (1px absolute pixel)
     local divider = container:CreateTexture(nil, "ARTWORK")
@@ -858,9 +1038,6 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
         local iconAnchor = container
         local scrollCenterX = centerX
         if maxVisibleRows and totalRows > maxVisibleRows then
-            local SCROLL_STEP_LOCAL = 45
-            local SMOOTH_SPEED_LOCAL = 12
-
             local visH = math.abs(FIRST_ICON_Y) + maxVisibleRows * ROW_STRIDE
             local contentH = math.abs(FIRST_ICON_Y) + totalRows * ROW_STRIDE
 
@@ -875,110 +1052,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
             sc:SetSize(halfW, contentH)
             sf:SetScrollChild(sc)
 
-            -- Scrollbar track
-            local scrollTrack = CreateFrame("Frame", nil, sf)
-            scrollTrack:SetWidth(4)
-            scrollTrack:SetPoint("TOPRIGHT", sf, "TOPRIGHT", -70, -32)
-            scrollTrack:SetPoint("BOTTOMRIGHT", sf, "BOTTOMRIGHT", -70, 8)
-            scrollTrack:SetFrameLevel(sf:GetFrameLevel() + 2)
-            scrollTrack:Hide()
-            local trackBg = scrollTrack:CreateTexture(nil, "BACKGROUND")
-            trackBg:SetAllPoints(); trackBg:SetColorTexture(1, 1, 1, 0.02)
-
-            local scrollThumb = CreateFrame("Button", nil, scrollTrack)
-            scrollThumb:SetWidth(4); scrollThumb:SetHeight(60)
-            scrollThumb:SetPoint("TOP", scrollTrack, "TOP", 0, 0)
-            scrollThumb:SetFrameLevel(scrollTrack:GetFrameLevel() + 1)
-            scrollThumb:EnableMouse(true)
-            scrollThumb:RegisterForDrag("LeftButton")
-            scrollThumb:SetScript("OnDragStart", function() end)
-            scrollThumb:SetScript("OnDragStop", function() end)
-            local thumbTex = scrollThumb:CreateTexture(nil, "ARTWORK")
-            thumbTex:SetAllPoints(); thumbTex:SetColorTexture(1, 1, 1, 0.27)
-
-            local scrollTarget = 0
-            local isSmoothing = false
-            local smoothFrame = CreateFrame("Frame"); smoothFrame:Hide()
-
-            local function UpdateThumb()
-                local maxScroll = EllesmereUI.SafeScrollRange(sf)
-                if maxScroll <= 0 then scrollTrack:Hide(); return end
-                scrollTrack:Show()
-                local trackH = scrollTrack:GetHeight()
-                local ratio = visH / (visH + maxScroll)
-                local thumbH = math.max(30, trackH * ratio)
-                scrollThumb:SetHeight(thumbH)
-                local scrollRatio = (tonumber(sf:GetVerticalScroll()) or 0) / maxScroll
-                scrollThumb:ClearAllPoints()
-                scrollThumb:SetPoint("TOP", scrollTrack, "TOP", 0, -(scrollRatio * (trackH - thumbH)))
-            end
-
-            smoothFrame:SetScript("OnUpdate", function(_, elapsed)
-                local cur = sf:GetVerticalScroll()
-                local maxScroll = EllesmereUI.SafeScrollRange(sf)
-                scrollTarget = math.max(0, math.min(maxScroll, scrollTarget))
-                local diff = scrollTarget - cur
-                if math.abs(diff) < 0.3 then
-                    sf:SetVerticalScroll(scrollTarget)
-                    UpdateThumb()
-                    isSmoothing = false
-                    smoothFrame:Hide()
-                    return
-                end
-                local newScroll = cur + diff * math.min(1, SMOOTH_SPEED_LOCAL * elapsed)
-                newScroll = math.max(0, math.min(maxScroll, newScroll))
-                sf:SetVerticalScroll(newScroll)
-                UpdateThumb()
-            end)
-
-            local function SmoothScrollTo(target)
-                local maxScroll = EllesmereUI.SafeScrollRange(sf)
-                scrollTarget = math.max(0, math.min(maxScroll, target))
-                if not isSmoothing then isSmoothing = true; smoothFrame:Show() end
-            end
-
-            sf:SetScript("OnMouseWheel", function(self, delta)
-                local maxScroll = EllesmereUI.SafeScrollRange(self)
-                if maxScroll <= 0 then return end
-                local base = isSmoothing and scrollTarget or self:GetVerticalScroll()
-                SmoothScrollTo(base - delta * SCROLL_STEP_LOCAL)
-            end)
-            sf:SetScript("OnScrollRangeChanged", function() UpdateThumb() end)
-
-            -- Thumb drag
-            local isDragging = false
-            local dragStartY, dragStartScroll
-            local function StopDrag()
-                if not isDragging then return end
-                isDragging = false
-                scrollThumb:SetScript("OnUpdate", nil)
-            end
-            scrollThumb:SetScript("OnMouseDown", function(self, button)
-                if button ~= "LeftButton" then return end
-                isSmoothing = false; smoothFrame:Hide()
-                isDragging = true
-                local _, cy = GetCursorPosition()
-                dragStartY = cy / self:GetEffectiveScale()
-                dragStartScroll = sf:GetVerticalScroll()
-                self:SetScript("OnUpdate", function(self2)
-                    if not IsMouseButtonDown("LeftButton") then StopDrag(); return end
-                    isSmoothing = false; smoothFrame:Hide()
-                    local _, cy2 = GetCursorPosition()
-                    cy2 = cy2 / self2:GetEffectiveScale()
-                    local deltaY = dragStartY - cy2
-                    local trackH = scrollTrack:GetHeight()
-                    local maxTravel = trackH - self2:GetHeight()
-                    if maxTravel <= 0 then return end
-                    local maxScroll = EllesmereUI.SafeScrollRange(sf)
-                    local newScroll = math.max(0, math.min(maxScroll, dragStartScroll + (deltaY / maxTravel) * maxScroll))
-                    scrollTarget = newScroll
-                    sf:SetVerticalScroll(newScroll)
-                    UpdateThumb()
-                end)
-            end)
-            scrollThumb:SetScript("OnMouseUp", function(_, button)
-                if button == "LeftButton" then StopDrag() end
-            end)
+            EllesmereUI.AttachSmoothScrollbar(sf, { rightInset = 70, topInset = 32, bottomInset = 8, panelWheel = true })
 
             iconParent = sc
             iconAnchor = sc
@@ -1067,22 +1141,13 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 local icon
                 if def.checkboxes then
                     local cbs = def.checkboxes
-                    local order = db.order
-                    if not order or #order < #cbs then
-                        order = {}
-                        for i = 1, #cbs do order[i] = i end
-                    end
+                    local order = EnsureOrder(db, #cbs)
                     for _, idx in ipairs(order) do
                         local cb = cbs[idx]
                         if cb and db[cb.key] ~= false and cb.items and cb.items[1] then
                             icon = C_Item.GetItemIconByID(cb.items[1])
                             if icon then break end
                         end
-                    end
-                elseif def.healthRecovery then
-                    local tipID = tonumber((lastHealthRecoveryKey or ""):match("^(%d+)"))
-                    if tipID and C_Item.GetItemIconByID then
-                        icon = C_Item.GetItemIconByID(tipID)
                     end
                 elseif def.fixedTooltip then
                     local slot = tonumber(def.fixedTooltip)
@@ -1119,14 +1184,16 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                     menuH = menuH + DH + HH + (#cbItems * MH)
                 end
 
-                menuFrame = CreateFrame("Frame", nil, UIParent)
+                -- Owned by its icon button on a kept section: the button's next
+                -- dress hides it, the next build's first right-click dresses it again.
+                menuFrame = keep and Pool.Owned(btn, "menu", "Frame", UIParent) or CreateFrame("Frame", nil, UIParent)
                 menuFrame:SetFrameStrata("FULLSCREEN_DIALOG"); menuFrame:SetFrameLevel(200)
                 menuFrame:SetClampedToScreen(true); menuFrame:EnableMouse(true)
                 menuFrame:SetSize(MW, menuH)
                 menuFrame:Hide()
                 local mBg = menuFrame:CreateTexture(nil, "BACKGROUND"); mBg:SetAllPoints()
                 mBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA or 0.92)
-                EllesmereUI.MakeBorder(menuFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+                EllesmereUI.MakeRoundedBorder(menuFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, mBg, nil, true)
                 local mY = -4
 
                 -- Create/Delete action row
@@ -1148,23 +1215,18 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                     if InCombatLockdown() then return end
                     if MacroExists() then
                         DeleteMacro(def.name)
-                        if def.healthRecovery then lastHealthRecoveryKey = nil end
                     else
                         local db = GetDB()
                         local body = BuildMacroBody(def, db)
                         if body == nil then return end -- spell data not cached yet
                         CreateMacro(def.name, ResolveMacroIcon(def), body, nil)
-                        if def.healthRecovery then
-                            lastHealthRecoveryKey = nil
-                            ApplyHealthRecoveryMacro()
-                        end
                         lastAvailableItems[def.name] = GetMacroInventoryKey(def, db)
+                        if def.checkboxes then ArmItemUpkeep() end
                         PlayFlash()
                         C_Timer.After(0.15, function()
                             if not InCombatLockdown() then ShowMacroFrame() end
                         end)
                     end
-                    C_Timer.After(0.1, function() RefreshState(); RefAct() end)
                 end)
                 mY = mY - MH
 
@@ -1174,10 +1236,11 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 tR:SetPoint("TOPLEFT", menuFrame, "TOPLEFT", 1, mY)
                 tR:SetPoint("TOPRIGHT", menuFrame, "TOPRIGHT", -1, mY)
                 local tB = CreateFrame("Frame", nil, tR); tB:SetSize(16, 16); tB:SetPoint("RIGHT", tR, "RIGHT", -10, 0)
-                local tBg = tB:CreateTexture(nil, "BACKGROUND"); tBg:SetAllPoints(); tBg:SetColorTexture(0.12, 0.12, 0.14, 1)
-                local tBrd = EllesmereUI.MakeBorder(tB, 0.4, 0.4, 0.4, 0.6, PP)
+                local tBg = tB:CreateTexture(nil, "BACKGROUND"); tBg:SetAllPoints(); tBg:SetColorTexture(0.114, 0.106, 0.099, 1)
+                local tBrd = EllesmereUI.MakeRoundedBorder(tB, 0.4, 0.4, 0.4, 0.6, tBg)
                 local tCk = tB:CreateTexture(nil, "ARTWORK"); PP.SetInside(tCk, tB, 2, 2)
                 tCk:SetColorTexture(EG.r, EG.g, EG.b, 1); tCk:SetSnapToPixelGrid(false)
+                EllesmereUI.RoundBody(tB, tCk, 2)
                 local tL = tR:CreateFontString(nil, "OVERLAY"); tL:SetFont(fontPath, 13, "")
                 tL:SetTextColor(0.75, 0.75, 0.75, 1); tL:SetPoint("LEFT", tR, "LEFT", 12, 0); tL:SetText(EllesmereUI.L("Show Tooltip"))
                 local tHL = tR:CreateTexture(nil, "ARTWORK"); tHL:SetAllPoints(); tHL:SetColorTexture(1, 1, 1, 0)
@@ -1216,10 +1279,11 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                         xR:SetPoint("TOPLEFT", menuFrame, "TOPLEFT", 1, mY)
                         xR:SetPoint("TOPRIGHT", menuFrame, "TOPRIGHT", -1, mY)
                         local xB = CreateFrame("Frame", nil, xR); xB:SetSize(16, 16); xB:SetPoint("RIGHT", xR, "RIGHT", -10, 0)
-                        local xBg = xB:CreateTexture(nil, "BACKGROUND"); xBg:SetAllPoints(); xBg:SetColorTexture(0.12, 0.12, 0.14, 1)
-                        local xBrd = EllesmereUI.MakeBorder(xB, 0.4, 0.4, 0.4, 0.6, PP)
+                        local xBg = xB:CreateTexture(nil, "BACKGROUND"); xBg:SetAllPoints(); xBg:SetColorTexture(0.114, 0.106, 0.099, 1)
+                        local xBrd = EllesmereUI.MakeRoundedBorder(xB, 0.4, 0.4, 0.4, 0.6, xBg)
                         local xCk = xB:CreateTexture(nil, "ARTWORK"); PP.SetInside(xCk, xB, 2, 2)
                         xCk:SetColorTexture(EG.r, EG.g, EG.b, 1); xCk:SetSnapToPixelGrid(false)
+                        EllesmereUI.RoundBody(xB, xCk, 2)
                         local xL = xR:CreateFontString(nil, "OVERLAY"); xL:SetFont(fontPath, 13, "")
                         xL:SetTextColor(0.75, 0.75, 0.75, 1); xL:SetPoint("LEFT", xR, "LEFT", 12, 0)
                         xL:SetText(EllesmereUI.L(xt.label))
@@ -1239,6 +1303,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                             db[xt.key] = (not db[xt.key]) or nil
                             RefX()
                             UpdateMacro(def, db)
+                            if def.createRanks then SyncSpellUpkeep() end
                         end)
                         mY = mY - MH
                     end
@@ -1293,7 +1358,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                             list:Hide()
                             local lBg = list:CreateTexture(nil, "BACKGROUND"); lBg:SetAllPoints()
                             lBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, 0.98)
-                            EllesmereUI.MakeBorder(list, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+                            EllesmereUI.MakeRoundedBorder(list, 1, 1, 1, EllesmereUI.DD_BRD_A, lBg, nil, true)
                             for oi = 1, 8 do
                                 local oY = -2 - (oi - 1) * LRH
                                 local oR = CreateFrame("Button", nil, list)
@@ -1368,10 +1433,11 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                         local rl = row:CreateFontString(nil, "OVERLAY"); rl:SetFont(fontPath, 13, "")
                         rl:SetTextColor(0.75, 0.75, 0.75, 1); rl:SetPoint("LEFT", row, "LEFT", 12, 0); rl:SetText(OptionDisplayName(cb))
                         local rb = CreateFrame("Frame", nil, row); rb:SetSize(16, 16); rb:SetPoint("RIGHT", row, "RIGHT", -10, 0)
-                        local rBg = rb:CreateTexture(nil, "BACKGROUND"); rBg:SetAllPoints(); rBg:SetColorTexture(0.12, 0.12, 0.14, 1)
-                        local rBrd = EllesmereUI.MakeBorder(rb, 0.4, 0.4, 0.4, 0.6, PP)
+                        local rBg = rb:CreateTexture(nil, "BACKGROUND"); rBg:SetAllPoints(); rBg:SetColorTexture(0.114, 0.106, 0.099, 1)
+                        local rBrd = EllesmereUI.MakeRoundedBorder(rb, 0.4, 0.4, 0.4, 0.6, rBg)
                         local rCk = rb:CreateTexture(nil, "ARTWORK"); PP.SetInside(rCk, rb, 2, 2)
                         rCk:SetColorTexture(EG.r, EG.g, EG.b, 1); rCk:SetSnapToPixelGrid(false)
+                        EllesmereUI.RoundBody(rb, rCk, 2)
                         local rHL = row:CreateTexture(nil, "ARTWORK"); rHL:SetAllPoints(); rHL:SetColorTexture(1, 1, 1, 0)
 
                         local function UC()
@@ -1432,11 +1498,11 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                             local to = math.max(1, math.min(iI, #cbItems))
                             if from ~= to then
                                 local db = GetDB()
-                                if not db.order then db.order = {}; for oi = 1, #cbItems do db.order[oi] = oi end end
+                                EnsureOrder(db, #cbItems)
                                 local mv = table.remove(db.order, from); table.insert(db.order, to, mv)
                             end
                             local db = GetDB()
-                            if not db.order then db.order = {}; for oi = 1, #cbItems do db.order[oi] = oi end end
+                            EnsureOrder(db, #cbItems)
                             for ri = 1, #rowFrames do
                                 local rf = rowFrames[ri]; local oi = db.order[ri]; local it = cbItems[oi]
                                 rf._cbIndex = ri; rf._cb = it; rf._lbl:SetText(OptionDisplayName(it))
@@ -1521,6 +1587,7 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 menuFrame:SetPoint("TOP", btn, "BOTTOM", 0, -18)
                 if menuFrame._refreshAction then menuFrame._refreshAction() end
                 menuFrame:Show(); btn._cogPopup = menuFrame
+                if keep then MF.openMenu = menuFrame end
             end
 
             btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -1545,13 +1612,9 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 local body = BuildMacroBody(def, db)
                 if body == nil then return end -- spell data not cached yet
                 CreateMacro(def.name, ResolveMacroIcon(def), body, nil)
-                if def.healthRecovery then
-                    lastHealthRecoveryKey = nil
-                    ApplyHealthRecoveryMacro()
-                end
                 lastAvailableItems[def.name] = GetMacroInventoryKey(def, db)
+                if def.checkboxes then ArmItemUpkeep() end
                 self._playFlash()
-                C_Timer.After(0.1, RefreshState)
                 C_Timer.After(0.15, function()
                     if not InCombatLockdown() then ShowMacroFrame() end
                 end)
@@ -1568,59 +1631,30 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
 
     -- Build spec macros on right side
     if #activeSpecDefs > 0 then
-        BuildMacroGroup(activeSpecDefs, "RIGHT", (activeSpecName or EllesmereUI.L("Spec")) .. " " .. activeClassName .. " " .. EllesmereUI.L("Macro Factory"), SPEC_ICONS_PER_ROW, SPEC_ICON_GAP, MAX_SPEC_VISIBLE_ROWS)
+        BuildMacroGroup(activeSpecDefs, "RIGHT", rightTitle, SPEC_ICONS_PER_ROW, SPEC_ICON_GAP, MAX_SPEC_VISIBLE_ROWS)
     else
         local emptyFS = container:CreateFontString(nil, "OVERLAY")
         emptyFS:SetFont(fontPath, 16, "")
         emptyFS:SetTextColor(1, 1, 1, 0.25)
         emptyFS:SetPoint("CENTER", container, "TOPLEFT", halfW + halfW / 2, -SECTION_H / 2)
-        emptyFS:SetText(EllesmereUI.L("No spec macros for ") .. (activeSpecName or EllesmereUI.L("this spec")))
+        emptyFS:SetText(emptyText)
         emptyFS:SetJustifyH("CENTER")
     end
 
-    -- Update macros when inventory changes
-    local function UpdateInventoryDependentMacros()
-        for _, btn in ipairs(allMacroButtons) do
-            local mdef = btn._def
-            if mdef and btn._tex and mdef.checkboxes then
-                local idx = GetMacroIndexByName(mdef.name)
-                if idx ~= 0 then
-                    local db = GetMacroDB(mdef.name)
-                    local newKey = GetMacroInventoryKey(mdef, db)
-                    if newKey ~= lastAvailableItems[mdef.name] then
-                        lastAvailableItems[mdef.name] = newKey
-                        UpdateMacro(mdef, db)
-                    end
-                end
-            elseif mdef and btn._tex and mdef.healthRecovery then
-                local newKey = lastHealthRecoveryKey or GetMacroInventoryKey(mdef, GetMacroDB(mdef.name))
-                if newKey ~= lastAvailableItems[mdef.name] then
-                    lastAvailableItems[mdef.name] = newKey
-                    if btn._refreshIcon then btn._refreshIcon() end
-                end
-            end
-        end
-    end
-
-    -- Poll for macro state changes (2s interval)
-    local pollFrame = CreateFrame("Frame", nil, container)
-    local elapsed = 0
-    pollFrame:SetScript("OnUpdate", function(self, dt)
-        elapsed = elapsed + dt
-        if elapsed < 2 then return end
-        elapsed = 0
+    -- Macro state follows UPDATE_MACROS while the section is shown: the event
+    -- registers on show (with one pass for changes made while hidden), goes on
+    -- hide, and a burst becomes one pass on the next frame. On a kept page the
+    -- show's pass is queued the same way: a page pass shows the kept section
+    -- again before this builder dresses it again, and that dress, in the same
+    -- frame, drops the queued pass.
+    local function SyncMacroStates()
         for _, btn in ipairs(allMacroButtons) do
             local mdef = btn._def
             if mdef and btn._tex then
                 local ex = GetMacroIndexByName(mdef.name) ~= 0
-                local wasCreated = btn._isGray
-                if wasCreated and not ex then
-                    btn._tex:SetDesaturated(false)
-                    btn._isGray = false
-                    if btn._refreshIcon then btn._refreshIcon() end
-                elseif not wasCreated and ex then
-                    btn._tex:SetDesaturated(true)
-                    btn._isGray = true
+                if ex ~= (btn._isGray == true) then
+                    btn._tex:SetDesaturated(ex)
+                    btn._isGray = ex
                     if btn._refreshIcon then btn._refreshIcon() end
                 end
                 if btn._cogPopup and btn._cogPopup:IsShown() and btn._cogPopup._refreshAction then
@@ -1628,43 +1662,37 @@ function EllesmereUI.BuildMacroFactory(parent, startY, PP)
                 end
             end
         end
+    end
+    local macroWatch = CreateFrame("Frame", nil, container)
+    local syncPending, syncGen
+    local function SyncNow()
+        syncPending = nil
+        -- A pass queued before the section was dressed again is dropped: its
+        -- buttons now show the new build, which painted them as it built.
+        if Pool.Gen(macroWatch) ~= syncGen then return end
+        if macroWatch:IsVisible() then SyncMacroStates() end
+    end
+    local function QueueSync()
+        if syncPending then return end
+        syncPending = true
+        syncGen = Pool.Gen(macroWatch)
+        C_Timer.After(0, SyncNow)
+    end
+    macroWatch:SetScript("OnEvent", QueueSync)
+    macroWatch:SetScript("OnShow", function(self)
+        self:RegisterEvent("UPDATE_MACROS")
+        if keep then QueueSync() else SyncMacroStates() end
     end)
-
-    -- Update macros when bag changes (throttled), spec changes, login, or combat ends
-    local eventFrame = CreateFrame("Frame", nil, container)
-    local bagUpdatePending = false
-    -- Spec changes are handled by a single persistent watcher (see end of file)
-    -- that rebuilds only this section, not here -- registering per build would
-    -- stack up handlers and multi-flash on every subsequent spec change.
-    eventFrame:RegisterEvent("BAG_UPDATE")
-    eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-    eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-    eventFrame:SetScript("OnEvent", function(self, event)
-        if event == "PLAYER_REGEN_ENABLED" then
-            ProcessPendingMacroUpdates()
-            UpdateInventoryDependentMacros()
-        elseif event == "PLAYER_ENTERING_WORLD" then
-            C_Timer.After(1, UpdateInventoryDependentMacros)
-        elseif not bagUpdatePending then
-            bagUpdatePending = true
-            C_Timer.After(0.5, function()
-                bagUpdatePending = false
-                UpdateInventoryDependentMacros()
-            end)
-        end
-    end)
+    macroWatch:SetScript("OnHide", function(self) self:UnregisterEvent("UPDATE_MACROS") end)
+    -- Built while shown: the buttons were just painted, so only listen.
+    if macroWatch:IsVisible() then macroWatch:RegisterEvent("UPDATE_MACROS") end
 
     -- Remember this build so a spec change can rebuild just this section in place
-    -- (constant SECTION_H keeps the rest of the page from shifting). Retire the
-    -- previous build's inventory event frame so its handlers don't stack up.
+    -- (constant SECTION_H keeps the rest of the page from shifting).
     local mf = EllesmereUI._macroFactory
     if not mf then mf = {}; EllesmereUI._macroFactory = mf end
-    if mf.eventFrame and mf.eventFrame ~= eventFrame then
-        mf.eventFrame:UnregisterAllEvents()
-        mf.eventFrame:SetScript("OnEvent", nil)
-    end
     mf.parent, mf.startY, mf.PP = parent, startY, PP
-    mf.container, mf.eventFrame = container, eventFrame
+    mf.container = container
     mf.builtSpecID = activeSpecID
 
     return SECTION_H
@@ -1672,8 +1700,9 @@ end
 
 -- Rebuild only the Macro Factory section when the player's spec changes, so its
 -- spec suggestions update without a full options-page rebuild (which flashed the
--- whole page). The new section is built before the old one is removed, and its
--- height is constant, so there is no visible gap or layout shift. Works whether
+-- whole page). On a kept page the section is the same frame dressed again;
+-- otherwise the new section is built before the old one is removed. Its height
+-- is constant, so there is no visible gap or layout shift. Works whether
 -- the options panel is open (user sees it refresh) or closed (the cached page's
 -- section is updated in place, so reopening already shows the new spec).
 function EllesmereUI.RefreshMacroFactory()
@@ -1693,21 +1722,62 @@ function EllesmereUI.RefreshMacroFactory()
     pcall(EllesmereUI.BuildMacroFactory, mf.parent, mf.startY, mf.PP)
     EllesmereUI._searchIndexSuppress = nil
 
-    -- The new section is built (constant SECTION_H, same anchor) before the old
-    -- one is dropped, so there is no gap or layout shift -- both apply in one frame.
+    -- A new section (constant SECTION_H, same anchor) was built before the old
+    -- one is dropped, so there is no gap or layout shift -- both apply in one
+    -- frame. A kept section is the same frame: nothing to drop.
     if oldContainer and oldContainer ~= mf.container then
         oldContainer:Hide()
         oldContainer:SetParent(nil)
     end
 end
 
+-- The Quality of Life page built without the section (its card closed): the
+-- kept section and the menu it owns hide, and a spec change finds nothing
+-- built to refresh. The next build dresses the section again (the pool shows
+-- it as it resets it).
+function EllesmereUI.ParkMacroFactory()
+    local mf = EllesmereUI._macroFactory
+    if not mf then return end
+    if MF.openMenu then
+        if MF.openMenu:IsShown() then MF.openMenu:Hide() end
+        MF.openMenu = nil
+    end
+    if mf.container and mf.container:IsShown() then mf.container:Hide() end
+    mf.parent = nil
+end
+
+-- A spec change only matters to what the options panel shows: the Macro
+-- Factory section's suggestions and the open page's spec-dependent controls.
+-- So the watcher listens only while the panel is shown, to the player's own
+-- spec alone, and an open catches up on a change made while it was closed.
 EllesmereUI._macroSpecWatcher = EllesmereUI._macroSpecWatcher or CreateFrame("Frame")
 EllesmereUI._macroSpecWatcher:UnregisterAllEvents()
-EllesmereUI._macroSpecWatcher:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-EllesmereUI._macroSpecWatcher:SetScript("OnEvent", function()
-    if EllesmereUI.RefreshMacroFactory then EllesmereUI.RefreshMacroFactory() end
-    -- Also re-run the active page's in-place widget refreshers so other
-    -- spec-dependent controls update, as the old per-build event frame did.
-    -- No-arg (fast path) => re-reads values only, no frame teardown, no flash.
-    if EllesmereUI.RefreshPage then EllesmereUI:RefreshPage() end
-end)
+do
+    local watcher = EllesmereUI._macroSpecWatcher
+    local seenSpecID
+    local function CurrentSpecID()
+        local idx = C_SpecializationInfo.GetSpecialization()
+        return idx and C_SpecializationInfo.GetSpecializationInfo(idx) or nil
+    end
+    local function OnSpecChanged()
+        seenSpecID = CurrentSpecID()
+        EllesmereUI.RefreshMacroFactory()
+        -- Also re-run the active page's in-place widget refreshers so other
+        -- spec-dependent controls update, as the old per-build event frame did.
+        -- No-arg (fast path) => re-reads values only, no frame teardown, no flash.
+        EllesmereUI:RefreshPage()
+    end
+    watcher:SetScript("OnEvent", OnSpecChanged)
+    EllesmereUI:RegisterOnShow(function()
+        watcher:RegisterUnitEvent("PLAYER_SPECIALIZATION_CHANGED", "player")
+        -- The first open builds its pages for the current spec already.
+        if seenSpecID ~= nil and CurrentSpecID() ~= seenSpecID then
+            OnSpecChanged()
+        else
+            seenSpecID = CurrentSpecID()
+        end
+    end)
+    EllesmereUI:RegisterOnHide(function()
+        watcher:UnregisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+    end)
+end

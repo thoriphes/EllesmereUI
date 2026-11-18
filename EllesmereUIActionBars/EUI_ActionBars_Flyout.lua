@@ -205,8 +205,9 @@ local function OnBlizzardFlyoutShow(flyout)
     -- once per button (its size never changes; the paint stamps classicArt
     -- in the button's record).
     local classic = ns.AB_Style() == "classic"
-    for i = 1, flyout:GetNumChildren() do
-        local child = select(i, flyout:GetChildren())
+    local children = { flyout:GetChildren() }
+    for i = 1, #children do
+        local child = children[i]
         if child and child:IsShown() and child.icon then
             if classic then
                 if not ns.EFD(child).classicArt then ns.AB_PaintClassicButton(child) end
@@ -218,7 +219,8 @@ local function OnBlizzardFlyoutShow(flyout)
 end
 
 -------------------------------------------------------------------------------
---  Hook Installation (deferred -- SpellFlyout may not exist at load time)
+--  Hook Installation (at login, with PLAYER_ENTERING_WORLD as the retry when
+--  SpellFlyout is not there yet).
 -------------------------------------------------------------------------------
 local function InstallBlizzFlyoutHook()
     local sf = _G.SpellFlyout
@@ -228,7 +230,7 @@ local function InstallBlizzFlyoutHook()
     sf:HookScript("OnShow", OnBlizzardFlyoutShow)
     return true
 end
-if not InstallBlizzFlyoutHook() then
+do
     -- Shell from the main file's pool: born at ActionBars' file scope so the
     -- handler work bills this addon (see the pool note there).
     local hookFrame = ns.TakeShell()

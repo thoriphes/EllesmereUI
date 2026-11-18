@@ -11,13 +11,17 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -- SILENTLY on a mismatch. Renaming one means updating every consumer.
 if not EllesmereUI._ModuleNS["EllesmereUIQoL"] then return end  -- module disabled: no options page
 
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local PAGE_QOL      = "QoL"
 local PAGE_CURSOR   = "Cursor"
 local PAGE_UPGCALC  = "Upgrader"
 local PAGE_SHIFTER  = "Shifter"
 local PAGE_MOVEMENT = "MoveAlert"
 local PAGE_RAIDTOOLS = "Raid Tools"
-local PAGE_TRAVEL   = "Travel"
 
 -------------------------------------------------------------------------------
 --  Hide Item Transforms picker popup
@@ -57,7 +61,7 @@ local function ShowTransformsPopup()
 
         local POPUP_W = CONTENT_LEFT + CONTENT_RIGHT + numCols * COL_W + (numCols - 1) * COL_GAP
         local POPUP_H = CONTENT_TOP + HDR_H + 4 + maxRows * ROW_H + 24 + 39 + 38
-        local ppScale = EllesmereUI.GetPopupScale and EllesmereUI.GetPopupScale() or 1
+        local ppScale = EllesmereUI.GetPopupScale() or 1
 
         local dimmer = CreateFrame("Frame", nil, UIParent)
         dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
@@ -83,8 +87,8 @@ local function ShowTransformsPopup()
 
         local bg = popup:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetColorTexture(0.06, 0.08, 0.10, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
+        bg:SetColorTexture(0.077, 0.068, 0.058, 1)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, bg)
 
         local title = popup:CreateFontString(nil, "OVERLAY")
         title:SetFont(FONT, 22, "")
@@ -172,12 +176,13 @@ local function ShowTransformsPopup()
                 box:SetFrameLevel(row:GetFrameLevel() + 1)
                 local boxBg = box:CreateTexture(nil, "BACKGROUND")
                 boxBg:SetAllPoints()
-                boxBg:SetColorTexture(0.12, 0.12, 0.14, 1)
-                row._boxBorder = EllesmereUI.MakeBorder(box, 0.4, 0.4, 0.4, 0.6, PP)
+                boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
+                row._boxBorder = EllesmereUI.MakeRoundedBorder(box, 0.4, 0.4, 0.4, 0.6, boxBg)
                 local check = box:CreateTexture(nil, "ARTWORK")
                 check:SetPoint("TOPLEFT", box, "TOPLEFT", 3, -3)
                 check:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -3, 3)
                 check:SetColorTexture(EG.r, EG.g, EG.b, 1)
+                EllesmereUI.RoundBody(box, check, 1)
                 row._check = check
 
                 local lbl = row:CreateFontString(nil, "OVERLAY")
@@ -206,8 +211,8 @@ local function ShowTransformsPopup()
         applyBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, 38)
         local applyBg = applyBtn:CreateTexture(nil, "BACKGROUND")
         applyBg:SetAllPoints()
-        applyBg:SetColorTexture(0.06, 0.08, 0.10, 0.92)
-        local applyBrd = EllesmereUI.MakeBorder(applyBtn, EG.r, EG.g, EG.b, 0.9, PP)
+        applyBg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
+        local applyBrd = EllesmereUI.MakeRoundedBorder(applyBtn, EG.r, EG.g, EG.b, 0.9, applyBg)
         local applyLbl = applyBtn:CreateFontString(nil, "OVERLAY")
         applyLbl:SetFont(FONT, 16, "")
         applyLbl:SetPoint("CENTER")
@@ -241,8 +246,9 @@ local function ShowTransformsPopup()
         dimmer:SetScript("OnMouseDown", function(self)
             if not popup:IsMouseOver() then self:Hide() end
         end)
-        popup:EnableKeyboard(true)
+        EllesmereUI.PopupTakeKeys(popup, dimmer)
         popup:SetScript("OnKeyDown", function(self, key)
+            if InCombatLockdown() then return end
             if key == "ESCAPE" then
                 self:SetPropagateKeyboardInput(false)
                 dimmer:Hide()
@@ -263,6 +269,121 @@ local function ShowTransformsPopup()
     transformsPopup._dimmer:Show()
 end
 
+-------------------------------------------------------------------------------
+--  SELF COMBAT TEXT section of the QoL page (runtime:
+--  EllesmereUIQoL_SelfCombatText.lua, settings through its SCT_Get/SCT_Set)
+-------------------------------------------------------------------------------
+local function BuildSelfCombatTextSection(parent, y)
+    local W = EllesmereUI.Widgets
+    local qns = EllesmereUI._ModuleNS["EllesmereUIQoL"]
+    local SCTGet, SCTSet = qns.SCT_Get, qns.SCT_Set
+    local _, h, hdr
+
+    hdr, h = W:SectionHeader(parent, "SELF COMBAT TEXT", y);  y = y - h
+
+    local function sctOff() return not SCTGet("enabled") end
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = "EUI_SelfCombatText", disabled = sctOff, disabledTooltip = "Self Combat Text" })
+    local function sctToggle(text, key)
+        return { type="toggle", text=text,
+          disabled=sctOff, disabledTooltip="Self Combat Text",
+          getValue=function() return SCTGet(key) end,
+          setValue=function(v) SCTSet(key, v); EllesmereUI:RefreshPage() end }
+    end
+    local function sctDropdown(text, key, values, order)
+        return { type="dropdown", text=text, values=values, order=order,
+          disabled=sctOff, disabledTooltip="Self Combat Text",
+          getValue=function() return SCTGet(key) end,
+          setValue=function(v) SCTSet(key, v) end }
+    end
+    -- A category toggle's colour, locked while the feature or that category is off
+    local function sctSwatch(rgn, key, colorKey, label)
+        if EllesmereUI._prebuilding then return end
+        EllesmereUI.BuildInlineSwatches(rgn, { {
+            disabled = function() return sctOff() or not SCTGet(key) end,
+            disabledTooltip = function() return sctOff() and "Self Combat Text" or label end,
+            getValue = function() local c = SCTGet(colorKey); return c.r, c.g, c.b end,
+            setValue = function(r, g, b) SCTSet(colorKey, { r = r, g = g, b = b }) end,
+        } })
+    end
+
+    local sctRow
+    sctRow, h = W:DualRow(parent, y,
+        { type="toggle", text="Self Combat Text",
+          tooltip="Shows your damage taken, healing, avoids and combat enter/leave above the player frame instead of Blizzard's combat text, whose other messages are hidden while this is on. Move it in Unlock Mode.",
+          getValue=function() return not sctOff() end,
+          setValue=EllesmereUI.SectionToggleSetValue(function(v) SCTSet("enabled", v) end) },
+        { type="slider", text="Combat Text Size", min=10, max=48, step=1,
+          disabled=sctOff, disabledTooltip="Self Combat Text",
+          getValue=function() return SCTGet("size") end,
+          setValue=function(v) SCTSet("size", v) end });  y = y - h
+    do
+        EllesmereUI.BuildInlineCog(sctRow._leftRegion, { disabled = sctOff, disabledTooltip = "Self Combat Text",
+            title = "Self Combat Text",
+            rows = {
+                { type="slider", label="Scroll Distance", min=20, max=300, step=5,
+                  get=function() return SCTGet("rise") end,
+                  set=function(v) SCTSet("rise", v) end },
+                { type="slider", label="Scroll Duration", min=0.5, max=4, step=0.1,
+                  get=function() return SCTGet("duration") end,
+                  set=function(v) SCTSet("duration", v) end },
+                { type="slider", label="Crit Scale", min=1, max=3, step=0.1,
+                  get=function() return SCTGet("critScale") end,
+                  set=function(v) SCTSet("critScale", v) end },
+                { type="toggle", label="Stagger Hits",
+                  tooltip="Spaces out hits that land together so none hides another.",
+                  get=function() return SCTGet("stagger") end,
+                  set=function(v) SCTSet("stagger", v) end },
+            },
+        })
+    end
+
+    -- Section gate: the rows below exist only while Self Combat Text is on (the
+    -- toggle's SectionToggleSetValue rebuilds the page).
+    if sctOff() then return y end
+
+    _, h = W:DualRow(parent, y,
+        sctDropdown("Animation", "anim",
+            { straight = "Straight", fountain = "Fountain", static = "Static" },
+            { "straight", "fountain", "static" }),
+        sctDropdown("Scroll Direction", "direction",
+            { up = "Up", down = "Down" }, { "up", "down" }));  y = y - h
+
+    local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
+    fontValues["__combat"] = { text = "Combat Text Font" }
+    table.insert(fontOrder, 1, "__combat")
+    _, h = W:DualRow(parent, y,
+        sctDropdown("Font", "font", fontValues, fontOrder),
+        sctDropdown("Outline", "outline",
+            { NONE = "None", OUTLINE = "Outline", THICKOUTLINE = "Thick Outline" },
+            { "NONE", "OUTLINE", "THICKOUTLINE" }));  y = y - h
+
+    _, h = W:DualRow(parent, y,
+        sctToggle("Text Shadow", "shadow"),
+        sctToggle("Abbreviate Numbers", "abbreviate"));  y = y - h
+
+    local sctRow2
+    sctRow2, h = W:DualRow(parent, y,
+        sctToggle("Show Damage Taken", "damage"),
+        sctToggle("Show Healing Received", "heal"));  y = y - h
+    sctSwatch(sctRow2._leftRegion, "damage", "damageColor", "Show Damage Taken")
+    sctSwatch(sctRow2._rightRegion, "heal", "healColor", "Show Healing Received")
+
+    local sctRow3
+    sctRow3, h = W:DualRow(parent, y,
+        sctToggle("Show Avoidance", "avoid"),
+        sctToggle("Show Combat Enter/Leave", "combat"));  y = y - h
+    sctSwatch(sctRow3._leftRegion, "avoid", "avoidColor", "Show Avoidance")
+    sctSwatch(sctRow3._rightRegion, "combat", "combatColor", "Show Combat Enter/Leave")
+
+    local sctRow4
+    sctRow4, h = W:DualRow(parent, y,
+        sctToggle("Show Power Gains", "power"),
+        EllesmereUI.BlankRowCfg());  y = y - h
+    sctSwatch(sctRow4._leftRegion, "power", "powerColor", "Show Power Gains")
+
+    return y
+end
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
 initFrame:SetScript("OnEvent", function(self)
@@ -272,27 +393,77 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  QoL Features page
     ---------------------------------------------------------------------------
+    -- The Macro Factory card: open or closed for the session (closed at its
+    -- start), the section name its header carries in search (set by each
+    -- build), and its glyph, the Potion macro's icon.
+    local macroFactoryOpen = {}
+    local macroFactorySection
+    local function MacroFactoryGlyph(hdr)
+        local PP = EllesmereUI.PanelPP
+        local icon = hdr:CreateTexture(nil, "ARTWORK")
+        PP.Size(icon, 22, 22)
+        PP.Point(icon, "LEFT", hdr, "LEFT", 17, 0)
+        icon:SetTexture("Interface\\Icons\\inv_potion_54")
+        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    end
+    -- Deep-link pre-hook: a jump to the card's own search entry opens the card
+    -- first, so the jump lands on the open factory (a jump to any other row of
+    -- the page leaves the card as it is).
+    do
+        local origNav = EllesmereUI.NavigateToElementSettings
+        function EllesmereUI:NavigateToElementSettings(moduleName, pageName, sectionName, preSelectFn, highlightText)
+            -- The original refuses in combat: no page state changes then.
+            if InCombatLockdown() then
+                return origNav(self, moduleName, pageName, sectionName, preSelectFn, highlightText)
+            end
+            if moduleName == "EllesmereUIQoL" and pageName == PAGE_QOL and sectionName ~= nil
+               and sectionName == macroFactorySection and not macroFactoryOpen.macroFactory then
+                macroFactoryOpen.macroFactory = true
+                EllesmereUI:InvalidatePageCache()
+            end
+            return origNav(self, moduleName, pageName, sectionName, preSelectFn, highlightText)
+        end
+    end
+
     local function BuildQoLPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local _, h
+        local _, h, hdr
         local PP = EllesmereUI.PanelPP
 
         parent._showRowDivider = true
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
 
-        -- The Macro Factory is deliberately NOT part of the global search. Its builder
-        -- arms live machinery at build time (a session event frame that rewrites the
-        -- player's real EUI_* macros on bag/spec events), so the hidden search
-        -- pre-build must never run it, and its rows are kept out of the search index so
-        -- results can never point into it (the index would otherwise deep-link to rows
-        -- whose page state the factory manages itself).
-        if EllesmereUI.BuildMacroFactory and not EllesmereUI._prebuilding then
-            EllesmereUI._searchIndexSuppress = true
-            local mfH = EllesmereUI.BuildMacroFactory(parent, y, PP)
-            EllesmereUI._searchIndexSuppress = nil
-            y = y - mfH
+        -- The Macro Factory sits in an expandable card (the patch notes' card),
+        -- closed at the start of every session: its section is built only while
+        -- the card is open, and a closed card parks the section an earlier build
+        -- left. The card's header is a search entry (a jump to it opens the card,
+        -- see the pre-hook below), but the factory's own rows stay out of the
+        -- index, and the hidden search pre-build builds the header only: it never
+        -- builds the section and never parks the one on screen. WoW Forever's
+        -- factory has its own item macros, plus Warlock and Mage sets instead of spec sets.
+        if EllesmereUI.BuildMacroFactory then
+            local prebuilding = EllesmereUI._prebuilding
+            local mfDesc = EllesmereUI.IS_FOREVER
+                and EllesmereUI.L("Ready-made macros for food, drink, healthstones, potions and trinkets, plus Warlock stones and Mage gems")
+                or EllesmereUI.L("Ready-made macros for potions, food, trinkets and focus, plus a set for your spec")
+            local mfTile = { key = "macroFactory", display = "Macro Factory",
+                desc = mfDesc,
+                buildContent = function(_, cy)
+                    if prebuilding then return cy end
+                    EllesmereUI._searchIndexSuppress = true
+                    local mfH = EllesmereUI.BuildMacroFactory(parent, cy, PP)
+                    EllesmereUI._searchIndexSuppress = nil
+                    return cy - mfH
+                end }
+            macroFactorySection = mfTile.display .. " " .. mfTile.desc
+            y = EllesmereUI.BuildModuleCard(parent, y, W, mfTile, {
+                enabled = true, expanded = macroFactoryOpen, descW = 560,
+                glyph = MacroFactoryGlyph })
+            if not macroFactoryOpen.macroFactory and not prebuilding then
+                EllesmereUI.ParkMacroFactory()
+            end
         end
 
         ---------------------------------------------------------------------------
@@ -300,83 +471,248 @@ initFrame:SetScript("OnEvent", function(self)
         ---------------------------------------------------------------------------
         _, h = W:SectionHeader(parent, "GENERAL", y);  y = y - h
 
-        local row1
-        row1, h = W:DualRow(parent, y,
-            { type="toggle", text="Hide Blizzard Party Panel",
-              tooltip="Hides the collapsed Blizzard party/raid sidebar panel on the side of the screen.",
-              disabled=function() return C_AddOns and C_AddOns.IsAddOnLoaded("EllesmereUIRaidFrames") end,
-              disabledTooltip="This option is now controlled by the Raid Frames addon", rawTooltip=true,
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideBlizzardPartyFrame or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideBlizzardPartyFrame = v
-                  if EllesmereUI._applyHideBlizzardPartyFrame then
-                      EllesmereUI._applyHideBlizzardPartyFrame()
-                  end
-              end },
-            { type="toggle", text="Skip Cinematics",
-              tooltip="When you press Escape or Space during a cinematic, the confirmation prompt is automatically accepted.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.skipCinematics or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.skipCinematics = v
-                  EllesmereUI:RefreshPage()
-              end }
-        );  y = y - h
-
-        -- Cog on Skip Cinematics (right region of row1)
-        if not EllesmereUI._prebuilding then
-            local rightRgn = row1._rightRegion
-            local function cinematicsOff()
-                return not (EllesmereUIDB and EllesmereUIDB.skipCinematics)
+        -- Row 1: Hide Blizzard Elements (checklist + Loot Rolls Window cog) |
+        -- Skip Cinematics (+ cog). Each checklist row reads and writes its own
+        -- saved key, as its toggle did. Party Panel is the same key and apply
+        -- as the Raid Frames toggle (EllesmereUI_BlizzardParty.lua). The talking
+        -- head, banner and toast rows are retail only: their runtime blocks do
+        -- not exist on WoW Forever.
+        do
+            local HBE_LABEL = "Hide Blizzard Elements"
+            local function QDB()
+                if not EllesmereUIDB then EllesmereUIDB = {} end
+                return EllesmereUIDB
+            end
+            -- The toast rows share the hideAlertToasts switch: a kind hides while
+            -- the switch is on and its own key allows it (Loot unset = on, the
+            -- others unset = off), the runtime's KindHidden rule.
+            local TOAST_KEYS = { "hideAlertToastsLoot", "hideAlertToastsAchievements", "hideAlertToastsHousing" }
+            local function ToastHidden(key)
+                local db = EllesmereUIDB
+                if not (db and db.hideAlertToasts) then return false end
+                local v = db[key]
+                if v == nil then return key == "hideAlertToastsLoot" end
+                return v
+            end
+            local function SetToast(key, v)
+                local db = QDB()
+                if v and not db.hideAlertToasts then
+                    -- The switch goes on for this kind alone.
+                    db.hideAlertToasts = true
+                    for i = 1, #TOAST_KEYS do db[TOAST_KEYS[i]] = false end
+                end
+                db[key] = v and true or false
+                if not v then
+                    local any = false
+                    for i = 1, #TOAST_KEYS do
+                        if ToastHidden(TOAST_KEYS[i]) then any = true end
+                    end
+                    if not any then db.hideAlertToasts = false end
+                end
+                if EllesmereUI._applyHideAlertToasts then EllesmereUI._applyHideAlertToasts() end
+            end
+            local function Toast(key, label, alias)
+                return { key = key, label = label, alias = alias,
+                    read = function() return ToastHidden(key) end,
+                    write = function(v) SetToast(key, v) end }
             end
 
-            local _, cinCogShow = EllesmereUI.BuildCogPopup({
-                title = "Cinematic Settings",
-                rows = {
-                    { type="toggle", label="Automatically Skip If Possible",
-                      get=function()
-                          return EllesmereUIDB and EllesmereUIDB.skipCinematicsAuto or false
-                      end,
-                      set=function(v)
-                          if not EllesmereUIDB then EllesmereUIDB = {} end
-                          EllesmereUIDB.skipCinematicsAuto = v
-                      end },
-                },
-            })
+            -- alias: the row's old label, kept as search text.
+            local RETAIL = not EllesmereUI.IS_FOREVER
+            local items = {}
+            items[#items + 1] = { key = "hideBlizzardPartyFrame", label = "Party Panel (Sidebar)",
+                alias = "Hide Blizzard Party Panel",
+                tooltip = "Hides the collapsed Blizzard party/raid sidebar panel on the side of the screen.",
+                read = function() return EllesmereUIDB and EllesmereUIDB.hideBlizzardPartyFrame or false end,
+                write = function(v)
+                    QDB().hideBlizzardPartyFrame = v
+                    EllesmereUI._applyHideBlizzardPartyFrame()
+                end }
+            if RETAIL then
+                items[#items + 1] = { key = "hideTalkingHead", label = "Talking Head",
+                    alias = "Hide Talking Head",
+                    tooltip = "Hides the large NPC dialogue popup that appears during quests and dungeons.",
+                    read = function() return EllesmereUIDB and EllesmereUIDB.hideTalkingHead or false end,
+                    write = function(v)
+                        QDB().hideTalkingHead = v
+                        EllesmereUI._applyHideTalkingHead()
+                    end }
+                items[#items + 1] = { key = "muteTalkingHead", label = "Talking Head Audio",
+                    alias = "Mute Talking Head",
+                    tooltip = "Silences the talking head's voice lines.",
+                    read = function() return EllesmereUIDB and EllesmereUIDB.muteTalkingHead == true end,
+                    write = function(v)
+                        QDB().muteTalkingHead = v
+                        EllesmereUI._applyHideTalkingHead()
+                    end }
+            end
+            items[#items + 1] = { key = "hideTutorials", label = "Tutorial Popups",
+                alias = "Hide Tutorial Pop-ups",
+                tooltip = "Hides Blizzard's tutorial UI: the yellow HelpTip bubbles and the glowing (i) help-plate buttons on the spellbook, talents, map, collections, and other panels.",
+                read = function() return EllesmereUIDB and EllesmereUIDB.hideTutorials or false end,
+                write = function(v)
+                    QDB().hideTutorials = v
+                    if EllesmereUI._applyHideTutorials then EllesmereUI._applyHideTutorials() end
+                end }
+            items[#items + 1] = { key = "hideErrorMessages", label = "Error Messages",
+                alias = "Hide Error Messages",
+                tooltip = "Hides most red error messages (such as 'Not enough rage' or 'Ability is not ready yet'). Important errors like a full bag or quest log are still shown.",
+                read = function() return EllesmereUIDB and EllesmereUIDB.hideErrorMessages or false end,
+                write = function(v)
+                    QDB().hideErrorMessages = v
+                    -- Turning it off takes effect at the next reload; the apply
+                    -- returns true while one is due.
+                    if EllesmereUI._applyHideErrorMessages and EllesmereUI._applyHideErrorMessages() then
+                        EllesmereUI:ShowConfirmPopup({
+                            title       = "Reload Required",
+                            message     = "Hidden error messages come back after a UI reload.",
+                            confirmText = "Reload Now",
+                            cancelText  = "Later",
+                            reload      = true,
+                        })
+                    end
+                end }
+            items[#items + 1] = { key = "hideLootHistory", label = "Group Loot Rolls Window",
+                alias = "Hide Loot Rolls Window",
+                tooltip = "Hides Blizzard's \"Loot Rolls\" window -- the running list of dropped items showing who rolled what and who won. Use the cog to let it appear briefly and close itself instead. The Need/Greed roll popups themselves are not affected.",
+                read = function() return EllesmereUIDB and EllesmereUIDB.hideLootHistory or false end,
+                write = function(v)
+                    QDB().hideLootHistory = v
+                    if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
+                    EllesmereUI:RefreshPage()  -- the Loot Rolls Window cog follows
+                end }
+            if RETAIL then
+                items[#items + 1] = { key = "hideBanners", label = "Top Screen Banners",
+                    alias = "Hide Banners",
+                    tooltip = "Hides the big banners at the top of the screen.",
+                    read = function() return EllesmereUIDB and EllesmereUIDB.hideBanners or false end,
+                    write = function(v)
+                        QDB().hideBanners = v
+                        if EllesmereUI._applyHideBanners then EllesmereUI._applyHideBanners() end
+                    end }
+            end
+            -- The same EllesmereUIDB.suppressErrors key and scriptErrors CVar as
+            -- Global Settings > Developer, applied on login by the parent.
+            items[#items + 1] = { key = "suppressErrors", label = "Lua Errors",
+                alias = "Suppress Lua Errors",
+                tooltip = "Hides the Lua error popup. The same setting as Global Settings > Developer.",
+                read = function() return not (EllesmereUIDB and EllesmereUIDB.suppressErrors == false) end,
+                write = function(v)
+                    QDB().suppressErrors = v
+                    if not InCombatLockdown() then EllesmereUI.SetCVar("scriptErrors", v and "0" or "1") end
+                end }
+            if RETAIL then
+                items[#items + 1] = Toast("hideAlertToastsLoot", "Loot Toasts", "Hide Alert Toasts")
+                items[#items + 1] = Toast("hideAlertToastsAchievements", "Achievement Toasts")
+                items[#items + 1] = Toast("hideAlertToastsHousing", "Housing Toasts")
+            end
 
-            local cinCogBtn = CreateFrame("Button", nil, rightRgn)
-            cinCogBtn:SetSize(26, 26)
-            cinCogBtn:SetPoint("RIGHT", rightRgn._lastInline or rightRgn._control, "LEFT", -9, 0)
-            rightRgn._lastInline = cinCogBtn
-            cinCogBtn:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
-            cinCogBtn:SetAlpha(cinematicsOff() and 0.15 or 0.4)
-            local cinCogTex = cinCogBtn:CreateTexture(nil, "OVERLAY")
-            cinCogTex:SetAllPoints()
-            cinCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            cinCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            cinCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(cinematicsOff() and 0.15 or 0.4) end)
-            cinCogBtn:SetScript("OnClick", function(self) cinCogShow(self) end)
+            -- Global search sees row labels and tooltips only, so this row's
+            -- entry, registered before the row (the index keeps the first one),
+            -- carries the checklist's names as search text; it is never shown.
+            if EllesmereUI._RegisterSearchEntry then
+                local words = {}
+                local function Word(s)
+                    if not s then return end
+                    words[#words + 1] = s
+                    local loc = EllesmereUI.L(s)
+                    if loc ~= s then words[#words + 1] = loc end
+                end
+                for i = 1, #items do
+                    Word(items[i].label)
+                    Word(items[i].alias)
+                end
+                local labelLoc = EllesmereUI.L(HBE_LABEL)
+                EllesmereUI._RegisterSearchEntry(HBE_LABEL, labelLoc ~= HBE_LABEL and labelLoc or nil,
+                    table.concat(words, " "), EllesmereUI._buildingModule, EllesmereUI._buildingPage,
+                    parent._currentSection and parent._currentSection._sectionName)
+            end
 
-            local cinCogBlock = CreateFrame("Frame", nil, cinCogBtn)
-            cinCogBlock:SetAllPoints()
-            cinCogBlock:SetFrameLevel(cinCogBtn:GetFrameLevel() + 10)
-            cinCogBlock:EnableMouse(true)
-            cinCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(cinCogBtn, EllesmereUI.DisabledTooltip("Skip Cinematics"))
-            end)
-            cinCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            local row1
+            row1, h = W:DualRow(parent, y,
+                { type="label", text=HBE_LABEL,
+                  tooltip="Choose which Blizzard elements to hide." },
+                { type="toggle", text="Skip Cinematics",
+                  tooltip="When you press Escape or Space during a cinematic, the confirmation prompt is automatically accepted.",
+                  getValue=function()
+                      return EllesmereUIDB and EllesmereUIDB.skipCinematics or false
+                  end,
+                  setValue=function(v)
+                      if not EllesmereUIDB then EllesmereUIDB = {} end
+                      EllesmereUIDB.skipCinematics = v
+                      EllesmereUI:RefreshPage()
+                  end }
+            );  y = y - h
 
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = cinematicsOff()
-                cinCogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then cinCogBlock:Show() else cinCogBlock:Hide() end
-            end)
-            if cinematicsOff() then cinCogBlock:Show() else cinCogBlock:Hide() end
+            do
+                local leftRgn = row1._leftRegion
+                if not EllesmereUI._prebuilding then
+                    local byKey = {}
+                    for i = 1, #items do byKey[items[i].key] = items[i] end
+                    local hbeDD, hbeDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                        leftRgn, 210, leftRgn:GetFrameLevel() + 2, items,
+                        function(key) return byKey[key].read() end,
+                        function(key, v) byKey[key].write(v) end)
+                    PP.Point(hbeDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+                    leftRgn._control = hbeDD
+                    leftRgn._lastInline = nil
+                    EllesmereUI.RegisterWidgetRefresh(hbeDDRefresh)
+                end
+
+                -- Loot Rolls Window cog (mode + auto-close delay), left of the list
+                local function lootHistOff()
+                    return not (EllesmereUIDB and EllesmereUIDB.hideLootHistory)
+                end
+                -- The delay only means anything in auto-close mode.
+                local function delayOff()
+                    return lootHistOff()
+                        or (EllesmereUIDB and EllesmereUIDB.lootHistoryMode) ~= "autoclose"
+                end
+                EllesmereUI.BuildInlineCog(leftRgn, {
+                    title = "Loot Rolls Window Settings",
+                    minWidth = 300,
+                    rows = {
+                        { type="dropdown", label="Mode",
+                          values={ hide = "Hide Completely", autoclose = "Close After Delay" },
+                          order={ "hide", "autoclose" },
+                          get=function() return (EllesmereUIDB and EllesmereUIDB.lootHistoryMode) or "hide" end,
+                          set=function(v)
+                            QDB().lootHistoryMode = v
+                            if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
+                          end },
+                        { type="slider", label="Close After (sec)",
+                          min=1, max=30, step=1,
+                          disabled=delayOff,
+                          get=function()
+                            return (EllesmereUIDB and EllesmereUIDB.lootHistoryDelay) or 5
+                          end,
+                          set=function(v)
+                            QDB().lootHistoryDelay = v
+                            if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
+                          end },
+                    },
+                    gap = 9, disabled = lootHistOff, disabledTooltip = "Group Loot Rolls Window",
+                })
+
+                -- Cog on Skip Cinematics (right region)
+                local function cinematicsOff()
+                    return not (EllesmereUIDB and EllesmereUIDB.skipCinematics)
+                end
+                EllesmereUI.BuildInlineCog(row1._rightRegion, {
+                    title = "Cinematic Settings",
+                    rows = {
+                        { type="toggle", label="Automatically Skip If Possible",
+                          get=function()
+                              return EllesmereUIDB and EllesmereUIDB.skipCinematicsAuto or false
+                          end,
+                          set=function(v)
+                              if not EllesmereUIDB then EllesmereUIDB = {} end
+                              EllesmereUIDB.skipCinematicsAuto = v
+                          end },
+                    },
+                    gap = 9, disabled = cinematicsOff, disabledTooltip = "Skip Cinematics",
+                })
+            end
         end
 
         local row2
@@ -430,13 +766,13 @@ initFrame:SetScript("OnEvent", function(self)
         );  y = y - h
 
         -- Cog on Auto Repair (left region)
-        if not EllesmereUI._prebuilding then
+        do
             local leftRgn = repairRow._leftRegion
             local function repairOff()
                 return not (EllesmereUIDB and EllesmereUIDB.autoRepair ~= false)
             end
 
-            local _, repCogShow = EllesmereUI.BuildCogPopup({
+            EllesmereUI.BuildInlineCog(leftRgn, {
                 title = "Auto Repair Settings",
                 rows = {
                     { type="toggle", label="Use Guild Bank Funds",
@@ -458,282 +794,13 @@ initFrame:SetScript("OnEvent", function(self)
                           EllesmereUIDB.repairCoinIcons = v
                       end },
                 },
+                gap = 9, disabled = repairOff, disabledTooltip = "Auto Repair",
             })
-
-            local repCogBtn = CreateFrame("Button", nil, leftRgn)
-            repCogBtn:SetSize(26, 26)
-            repCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = repCogBtn
-            repCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            repCogBtn:SetAlpha(repairOff() and 0.15 or 0.4)
-            local repCogTex = repCogBtn:CreateTexture(nil, "OVERLAY")
-            repCogTex:SetAllPoints()
-            repCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            repCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            repCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(repairOff() and 0.15 or 0.4) end)
-            repCogBtn:SetScript("OnClick", function(self) repCogShow(self) end)
-
-            local repCogBlock = CreateFrame("Frame", nil, repCogBtn)
-            repCogBlock:SetAllPoints()
-            repCogBlock:SetFrameLevel(repCogBtn:GetFrameLevel() + 10)
-            repCogBlock:EnableMouse(true)
-            repCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(repCogBtn, EllesmereUI.DisabledTooltip("Auto Repair"))
-            end)
-            repCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = repairOff()
-                repCogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then repCogBlock:Show() else repCogBlock:Hide() end
-            end)
-            if repairOff() then repCogBlock:Show() else repCogBlock:Hide() end
         end
 
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="AH Current Expansion Only",
-              tooltip="Automatically enables the 'Current Expansion Only' filter whenever you open the Auction House.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.ahCurrentExpansion or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.ahCurrentExpansion = v
-              end },
-            { type="toggle", text="Hide Talking Head",
-              tooltip="Hides the large NPC dialogue popup that appears during quests and dungeons.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideTalkingHead or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideTalkingHead = v
-              end }
-        );  y = y - h
-
-        -- Row 5: Show Coordinates on Map (left, with cog) | Suppress Lua Errors
-        -- (Suppress Lua Errors is a front-end duplicate of the toggle in
-        -- Global Settings > Developer; same EllesmereUIDB.suppressErrors key and
-        -- scriptErrors CVar, applied on login by the parent General module.)
-        local coordRow
-        coordRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Coordinates on Map",
-              tooltip="Displays cursor and player coordinates at the bottom of the world map.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.mapCoords or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.mapCoords = v
-                  if EllesmereUI._applyMapCoords then EllesmereUI._applyMapCoords() end
-                  EllesmereUI:RefreshPage()
-              end },
-            { type="toggle", text="Suppress Lua Errors",
-              tooltip="Hides the Lua error popup. The same setting as Global Settings > Developer.",
-              getValue=function()
-                  return not (EllesmereUIDB and EllesmereUIDB.suppressErrors == false)
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.suppressErrors = v
-                  if not InCombatLockdown() then SetCVar("scriptErrors", v and "0" or "1") end
-              end }
-        );  y = y - h
-
-        -- Cog on Show Coordinates on Map (left region)
-        if not EllesmereUI._prebuilding then
-            local leftRgn = coordRow._leftRegion
-            local function coordsOff()
-                return EllesmereUIDB and EllesmereUIDB.mapCoords == false
-            end
-
-            local _, coordCogShow = EllesmereUI.BuildCogPopup({
-                title = "Map Coordinates Settings",
-                rows = {
-                    { type = "slider", label = "Text Size", min = 8, max = 24, step = 1,
-                      get = function()
-                          return (EllesmereUIDB and EllesmereUIDB.mapCoordsTextSize) or 12
-                      end,
-                      set = function(v)
-                          if not EllesmereUIDB then EllesmereUIDB = {} end
-                          EllesmereUIDB.mapCoordsTextSize = v
-                          if EllesmereUI._applyMapCoords then EllesmereUI._applyMapCoords() end
-                      end },
-                },
-            })
-            local coordCogBtn = CreateFrame("Button", nil, leftRgn)
-            coordCogBtn:SetSize(26, 26)
-            coordCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = coordCogBtn
-            coordCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            coordCogBtn:SetAlpha(coordsOff() and 0.15 or 0.4)
-            local coordCogTex = coordCogBtn:CreateTexture(nil, "OVERLAY")
-            coordCogTex:SetAllPoints()
-            coordCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            coordCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            coordCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(coordsOff() and 0.15 or 0.4) end)
-            coordCogBtn:SetScript("OnClick", function(self) coordCogShow(self) end)
-
-            local coordCogBlock = CreateFrame("Frame", nil, coordCogBtn)
-            coordCogBlock:SetAllPoints()
-            coordCogBlock:SetFrameLevel(coordCogBtn:GetFrameLevel() + 10)
-            coordCogBlock:EnableMouse(true)
-            coordCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(coordCogBtn, EllesmereUI.DisabledTooltip("Show Coordinates on Map"))
-            end)
-            coordCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = coordsOff()
-                coordCogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then coordCogBlock:Show() else coordCogBlock:Hide() end
-            end)
-            local coordInitOff = coordsOff()
-            coordCogBtn:SetAlpha(coordInitOff and 0.15 or 0.4)
-            if coordInitOff then coordCogBlock:Show() else coordCogBlock:Hide() end
-        end
-
-        -- Row 6: Hide Error Messages (left) | Hide Tutorial Pop-ups (right)
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Hide Error Messages",
-              tooltip="Hides most red error messages (such as 'Not enough rage' or 'Ability is not ready yet'). Important errors like a full bag or quest log are still shown.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideErrorMessages or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideErrorMessages = v
-                  if EllesmereUI._applyHideErrorMessages then EllesmereUI._applyHideErrorMessages() end
-              end },
-            { type="toggle", text="Hide Tutorial Pop-ups",
-              tooltip="Hides Blizzard's tutorial UI: the yellow HelpTip bubbles and the glowing (i) help-plate buttons on the spellbook, talents, map, collections, and other panels.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideTutorials or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideTutorials = v
-                  if EllesmereUI._applyHideTutorials then EllesmereUI._applyHideTutorials() end
-              end }
-        );  y = y - h
-
-        -- Row: Hide Loot Rolls Window (left, with settings cog) | Combat
-        -- Alert (right, with its own settings cog below)
-        local lootHistRow
-        lootHistRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Hide Loot Rolls Window",
-              tooltip="Hides Blizzard's \"Loot Rolls\" window -- the running list of dropped items showing who rolled what and who won. Use the cog to let it appear briefly and close itself instead. The Need/Greed roll popups themselves are not affected.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.hideLootHistory or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.hideLootHistory = v
-                  if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
-                  EllesmereUI:RefreshPage()  -- update the cog disabled state
-              end },
-            { type="toggle", text="Combat Alert",
-              tooltip="Shows a large on-screen text when you enter and/or leave combat (e.g. \"+Combat\" / \"-Combat\"). Use the cog to set the display text, size, colors and which transitions are shown; use Unlock Mode to reposition the alert.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.combatAlertEnabled or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.combatAlertEnabled = v
-                  if EllesmereUI._applyCombatAlert then EllesmereUI._applyCombatAlert() end
-                  EllesmereUI:RefreshPage()
-              end }
-        );  y = y - h
-
-        -- Inline cog (mode + auto-close delay) on the Hide Loot Rolls toggle
-        if not EllesmereUI._prebuilding then
-            local leftRgn = lootHistRow._leftRegion
-            local function lootHistOff()
-                return not (EllesmereUIDB and EllesmereUIDB.hideLootHistory)
-            end
-            -- The delay only means anything in auto-close mode.
-            local function delayOff()
-                return lootHistOff()
-                    or (EllesmereUIDB and EllesmereUIDB.lootHistoryMode) ~= "autoclose"
-            end
-
-            local lhModeValues = {
-                hide      = "Hide Completely",
-                autoclose = "Close After Delay",
-            }
-            local lhModeOrder = { "hide", "autoclose" }
-
-            local _, lootHistCogShow = EllesmereUI.BuildCogPopup({
-                title = "Loot Rolls Window Settings",
-                minWidth = 300,
-                rows = {
-                    { type="dropdown", label="Mode",
-                      values=lhModeValues, order=lhModeOrder,
-                      get=function() return (EllesmereUIDB and EllesmereUIDB.lootHistoryMode) or "hide" end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.lootHistoryMode = v
-                        if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
-                      end },
-                    { type="slider", label="Close After (sec)",
-                      min=1, max=30, step=1,
-                      disabled=delayOff,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.lootHistoryDelay) or 5
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.lootHistoryDelay = v
-                        if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
-                      end },
-                },
-            })
-
-            local lhCogBtn = CreateFrame("Button", nil, leftRgn)
-            lhCogBtn:SetSize(26, 26)
-            lhCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = lhCogBtn
-            lhCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            lhCogBtn:SetAlpha(lootHistOff() and 0.15 or 0.4)
-            local lhCogTex = lhCogBtn:CreateTexture(nil, "OVERLAY")
-            lhCogTex:SetAllPoints()
-            lhCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            lhCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            lhCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(lootHistOff() and 0.15 or 0.4) end)
-            lhCogBtn:SetScript("OnClick", function(self) lootHistCogShow(self) end)
-
-            local lhCogBlock = CreateFrame("Frame", nil, lhCogBtn)
-            lhCogBlock:SetAllPoints()
-            lhCogBlock:SetFrameLevel(lhCogBtn:GetFrameLevel() + 10)
-            lhCogBlock:EnableMouse(true)
-            lhCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(lhCogBtn, EllesmereUI.DisabledTooltip("Hide Loot Rolls Window"))
-            end)
-            lhCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = lootHistOff()
-                lhCogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then lhCogBlock:Show() else lhCogBlock:Hide() end
-            end)
-            if lootHistOff() then lhCogBlock:Show() else lhCogBlock:Hide() end
-        end
-
-        -- Row 7: Announce Group Deaths (left, with Text Size cog) | Hide Item
-        -- Transforms (right, with picker cog)
-        local deathRow
-        deathRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Announce Group Deaths",
-              tooltip="Shows a large on-screen alert (e.g. \"Player DIED!\") whenever a party or raid member dies, so you immediately notice deaths during dungeons and raids. Use Unlock Mode to reposition the alert.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.announceGroupDeaths or false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.announceGroupDeaths = v
-                  if EllesmereUI._applyAnnounceGroupDeaths then EllesmereUI._applyAnnounceGroupDeaths() end
-                  EllesmereUI:RefreshPage()
-              end },
+        -- Hide Item Transforms (+ picker cog) | Auto Select Single Gossip (+ cog)
+        local transformRow
+        transformRow, h = W:DualRow(parent, y,
             { type="toggle", text="Hide Item Transforms (ex: Chef's Hat)",
               tooltip="Automatically removes cosmetic transforms when they are applied to you, such as profession gear, holiday costumes, toys and consumables. Use the cog to pick exactly which transforms are removed. Transforms applied during combat are removed when combat ends.",
               getValue=function()
@@ -746,289 +813,124 @@ initFrame:SetScript("OnEvent", function(self)
                       EllesmereUI._applyHideTransforms()
                   end
                   EllesmereUI:RefreshPage()  -- update the picker cog disabled state
+              end },
+            { type="toggle", text="Auto Select Single Gossip",
+              tooltip="Picks an NPC's only dialog option for you.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.autoGossip or false
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.autoGossip = v
+                  if EllesmereUI._applyAutoGossip then EllesmereUI._applyAutoGossip() end
+                  EllesmereUI:RefreshPage()
               end }
         );  y = y - h
 
-        -- Inline cog (Text Size) on the Announce Group Deaths toggle
-        if not EllesmereUI._prebuilding then
-            local leftRgn = deathRow._leftRegion
-            local function deathOff()
-                return not (EllesmereUIDB and EllesmereUIDB.announceGroupDeaths)
-            end
-
-            -- Sound dropdown values (mirrors Chat's "Whisper Sound"): shallow-copy
-            -- the runtime name table and attach _menuOpts so each row gets a
-            -- click-to-preview speaker icon.
-            local gdSoundPaths = EllesmereUI._groupDeathSoundPaths or {}
-            local gdSoundNames = EllesmereUI._groupDeathSoundNames or { none = "None" }
-            local gdSoundOrder = EllesmereUI._groupDeathSoundOrder or { "none" }
-            local gdSoundValues = {}
-            for k, v in pairs(gdSoundNames) do gdSoundValues[k] = v end
-            gdSoundValues._menuOpts = {
-                itemHeight = 26,
-                maxTextWidthPct = 0.8,
-                searchable = true,
-                iconAtlas = function(key)
-                    if key == "none" then return nil end
-                    if not gdSoundPaths[key] then return nil end
-                    return "common-icon-sound"
-                end,
-                iconPressedAtlas = function(key)
-                    if key == "none" then return nil end
-                    return "common-icon-sound-pressed"
-                end,
-                iconOnClick = function(key)
-                    local path = gdSoundPaths[key]
-                    if path then PlaySoundFile(path, "Master") end
-                end,
-                iconTooltip = function() return "Preview Sound" end,
-            }
-
-            local _, deathCogShow = EllesmereUI.BuildCogPopup({
-                title = "Group Death Alert Settings",
-                rows = {
-                    { type="slider", label="Text Size",
-                      min=14, max=64, step=1,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.groupDeathTextSize) or 34
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.groupDeathTextSize = v
-                        if EllesmereUI._applyGroupDeathAlert then EllesmereUI._applyGroupDeathAlert() end
-                        if EllesmereUI._groupDeathShowVisual then EllesmereUI._groupDeathShowVisual() end
-                      end },
-                    { type="dropdown", label="Sound",
-                      values=gdSoundValues, order=gdSoundOrder,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.groupDeathSoundKey) or "none"
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.groupDeathSoundKey = v
-                        if v ~= "none" and EllesmereUI._groupDeathPlaySound then
-                            EllesmereUI._groupDeathPlaySound()
-                        end
-                      end },
-                },
-            })
-            local deathCogBtn = CreateFrame("Button", nil, leftRgn)
-            deathCogBtn:SetSize(26, 26)
-            deathCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = deathCogBtn
-            deathCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            deathCogBtn:SetAlpha(deathOff() and 0.15 or 0.4)
-            local deathCogTex = deathCogBtn:CreateTexture(nil, "OVERLAY")
-            deathCogTex:SetAllPoints()
-            deathCogTex:SetTexture(EllesmereUI.COGS_ICON or EllesmereUI.DIRECTIONS_ICON)
-            deathCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            deathCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-            deathCogBtn:SetScript("OnClick", function(self) deathCogShow(self) end)
-
-            -- Blocking overlay for cog when the feature is off
-            local deathCogBlock = CreateFrame("Frame", nil, deathCogBtn)
-            deathCogBlock:SetAllPoints()
-            deathCogBlock:SetFrameLevel(deathCogBtn:GetFrameLevel() + 10)
-            deathCogBlock:EnableMouse(true)
-            deathCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(deathCogBtn, EllesmereUI.DisabledTooltip("Announce Group Deaths"))
-            end)
-            deathCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                if deathOff() then
-                    deathCogBtn:SetAlpha(0.15); deathCogBlock:Show()
-                else
-                    deathCogBtn:SetAlpha(0.4); deathCogBlock:Hide()
-                end
-            end)
-            local deathInitOff = deathOff()
-            deathCogBtn:SetAlpha(deathInitOff and 0.15 or 0.4)
-            if deathInitOff then deathCogBlock:Show() else deathCogBlock:Hide() end
-        end
-
-        -- Inline cog (text, size, colors, mode) on the Combat Alert toggle
-        -- (the RIGHT slot of the Hide Loot Rolls row above).
-        if not EllesmereUI._prebuilding then
-            local leftRgn = lootHistRow._rightRegion
-            local function caOff()
-                return not (EllesmereUIDB and EllesmereUIDB.combatAlertEnabled)
-            end
-            local function enterClassOn()
-                return EllesmereUIDB and EllesmereUIDB.combatAlertEnterUseClassColor
-            end
-            local function leaveClassOn()
-                return EllesmereUIDB and EllesmereUIDB.combatAlertLeaveUseClassColor
-            end
-
-            local caModeValues = {
-                both  = "Enter & Leave",
-                enter = "Enter Only",
-                leave = "Leave Only",
-            }
-            local caModeOrder = { "both", "enter", "leave" }
-
-            local _, combatAlertCogShow = EllesmereUI.BuildCogPopup({
-                title = "Combat Alert Settings",
-                minWidth = 300,
-                rows = {
-                    { type="dropdown", label="Show On",
-                      values=caModeValues, order=caModeOrder,
-                      get=function() return (EllesmereUIDB and EllesmereUIDB.combatAlertMode) or "both" end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertMode = v
-                      end },
-                    { type="slider", label="Text Size",
-                      min=14, max=64, step=1,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.combatAlertTextSize) or 22
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertTextSize = v
-                        if EllesmereUI._applyCombatAlertFrame then EllesmereUI._applyCombatAlertFrame() end
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("enter") end
-                      end },
-                    { type="input", label="Enter Text", inputWidth=90,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.combatAlertEnterText) or "+Combat"
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertEnterText = v
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("enter") end
-                      end },
-                    { type="colorpicker", label="Enter Color",
-                      disabled=enterClassOn,
-                      disabledTooltip="Disable Class Color to pick a custom color.", rawTooltip=true,
-                      get=function()
-                        local c = (EllesmereUIDB and EllesmereUIDB.combatAlertEnterColor) or { r=1.00, g=1.00, b=1.00 }
-                        return c.r, c.g, c.b
-                      end,
-                      set=function(r, g, b)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertEnterColor = { r=r, g=g, b=b }
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("enter") end
-                      end },
-                    { type="toggle", label="Enter Class Color",
-                      get=function() return enterClassOn() end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertEnterUseClassColor = v
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("enter") end
-                      end },
-                    { type="input", label="Leave Text", inputWidth=90,
-                      get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.combatAlertLeaveText) or "-Combat"
-                      end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertLeaveText = v
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("leave") end
-                      end },
-                    { type="colorpicker", label="Leave Color",
-                      disabled=leaveClassOn,
-                      disabledTooltip="Disable Class Color to pick a custom color.", rawTooltip=true,
-                      get=function()
-                        local c = (EllesmereUIDB and EllesmereUIDB.combatAlertLeaveColor) or { r=1.00, g=1.00, b=1.00 }
-                        return c.r, c.g, c.b
-                      end,
-                      set=function(r, g, b)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertLeaveColor = { r=r, g=g, b=b }
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("leave") end
-                      end },
-                    { type="toggle", label="Leave Class Color",
-                      get=function() return leaveClassOn() end,
-                      set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.combatAlertLeaveUseClassColor = v
-                        if EllesmereUI._combatAlertPreview then EllesmereUI._combatAlertPreview("leave") end
-                      end },
-                },
-                footer = { unlockKey = "EUI_CombatAlert" },
-            })
-            local caCogBtn = CreateFrame("Button", nil, leftRgn)
-            caCogBtn:SetSize(26, 26)
-            caCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = caCogBtn
-            caCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            caCogBtn:SetAlpha(caOff() and 0.15 or 0.4)
-            local caCogTex = caCogBtn:CreateTexture(nil, "OVERLAY")
-            caCogTex:SetAllPoints()
-            caCogTex:SetTexture(EllesmereUI.COGS_ICON or EllesmereUI.DIRECTIONS_ICON)
-            caCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            caCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-            caCogBtn:SetScript("OnClick", function(self) combatAlertCogShow(self) end)
-
-            -- Blocking overlay for cog when the feature is off
-            local caCogBlock = CreateFrame("Frame", nil, caCogBtn)
-            caCogBlock:SetAllPoints()
-            caCogBlock:SetFrameLevel(caCogBtn:GetFrameLevel() + 10)
-            caCogBlock:EnableMouse(true)
-            caCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(caCogBtn, EllesmereUI.DisabledTooltip("Combat Alert"))
-            end)
-            caCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                if caOff() then
-                    caCogBtn:SetAlpha(0.15); caCogBlock:Show()
-                else
-                    caCogBtn:SetAlpha(0.4); caCogBlock:Hide()
-                end
-            end)
-            local caInitOff = caOff()
-            caCogBtn:SetAlpha(caInitOff and 0.15 or 0.4)
-            if caInitOff then caCogBlock:Show() else caCogBlock:Hide() end
-        end
-
-        -- (Target Distance Text moved to the EXTRAS section, Row 4 right slot.)
-
-        -- Inline picker cog on Hide Item Transforms (right slot of the death
-        -- row): opens the item checklist popup. Dimmed and inert while the
-        -- toggle is off, mirroring the resource-bar spec-picker button.
-        if not EllesmereUI._prebuilding then
-            local rgn = deathRow._rightRegion
+        -- Inline picker cog on Hide Item Transforms (left slot): opens the item
+        -- checklist popup. Dimmed and inert while the toggle is off, mirroring
+        -- the resource-bar spec-picker button.
+        do
+            local rgn = transformRow._leftRegion
             local function hitOff()
                 return not (EllesmereUIDB and EllesmereUIDB.hideTransforms)
             end
-            local cogBtn = CreateFrame("Button", nil, rgn)
-            cogBtn:SetSize(26, 26)
-            cogBtn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -9, 0)
-            rgn._lastInline = cogBtn
-            cogBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-            cogBtn:SetAlpha(hitOff() and 0.15 or 0.4)
-            local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
-            cogTex:SetAllPoints()
-            cogTex:SetTexture(EllesmereUI.COGS_ICON)
-            cogBtn:SetScript("OnEnter", function(self)
-                if hitOff() then return end
-                self:SetAlpha(0.7)
-                EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.L("Choose which transforms are removed"))
-            end)
-            cogBtn:SetScript("OnLeave", function(self)
-                self:SetAlpha(hitOff() and 0.15 or 0.4)
-                EllesmereUI.HideWidgetTooltip()
-            end)
-            cogBtn:SetScript("OnClick", function()
-                if hitOff() then return end
-                ShowTransformsPopup()
-            end)
-            EllesmereUI.RegisterWidgetRefresh(function()
-                cogBtn:SetAlpha(hitOff() and 0.15 or 0.4)
-            end)
+            EllesmereUI.BuildInlineCog(rgn, {
+                gap = 9, tip = EllesmereUI.L("Choose which transforms are removed"),
+                disabled = hitOff, disabledTooltip = "Hide Item Transforms",
+                show = function() ShowTransformsPopup() end,
+            })
         end
+
+        -- Cog on Auto Select Single Gossip (right slot)
+        do
+            local rightRgn = transformRow._rightRegion
+            local function gossipOff()
+                return not (EllesmereUIDB and EllesmereUIDB.autoGossip)
+            end
+
+            EllesmereUI.BuildInlineCog(rightRgn, {
+                title = "Auto Gossip Settings",
+                rows = {
+                    { type="toggle", label="Hold Shift to Skip",
+                      get=function()
+                          if not EllesmereUIDB then return true end
+                          return EllesmereUIDB.autoGossipShiftSkip ~= false
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.autoGossipShiftSkip = v
+                      end },
+                    { type="toggle", label="Disable in Instances",
+                      get=function()
+                          if not EllesmereUIDB then return true end
+                          return EllesmereUIDB.autoGossipDisableInstance ~= false
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.autoGossipDisableInstance = v
+                      end },
+                    { type="toggle", label="Ignore Low Level Quests",
+                      get=function()
+                          return EllesmereUIDB and EllesmereUIDB.autoGossipIgnoreTrivial or false
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.autoGossipIgnoreTrivial = v
+                      end },
+                },
+                gap = 9, disabled = gossipOff, disabledTooltip = "Auto Select Single Gossip",
+            })
+        end
+
+        -- Type /cd to open Blizzard CDM | AH Current Expansion Only. The AH
+        -- filter is not offered on WoW Forever (its runtime block does not
+        -- exist there), so that slot is blank there.
+        _, h = W:DualRow(parent, y,
+            -- Cooldown Manager registers /cd at load from this key, so a change reloads
+            { type="toggle", text="Type /cd to open Blizzard CDM",
+              tooltip="Lets /cd open or close Blizzard's Cooldown Manager settings.",
+              disabled=function() return not EllesmereUI._ModuleNS["EllesmereUICooldownManager"] end,
+              disabledTooltip="Cooldown Manager",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.blizzCDMSlash == true
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.blizzCDMSlash = v and true or nil
+                  EllesmereUI:ShowConfirmPopup({
+                      title       = "Reload Required",
+                      message     = "The /cd change applies after a UI reload.",
+                      confirmText = "Reload Now",
+                      cancelText  = "Later",
+                      reload      = true,
+                  })
+              end },
+            EllesmereUI.IS_FOREVER and EllesmereUI.BlankRowCfg() or
+            { type="toggle", text="AH Current Expansion Only",
+              tooltip="Automatically enables the 'Current Expansion Only' filter whenever you open the Auction House.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.ahCurrentExpansion or false
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.ahCurrentExpansion = v
+              end }
+        );  y = y - h
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
 
         ---------------------------------------------------------------------------
         --  EXTRAS
         ---------------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, "EXTRAS", y);  y = y - h
+        hdr, h = W:SectionHeader(parent, "EXTRAS", y);  y = y - h
+        -- The FPS Counter is the section's first mover, so the header's button
+        -- takes it; the button explains itself while the counter is off.
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "EUI_FPS",
+            disabled = function() return not EllesmereUI.QoLExtrasGet("showFPS") end,
+            disabledTooltip = "Show FPS Counter" })
 
-        -- Row 1: Show FPS Counter (left, with swatch+cog) | FPS Toggle Keybind (right)
+        -- Row 1: Show FPS Counter (left, with cog+swatch) | FPS Toggle Keybind (right)
         local fpsRow
         fpsRow, h = W:DualRow(parent, y,
             { type="toggle", text="Show FPS Counter",
@@ -1043,8 +945,8 @@ initFrame:SetScript("OnEvent", function(self)
             { type="label", text="FPS Toggle Keybind" }
         );  y = y - h
 
-        -- Inline color swatch + cog on the FPS toggle (left region)
-        if not EllesmereUI._prebuilding then
+        -- Inline cog + color swatches on the FPS toggle (left region)
+        do
             local leftRgn = fpsRow._leftRegion
             local function fpsOff()
                 return not EllesmereUI.QoLExtrasGet("showFPS")
@@ -1076,70 +978,8 @@ initFrame:SetScript("OnEvent", function(self)
                 if EllesmereUI._applyFPSDisplay then EllesmereUI._applyFPSDisplay() end
                 if fpsUpdateState then fpsUpdateState() end
             end
-            -- Custom swatch (nearest the control): a click switches to custom
-            -- mode first; a second click opens the picker.
-            local fpsSwatch, fpsUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, fpsSwGet, fpsSwSet, true, 20)
-            do
-                local openPicker = fpsSwatch:GetScript("OnClick")
-                fpsSwatch:SetScript("OnClick", function(self)
-                    if fpsMode() ~= "custom" then fpsSetMode("custom") return end
-                    if openPicker then openPicker(self) end
-                end)
-            end
-            PP.Point(fpsSwatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-            leftRgn._lastInline = fpsSwatch
 
-            -- Class-colour swatch: live player class colour.
-            local fpsClassSw, fpsUpdClass = EllesmereUI.BuildColorSwatch(
-                leftRgn, leftRgn:GetFrameLevel() + 5,
-                function()
-                    local cc = EllesmereUI.GetClassColor and EllesmereUI.GetClassColor(select(2, UnitClass("player")))
-                    if cc then return cc.r, cc.g, cc.b end
-                    return 1, 1, 1
-                end,
-                function() end, nil, 20)
-            fpsClassSw:SetScript("OnClick", function() fpsSetMode("class") end)
-            PP.Point(fpsClassSw, "RIGHT", leftRgn._lastInline, "LEFT", -8, 0)
-            leftRgn._lastInline = fpsClassSw
-
-            local fpsTips = { { fpsClassSw, "Class Color" }, { fpsSwatch, "Custom Color" } }
-            for _, e in ipairs(fpsTips) do
-                e[1]:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(e[1], e[2]) end)
-                e[1]:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            end
-
-            -- Blocking overlays while Show FPS Counter is off (shown from the
-            -- single refresh below, like the swatch alphas).
-            local fpsBlocks = {}
-            for _, e in ipairs(fpsTips) do
-                local sw = e[1]
-                local block = CreateFrame("Frame", nil, sw)
-                block:SetAllPoints()
-                block:SetFrameLevel(sw:GetFrameLevel() + 10)
-                block:EnableMouse(true)
-                block:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip("Show FPS Counter"))
-                end)
-                block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                fpsBlocks[#fpsBlocks + 1] = block
-            end
-
-            -- While the counter is off both swatches dim flat; while on, the
-            -- active mode is bright and the other dimmed. One refresh owns
-            -- both, plus the swatch fills (class color changes, custom picks).
-            fpsUpdateState = function()
-                if fpsUpdateSwatch then fpsUpdateSwatch() end
-                if fpsUpdClass then fpsUpdClass() end
-                local off = fpsOff()
-                for _, block in ipairs(fpsBlocks) do block:SetShown(off) end
-                local m = not off and fpsMode() or nil
-                fpsClassSw:SetAlpha(m == "class" and 1 or 0.3)
-                fpsSwatch:SetAlpha(m == "custom" and 1 or 0.3)
-            end
-            EllesmereUI.RegisterWidgetRefresh(fpsUpdateState)
-            fpsUpdateState()
-
-            local _, fpsCogShow = EllesmereUI.BuildCogPopup({
+            EllesmereUI.BuildInlineCog(leftRgn, {
                 title = "FPS Counter Settings",
                 rows = {
                     { type="toggle", label="Attach to Secondary Stats",
@@ -1206,184 +1046,97 @@ initFrame:SetScript("OnEvent", function(self)
                         if EllesmereUI._applyFPSDisplay then EllesmereUI._applyFPSDisplay() end
                       end },
                 },
+                gap = 9, disabled = fpsOff, disabledTooltip = "Show FPS Counter",
             })
-            local fpsCogBtn = CreateFrame("Button", nil, leftRgn)
-            fpsCogBtn:SetSize(26, 26)
-            fpsCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = fpsCogBtn
-            fpsCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            fpsCogBtn:SetAlpha(fpsOff() and 0.15 or 0.4)
-            local fpsCogTex = fpsCogBtn:CreateTexture(nil, "OVERLAY")
-            fpsCogTex:SetAllPoints()
-            fpsCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            fpsCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            fpsCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-            fpsCogBtn:SetScript("OnClick", function(self) fpsCogShow(self) end)
 
-            -- Blocking overlay for cog when FPS is off
-            local fpsCogBlock = CreateFrame("Frame", nil, fpsCogBtn)
-            fpsCogBlock:SetAllPoints()
-            fpsCogBlock:SetFrameLevel(fpsCogBtn:GetFrameLevel() + 10)
-            fpsCogBlock:EnableMouse(true)
-            fpsCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(fpsCogBtn, EllesmereUI.DisabledTooltip("Show FPS Counter"))
-            end)
-            fpsCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = fpsOff()
-                if off then
-                    fpsCogBtn:SetAlpha(0.15)
-                    fpsCogBlock:Show()
-                else
-                    fpsCogBtn:SetAlpha(0.4)
-                    fpsCogBlock:Hide()
+            if not EllesmereUI._prebuilding then
+                -- Custom swatch (nearest the cog): a click switches to custom
+                -- mode first; a second click opens the picker.
+                local fpsSwatch, fpsUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, fpsSwGet, fpsSwSet, true, 20)
+                do
+                    local openPicker = fpsSwatch:GetScript("OnClick")
+                    fpsSwatch:SetScript("OnClick", function(self)
+                        if fpsMode() ~= "custom" then fpsSetMode("custom") return end
+                        if openPicker then openPicker(self) end
+                    end)
                 end
-            end)
-            local fpsCogInitOff = fpsOff()
-            fpsCogBtn:SetAlpha(fpsCogInitOff and 0.15 or 0.4)
-            if fpsCogInitOff then fpsCogBlock:Show() else fpsCogBlock:Hide() end
+                PP.Point(fpsSwatch, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
+                leftRgn._lastInline = fpsSwatch
+
+                -- Class-colour swatch: live player class colour.
+                local fpsClassSw, fpsUpdClass = EllesmereUI.BuildColorSwatch(
+                    leftRgn, leftRgn:GetFrameLevel() + 5,
+                    function()
+                        local cc = EllesmereUI.GetClassColor(select(2, UnitClass("player")))
+                        if cc then return cc.r, cc.g, cc.b end
+                        return 1, 1, 1
+                    end,
+                    function() end, nil, 20)
+                fpsClassSw:SetScript("OnClick", function() fpsSetMode("class") end)
+                PP.Point(fpsClassSw, "RIGHT", leftRgn._lastInline, "LEFT", -8, 0)
+                leftRgn._lastInline = fpsClassSw
+
+                local fpsTips = { { fpsClassSw, "Class Color" }, { fpsSwatch, "Custom Color" } }
+                for _, e in ipairs(fpsTips) do
+                    e[1]:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(e[1], e[2]) end)
+                    e[1]:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                end
+
+                -- Blocking overlays while Show FPS Counter is off (shown from the
+                -- single refresh below, like the swatch alphas).
+                local fpsBlocks = {}
+                for _, e in ipairs(fpsTips) do
+                    local sw = e[1]
+                    local block = CreateFrame("Frame", nil, sw)
+                    block:SetAllPoints()
+                    block:SetFrameLevel(sw:GetFrameLevel() + 10)
+                    block:EnableMouse(true)
+                    block:SetScript("OnEnter", function()
+                        EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip("Show FPS Counter"))
+                    end)
+                    block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                    fpsBlocks[#fpsBlocks + 1] = block
+                end
+
+                -- While the counter is off both swatches dim flat; while on, the
+                -- active mode is bright and the other dimmed. One refresh owns
+                -- both, plus the swatch fills (class color changes, custom picks).
+                fpsUpdateState = function()
+                    if fpsUpdateSwatch then fpsUpdateSwatch() end
+                    if fpsUpdClass then fpsUpdClass() end
+                    local off = fpsOff()
+                    for _, block in ipairs(fpsBlocks) do block:SetShown(off) end
+                    local m = not off and fpsMode() or nil
+                    fpsClassSw:SetAlpha(m == "class" and 1 or 0.3)
+                    fpsSwatch:SetAlpha(m == "custom" and 1 or 0.3)
+                end
+                EllesmereUI.RegisterWidgetRefresh(fpsUpdateState)
+                fpsUpdateState()
+            end
         end
 
         -- FPS Toggle Keybind (built into right region of fpsRow)
         if not EllesmereUI._prebuilding then
             local rightRgn = fpsRow._rightRegion
-            local SIDE_PAD = 20
-
-            local KB_W, KB_H = 140, 30
-            local kbBtn = CreateFrame("Button", nil, rightRgn)
-            PP.Size(kbBtn, KB_W, KB_H)
-            PP.Point(kbBtn, "RIGHT", rightRgn, "RIGHT", -SIDE_PAD, 0)
-            kbBtn:SetFrameLevel(rightRgn:GetFrameLevel() + 2)
-            kbBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-            local kbBg = EllesmereUI.SolidTex(kbBtn, "BACKGROUND", EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-            kbBg:SetAllPoints()
-            kbBtn._border = EllesmereUI.MakeBorder(kbBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, EllesmereUI.PanelPP)
-            local kbLbl = EllesmereUI.MakeFont(kbBtn, 13, nil, 1, 1, 1)
-            kbLbl:SetAlpha(EllesmereUI.DD_TXT_A)
-            kbLbl:SetPoint("CENTER")
-
-            local function FormatKey(key)
-                if not key then return EllesmereUI.L("Not Bound") end
-                local parts = {}
-                for mod in key:gmatch("(%u+)%-") do
-                    parts[#parts + 1] = mod:sub(1, 1) .. mod:sub(2):lower()
-                end
-                local actualKey = key:match("[^%-]+$") or key
-                parts[#parts + 1] = actualKey
-                return table.concat(parts, " + ")
-            end
-
-            local function RefreshLabel()
-                local key = EllesmereUIDB and EllesmereUIDB.fpsToggleKey
-                kbLbl:SetText(FormatKey(key))
-            end
-            RefreshLabel()
-
-            local listening = false
-
-            kbBtn:SetScript("OnClick", function(self, button)
-                if button == "RightButton" then
-                    if listening then
-                        listening = false
-                        self:EnableKeyboard(false)
-                    end
+            local kbBtn, refresh = EllesmereUI.BuildKeybindButton(rightRgn, {
+                w = 140, h = 30, font = 13,
+                get = function() return EllesmereUIDB and EllesmereUIDB.fpsToggleKey end,
+                set = function(fullKey)
                     if not EllesmereUIDB then EllesmereUIDB = {} end
-                    if EllesmereUIDB.fpsToggleKey and _G["EUI_FPSBindBtn"] then
-                        ClearOverrideBindings(_G["EUI_FPSBindBtn"])
+                    local bindBtn = _G["EUI_FPSBindBtn"]
+                    if not fullKey then
+                        if EllesmereUIDB.fpsToggleKey and bindBtn then ClearOverrideBindings(bindBtn) end
+                    elseif bindBtn then
+                        -- Binding refused in combat: keep the old key.
+                        if InCombatLockdown() then return end
+                        ClearOverrideBindings(bindBtn)
+                        SetOverrideBindingClick(bindBtn, true, fullKey, "EUI_FPSBindBtn")
                     end
-                    EllesmereUIDB.fpsToggleKey = nil
-                    RefreshLabel()
-                    return
-                end
-                if listening then return end
-                listening = true
-                kbLbl:SetText(EllesmereUI.L("Press a key..."))
-                kbBtn:EnableKeyboard(true)
-            end)
-
-            kbBtn:SetScript("OnKeyDown", function(self, key)
-                if not listening then
-                    self:SetPropagateKeyboardInput(true)
-                    return
-                end
-                if key == "LSHIFT" or key == "RSHIFT" or key == "LCTRL" or key == "RCTRL"
-                   or key == "LALT" or key == "RALT" or key == "LMETA" or key == "RMETA" then
-                    self:SetPropagateKeyboardInput(true)
-                    return
-                end
-                self:SetPropagateKeyboardInput(false)
-                if key == "ESCAPE" then
-                    listening = false
-                    self:EnableKeyboard(false)
-                    RefreshLabel()
-                    return
-                end
-                -- Blizzard's canonical chord order is ALT-CTRL-SHIFT-KEY, and
-                -- CreateKeyChordStringUsingMetaKeyState is what produces it.
-                -- Hand-rolling the modifiers built SHIFT-CTRL-ALT-KEY, a chord
-                -- string the engine never generates, so any bind using more
-                -- than one modifier was stored in a form nothing could match.
-                -- Single-modifier binds happen to agree, which is why this
-                -- survived.
-                local fullKey
-                if CreateKeyChordStringUsingMetaKeyState then
-                    fullKey = CreateKeyChordStringUsingMetaKeyState(key)
-                else
-                    local mods = ""
-                    if IsAltKeyDown() then mods = mods .. "ALT-" end
-                    if IsControlKeyDown() then mods = mods .. "CTRL-" end
-                    if IsShiftKeyDown() then mods = mods .. "SHIFT-" end
-                    if IsMetaKeyDown and IsMetaKeyDown() then
-                        mods = mods .. "META-"
-                    end
-                    fullKey = mods .. key
-                end
-
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                local bindBtn = _G["EUI_FPSBindBtn"]
-                if bindBtn then
-                    if InCombatLockdown() then
-                        listening = false
-                        self:EnableKeyboard(false)
-                        RefreshLabel()
-                        return
-                    end
-                    ClearOverrideBindings(bindBtn)
-                    SetOverrideBindingClick(bindBtn, true, fullKey, "EUI_FPSBindBtn")
-                end
-                EllesmereUIDB.fpsToggleKey = fullKey
-
-                listening = false
-                self:EnableKeyboard(false)
-                RefreshLabel()
-            end)
-
-            kbBtn:SetScript("OnEnter", function(self)
-                kbBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA)
-                if kbBtn._border and kbBtn._border.SetColor then
-                    kbBtn._border:SetColor(1, 1, 1, 0.3)
-                end
-                EllesmereUI.ShowWidgetTooltip(self, "Left-click to set a keybind.\nRight-click to unbind.")
-            end)
-            kbBtn:SetScript("OnLeave", function()
-                if listening then return end
-                kbBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-                if kbBtn._border and kbBtn._border.SetColor then
-                    kbBtn._border:SetColor(1, 1, 1, EllesmereUI.DD_BRD_A)
-                end
-                EllesmereUI.HideWidgetTooltip()
-            end)
-
-            EllesmereUI.RegisterWidgetRefresh(RefreshLabel)
-
-            rightRgn:SetScript("OnHide", function()
-                if listening then
-                    listening = false
-                    kbBtn:EnableKeyboard(false)
-                    RefreshLabel()
-                end
-            end)
+                    EllesmereUIDB.fpsToggleKey = fullKey
+                end,
+            })
+            PP.Point(kbBtn, "RIGHT", rightRgn, "RIGHT", -20, 0)
+            EllesmereUI.RegisterWidgetRefresh(refresh)
         end
 
         -- Row 2: Low Durability Warning (left, with cog+eye+swatch) | Disable Right Click Targeting (right)
@@ -1392,11 +1145,10 @@ initFrame:SetScript("OnEvent", function(self)
             { type="toggle", text="Low Durability Warning",
               tooltip="Flashes a warning on screen when any equipped item drops below the configured durability threshold. Only triggers out of combat.",
               getValue=function()
-                return EllesmereUIDB and EllesmereUIDB.repairWarning ~= false
+                return EllesmereUI.QoLExtrasGet("repairWarning") ~= false
               end,
               setValue=function(v)
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                EllesmereUIDB.repairWarning = v
+                EllesmereUI.QoLExtrasSet("repairWarning", v)
                 if EllesmereUI._syncDurWarnEvents then EllesmereUI._syncDurWarnEvents() end
                 if not v and EllesmereUI._durWarnHidePreview then
                     EllesmereUI._durWarnHidePreview()
@@ -1444,201 +1196,175 @@ initFrame:SetScript("OnEvent", function(self)
             EllesmereUI.RegisterWidgetRefresh(rcCBRefresh)
         end
 
-        -- Inline: eyeball | cog | color swatch on the durability warning toggle
-        if not EllesmereUI._prebuilding then
+        -- Inline: eyeball | color swatch | cog on the durability warning toggle
+        do
             local leftRgn = durWarnRow._leftRegion
             local function durOff()
-                return EllesmereUIDB and EllesmereUIDB.repairWarning == false
+                return EllesmereUI.QoLExtrasGet("repairWarning") == false
             end
 
-            -- Color swatch (rightmost inline, closest to toggle)
-            local durSwGet = function()
-                local c = EllesmereUIDB and EllesmereUIDB.durWarnColor
-                if c then return c.r, c.g, c.b end
-                return 1, 0.27, 0.27
-            end
-            local durSwSet = function(r, g, b)
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                EllesmereUIDB.durWarnColor = { r = r, g = g, b = b }
-                if EllesmereUI._applyDurWarn then EllesmereUI._applyDurWarn() end
-            end
-            local durSwatch, durUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, durSwGet, durSwSet, nil, 20)
-            PP.Point(durSwatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-            leftRgn._lastInline = durSwatch
-
-            -- Disabled overlay for swatch when durability warning is off
-            local durSwBlock = CreateFrame("Frame", nil, durSwatch)
-            durSwBlock:SetAllPoints()
-            durSwBlock:SetFrameLevel(durSwatch:GetFrameLevel() + 10)
-            durSwBlock:EnableMouse(true)
-            durSwBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(durSwatch, EllesmereUI.DisabledTooltip("Low Durability Warning"))
-            end)
-            durSwBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = durOff()
-                if off then
-                    durSwatch:SetAlpha(0.3)
-                    durSwBlock:Show()
-                else
-                    durSwatch:SetAlpha(1)
-                    durSwBlock:Hide()
-                end
-                durUpdateSwatch()
-            end)
-            local durInitOff = durOff()
-            durSwatch:SetAlpha(durInitOff and 0.3 or 1)
-            if durInitOff then durSwBlock:Show() else durSwBlock:Hide() end
-
-            -- Cog popup for durability settings (left of swatch)
-            local _, durCogShow = EllesmereUI.BuildCogPopup({
+            -- Cog popup for durability settings (rightmost inline, closest to toggle)
+            EllesmereUI.BuildInlineCog(leftRgn, {
                 title = "Durability Settings",
                 rows = {
                     { type="slider", label="Text Size",
                       min=10, max=50, step=1,
                       get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.durWarnTextSize) or 30
+                        return EllesmereUI.QoLExtrasGet("durWarnTextSize") or 30
                       end,
                       set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.durWarnTextSize = v
+                        EllesmereUI.QoLExtrasSet("durWarnTextSize", v)
                         if EllesmereUI._durWarnApplySettings then EllesmereUI._durWarnApplySettings() end
                       end },
                     { type="slider", label="Y-Offset",
                       min=-600, max=600, step=1,
                       get=function()
-                        return EllesmereUIDB and EllesmereUIDB.durWarnYOffset or 250
+                        return EllesmereUI.QoLExtrasGet("durWarnYOffset") or 250
                       end,
                       set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.durWarnYOffset = v
-                        EllesmereUIDB.durWarnPos = nil  -- clear custom pos so slider always takes effect
+                        EllesmereUI.QoLExtrasSet("durWarnYOffset", v)
+                        EllesmereUI.QoLExtrasSet("durWarnPos", false)  -- clear custom pos so slider always takes effect
                         if EllesmereUI._durWarnPreview then EllesmereUI._durWarnPreview() end
                       end },
                     { type="slider", label="Repair %",
                       min=5, max=100, step=1,
                       get=function()
-                        return EllesmereUIDB and EllesmereUIDB.durWarnThreshold or 40
+                        return EllesmereUI.QoLExtrasGet("durWarnThreshold") or 40
                       end,
                       set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.durWarnThreshold = v
+                        EllesmereUI.QoLExtrasSet("durWarnThreshold", v)
                       end },
+                    EllesmereUI.IS_FOREVER and { type="toggle", label="Ignore Thrown Weapons",
+                      tooltip="Thrown weapons lose durability with every throw.",
+                      get=function()
+                        return EllesmereUI.QoLExtrasGet("durWarnIgnoreThrown") ~= false
+                      end,
+                      set=function(v)
+                        EllesmereUI.QoLExtrasSet("durWarnIgnoreThrown", v)
+                        if EllesmereUI._syncDurWarnEvents then EllesmereUI._syncDurWarnEvents() end
+                      end } or nil,
                 },
+                gap = 9, disabled = durOff, disabledTooltip = "Low Durability Warning",
             })
-            local durCogBtn = CreateFrame("Button", nil, leftRgn)
-            durCogBtn:SetSize(26, 26)
-            durCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = durCogBtn
-            durCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            durCogBtn:SetAlpha(durOff() and 0.15 or 0.4)
-            local durCogTex = durCogBtn:CreateTexture(nil, "OVERLAY")
-            durCogTex:SetAllPoints()
-            durCogTex:SetTexture(EllesmereUI.DIRECTIONS_ICON)
-            durCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            durCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-            durCogBtn:SetScript("OnClick", function(self) durCogShow(self) end)
 
-            -- Blocking overlay for cog when durability warning is off
-            local durCogBlock = CreateFrame("Frame", nil, durCogBtn)
-            durCogBlock:SetAllPoints()
-            durCogBlock:SetFrameLevel(durCogBtn:GetFrameLevel() + 10)
-            durCogBlock:EnableMouse(true)
-            durCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(durCogBtn, EllesmereUI.DisabledTooltip("Low Durability Warning"))
-            end)
-            durCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = durOff()
-                if off then
-                    durCogBtn:SetAlpha(0.15)
-                    durCogBlock:Show()
-                else
-                    durCogBtn:SetAlpha(0.4)
-                    durCogBlock:Hide()
+            if not EllesmereUI._prebuilding then
+                -- Color swatch (left of the cog)
+                local durSwGet = function()
+                    local c = EllesmereUI.QoLExtrasGet("durWarnColor")
+                    if c then return c.r, c.g, c.b end
+                    return 1, 0.27, 0.27
                 end
-            end)
-            local durCogInitOff = durOff()
-            durCogBtn:SetAlpha(durCogInitOff and 0.15 or 0.4)
-            if durCogInitOff then durCogBlock:Show() else durCogBlock:Hide() end
-
-            -- Eye icon to toggle durability warning preview (left of cog)
-            local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
-            local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
-            local durPreviewShown = false
-            local eyeBtn = CreateFrame("Button", nil, leftRgn)
-            eyeBtn:SetSize(26, 26)
-            eyeBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
-            leftRgn._lastInline = eyeBtn
-            eyeBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            eyeBtn:SetAlpha(durOff() and 0.15 or 0.4)
-            local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-            eyeTex:SetAllPoints()
-            local function RefreshDurEye()
-                if durPreviewShown then
-                    eyeTex:SetTexture(EYE_INVISIBLE)
-                else
-                    eyeTex:SetTexture(EYE_VISIBLE)
-                end
-            end
-            RefreshDurEye()
-            eyeBtn:SetScript("OnEnter", function(self)
-                self:SetAlpha(0.7)
-                EllesmereUI.ShowWidgetTooltip(self, "Preview durability warning")
-            end)
-            eyeBtn:SetScript("OnLeave", function(self)
-                EllesmereUI.HideWidgetTooltip()
-                self:SetAlpha(0.4)
-            end)
-            eyeBtn:SetScript("OnClick", function(self)
-                durPreviewShown = not durPreviewShown
-                RefreshDurEye()
-                if durPreviewShown then
+                local durSwSet = function(r, g, b)
+                    EllesmereUI.QoLExtrasSet("durWarnColor", { r = r, g = g, b = b })
                     if EllesmereUI._applyDurWarn then EllesmereUI._applyDurWarn() end
-                    if EllesmereUI._durWarnPreview then
-                        EllesmereUI._durWarnPreview()
+                end
+                local durSwatch, durUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, durSwGet, durSwSet, nil, 20)
+                PP.Point(durSwatch, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
+                leftRgn._lastInline = durSwatch
+
+                -- Disabled overlay for swatch when durability warning is off
+                local durSwBlock = CreateFrame("Frame", nil, durSwatch)
+                durSwBlock:SetAllPoints()
+                durSwBlock:SetFrameLevel(durSwatch:GetFrameLevel() + 10)
+                durSwBlock:EnableMouse(true)
+                durSwBlock:SetScript("OnEnter", function()
+                    EllesmereUI.ShowWidgetTooltip(durSwatch, EllesmereUI.DisabledTooltip("Low Durability Warning"))
+                end)
+                durSwBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                EllesmereUI.RegisterWidgetRefresh(function()
+                    local off = durOff()
+                    if off then
+                        durSwatch:SetAlpha(0.3)
+                        durSwBlock:Show()
+                    else
+                        durSwatch:SetAlpha(1)
+                        durSwBlock:Hide()
                     end
-                else
-                    if EllesmereUI._durWarnHidePreview then
-                        EllesmereUI._durWarnHidePreview()
+                    durUpdateSwatch()
+                end)
+                local durInitOff = durOff()
+                durSwatch:SetAlpha(durInitOff and 0.3 or 1)
+                if durInitOff then durSwBlock:Show() else durSwBlock:Hide() end
+
+                -- Eye icon to toggle durability warning preview (left of swatch)
+                local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
+                local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
+                local durPreviewShown = false
+                local eyeBtn = CreateFrame("Button", nil, leftRgn)
+                eyeBtn:SetSize(26, 26)
+                eyeBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
+                leftRgn._lastInline = eyeBtn
+                eyeBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
+                EllesmereUI.SetGlyphAlpha(eyeBtn, durOff() and 0.15 or 0.4)
+                local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+                eyeTex:SetAllPoints()
+                local function RefreshDurEye()
+                    if durPreviewShown then
+                        eyeTex:SetTexture(EYE_INVISIBLE)
+                    else
+                        eyeTex:SetTexture(EYE_VISIBLE)
                     end
                 end
-            end)
-
-            -- Blocking overlay for eye when durability warning is off
-            local eyeBlock = CreateFrame("Frame", nil, eyeBtn)
-            eyeBlock:SetAllPoints()
-            eyeBlock:SetFrameLevel(eyeBtn:GetFrameLevel() + 10)
-            eyeBlock:EnableMouse(true)
-            eyeBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(eyeBtn, EllesmereUI.DisabledTooltip("Low Durability Warning"))
-            end)
-            eyeBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = durOff()
-                if off then
-                    durPreviewShown = false
+                RefreshDurEye()
+                eyeBtn:SetScript("OnEnter", function(self)
+                    EllesmereUI.SetGlyphAlpha(self, 0.7)
+                    EllesmereUI.ShowWidgetTooltip(self, "Preview durability warning")
+                end)
+                eyeBtn:SetScript("OnLeave", function(self)
+                    EllesmereUI.HideWidgetTooltip()
+                    EllesmereUI.SetGlyphAlpha(self, 0.4)
+                end)
+                eyeBtn:SetScript("OnClick", function(self)
+                    durPreviewShown = not durPreviewShown
                     RefreshDurEye()
-                    eyeBtn:SetAlpha(0.15)
-                    eyeBlock:Show()
-                else
-                    eyeBtn:SetAlpha(0.4)
-                    eyeBlock:Hide()
-                end
-            end)
-            local eyeInitOff = durOff()
-            eyeBtn:SetAlpha(eyeInitOff and 0.15 or 0.4)
-            if eyeInitOff then eyeBlock:Show() else eyeBlock:Hide() end
+                    if durPreviewShown then
+                        if EllesmereUI._applyDurWarn then EllesmereUI._applyDurWarn() end
+                        if EllesmereUI._durWarnPreview then
+                            EllesmereUI._durWarnPreview()
+                        end
+                    else
+                        if EllesmereUI._durWarnHidePreview then
+                            EllesmereUI._durWarnHidePreview()
+                        end
+                    end
+                end)
+
+                -- Blocking overlay for eye when durability warning is off
+                local eyeBlock = CreateFrame("Frame", nil, eyeBtn)
+                eyeBlock:SetAllPoints()
+                eyeBlock:SetFrameLevel(eyeBtn:GetFrameLevel() + 10)
+                eyeBlock:EnableMouse(true)
+                eyeBlock:SetScript("OnEnter", function()
+                    EllesmereUI.ShowWidgetTooltip(eyeBtn, EllesmereUI.DisabledTooltip("Low Durability Warning"))
+                end)
+                eyeBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                EllesmereUI.RegisterWidgetRefresh(function()
+                    local off = durOff()
+                    if off then
+                        durPreviewShown = false
+                        RefreshDurEye()
+                        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.15)
+                        eyeBlock:Show()
+                    else
+                        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
+                        eyeBlock:Hide()
+                    end
+                end)
+                local eyeInitOff = durOff()
+                EllesmereUI.SetGlyphAlpha(eyeBtn, eyeInitOff and 0.15 or 0.4)
+                if eyeInitOff then eyeBlock:Show() else eyeBlock:Hide() end
+            end
         end
 
-        -- Row 3: Secondary Stat Display (left, with swatch+cog) | Guild Chat Privacy (right)
+        -- Row 3: Secondary Stat Display (left, with cog+swatches) | Guild Chat Privacy (right)
         local row4
         row4, h = W:DualRow(parent, y,
             { type="toggle", text="Secondary Stat Display",
-              tooltip="Displays secondary stat percentages (Crit, Haste, Mastery, Vers) at the top left of the screen.",
+              tooltip=EllesmereUI.IS_FOREVER
+                  and "Displays your character stats at the top left of the screen."
+                  or "Displays secondary stat percentages (Crit, Haste, Mastery, Vers) at the top left of the screen.",
               getValue=function()
                 return EllesmereUI.QoLExtrasGet("showSecondaryStats") or false
               end,
@@ -1665,117 +1391,12 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
-        -- Inline color swatch + cog on Secondary Stat Display (left region)
-        if not EllesmereUI._prebuilding then
+        -- Inline cog + color swatches on Secondary Stat Display (left region)
+        do
             local leftRgn = row4._leftRegion
             local function statsOff()
                 return not EllesmereUI.QoLExtrasGet("showSecondaryStats")
             end
-
-            -- Inline default + class + custom colour swatches, following the
-            -- minimap border's swatch-row convention: the active mode renders
-            -- at full alpha, the others dimmed, each with a naming tooltip.
-            local function ssMode()
-                local m = EllesmereUI.QoLExtrasGet("secondaryStatsColorMode")
-                if m then return m end
-                -- No mode saved: a stored color was in use, otherwise class
-                -- color -- the pre-mode default look.
-                return EllesmereUI.QoLExtrasGet("secondaryStatsColor") and "custom" or "class"
-            end
-            local ssUpdateState   -- forward: swatches reference it from OnClick
-            local function ssSetMode(v)
-                EllesmereUI.QoLExtrasSet("secondaryStatsColorMode", v)
-                if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
-                if ssUpdateState then ssUpdateState() end
-            end
-
-            -- Custom swatch (nearest the control): stored custom colour. A
-            -- click switches to custom mode first; a second click opens the
-            -- picker (same two-step as the minimap border swatches).
-            local ssCustom, ssUpdCustom = EllesmereUI.BuildColorSwatch(
-                leftRgn, leftRgn:GetFrameLevel() + 5,
-                function()
-                    local c = EllesmereUI.QoLExtrasGet("secondaryStatsColor")
-                    if c then return c.r, c.g, c.b end
-                    return 1, 1, 1
-                end,
-                function(r, g, b)
-                    EllesmereUI.QoLExtrasSet("secondaryStatsColor", { r = r, g = g, b = b })
-                    EllesmereUI.QoLExtrasSet("secondaryStatsColorMode", "custom")
-                    if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
-                    if ssUpdateState then ssUpdateState() end
-                end, nil, 20)
-            do
-                local openPicker = ssCustom:GetScript("OnClick")
-                ssCustom:SetScript("OnClick", function(self)
-                    if ssMode() ~= "custom" then ssSetMode("custom") return end
-                    if openPicker then openPicker(self) end
-                end)
-            end
-            PP.Point(ssCustom, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-            leftRgn._lastInline = ssCustom
-
-            -- Class-colour swatch: live player class colour.
-            local ssClass, ssUpdClass = EllesmereUI.BuildColorSwatch(
-                leftRgn, leftRgn:GetFrameLevel() + 5,
-                function()
-                    local cc = EllesmereUI.GetClassColor and EllesmereUI.GetClassColor(select(2, UnitClass("player")))
-                    if cc then return cc.r, cc.g, cc.b end
-                    return 1, 1, 1
-                end,
-                function() end, nil, 20)
-            ssClass:SetScript("OnClick", function() ssSetMode("class") end)
-            PP.Point(ssClass, "RIGHT", leftRgn._lastInline, "LEFT", -8, 0)
-            leftRgn._lastInline = ssClass
-
-            -- Multicolored swatch (outermost): the per-stat palette, previewed
-            -- by its first hue (crit gold).
-            local ssMulti, ssUpdMulti = EllesmereUI.BuildColorSwatch(
-                leftRgn, leftRgn:GetFrameLevel() + 5,
-                function() return 1, 209 / 255, 0 end,
-                function() end, nil, 20)
-            ssMulti:SetScript("OnClick", function() ssSetMode("palette") end)
-            PP.Point(ssMulti, "RIGHT", leftRgn._lastInline, "LEFT", -8, 0)
-            leftRgn._lastInline = ssMulti
-
-            local ssTips = { { ssMulti, "Multicolored" }, { ssClass, "Class Color" }, { ssCustom, "Custom Color" } }
-            for _, e in ipairs(ssTips) do
-                e[1]:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(e[1], e[2]) end)
-                e[1]:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            end
-
-            -- Blocking overlays while Secondary Stat Display is off (shown from
-            -- the single refresh below, like the swatch alphas).
-            local ssBlocks = {}
-            for _, e in ipairs(ssTips) do
-                local sw = e[1]
-                local block = CreateFrame("Frame", nil, sw)
-                block:SetAllPoints()
-                block:SetFrameLevel(sw:GetFrameLevel() + 10)
-                block:EnableMouse(true)
-                block:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip("Secondary Stat Display"))
-                end)
-                block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                ssBlocks[#ssBlocks + 1] = block
-            end
-
-            -- While the display is off every swatch dims flat; while on, the
-            -- active mode is bright and the others dimmed. One refresh owns
-            -- both, plus the swatch fills (class color changes, custom picks).
-            ssUpdateState = function()
-                if ssUpdCustom then ssUpdCustom() end
-                if ssUpdClass then ssUpdClass() end
-                if ssUpdMulti then ssUpdMulti() end
-                local off = statsOff()
-                for _, block in ipairs(ssBlocks) do block:SetShown(off) end
-                local m = not off and ssMode() or nil
-                ssMulti:SetAlpha(m == "palette" and 1 or 0.3)
-                ssClass:SetAlpha(m == "class" and 1 or 0.3)
-                ssCustom:SetAlpha(m == "custom" and 1 or 0.3)
-            end
-            EllesmereUI.RegisterWidgetRefresh(ssUpdateState)
-            ssUpdateState()
 
             -- Cog popup: stat visibility/order + tertiary swatch pair + Scale
             local function tsMode()
@@ -1805,27 +1426,84 @@ initFrame:SetScript("OnEvent", function(self)
                 end
                 return items
             end
-            local _, ssCogShow = EllesmereUI.BuildCogPopup({
-                title = "Secondary Stats Settings",
-                rows = {
-                    -- Key stays `coloredPercentages`: it is the shipped setting
-                    -- name, and renaming it would drop everyone's saved choice.
-                    { type = "toggle", label = "Colored Values",
-                      get = function()
-                          return EllesmereUI.QoLExtrasGet("coloredPercentages") or false
-                      end,
-                      set = function(v)
-                          EllesmereUI.QoLExtrasSet("coloredPercentages", v)
-                          if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
+            -- Key stays `coloredPercentages`: it is the shipped setting
+            -- name, and renaming it would drop everyone's saved choice.
+            local coloredRow = { type = "toggle", label = "Colored Values",
+                get = function()
+                    return EllesmereUI.QoLExtrasGet("coloredPercentages") or false
+                end,
+                set = function(v)
+                    EllesmereUI.QoLExtrasSet("coloredPercentages", v)
+                    if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
+                end }
+            local abbreviateRow = { type = "toggle", label = "Abbreviate Stat Labels",
+                get = function()
+                    return EllesmereUI.QoLExtrasGet("secondaryStatsAbbreviateLabels") or false
+                end,
+                set = function(v)
+                    EllesmereUI.QoLExtrasSet("secondaryStatsAbbreviateLabels", v)
+                    if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
+                end }
+            local scaleRow = { type = "slider", label = "Scale", min = 50, max = 200, step = 5,
+                get = function()
+                    local pos = EllesmereUI.QoLExtrasGet("secondaryStatsPos")
+                    return math.floor(((pos and pos.scale) or 1.0) * 100 + 0.5)
+                end,
+                set = function(v)
+                    -- Shallow-copy so we never mutate the shared account-wide
+                    -- fallback table in place; the write lands per-profile.
+                    local prev = EllesmereUI.QoLExtrasGet("secondaryStatsPos")
+                    local newPos = {}
+                    if prev then for pk, pv in pairs(prev) do newPos[pk] = pv end end
+                    newPos.scale = v / 100
+                    EllesmereUI.QoLExtrasSet("secondaryStatsPos", newPos)
+                    if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
+                end }
+            local cogRows, cogBtn, cogShow
+            if EllesmereUI.IS_FOREVER then
+                -- WoW Forever has no ratings or tertiaries: its stat catalog is
+                -- picked in the grouped Choose Stats window
+                -- (EUI_QoL_StatPicker.lua) and the shown stats ordered here.
+                local FV_STAT = EllesmereUI._ModuleNS["EllesmereUIQoL"].FvStats.byKey
+                cogRows = {
+                    coloredRow,
+                    abbreviateRow,
+                    { type = "button", label = "Choose Stats...",
+                      action = function()
+                          -- The window takes the cog popup's place under the cog.
+                          cogShow._popupFrame:Hide()
+                          EllesmereUI._ShowStatPicker(cogBtn)
                       end },
-                    { type = "toggle", label = "Abbreviate Stat Labels",
-                      get = function()
-                          return EllesmereUI.QoLExtrasGet("secondaryStatsAbbreviateLabels") or false
+                    { type = "reorder", label = "Reorder Shown Stats", maxVisible = 12,
+                      items = function()
+                          local hidden = EllesmereUI.QoLExtrasGet("secondaryStatsHidden")
+                          local items = {}
+                          for _, key in ipairs(EllesmereUI._secondaryStatsOrder()) do
+                              if not (type(hidden) == "table" and hidden[key]) then
+                                  items[#items + 1] = { key = key, label = EllesmereUI.L(FV_STAT[key].label) }
+                              end
+                          end
+                          return items
                       end,
-                      set = function(v)
-                          EllesmereUI.QoLExtrasSet("secondaryStatsAbbreviateLabels", v)
-                          if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
+                      -- The hidden stats follow the shown ones, in their saved order.
+                      set = function(keys)
+                          local order, seen = {}, {}
+                          for _, key in ipairs(keys) do
+                              order[#order + 1] = key
+                              seen[key] = true
+                          end
+                          for _, key in ipairs(EllesmereUI._secondaryStatsOrder()) do
+                              if not seen[key] then order[#order + 1] = key end
+                          end
+                          EllesmereUI.QoLExtrasSet("secondaryStatsOrder", order)
+                          EllesmereUI._applySecondaryStats()
                       end },
+                    scaleRow,
+                }
+            else
+                cogRows = {
+                    coloredRow,
+                    abbreviateRow,
                     { type = "toggle", label = "Show Raw Rating",
                       get = function()
                           return EllesmereUI.QoLExtrasGet("showSecondaryStatsRaw") or false
@@ -1890,7 +1568,7 @@ initFrame:SetScript("OnEvent", function(self)
                       swatches = {
                           { tooltip = "Class Color",
                             getValue = function()
-                                local cc = EllesmereUI.GetClassColor and EllesmereUI.GetClassColor(select(2, UnitClass("player")))
+                                local cc = EllesmereUI.GetClassColor(select(2, UnitClass("player")))
                                 if cc then return cc.r, cc.g, cc.b end
                                 return 1, 1, 1
                             end,
@@ -1914,159 +1592,148 @@ initFrame:SetScript("OnEvent", function(self)
                             end,
                             refreshAlpha = function() return tsMode() == "custom" and 1 or 0.3 end },
                       } },
-                    { type = "slider", label = "Scale", min = 50, max = 200, step = 5,
-                      get = function()
-                          local pos = EllesmereUI.QoLExtrasGet("secondaryStatsPos")
-                          return math.floor(((pos and pos.scale) or 1.0) * 100 + 0.5)
-                      end,
-                      set = function(v)
-                          -- Shallow-copy so we never mutate the shared account-wide
-                          -- fallback table in place; the write lands per-profile.
-                          local prev = EllesmereUI.QoLExtrasGet("secondaryStatsPos")
-                          local newPos = {}
-                          if prev then for pk, pv in pairs(prev) do newPos[pk] = pv end end
-                          newPos.scale = v / 100
-                          EllesmereUI.QoLExtrasSet("secondaryStatsPos", newPos)
-                          if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
-                      end },
-                },
-            })
-            local ssCogBtn = CreateFrame("Button", nil, leftRgn)
-            ssCogBtn:SetSize(26, 26)
-            ssCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
-            leftRgn._lastInline = ssCogBtn
-            ssCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            ssCogBtn:SetAlpha(statsOff() and 0.15 or 0.4)
-            local ssCogTex = ssCogBtn:CreateTexture(nil, "OVERLAY")
-            ssCogTex:SetAllPoints()
-            ssCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            ssCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            ssCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-            ssCogBtn:SetScript("OnClick", function(self) ssCogShow(self) end)
-
-            -- Blocking overlay for cog when Secondary Stat Display is off
-            local ssCogBlock = CreateFrame("Frame", nil, ssCogBtn)
-            ssCogBlock:SetAllPoints()
-            ssCogBlock:SetFrameLevel(ssCogBtn:GetFrameLevel() + 10)
-            ssCogBlock:EnableMouse(true)
-            ssCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(ssCogBtn, EllesmereUI.DisabledTooltip("Secondary Stat Display"))
-            end)
-            ssCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            -- Refresh: dim + block the cog with the toggle. The swatches and
-            -- their overlays are owned by ssUpdateState above.
-            local function ssCogRefresh()
-                local off = statsOff()
-                ssCogBtn:SetAlpha(off and 0.15 or 0.4)
-                ssCogBlock:SetShown(off)
+                    scaleRow,
+                }
             end
-            EllesmereUI.RegisterWidgetRefresh(ssCogRefresh)
-            ssCogRefresh()
+            cogBtn, cogShow = EllesmereUI.BuildInlineCog(leftRgn, {
+                title = "Secondary Stats Settings",
+                rows = cogRows,
+                disabled = statsOff, disabledTooltip = "Secondary Stat Display",
+            })
+
+            if not EllesmereUI._prebuilding then
+                -- Inline default + class + custom colour swatches, following the
+                -- minimap border's swatch-row convention: the active mode renders
+                -- at full alpha, the others dimmed, each with a naming tooltip.
+                local function ssMode()
+                    local m = EllesmereUI.QoLExtrasGet("secondaryStatsColorMode")
+                    if m then return m end
+                    -- No mode saved: a stored color was in use, otherwise class
+                    -- color -- the pre-mode default look.
+                    return EllesmereUI.QoLExtrasGet("secondaryStatsColor") and "custom" or "class"
+                end
+                local ssUpdateState   -- forward: swatches reference it from OnClick
+                local function ssSetMode(v)
+                    EllesmereUI.QoLExtrasSet("secondaryStatsColorMode", v)
+                    if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
+                    if ssUpdateState then ssUpdateState() end
+                end
+
+                -- Custom swatch (nearest the cog): stored custom colour. A
+                -- click switches to custom mode first; a second click opens the
+                -- picker (same two-step as the minimap border swatches).
+                local ssCustom, ssUpdCustom = EllesmereUI.BuildColorSwatch(
+                    leftRgn, leftRgn:GetFrameLevel() + 5,
+                    function()
+                        local c = EllesmereUI.QoLExtrasGet("secondaryStatsColor")
+                        if c then return c.r, c.g, c.b end
+                        return 1, 1, 1
+                    end,
+                    function(r, g, b)
+                        EllesmereUI.QoLExtrasSet("secondaryStatsColor", { r = r, g = g, b = b })
+                        EllesmereUI.QoLExtrasSet("secondaryStatsColorMode", "custom")
+                        if EllesmereUI._applySecondaryStats then EllesmereUI._applySecondaryStats() end
+                        if ssUpdateState then ssUpdateState() end
+                    end, nil, 20)
+                do
+                    local openPicker = ssCustom:GetScript("OnClick")
+                    ssCustom:SetScript("OnClick", function(self)
+                        if ssMode() ~= "custom" then ssSetMode("custom") return end
+                        if openPicker then openPicker(self) end
+                    end)
+                end
+                PP.Point(ssCustom, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
+                leftRgn._lastInline = ssCustom
+
+                -- Class-colour swatch: live player class colour.
+                local ssClass, ssUpdClass = EllesmereUI.BuildColorSwatch(
+                    leftRgn, leftRgn:GetFrameLevel() + 5,
+                    function()
+                        local cc = EllesmereUI.GetClassColor(select(2, UnitClass("player")))
+                        if cc then return cc.r, cc.g, cc.b end
+                        return 1, 1, 1
+                    end,
+                    function() end, nil, 20)
+                ssClass:SetScript("OnClick", function() ssSetMode("class") end)
+                PP.Point(ssClass, "RIGHT", leftRgn._lastInline, "LEFT", -8, 0)
+                leftRgn._lastInline = ssClass
+
+                -- Multicolored swatch (outermost): the per-stat palette, previewed
+                -- by its first hue (crit gold).
+                local ssMulti, ssUpdMulti = EllesmereUI.BuildColorSwatch(
+                    leftRgn, leftRgn:GetFrameLevel() + 5,
+                    function() return 1, 209 / 255, 0 end,
+                    function() end, nil, 20)
+                ssMulti:SetScript("OnClick", function() ssSetMode("palette") end)
+                PP.Point(ssMulti, "RIGHT", leftRgn._lastInline, "LEFT", -8, 0)
+                leftRgn._lastInline = ssMulti
+
+                local ssTips = { { ssMulti, "Multicolored" }, { ssClass, "Class Color" }, { ssCustom, "Custom Color" } }
+                for _, e in ipairs(ssTips) do
+                    e[1]:HookScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(e[1], e[2]) end)
+                    e[1]:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                end
+
+                -- Blocking overlays while Secondary Stat Display is off (shown from
+                -- the single refresh below, like the swatch alphas).
+                local ssBlocks = {}
+                for _, e in ipairs(ssTips) do
+                    local sw = e[1]
+                    local block = CreateFrame("Frame", nil, sw)
+                    block:SetAllPoints()
+                    block:SetFrameLevel(sw:GetFrameLevel() + 10)
+                    block:EnableMouse(true)
+                    block:SetScript("OnEnter", function()
+                        EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip("Secondary Stat Display"))
+                    end)
+                    block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                    ssBlocks[#ssBlocks + 1] = block
+                end
+
+                -- While the display is off every swatch dims flat; while on, the
+                -- active mode is bright and the others dimmed. One refresh owns
+                -- both, plus the swatch fills (class color changes, custom picks).
+                ssUpdateState = function()
+                    if ssUpdCustom then ssUpdCustom() end
+                    if ssUpdClass then ssUpdClass() end
+                    if ssUpdMulti then ssUpdMulti() end
+                    local off = statsOff()
+                    for _, block in ipairs(ssBlocks) do block:SetShown(off) end
+                    local m = not off and ssMode() or nil
+                    ssMulti:SetAlpha(m == "palette" and 1 or 0.3)
+                    ssClass:SetAlpha(m == "class" and 1 or 0.3)
+                    ssCustom:SetAlpha(m == "custom" and 1 or 0.3)
+                end
+                EllesmereUI.RegisterWidgetRefresh(ssUpdateState)
+                ssUpdateState()
+            end
         end
 
-        -- Row 4: Rested Indicator (left) |
+        -- Row 4: Rested Indicator (left; mirrored in the Unit Frames player
+        -- EXTRAS, EllesmereUI.RestedIndicatorCfg) |
         local restedRow
         restedRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Rested Indicator",
-              tooltip="Displays a ZZZ indicator on your player frame when you are in a resting area.",
-              getValue=function()
-                if not EllesmereUIDB then return true end
-                return EllesmereUIDB.showRestedIndicator == true
-              end,
-              setValue=function(v)
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                EllesmereUIDB.showRestedIndicator = v
-                local pf = _G["EllesmereUIUnitFrames_Player"]
-                if pf and pf._restIndicator then
-                    if v and IsResting() then pf._restIndicator:Show() else pf._restIndicator:Hide() end
-                end
-                EllesmereUI:RefreshPage()
-              end },
-            { type="toggle", text="Target Distance Text",
+            EllesmereUI.RestedIndicatorCfg(),
+            { type="toggle", text="Target Distance (Range) Text",
               tooltip="Shows the approximate distance to your current target as movable on-screen text (default 30-35). Use the cog for format, alignment, and text size; use Unlock Mode to position or Anchor to your Player Frame.",
               getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.targetDistanceEnabled or false
+                  return EllesmereUI.QoLExtrasGet("targetDistanceEnabled") or false
               end,
               setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.targetDistanceEnabled = v
+                  EllesmereUI.QoLExtrasSet("targetDistanceEnabled", v)
                   if EllesmereUI._applyTargetDistance then EllesmereUI._applyTargetDistance() end
                   EllesmereUI:RefreshPage()
               end }
         );  y = y - h
 
-        -- Inline cog on Rested Indicator (left region) for X/Y offsets
-        if not EllesmereUI._prebuilding then
-            local leftRgn = restedRow._leftRegion
-            local function ApplyRestIndicatorPos()
-                local pf = _G["EllesmereUIUnitFrames_Player"]
-                if pf and pf._restIndicator then
-                    pf._restIndicator:ClearAllPoints()
-                    local rx = (EllesmereUIDB and EllesmereUIDB.restedIndicatorXOffset) or 0
-                    local ry = (EllesmereUIDB and EllesmereUIDB.restedIndicatorYOffset) or 0
-                    pf._restIndicator:SetPoint("TOPLEFT", pf.Health, "TOPLEFT", 3 + rx, -2 + ry)
-                end
-            end
-            local _, restCogShow = EllesmereUI.BuildCogPopup({
-                title = "Rested Indicator Position",
-                rows = {
-                    { type="slider", label="X Offset", min=-50, max=50, step=1,
-                      get=function() return (EllesmereUIDB and EllesmereUIDB.restedIndicatorXOffset) or 0 end,
-                      set=function(v)
-                          if not EllesmereUIDB then EllesmereUIDB = {} end
-                          EllesmereUIDB.restedIndicatorXOffset = v
-                          ApplyRestIndicatorPos()
-                      end },
-                    { type="slider", label="Y Offset", min=-50, max=50, step=1,
-                      get=function() return (EllesmereUIDB and EllesmereUIDB.restedIndicatorYOffset) or 0 end,
-                      set=function(v)
-                          if not EllesmereUIDB then EllesmereUIDB = {} end
-                          EllesmereUIDB.restedIndicatorYOffset = v
-                          ApplyRestIndicatorPos()
-                      end },
-                },
-            })
-            -- Manual cog button (no MakeCogBtn in this file)
-            local function restOff()
-                return not EllesmereUIDB or EllesmereUIDB.showRestedIndicator ~= true
-            end
-            local restCogBtn = CreateFrame("Button", nil, leftRgn)
-            restCogBtn:SetSize(26, 26)
-            restCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = restCogBtn
-            restCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            restCogBtn:SetAlpha(restOff() and 0.15 or 0.4)
-            local restCogTex = restCogBtn:CreateTexture(nil, "OVERLAY")
-            restCogTex:SetAllPoints()
-            restCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            restCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            restCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(restOff() and 0.15 or 0.4) end)
-            restCogBtn:SetScript("OnClick", function(self) restCogShow(self) end)
-
-            -- Blocking overlay when Rested Indicator is off
-            local restCogBlock = CreateFrame("Frame", nil, restCogBtn)
-            restCogBlock:SetAllPoints()
-            restCogBlock:SetFrameLevel(restCogBtn:GetFrameLevel() + 10)
-            restCogBlock:EnableMouse(true)
-            restCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(restCogBtn, EllesmereUI.DisabledTooltip("Rested Indicator"))
-            end)
-            restCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            local function UpdateRestCogState()
-                local off = restOff()
-                restCogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then restCogBlock:Show() else restCogBlock:Hide() end
-            end
-            EllesmereUI.RegisterWidgetRefresh(UpdateRestCogState)
-            UpdateRestCogState()
-        end
+        -- Inline cog on Rested Indicator (left region): Anchor, Animated, Size, X/Y offsets
+        EllesmereUI.BuildRestedIndicatorCog(restedRow._leftRegion)
 
         -- Target Distance settings cog (right slot of the Rested row)
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = restedRow._rightRegion
             local function tdOff()
-                return not (EllesmereUIDB and EllesmereUIDB.targetDistanceEnabled)
+                return not EllesmereUI.QoLExtrasGet("targetDistanceEnabled")
             end
 
             local tdFormatValues = {
@@ -2082,42 +1749,39 @@ initFrame:SetScript("OnEvent", function(self)
             }
             local tdAlignOrder = { "LEFT", "CENTER", "RIGHT" }
 
-            local _, targetDistCogShow = EllesmereUI.BuildCogPopup({
+            EllesmereUI.BuildInlineCog(rgn, {
                 title = "Target Distance Settings",
                 minWidth = 280,
                 rows = {
                     { type="dropdown", label="Format",
                       values=tdFormatValues, order=tdFormatOrder,
                       get=function()
-                        local f = EllesmereUIDB and EllesmereUIDB.targetDistanceFormat
+                        local f = EllesmereUI.QoLExtrasGet("targetDistanceFormat")
                         if f == "plus" or f == "min" or f == "range" then return f end
                         return "range"
                       end,
                       set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.targetDistanceFormat = v
+                        EllesmereUI.QoLExtrasSet("targetDistanceFormat", v)
                         if EllesmereUI._applyTargetDistanceFrame then EllesmereUI._applyTargetDistanceFrame() end
                       end },
                     { type="dropdown", label="Text Align",
                       values=tdAlignValues, order=tdAlignOrder,
                       get=function()
-                        local a = EllesmereUIDB and EllesmereUIDB.targetDistanceAlign
+                        local a = EllesmereUI.QoLExtrasGet("targetDistanceAlign")
                         if a == "LEFT" or a == "CENTER" or a == "RIGHT" then return a end
                         return "CENTER"
                       end,
                       set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.targetDistanceAlign = v
+                        EllesmereUI.QoLExtrasSet("targetDistanceAlign", v)
                         if EllesmereUI._applyTargetDistanceFrame then EllesmereUI._applyTargetDistanceFrame() end
                       end },
                     { type="slider", label="Text Size",
                       min=10, max=48, step=1,
                       get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.targetDistanceTextSize) or 18
+                        return EllesmereUI.QoLExtrasGet("targetDistanceTextSize") or 18
                       end,
                       set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.targetDistanceTextSize = v
+                        EllesmereUI.QoLExtrasSet("targetDistanceTextSize", v)
                         if EllesmereUI._applyTargetDistanceFrame then EllesmereUI._applyTargetDistanceFrame() end
                       end },
                     { type="dropdown", label="Frame Strata",
@@ -2125,48 +1789,163 @@ initFrame:SetScript("OnEvent", function(self)
                       values = EllesmereUI.FRAME_STRATA_LABELS,
                       order = EllesmereUI.FRAME_STRATA_ORDER_BASE,
                       get=function()
-                        return (EllesmereUIDB and EllesmereUIDB.targetDistanceStrata) or "HIGH"
+                        return EllesmereUI.QoLExtrasGet("targetDistanceStrata") or "HIGH"
                       end,
                       set=function(v)
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.targetDistanceStrata = v
+                        EllesmereUI.QoLExtrasSet("targetDistanceStrata", v)
                         if EllesmereUI._applyTargetDistanceFrame then EllesmereUI._applyTargetDistanceFrame() end
                       end },
                 },
                 footer = { unlockKey = "EUI_TargetDistance" },
+                gap = 9, disabled = tdOff, disabledTooltip = "Target Distance (Range) Text",
             })
-            local tdCogBtn = CreateFrame("Button", nil, rgn)
-            tdCogBtn:SetSize(26, 26)
-            tdCogBtn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -9, 0)
-            rgn._lastInline = tdCogBtn
-            tdCogBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-            tdCogBtn:SetAlpha(tdOff() and 0.15 or 0.4)
-            local tdCogTex = tdCogBtn:CreateTexture(nil, "OVERLAY")
-            tdCogTex:SetAllPoints()
-            tdCogTex:SetTexture(EllesmereUI.COGS_ICON or EllesmereUI.DIRECTIONS_ICON)
-            tdCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            tdCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-            tdCogBtn:SetScript("OnClick", function(self) targetDistCogShow(self) end)
+        end
 
-            local tdCogBlock = CreateFrame("Frame", nil, tdCogBtn)
-            tdCogBlock:SetAllPoints()
-            tdCogBlock:SetFrameLevel(tdCogBtn:GetFrameLevel() + 10)
-            tdCogBlock:EnableMouse(true)
-            tdCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(tdCogBtn, EllesmereUI.DisabledTooltip("Target Distance Text"))
-            end)
-            tdCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        -- Row 5: Environment Ping keybind (left) | Show Coordinates on Map (+ cog)
+        local pingRow
+        pingRow, h = W:DualRow(parent, y,
+            { type="label", text="Environment Ping" },
+            { type="toggle", text="Show Coordinates on Map",
+              tooltip="Displays cursor and player coordinates at the bottom of the world map.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.mapCoords or false
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.mapCoords = v
+                  if EllesmereUI._applyMapCoords then EllesmereUI._applyMapCoords() end
+                  EllesmereUI:RefreshPage()
+              end }
+        );  y = y - h
+        -- Cog on Show Coordinates on Map (right region)
+        do
+            local function coordsOff()
+                return not (EllesmereUIDB and EllesmereUIDB.mapCoords)
+            end
+            EllesmereUI.BuildInlineCog(pingRow._rightRegion, {
+                title = "Map Coordinates Settings",
+                rows = {
+                    { type = "slider", label = "Text Size", min = 8, max = 24, step = 1,
+                      get = function()
+                          return (EllesmereUIDB and EllesmereUIDB.mapCoordsTextSize) or 12
+                      end,
+                      set = function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.mapCoordsTextSize = v
+                          if EllesmereUI._applyMapCoords then EllesmereUI._applyMapCoords() end
+                      end },
+                },
+                gap = 9, disabled = coordsOff, disabledTooltip = "Show Coordinates on Map",
+            })
+        end
+        if not EllesmereUI._prebuilding then
+            local rgn = pingRow._leftRegion
+            local kbBtn, refresh = EllesmereUI.BuildKeybindButton(rgn, {
+                w = 140, h = 30, font = 13, mouse = true,
+                get = function() return EllesmereUIDB.envPingKey end,
+                set = function(v)
+                    -- The hold key cannot be the button it claims.
+                    local base = v and v:match("[^%-]+$")
+                    if base == "BUTTON1" or base == "BUTTON2" then return end
+                    EllesmereUIDB.envPingKey = v
+                    if EllesmereUI._applyEnvPing then EllesmereUI._applyEnvPing() end
+                end,
+                tooltip = "While held, left-clicking the world sends a ping that ignores units and only targets the environment.\n\nLeft-click to set a keybind.\nRight-click to unbind.",
+            })
+            PP.Point(kbBtn, "RIGHT", rgn, "RIGHT", -20, 0)
+            EllesmereUI.RegisterWidgetRefresh(refresh)
+        end
 
-            EllesmereUI.RegisterWidgetRefresh(function()
-                if tdOff() then
-                    tdCogBtn:SetAlpha(0.15); tdCogBlock:Show()
-                else
-                    tdCogBtn:SetAlpha(0.4); tdCogBlock:Hide()
+        -- Auto-Accept Resurrection: right of Row 6, or its own row on WoW Forever.
+        local resCfg = { type="toggle", text="Auto-Accept Resurrection",
+            tooltip="Automatically accepts resurrections from players who are out of combat, such as raid resses after a wipe. Use the cog to also accept combat resurrections.",
+            getValue=function()
+                return EllesmereUIDB and EllesmereUIDB.autoAcceptRes or false
+            end,
+            setValue=function(v)
+                if not EllesmereUIDB then EllesmereUIDB = {} end
+                EllesmereUIDB.autoAcceptRes = v
+                if EllesmereUI._applyAutoAcceptRes then EllesmereUI._applyAutoAcceptRes() end
+                EllesmereUI:RefreshPage()
+            end }
+        local function BuildResCog(rgn)
+            EllesmereUI.BuildInlineCog(rgn, {
+                title = "Auto-Accept Resurrection",
+                rows = {
+                    { type="toggle", label="Accept Combat Resurrections",
+                      get=function()
+                          return EllesmereUIDB and EllesmereUIDB.autoAcceptResCombat or false
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.autoAcceptResCombat = v
+                      end },
+                },
+                gap = 9,
+                disabled = function() return not (EllesmereUIDB and EllesmereUIDB.autoAcceptRes) end,
+                disabledTooltip = "Auto-Accept Resurrection",
+            })
+        end
+
+        -- Row 6: Transparent World Map Sidebars (left) | Auto-Accept Resurrection. Not offered
+        -- on WoW Forever: Forever Essentials has its own map background option there.
+        if not EllesmereUI.IS_FOREVER then
+            local sidebarsRow
+            sidebarsRow, h = W:DualRow(parent, y,
+                { type="toggle", text="Transparent World Map Sidebars",
+                  tooltip="Clears the black bars beside the maximized map.",
+                  getValue=function()
+                      return EllesmereUIDB and EllesmereUIDB.mapSidebarsClear or false
+                  end,
+                  setValue=function(v)
+                      if not EllesmereUIDB then EllesmereUIDB = {} end
+                      EllesmereUIDB.mapSidebarsClear = v
+                      if EllesmereUI._applyMapSidebars then EllesmereUI._applyMapSidebars() end
+                      EllesmereUI:RefreshPage()
+                  end },
+                resCfg
+            );  y = y - h
+            BuildResCog(sidebarsRow._rightRegion)
+            -- Cog on Transparent World Map Sidebars (left region)
+            do
+                local function sidebarsOff()
+                    return not (EllesmereUIDB and EllesmereUIDB.mapSidebarsClear)
                 end
-            end)
-            local tdInitOff = tdOff()
-            tdCogBtn:SetAlpha(tdInitOff and 0.15 or 0.4)
-            if tdInitOff then tdCogBlock:Show() else tdCogBlock:Hide() end
+                EllesmereUI.BuildInlineCog(sidebarsRow._leftRegion, {
+                    title = "World Map Sidebars Settings",
+                    rows = {
+                        { type = "slider", label = "Opacity", min = 0, max = 100, step = 5,
+                          get = function()
+                              return (EllesmereUIDB and EllesmereUIDB.mapSidebarsOpacity) or 0
+                          end,
+                          set = function(v)
+                              if not EllesmereUIDB then EllesmereUIDB = {} end
+                              EllesmereUIDB.mapSidebarsOpacity = v
+                              if EllesmereUI._applyMapSidebars then EllesmereUI._applyMapSidebars() end
+                          end },
+                        { type = "toggle", label = "Click Through",
+                          tooltip = "Lets clicks and camera turns pass through.",
+                          get = function()
+                              return not (EllesmereUIDB and EllesmereUIDB.mapSidebarsClickThrough == false)
+                          end,
+                          set = function(v)
+                              if not EllesmereUIDB then EllesmereUIDB = {} end
+                              -- Stored only when off: unset reads as on.
+                              if v then
+                                  EllesmereUIDB.mapSidebarsClickThrough = nil
+                              else
+                                  EllesmereUIDB.mapSidebarsClickThrough = false
+                              end
+                              if EllesmereUI._applyMapSidebars then EllesmereUI._applyMapSidebars() end
+                          end },
+                    },
+                    gap = 9, disabled = sidebarsOff, disabledTooltip = "Transparent World Map Sidebars",
+                })
+            end
+        else
+            local resRow
+            resRow, h = W:DualRow(parent, y, resCfg, EllesmereUI.BlankRowCfg());  y = y - h
+            BuildResCog(resRow._leftRegion)
         end
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
@@ -2206,7 +1985,7 @@ initFrame:SetScript("OnEvent", function(self)
             return true
         end
 
-        -- Row 1: Character Crosshair (left: dropdown + swatch + cog) | Visibility
+        -- Row 1: Character Crosshair (left: dropdown + cog + swatch) | Visibility
         local crosshairRow
         crosshairRow, h = W:DualRow(parent, y,
             { type="dropdown", text="Character Crosshair",
@@ -2337,50 +2116,8 @@ initFrame:SetScript("OnEvent", function(self)
             visUpdateDisabled()
         end
 
-        -- Inline color swatch on the crosshair dropdown (left region)
-        if not EllesmereUI._prebuilding then
-            local leftRgn = crosshairRow._leftRegion
-
-            local chSwGet = function()
-                local c = cget("crosshairColor")
-                if c then return c.r, c.g, c.b, c.a end
-                return 1, 1, 1, 0.75
-            end
-            local chSwSet = function(r, g, b, a)
-                cset("crosshairColor", { r = r, g = g, b = b, a = a or 1 })
-                if EllesmereUI._applyCrosshair then EllesmereUI._applyCrosshair() end
-            end
-            local chSwatch, chUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, chSwGet, chSwSet, true, 20)
-            PP.Point(chSwatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-            leftRgn._lastInline = chSwatch
-
-            local chSwBlock = CreateFrame("Frame", nil, chSwatch)
-            chSwBlock:SetAllPoints()
-            chSwBlock:SetFrameLevel(chSwatch:GetFrameLevel() + 10)
-            chSwBlock:EnableMouse(true)
-            chSwBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(chSwatch, EllesmereUI.DisabledTooltip("Character Crosshair"))
-            end)
-            chSwBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = crosshairOff()
-                if off then
-                    chSwatch:SetAlpha(0.3)
-                    chSwBlock:Show()
-                else
-                    chSwatch:SetAlpha(1)
-                    chSwBlock:Hide()
-                end
-                chUpdateSwatch()
-            end)
-            local chInitOff = crosshairOff()
-            chSwatch:SetAlpha(chInitOff and 0.3 or 1)
-            if chInitOff then chSwBlock:Show() else chSwBlock:Hide() end
-        end
-
         -- Inline cog on the crosshair dropdown (left region) for expanded options
-        if not EllesmereUI._prebuilding then
+        do
             local leftRgn = crosshairRow._leftRegion
             local function chCogOff() return crosshairOff() end
             local function presetThick()
@@ -2455,40 +2192,54 @@ initFrame:SetScript("OnEvent", function(self)
                     end,
                 }
             end
-            local _, chCogShow = EllesmereUI.BuildCogPopup({
+
+            EllesmereUI.BuildInlineCog(leftRgn, {
                 title = "Crosshair Options",
                 rows = chCogRows,
+                gap = 9, disabled = chCogOff, disabledTooltip = "Character Crosshair",
             })
+        end
 
-            local chCogBtn = CreateFrame("Button", nil, leftRgn)
-            chCogBtn:SetSize(26, 26)
-            chCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
-            leftRgn._lastInline = chCogBtn
-            chCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            chCogBtn:SetAlpha(chCogOff() and 0.15 or 0.4)
-            local chCogTex = chCogBtn:CreateTexture(nil, "OVERLAY")
-            chCogTex:SetAllPoints()
-            chCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            chCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            chCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(chCogOff() and 0.15 or 0.4) end)
-            chCogBtn:SetScript("OnClick", function(self) chCogShow(self) end)
+        -- Inline color swatch on the crosshair dropdown (left region)
+        if not EllesmereUI._prebuilding then
+            local leftRgn = crosshairRow._leftRegion
 
-            -- Blocking overlay when the crosshair is off (None)
-            local chCogBlock = CreateFrame("Frame", nil, chCogBtn)
-            chCogBlock:SetAllPoints()
-            chCogBlock:SetFrameLevel(chCogBtn:GetFrameLevel() + 10)
-            chCogBlock:EnableMouse(true)
-            chCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(chCogBtn, EllesmereUI.DisabledTooltip("Character Crosshair"))
-            end)
-            chCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            local function UpdateChCogState()
-                local off = chCogOff()
-                chCogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then chCogBlock:Show() else chCogBlock:Hide() end
+            local chSwGet = function()
+                local c = cget("crosshairColor")
+                if c then return c.r, c.g, c.b, c.a end
+                return 1, 1, 1, 0.75
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateChCogState)
-            UpdateChCogState()
+            local chSwSet = function(r, g, b, a)
+                cset("crosshairColor", { r = r, g = g, b = b, a = a or 1 })
+                if EllesmereUI._applyCrosshair then EllesmereUI._applyCrosshair() end
+            end
+            local chSwatch, chUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, chSwGet, chSwSet, true, 20)
+            PP.Point(chSwatch, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
+            leftRgn._lastInline = chSwatch
+
+            local chSwBlock = CreateFrame("Frame", nil, chSwatch)
+            chSwBlock:SetAllPoints()
+            chSwBlock:SetFrameLevel(chSwatch:GetFrameLevel() + 10)
+            chSwBlock:EnableMouse(true)
+            chSwBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(chSwatch, EllesmereUI.DisabledTooltip("Character Crosshair"))
+            end)
+            chSwBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            EllesmereUI.RegisterWidgetRefresh(function()
+                local off = crosshairOff()
+                if off then
+                    chSwatch:SetAlpha(0.3)
+                    chSwBlock:Show()
+                else
+                    chSwatch:SetAlpha(1)
+                    chSwBlock:Hide()
+                end
+                chUpdateSwatch()
+            end)
+            local chInitOff = crosshairOff()
+            chSwatch:SetAlpha(chInitOff and 0.3 or 1)
+            if chInitOff then chSwBlock:Show() else chSwBlock:Hide() end
         end
 
         -- Color Out of Range (toggle + inline color picker)
@@ -2553,15 +2304,18 @@ initFrame:SetScript("OnEvent", function(self)
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
 
+        y = BuildSelfCombatTextSection(parent, y)
+        _, h = W:Spacer(parent, y, 20);  y = y - h
+
         ---------------------------------------------------------------------------
-        --  GROUP FINDER
+        --  GROUP FINDER (INSTANCES on WoW Forever)
         ---------------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, "GROUP FINDER", y);  y = y - h
+        _, h = W:SectionHeader(parent, EllesmereUI.IS_FOREVER and "INSTANCES" or "GROUP FINDER", y);  y = y - h
 
         -- Auto Insert Keystone | Announce Instance Reset, then Quick Signup |
-        -- Persistent Signup Note. WoW Forever has no keystones: the first slot goes
-        -- and the other three fill in sequence, so the note lands alone on the
-        -- second row and its cog follows it there.
+        -- Persistent Signup Note, which Group Finder's settings page mirrors (the
+        -- same account-wide switches). WoW Forever has no keystones and no premade
+        -- group list, so only Announce Instance Reset is built there.
         local autoKeyCfg = { type="toggle", text="Auto Insert Keystone",
               tooltip="Automatically inserts your key into the Font of Power.",
               getValue=function()
@@ -2592,9 +2346,7 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v)
                   if not EllesmereUIDB then EllesmereUIDB = {} end
                   EllesmereUIDB.quickSignup = v
-                  if EllesmereUI._applyQuickSignup then
-                      EllesmereUI._applyQuickSignup()
-                  end
+                  EllesmereUI._applyQuickSignup()
               end }
         local persistCfg = { type="toggle", text="Persistent Signup Note",
               tooltip="Keeps a saved signup note you can copy into the Sign Up dialog with the Copy button.",
@@ -2604,81 +2356,44 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v)
                   if not EllesmereUIDB then EllesmereUIDB = {} end
                   EllesmereUIDB.persistSignupNote = v
-                  if EllesmereUI._applyPersistSignupNote then
-                      EllesmereUI._applyPersistSignupNote()
-                  end
+                  EllesmereUI._applyPersistSignupNote()
                   EllesmereUI:RefreshPage()
               end }
-        local noteRow, noteRgnKey
+        local noteRow
         if EllesmereUI.IS_FOREVER then
-            _, h = W:DualRow(parent, y, announceCfg, quickCfg);  y = y - h
-            noteRow, h = W:DualRow(parent, y, persistCfg, { type="label", text="" });  y = y - h
-            noteRgnKey = "_leftRegion"
+            _, h = W:DualRow(parent, y, announceCfg, EllesmereUI.BlankRowCfg());  y = y - h
         else
             _, h = W:DualRow(parent, y, autoKeyCfg, announceCfg);  y = y - h
             noteRow, h = W:DualRow(parent, y, quickCfg, persistCfg);  y = y - h
-            noteRgnKey = "_rightRegion"
         end
 
-        if not EllesmereUI._prebuilding then
-            local rightRgn = noteRow[noteRgnKey]
+        if noteRow then
+            local rightRgn = noteRow._rightRegion
             local function persistOff()
                 return not (EllesmereUIDB and EllesmereUIDB.persistSignupNote)
             end
 
-            local noteCogBtn = CreateFrame("Button", nil, rightRgn)
-            noteCogBtn:SetSize(26, 26)
-            noteCogBtn:SetPoint("RIGHT", rightRgn._lastInline or rightRgn._control, "LEFT", -9, 0)
-            rightRgn._lastInline = noteCogBtn
-            noteCogBtn:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
-            noteCogBtn:SetAlpha(persistOff() and 0.15 or 0.4)
-            local noteCogTex = noteCogBtn:CreateTexture(nil, "OVERLAY")
-            noteCogTex:SetAllPoints()
-            noteCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            noteCogBtn:SetScript("OnEnter", function(self)
-                self:SetAlpha(0.7)
-                EllesmereUI.ShowWidgetTooltip(self, "Edit the saved signup note.")
-            end)
-            noteCogBtn:SetScript("OnLeave", function(self)
-                self:SetAlpha(persistOff() and 0.15 or 0.4)
-                EllesmereUI.HideWidgetTooltip()
-            end)
-            noteCogBtn:SetScript("OnClick", function()
-                EllesmereUI:ShowInputPopup({
-                    title="Signup Note",
-                    message="Saved between reloads and relogs. In Group Finder, choose Copy, press Ctrl+C, then Ctrl+V.",
-                    placeholder="Enter signup note...",
-                    initialText=EllesmereUI.GetPersistentSignupNote
-                        and EllesmereUI.GetPersistentSignupNote() or "",
-                    maxLetters=63,
-                    inputHeight=70,
-                    multiline=true,
-                    showCount=true,
-                    allowEmpty=true,
-                    confirmText="Save",
-                    onConfirm=function(note)
-                        if EllesmereUI.SetPersistentSignupNote then
+            EllesmereUI.BuildInlineCog(rightRgn, {
+                gap = 9, tip = "Edit the saved signup note.",
+                disabled = persistOff, disabledTooltip = "Persistent Signup Note",
+                show = function()
+                    EllesmereUI:ShowInputPopup({
+                        title="Signup Note",
+                        message="Saved between reloads and relogs. In Group Finder, choose Copy, press Ctrl+C, then Ctrl+V.",
+                        placeholder="Enter signup note...",
+                        initialText=EllesmereUI.GetPersistentSignupNote(),
+                        maxLetters=63,
+                        inputHeight=70,
+                        multiline=true,
+                        showCount=true,
+                        allowEmpty=true,
+                        confirmText="Save",
+                        onConfirm=function(note)
                             EllesmereUI.SetPersistentSignupNote(note or "")
-                        end
-                    end,
-                })
-            end)
-
-            local noteCogBlock = CreateFrame("Frame", nil, noteCogBtn)
-            noteCogBlock:SetAllPoints()
-            noteCogBlock:SetFrameLevel(noteCogBtn:GetFrameLevel() + 10)
-            noteCogBlock:EnableMouse(true)
-            noteCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(noteCogBtn, EllesmereUI.DisabledTooltip("Persistent Signup Note"))
-            end)
-            noteCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = persistOff()
-                noteCogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then noteCogBlock:Show() else noteCogBlock:Hide() end
-            end)
-            if persistOff() then noteCogBlock:Show() else noteCogBlock:Hide() end
+                        end,
+                    })
+                end,
+            })
         end
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
@@ -2748,13 +2463,13 @@ initFrame:SetScript("OnEvent", function(self)
         );  y = y - h
 
         -- Cog on Auto Open Containers (right region)
-        if not EllesmereUI._prebuilding then
+        do
             local rightRgn = autoOpenContainerRow._rightRegion
             local function autoOpenContainerOff()
                 return not (EllesmereUIDB and EllesmereUIDB.autoOpenContainers == true)
             end
 
-            local _, autoOpenContainerCogShow = EllesmereUI.BuildCogPopup({
+            EllesmereUI.BuildInlineCog(rightRgn, {
                 title = "Auto Open Containers Settings",
                 rows = {
                     { type="toggle", label="Exclude Warbound Containers",
@@ -2780,37 +2495,57 @@ initFrame:SetScript("OnEvent", function(self)
                           end
                       end },
                 },
+                gap = 9, disabled = autoOpenContainerOff, disabledTooltip = "Auto Open Containers",
             })
-
-            local autoOpenContainerCogBtn = CreateFrame("Button", nil, rightRgn)
-            autoOpenContainerCogBtn:SetSize(26, 26)
-            autoOpenContainerCogBtn:SetPoint("RIGHT", rightRgn._lastInline or rightRgn._control, "LEFT", -9, 0)
-            rightRgn._lastInline = autoOpenContainerCogBtn
-            autoOpenContainerCogBtn:SetFrameLevel(rightRgn:GetFrameLevel() + 5)
-            autoOpenContainerCogBtn:SetAlpha(autoOpenContainerOff() and 0.15 or 0.4)
-            local autoOpenContainerCogTex = autoOpenContainerCogBtn:CreateTexture(nil, "OVERLAY")
-            autoOpenContainerCogTex:SetAllPoints()
-            autoOpenContainerCogTex:SetTexture(EllesmereUI.COGS_ICON)
-            autoOpenContainerCogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-            autoOpenContainerCogBtn:SetScript("OnLeave", function(self) self:SetAlpha(autoOpenContainerOff() and 0.15 or 0.4) end)
-            autoOpenContainerCogBtn:SetScript("OnClick", function(self) autoOpenContainerCogShow(self) end)
-
-            local autoOpenContainerCogBlock = CreateFrame("Frame", nil, autoOpenContainerCogBtn)
-            autoOpenContainerCogBlock:SetAllPoints()
-            autoOpenContainerCogBlock:SetFrameLevel(autoOpenContainerCogBtn:GetFrameLevel() + 10)
-            autoOpenContainerCogBlock:EnableMouse(true)
-            autoOpenContainerCogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(autoOpenContainerCogBtn, EllesmereUI.DisabledTooltip("Auto Open Containers"))
-            end)
-            autoOpenContainerCogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = autoOpenContainerOff()
-                autoOpenContainerCogBtn:SetAlpha(off and 0.15 or 0.4)
-                if off then autoOpenContainerCogBlock:Show() else autoOpenContainerCogBlock:Hide() end
-            end)
-            if autoOpenContainerOff() then autoOpenContainerCogBlock:Show() else autoOpenContainerCogBlock:Hide() end
         end
+
+        -- Bonus Roll Confirmation. Not offered on WoW Forever: no bonus rolls
+        -- there, so the row is not built and the runtime block does not exist.
+        if not EllesmereUI.IS_FOREVER then
+        local bonusRollRow
+        local function bonusRollConflict()
+            return C_AddOns.IsAddOnLoaded("BonusRollConfirm")
+        end
+        bonusRollRow, h = W:DualRow(parent, y,
+            { type="toggle", text=EllesmereUI.L("Bonus Roll Confirmation"),
+              tooltip=EllesmereUI.L("Asks before spending a bonus roll and shows your loot specialization. Use the cog to also confirm Pass."),
+              disabled=bonusRollConflict,
+              disabledTooltip=EllesmereUI.L("BonusRollConfirm is loaded and handles confirmation. Disable that addon and reload to use this feature."),
+              rawTooltip=true,
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.bonusRollConfirmation == true
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.bonusRollConfirmation = v
+                  if EllesmereUI._applyBonusRollConfirmation then EllesmereUI._applyBonusRollConfirmation() end
+                  EllesmereUI:RefreshPage()
+              end },
+            EllesmereUI.BlankRowCfg()
+        );  y = y - h
+        do
+            EllesmereUI.BuildInlineCog(bonusRollRow._leftRegion, {
+                title = EllesmereUI.L("Bonus Roll Settings"),
+                rows = {
+                    { type="toggle", label=EllesmereUI.L("Only Confirm Roll"),
+                      tooltip=EllesmereUI.L("Pass immediately without confirmation. Turn off to confirm both Roll and Pass."),
+                      get=function()
+                          return not EllesmereUIDB or EllesmereUIDB.bonusRollOnly ~= false
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.bonusRollOnly = v
+                          if EllesmereUI._applyBonusRollConfirmation then EllesmereUI._applyBonusRollConfirmation() end
+                      end },
+                },
+                gap = 9,
+                disabled = function()
+                    return bonusRollConflict() or not (EllesmereUIDB and EllesmereUIDB.bonusRollConfirmation)
+                end,
+                disabledTooltip = EllesmereUI.L("Bonus Roll Confirmation"),
+            })
+        end
+        end -- not IS_FOREVER
 
         -- Keys, Logs & Brez sections live at the bottom of this page (the
         -- separate tab was retired to keep the tab bar at five pages).
@@ -2827,12 +2562,21 @@ initFrame:SetScript("OnEvent", function(self)
     -- No item upgrade system on WoW Forever: the Upgrader tab is not offered there
     -- (its resident file returns at load, so the page builder never exists either).
     if not EllesmereUI.IS_FOREVER then pages[#pages + 1] = PAGE_UPGCALC end
-    if EllesmereUI.IS_FOREVER then pages[#pages + 1] = PAGE_TRAVEL end
+    local searchTerms = { "brez", "bres", "battle res", "combat res", "cursor", "macro", "fps", "logging", "combat log", "warcraft logs", "upgrade", "ilvl", "item level", "crest", "upgrade calculator", "upgrade tooltips", "tooltip", "shifter", "move", "drag", "position", "demodal", "drift", "combat alert", "enter combat", "leave combat", "in combat", "combat text", "combat notification", "transform", "transforms", "costume", "disguise", "chef's hat", "noggenfogger", "target distance", "distance to target", "range text", "yard", "yards", "movement", "mobility", "gap closer", "blink", "gateway", "warlock gateway", "control shard", "time spiral", "free movement", "raid tools", "raid", "pull timer", "pull", "ready check", "role check", "raid marker", "target marker", "world marker", "flare", "disband", "convert to raid", "countdown" }
+    -- Terms for features WoW Forever does not have (the Battle Res indicator)
+    -- are dropped there, so a sidebar search for them does not list this
+    -- module; retail keeps the full list.
+    if EllesmereUI.IS_FOREVER then
+        local foreverDrop = { ["brez"] = true, ["bres"] = true, ["battle res"] = true, ["combat res"] = true }
+        for i = #searchTerms, 1, -1 do
+            if foreverDrop[searchTerms[i]] then table.remove(searchTerms, i) end
+        end
+    end
     EllesmereUI:RegisterModule("EllesmereUIQoL", {
         title       = "Quality of Life",
         description = "Quality of life features and custom cursor.",
         pages       = pages,
-        searchTerms = { "brez", "bres", "battle res", "combat res", "cursor", "macro", "fps", "logging", "combat log", "warcraft logs", "upgrade", "ilvl", "item level", "crest", "upgrade calculator", "shifter", "move", "drag", "position", "demodal", "drift", "combat alert", "enter combat", "leave combat", "in combat", "combat text", "combat notification", "transform", "transforms", "costume", "disguise", "chef's hat", "noggenfogger", "target distance", "distance to target", "range text", "yard", "yards", "movement", "mobility", "gap closer", "blink", "gateway", "warlock gateway", "control shard", "time spiral", "free movement", "raid tools", "raid", "pull timer", "pull", "ready check", "role check", "raid marker", "target marker", "world marker", "flare", "disband", "convert to raid", "countdown" },
+        searchTerms = searchTerms,
         buildPage   = function(pageName, parent, yOffset)
             -- The Raid Tools settings preview ends when any OTHER QoL page
             -- builds (the CDM tracking-bars placeholder arrangement); window
@@ -2860,9 +2604,6 @@ initFrame:SetScript("OnEvent", function(self)
             if pageName == PAGE_RAIDTOOLS and _G._EUI_BuildRaidToolsPage then
                 return _G._EUI_BuildRaidToolsPage(pageName, parent, yOffset)
             end
-            if pageName == PAGE_TRAVEL and _G._EUI_BuildFlightTimerPage then
-                return _G._EUI_BuildFlightTimerPage(pageName, parent, yOffset)
-            end
         end,
         -- Cached pages are restored WITHOUT a rebuild, so buildPage never runs
         -- on the warm path -- reopening the window onto Raid Tools would leave
@@ -2874,11 +2615,15 @@ initFrame:SetScript("OnEvent", function(self)
                 _G._EUI_RaidTools_Preview(pageName == PAGE_RAIDTOOLS)
             end
         end,
+        resetScope = "account",
         onReset = function()
             if EllesmereUIDB then
                 EllesmereUIDB.hideBlizzardPartyFrame = false
                 EllesmereUIDB.quickLoot = false
-                EllesmereUIDB.quickLootShiftSkip = false
+                EllesmereUIDB.autoGossip = false
+                EllesmereUIDB.autoGossipShiftSkip = nil
+                EllesmereUIDB.autoGossipDisableInstance = nil
+                EllesmereUIDB.autoGossipIgnoreTrivial = nil
                 EllesmereUIDB.skipCinematics = false
                 EllesmereUIDB.skipCinematicsAuto = false
                 EllesmereUIDB.autoFillDelete = false
@@ -2889,25 +2634,42 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.persistSignupNote = false
                 EllesmereUIDB.signupNote = nil
                 EllesmereUIDB.ahCurrentExpansion = false
-                EllesmereUIDB.healthMacroEnabled = false
-                EllesmereUIDB.healthMacroPrio1 = 1
-                EllesmereUIDB.healthMacroPrio2 = 2
-                EllesmereUIDB.healthMacroPrio3 = 3
-                EllesmereUIDB.foodMacroEnabled = false
+                EllesmereUIDB.hideTalkingHead = false
+                EllesmereUIDB.muteTalkingHead = nil
                 EllesmereUIDB.hideScreenshotStatus = false
                 EllesmereUIDB.trainAllButton = false
                 EllesmereUIDB.autoUnwrapCollections = false
                 EllesmereUIDB.autoOpenContainers = false
+                EllesmereUIDB.bonusRollConfirmation = false
+                EllesmereUIDB.bonusRollOnly = true
                 EllesmereUIDB.autoOpenContainersExcludeWarbound = true
                 EllesmereUIDB.autoOpenContainersHoldCappedArtisanPayouts = false
                 EllesmereUIDB.autoRepairGuild = false
+                -- Low Durability Warning settings (its on/off switch is in the
+                -- Global Settings reset).
+                EllesmereUIDB.durWarnThreshold = nil
+                EllesmereUIDB.durWarnTextSize = nil
+                EllesmereUIDB.durWarnColor = nil
+                EllesmereUIDB.durWarnYOffset = nil
+                EllesmereUIDB.durWarnPos = nil
+                EllesmereUIDB.durWarnIgnoreThrown = nil
                 EllesmereUIDB.shifterEnabled = false
                 EllesmereUIDB.shifterPositions = nil
                 EllesmereUIDB.hideErrorMessages = false
+                EllesmereUIDB.hideTutorials = false
+                -- Hands the tutorial CVars back before the reset's reload.
+                if EllesmereUI._applyHideTutorials then EllesmereUI._applyHideTutorials() end
                 EllesmereUIDB.hideLootHistory = false
                 EllesmereUIDB.lootHistoryMode = nil
                 EllesmereUIDB.lootHistoryDelay = nil
                 if EllesmereUI._applyHideLootHistory then EllesmereUI._applyHideLootHistory() end
+                -- Talking Head does not exist on WoW Forever.
+                if EllesmereUI._applyHideTalkingHead then EllesmereUI._applyHideTalkingHead() end
+                EllesmereUIDB.hideBanners = false
+                EllesmereUIDB.hideAlertToasts = false
+                EllesmereUIDB.hideAlertToastsLoot = nil
+                EllesmereUIDB.hideAlertToastsAchievements = nil
+                EllesmereUIDB.hideAlertToastsHousing = nil
                 EllesmereUIDB.announceGroupDeaths = false
                 EllesmereUIDB.groupDeathTextSize = nil
                 EllesmereUIDB.groupDeathAlertPos = nil
@@ -2923,6 +2685,17 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.combatAlertLeaveColor = nil
                 EllesmereUIDB.combatAlertEnterUseClassColor = nil
                 EllesmereUIDB.combatAlertLeaveUseClassColor = nil
+                EllesmereUIDB.alertsPos = nil
+                EllesmereUIDB.potionAlertEnabled = false
+                EllesmereUIDB.potionAlertText = nil
+                EllesmereUIDB.potionAlertTextSize = nil
+                EllesmereUIDB.potionAlertColor = nil
+                EllesmereUIDB.potionAlertUseClassColor = nil
+                EllesmereUIDB.talentAlertEnabled = false
+                EllesmereUIDB.talentAlertText = nil
+                EllesmereUIDB.talentAlertTextSize = nil
+                EllesmereUIDB.talentAlertColor = nil
+                EllesmereUIDB.talentAlertUseClassColor = nil
                 EllesmereUIDB.targetDistanceEnabled = false
                 EllesmereUIDB.targetDistanceFormat = nil
                 EllesmereUIDB.targetDistanceAlign = nil
@@ -2930,38 +2703,70 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.targetDistanceOffsetX = nil
                 EllesmereUIDB.targetDistanceOffsetY = nil
                 EllesmereUIDB.targetDistanceTextSize = nil
+                EllesmereUIDB.targetDistanceStrata = nil
                 EllesmereUIDB.targetDistancePos = nil
+                -- The on-screen elements follow profiles: this profile's own values go too,
+                -- so it reads the cleared account-wide ones.
+                for _, k in ipairs({
+                    "targetDistanceEnabled", "targetDistanceFormat", "targetDistanceAlign",
+                    "targetDistanceTextSize", "targetDistanceStrata", "targetDistancePos",
+                    "announceGroupDeaths", "groupDeathTextSize", "groupDeathAlertPos", "groupDeathSound",
+                    "groupDeathSoundKey",
+                    "combatAlertEnabled", "combatAlertMode", "combatAlertTextSize", "combatAlertPos",
+                    "combatAlertEnterText", "combatAlertLeaveText", "combatAlertEnterColor", "combatAlertLeaveColor",
+                    "combatAlertEnterUseClassColor", "combatAlertLeaveUseClassColor", "alertsPos",
+                    "potionAlertEnabled", "potionAlertText", "potionAlertTextSize", "potionAlertColor",
+                    "potionAlertUseClassColor",
+                    "talentAlertEnabled", "talentAlertText", "talentAlertTextSize", "talentAlertColor",
+                    "talentAlertUseClassColor",
+                    -- not repairWarning: the Global Settings reset owns that switch
+                    "durWarnThreshold", "durWarnTextSize", "durWarnColor", "durWarnYOffset",
+                    "durWarnPos", "durWarnIgnoreThrown",
+                }) do
+                    EllesmereUI.QoLExtrasSet(k, nil)
+                end
+                EllesmereUIDB.mapSidebarsClear = nil
+                EllesmereUIDB.mapSidebarsOpacity = nil
+                EllesmereUIDB.mapSidebarsClickThrough = nil
+                EllesmereUIDB.autoAcceptRes = nil
+                EllesmereUIDB.autoAcceptResCombat = nil
                 if EllesmereUIDB.unlockAnchors then
                     EllesmereUIDB.unlockAnchors.EUI_TargetDistance = nil
+                    EllesmereUIDB.unlockAnchors.EUI_CombatAlert = nil
+                    EllesmereUIDB.unlockAnchors.EUI_BattleRes = nil
+                    EllesmereUIDB.unlockAnchors.EUI_Bloodlust = nil
                 end
                 EllesmereUIDB.hideTransforms = false
                 EllesmereUIDB.hideTransformItems = nil
-                EllesmereUIDB.flightTimer = nil
-                if EllesmereUIDB.unlockAnchors then
-                    EllesmereUIDB.unlockAnchors.EUI_FlightTimer = nil
-                end
+                -- The /keys popup, LFG Reminder, /way and /euipaste sections (the reset reloads).
+                EllesmereUIDB.keystonePopup = nil
+                EllesmereUIDB.teleportPrompt = nil
+                EllesmereUIDB.waypointCmd = nil
+                EllesmereUIDB.pasteCommands = nil
             end
             EllesmereUIDB.autoLogging = nil
             if _G._EUI_ResetUpgradeCalc then _G._EUI_ResetUpgradeCalc() end
             if _G._EBS_ResetCursor then _G._EBS_ResetCursor() end
-            if EllesmereUI._applyHideBlizzardPartyFrame then EllesmereUI._applyHideBlizzardPartyFrame() end
+            -- Battle Res and Bloodlust do not exist on WoW Forever.
+            if _G._EUI_BattleRes_Reset then _G._EUI_BattleRes_Reset() end
+            EllesmereUI._applyHideBlizzardPartyFrame()
+            if EllesmereUI._applyBonusRollConfirmation then EllesmereUI._applyBonusRollConfirmation() end
             if EllesmereUI._applyHideErrorMessages then EllesmereUI._applyHideErrorMessages() end
             if EllesmereUI._applyAnnounceGroupDeaths then EllesmereUI._applyAnnounceGroupDeaths() end
             if EllesmereUI._applyCombatAlert then EllesmereUI._applyCombatAlert() end
+            if EllesmereUI._applyPotionAlert then EllesmereUI._applyPotionAlert() end
+            if EllesmereUI._applyTalentAlert then EllesmereUI._applyTalentAlert() end
             if EllesmereUI._applyTargetDistance then EllesmereUI._applyTargetDistance() end
             if EllesmereUI._applyHideTransforms then EllesmereUI._applyHideTransforms() end
-            if EllesmereUI._FlightTimer then
-                EllesmereUI._FlightTimer.Apply()
-                EllesmereUI._FlightTimer.ApplyStyle()
-                EllesmereUI._FlightTimer.ApplyPosition()
-            end
             if EllesmereUI._applyQuickSignup then EllesmereUI._applyQuickSignup() end
             if EllesmereUI._applyPersistSignupNote then EllesmereUI._applyPersistSignupNote() end
             if EllesmereUI._applyQuickLoot then EllesmereUI._applyQuickLoot() end
+            if EllesmereUI._applyAutoGossip then EllesmereUI._applyAutoGossip() end
             if EllesmereUI._applyInstanceResetAnnounce then EllesmereUI._applyInstanceResetAnnounce() end
             if EllesmereUI._applyAutoOpenContainers then EllesmereUI._applyAutoOpenContainers() end
             if EllesmereUI._ShutdownShifter then EllesmereUI._ShutdownShifter() end
             if _G._EUI_AutoLogging_Check then _G._EUI_AutoLogging_Check() end
+            EllesmereUI._ModuleNS["EllesmereUIQoL"].SCT_Reset()
             EllesmereUI:InvalidatePageCache()
         end,
         -- Tears down Duration Warning, Raid Tools, and Movement Alert

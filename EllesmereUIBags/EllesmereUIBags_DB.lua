@@ -11,32 +11,54 @@ local BAGS_DEFAULTS = {
     profile = {
         bagScale              = 1,
         bagItemIconZoom       = 0.08,
+        bagSlotSize           = 34,      -- item slot size, bags and bank
+        bagSlotSpacing        = 4,       -- gap between slots
         bagColumns            = 12,
         bagAutoSize           = false,
+        bagAnchorCorner       = true,    -- Anchor to Nearest Corner (the Window Scale cog), bags and bank
         bagCatTitleSize       = 11,
         bagCountFontSize      = 11,
+        bagSlotCountFormat    = "used_total",
+        bagSeparateReagentSlots = false,
         itemlevelFontSize     = 12,
         showItemlevelInBags   = true,
         showUpgradeIndicator  = true,
         bagShowTrackRank      = false,
         itemlevelUseCustomColor = false,
         bagHideEmptyCategories = true,
+        bagCategorizeReagents = false,
         bagSplitSetGearBySet  = false,
         bagShowSetGearName    = false,
         bagSetNameFontSize    = 9,
-        bagMergeDuplicates    = true,
+        bagMergeDuplicates    = true,    -- every display
         bagSidebarCollapsed   = false,
+        bagHideSidebarIconsCollapsed = false, -- on: collapsed = no icon strip, the expand arrow sits by the title
         bankSidebarCollapsed  = false,
         bagShowPinnedItems    = true,
-        bagShowRecentItems    = true,
+        -- Profiles saved before these defaults carry their own value of
+        -- bagShowRecentItems, bagHidePinnedInCategories and bagDefaultBagType
+        -- (EllesmereUI_Migration.lua: bags_hide_pinned_existing_off_v1, and on
+        -- WoW Forever bags_forever_defaults_existing_v1).
+        bagShowRecentItems    = EllesmereUI.IS_FOREVER ~= true,   -- off on WoW Forever
         bagPinnedInOneBag     = true,
+        bagHidePinnedInCategories = true,
+        bagDimPinnedInOneBag  = false,   -- Dim Items in OneBag/MultiBag (the Pinned Items cog)
         bagRecentInOneBag     = false,
         bagShowRecentClear    = false,
-        bagShowPinRecentTips  = true,
+        bagRecentNewOnly      = false,   -- Recent Items: only items not carried before (gear, mail, trade always)
+        bagRecentShowGained   = false,   -- Recent Items: one entry per stackable with the amount picked up
+        -- Bag Top Bar Icons: the header's Show Bags, Junk Marker, Quick Actions, Sort and Keyring icons
+        bagShowBagsIcon       = true,
+        bagShowJunkIcon       = true,    -- the Junk Marker: header coin, Junk category, Sell Junk at merchants
+        bagShowQuickIcon      = false,   -- Quick Actions: dim all but items a spell works on; click or Alt-click casts it
         bagShowSortIcon       = true,
+        bagShowKeyringIcon    = false,   -- WoW Forever only: opens the keyring above the icon
         bagSortToBottom       = false,
-        bagHideRandomize      = false,
-        bagDefaultBagType     = "all",   -- "all" | "onebag" | "multibag"
+        -- Show Coins: the coins the gold summary shows, "gold" | "silver" (gold and silver) |
+        -- "copper" (all three); Gold and Silver on WoW Forever
+        bagGoldCoins          = (EllesmereUI.IS_FOREVER == true) and "silver" or "gold",
+        -- "all" | "onebag" | "multibag"; MultiBag on WoW Forever
+        bagDefaultBagType     = (EllesmereUI.IS_FOREVER == true) and "multibag" or "all",
         bagDefaultOneBag      = false,   -- legacy; migrated to bagDefaultBagType
         bagNestByExpansion    = false,
         bankNestByExpansion   = false,
@@ -44,18 +66,36 @@ local BAGS_DEFAULTS = {
         bankCategorySidebar   = false,
         bankHideTabsInSidebar = false,
         bankHideEmptyWhenNested = false,
+        bankListView          = false,  -- reload to apply
+        bankCompactView       = false,  -- reload to apply; bankListView wins when both are set
         bagArmoryGroupBySlot  = false,
         bagCompactArmorySlotGroups = false,
-        bagHideOneBagWarning  = false,
         bagHideAddCategory    = false,
-        bagMoveNoShift        = false,
+        bagBgOpacity          = 100,     -- background opacity for bags and bank (bagBgColor / bagSlotBgColor: nil = default)
+        bagWindowLocked       = false,   -- footer lock icon: no resizing or moving
+        bankWindowLocked      = false,
+        bagOpenWithCharacter  = false,
+        -- bagFrameStrata has no default: unset reads the retired
+        -- bagAllowWindowsOverBags (ns.BagFrameStrata)
         bagStackSplitter      = false,
-        enableGoldTracking    = true,
         detachReagentBag      = false,
         enhancedBags          = true,
-        bagDesaturateJunkItems = false,
+        bagDesaturateJunkItems = false,  -- Junk Item Visuals: grey items and Junk Marker junk, every display
+        bagShowJunkCoin       = false,   -- Junk Item Visuals: the coin badge on junk (Grid and Compact)
+        bagQualityBorder      = true,    -- Quality Item Border, every display
         bagDisplayBindType    = false,
         bagBindTypeFontSize   = 11,
+        bagDisplayMode        = "grid",  -- "grid" | "list" | "compact" (reload to apply)
+        bagListRoundIcons     = false,
+        bagListSplitArmor     = false,
+        bagListSplitWeapons   = false,
+        bagListSplitProfessions = false,
+        bagListGapL           = 15,
+        bagListGapR           = 23,
+        bagListFontSize       = 11,
+        bagListRowHeight      = 24,
+        bagListHideStripes    = false,
+        bagListSectionValue   = false,
     },
 }
 local db = EllesmereUI.Lite.NewDB("EllesmereUIBagsDB", BAGS_DEFAULTS)

@@ -10,6 +10,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local _, ns = ...
 
 local AK -- EllesmereUI.AuraKit, resolved at first use
+-- Born in this module's main chunk, so the aura containers it builds bill this
+-- module (AuraKit's shared build scheduler).
+local AKWorker = EllesmereUI.AuraKit.NewBuildWorker()
 -- The engine's own null binding: the AuraContainer intrinsic is born on unitToken
 -- "none" (Blizzard_AuraContainer.xml KeyValues). A button with no unit attribute
 -- yet has to land back on that, never on "player" -- that is a unit whose auras
@@ -23,23 +26,6 @@ local FALLBACK_FONT = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.
 ns.RFC_OwnsDebuffs = true
 ns.RFC_OwnsDefensives = true
 ns.RFC_OwnsDispel = true
-ns.RFC_OwnsBM = true -- both BM display modes (custom slots/chains + simple grid group)
-
--- Legacy aura paths (defensives, dispel border, BuffManager) hard-error while auras
--- are secret and would abort shared handler chains, breaking migrated displays too --
--- so they skip silently under restriction. Cache is asymmetric (AK.AurasRestricted):
--- only the RESTRICTED answer caches per-frame; a stale "unrestricted" reruns into hard
--- errors, a stale "restricted" only skips one frame.
-local restrictedStamp = -1
-function ns.RFC_LegacyAuraGuard()
-    local now = GetTime()
-    if now == restrictedStamp then return true end
-    if pcall(C_UnitAuras.GetAuraDataByIndex, "player", 1, "HELPFUL") then
-        return false
-    end
-    restrictedStamp = now
-    return true
-end
 
 local SATED_DEBUFFS = {
     [57723] = true, [57724] = true, [80354] = true, [95809] = true,
@@ -99,8 +85,8 @@ end
 -- bake indicator scale into both keys, and 0 scales to 0, so the sentinel survives).
 local function DispLocSize(s)
     local v = s.dispellableDebuffSize
-    if v and v > 0 then return v end
-    return s.debuffSize or 18
+    if v and v > 0 then return ns.RFC_SnapSize(v) end
+    return ns.RFC_DebuffSize(s)
 end
 
 -- Groups the location container needs for the active preset (all on-demand, split
@@ -154,17 +140,21 @@ local function DmFxBlockFor(list, cat)
     end
 end
 
+local DM_GLOW_SPEC = {}
+-- Engine glow families the DM and BM Icon Glow menus offer (Pixel and the
+-- flipbooks, no Blizzard Border): a prewarm builds only these.
+local ICON_GLOW_NEED = { ants = true, flip = true }
 local function ApplyDmFx(button, d, style)
     local cat = d.dmCat
     if not cat and style.ccGroup then cat = "cc" end
     local e = style.fxList and DmFxBlockFor(style.fxList, cat) or nil
 
-    -- Icon Glow (engine-hosted): StartEngineGlow renders Pixel as the genuine C-side
-    -- dash march and remaps other driver styles to FlipBook -- identical in/out of secret.
+    -- Icon Glow (engine host): C-side animations only, identical in and out of secret.
     local Glows = EllesmereUI.Glows
-    local gType = (e and e.glowType) or 0
+    local spec = e and Glows.SpecFromPrefix(DM_GLOW_SPEC, e, "glow", 1.0, 0.776, 0.376)
     local gov = d.dmFxgHost
-    if gType > 0 and Glows and Glows.StartEngineGlow then
+    local sz = style.width or 18
+    if spec then
         if not gov then
             gov = CreateFrame("Frame", nil, button)
             gov:SetAllPoints(button)
@@ -177,23 +167,23 @@ local function ApplyDmFx(button, d, style)
             if d.stackCarrier then d.stackCarrier:SetFrameLevel(base + 5) end
             gov:EnableMouse(false)
             d.dmFxgHost = gov
+            Glows.PrewarmEngineHost(gov, sz, style.height or sz, ICON_GLOW_NEED)
+            -- The button runs the glow's animations itself (only while it
+            -- shows an aura), where the client can.
+            Glows.BindEngineHost(gov, button, d)
         end
-        gov:Show()
-        local cr, cg, cb = e.glowR or 1.0, e.glowG or 0.776, e.glowB or 0.376
-        if e.glowClassColor then
-            local _, classFile = UnitClass("player")
-            local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-            if cc then cr, cg, cb = cc.r, cc.g, cc.b end
-        end
-        local sz = style.width or 18
-        if (not gov._euiGlowActive) or gov._fxStyle ~= gType or gov._fxW ~= sz
-           or gov._fxCR ~= cr or gov._fxCG ~= cg or gov._fxCB ~= cb then
-            Glows.StartEngineGlow(gov, gType, sz, cr, cg, cb)
-            gov._fxStyle, gov._fxW = gType, sz
-            gov._fxCR, gov._fxCG, gov._fxCB = cr, cg, cb
+        -- A bound host glows on every button. Without that (WoW Forever) the
+        -- animation plays while hidden too: only buttons the group can ever
+        -- show run one.
+        if Glows.IsEngineHostBound(gov) or EllesmereUI.AuraKit.ButtonCanShow(button) then
+            gov:Show()
+            Glows.StartSpecGlow(gov, spec, sz, style.height or sz, "engine")
+        else
+            if gov._euiGlowActive then Glows.StopGlow(gov) end
+            gov:Hide()
         end
     elseif gov then
-        if gov._euiGlowActive and Glows and Glows.StopGlow then Glows.StopGlow(gov) end
+        if gov._euiGlowActive then Glows.StopGlow(gov) end
         gov:Hide()
     end
 
@@ -237,7 +227,7 @@ local function ApplyRFDebuffText(button, d, style)
             button:SetMouseMotionEnabled(motion)
         end
     end
-    local path = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or FALLBACK_FONT
+    local path = (EllesmereUI.GetFontPath("raidFrames")) or FALLBACK_FONT
     if d.duration then
         -- Always font the string even hidden: the engine SetText()s every registered
         -- duration string on display updates, and an unfonted FontString hard-errors.
@@ -329,16 +319,102 @@ local function CK(c)
     return string.format("%.3f,%.3f,%.3f", r, g, b)
 end
 
+-- Shared by buff icons, debuff grids and their previews. Unset styles keep the
+-- original PP border path; explicit styles use AuraKit's unit-frame border inputs.
+-- into: a table to fill instead of a new one, for a caller that applies it at once
+-- (the previews' tickers); a style keeps its own.
+function ns.RFC_AuraBorder(s, prefix, into)
+    local size = s[prefix .. "Size"] or 1
+    if size <= 0 then return nil end
+    local color = s[prefix .. "Color"]
+    local r, g, b = ColorParts(color, 0, 0, 0)
+    local tex = s[prefix .. "Texture"]
+    local t = into or {}
+    t[1], t[2], t[3], t[4] = r, g, b, color and color.a or 1
+    t.size, t.texture = size, tex
+    t.edgePx = EllesmereUI.BorderPx(s[prefix .. "SizePx"], size, tex or "solid")
+    t.offsetX, t.offsetY = s[prefix .. "TextureOffset"], s[prefix .. "TextureOffsetY"]
+    t.shiftX, t.shiftY = s[prefix .. "TextureShiftX"], s[prefix .. "TextureShiftY"]
+    return t
+end
+
+function ns.RFC_AuraBorderFP(s, prefix)
+    if not s[prefix .. "Texture"] and not s[prefix .. "SizePx"]
+        and not (s[prefix .. "Color"] and s[prefix .. "Color"].a) then return false end
+    return FP(s[prefix .. "Texture"], s[prefix .. "SizePx"],
+        s[prefix .. "TextureOffset"], s[prefix .. "TextureOffsetY"],
+        s[prefix .. "TextureShiftX"], s[prefix .. "TextureShiftY"],
+        s[prefix .. "DispelTextured"],
+        s[prefix .. "Color"] and s[prefix .. "Color"].a)
+end
+
+-- Owned hosts only (bare buff squares and previews); normal icons use AuraKit.
+function ns.RFC_ApplyAuraBorder(host, state, border, cooldownLevel)
+    if not host then return end
+    if not border then
+        EllesmereUI.ApplySecretSafeBorderStyle(host, state, 0, 0, 0, 0, 0, "solid")
+        host:Hide()
+        return
+    end
+    if border.texture or border.edgePx then
+        host:SetFrameLevel(cooldownLevel + 1)
+    end
+    EllesmereUI.ApplySecretSafeBorderStyle(host, state, border.size,
+        border[1], border[2], border[3], border[4], border.texture or "solid",
+        border.offsetX, border.offsetY, border.shiftX, border.shiftY,
+        "unitframes", border.size, nil, border.edgePx)
+    host:Show()
+end
+
+local pvBorder = {}  -- reused by every preview border (applied at once)
+function ns.RFC_PreviewAuraBorder(icon, host, s, prefix)
+    ns.RFC_ApplyAuraBorder(host, host, ns.RFC_AuraBorder(s, prefix, pvBorder),
+        (icon._cooldown or icon):GetFrameLevel())
+end
+
+-- A Class-mode glow draws the palette's class colour, so that colour is an
+-- input of every glow print (a Colors page edit must restyle); "" for every
+-- other mode. The colour last printed feeds the colours-changed hook below
+-- RFC_ReloadAll. On ns: the Debuff Manager's prints use it too.
+function ns.RF_GlowClassFP(mode, classFlag)
+    local G = EllesmereUI.Glows
+    if G.DeriveColorMode(mode, classFlag) ~= "class" then return "" end
+    local r, g, b = G.ResolveColor("class")
+    ns._rfGlowClassR, ns._rfGlowClassG, ns._rfGlowClassB = r, g, b
+    return string.format("cc%.3f,%.3f,%.3f", r, g, b)
+end
+
+-- Aura icon sizes on whole physical pixels: a fractional button leaves the
+-- unsnapped border off the snapped icon's far edge. Styles, flow layouts, row
+-- widths and fingerprints all read the size here so they agree. Memoized until
+-- the next RFC_ReloadAll. On ns (local cap).
+do
+    local cache = {}
+    function ns.RFC_SnapSize(v)
+        local r = cache[v]
+        if not r then
+            r = ns.PixelSnap(v)
+            if r <= 0 then r = v end -- under half a pixel: keep the raw size
+            cache[v] = r
+        end
+        return r
+    end
+    function ns.RFC_ResetSnap() wipe(cache) end
+end
+function ns.RFC_DebuffSize(s)
+    return ns.RFC_SnapSize(s.debuffSize or 18)
+end
+
 -- sizeOverride: the dispellable-location styles reuse the whole debuff
 -- style with only the physical size swapped (see DispLocSize).
 local function BuildDebuffStyle(s, sizeOverride)
-    local br, bg, bb = ColorParts(s.debuffBorderColor, 0, 0, 0)
-    local size = sizeOverride or s.debuffSize or 18
+    local border = ns.RFC_AuraBorder(s, "debuffBorder")
+    local size = sizeOverride and ns.RFC_SnapSize(sizeOverride) or ns.RFC_DebuffSize(s)
     -- Engine dispel-border extras: ring thickness in PHYSICAL pixels + the user
     -- palette as the engine tint map (AuraKit registers both; helper resolved at
     -- call time, declared below). -1 = follow icon's own Border thickness, 0 = recolor off.
     local dpx = s.dispelIconBorderSize or 2
-    if dpx == -1 then dpx = s.debuffBorderSize or 1 end
+    if dpx == -1 then dpx = border and (border.edgePx or border.size) or 0 end
     local dcMap, dcFP
     if ns.RFC_DispelBorderColorMap then dcMap, dcFP = ns.RFC_DispelBorderColorMap(s) end
     return {
@@ -346,10 +422,12 @@ local function BuildDebuffStyle(s, sizeOverride)
         height = size,
         iconCrop = true,
         iconZoom = s.debuffIconZoom or 0.08,
-        border = (s.debuffBorderSize or 1) > 0 and { br, bg, bb, 1, size = s.debuffBorderSize or 1 } or nil,
+        border = border,
         -- Dispellable debuffs get the engine dispel-type border over the
         -- static one (dispelName is secret in 12.1; see AuraKit).
         dispelBorder = true,
+        dispelBorderTexture = s.debuffBorderDispelTextured == true and border
+            and border.texture ~= "solid" and border.texture ~= "" and border.texture or nil,
         dispelBorderPx = dpx,
         dispelColorMap = dcMap,
         dispelColorFP = dcFP,
@@ -387,8 +465,7 @@ end
 
 -- Crowd-control group style: plain debuff style + a marker the DM per-filter Icon
 -- Effects use to ID cc-group buttons (that group stamps no category via extraInit).
--- The dedicated CC Debuff Glow is RETIRED (DM Icon Effects glow supersedes it) --
--- old debuffCCGlow* keys are orphaned here.
+-- The dedicated CC Debuff Glow is RETIRED (DM Icon Effects glow supersedes it).
 local function BuildDebuffCCStyle(s, sizeOverride)
     local st = BuildDebuffStyle(s, sizeOverride)
     st.ccGroup = true
@@ -449,7 +526,7 @@ function ns.RFC_DebuffPin(s)
     local grow = s.debuffGrowDirection or "LEFT"
     local point = ResolveFlowAnchor(pos, corner, grow, s.debuffWrapDirection or "UP")
     return point, corner, s.debuffOffsetX or 0, s.debuffOffsetY or 0,
-        s.debuffSize or 18, s.debuffSpacing or 1, s.debuffPerRow or 5,
+        ns.RFC_DebuffSize(s), s.debuffSpacing or 1, s.debuffPerRow or 5,
         (grow == "UP" or grow == "DOWN")
 end
 
@@ -470,7 +547,7 @@ local function AnchorDebuffContainer(container, health, s)
     AK.SetContainerAnchor(container, anchorPoint)
     AK.SetContainerGrowth(container, FlowDir(gH), FlowDir(gV))
 
-    local size = s.debuffSize or 18
+    local size = ns.RFC_DebuffSize(s)
     local spacing = s.debuffSpacing or 1
     local perRow = s.debuffPerRow or 5
     local vertical = (grow == "UP" or grow == "DOWN")
@@ -640,46 +717,108 @@ local function ApplyRFDispelSlot(button, dd, style)
     tex:ClearAllPoints()
     if style.mode == "none" then
         tex:Hide()
-    elseif style.mode == "gradient" or style.mode == "gradient_sharp" then
+    elseif style.mode == "gradient" or style.mode == "gradient_sharp" or style.mode == "gradient_reverse" then
         tex:Show()
         tex:SetAllPoints(health)
-        tex:SetTexture(style.mode == "gradient_sharp" and GRADIENT_SHARP_TEXTURE or GRADIENT_TEXTURE)
+        tex:SetTexture(style.mode == "gradient" and GRADIENT_TEXTURE or GRADIENT_SHARP_TEXTURE)
+        -- Gradient Sharp Reverse: the sharp texture flipped vertically (bottom-up).
+        if style.mode == "gradient_reverse" then
+            tex:SetTexCoord(0, 1, 1, 0)
+        else
+            tex:SetTexCoord(0, 1, 0, 1)
+        end
         tex:SetVertexColor(r, g, b, alpha)
     elseif style.mode == "full" then
         tex:Show()
         tex:SetAllPoints(health)
+        tex:SetTexCoord(0, 1, 0, 1)
         tex:SetColorTexture(r, g, b, alpha)
         tex:SetVertexColor(1, 1, 1, 1)
     else -- "fill"
         tex:Show()
         local fillTex = health.GetStatusBarTexture and health:GetStatusBarTexture()
-        -- Both corners come off the fill texture: a TOPLEFT-of-bar pair only tracks a
-        -- left-to-right bar, so a vertical fill spanned the whole frame like "full".
-        if fillTex then
-            tex:SetAllPoints(fillTex)
-        else
-            tex:SetAllPoints(health)
-        end
+        -- The current-health area, off the fill texture's edges (a TOPLEFT-of-bar
+        -- pair alone only tracks a left-to-right bar): the fill itself, or under
+        -- Inverted Fill the rest of the bar up to the fill's HP edge, so a unit at
+        -- full health still shows the wash.
+        ns.RF_AnchorCurHealth(tex, health, fillTex, style.fillVert, style.fillInvert)
+        tex:SetTexCoord(0, 1, 0, 1)
         tex:SetColorTexture(r, g, b, alpha)
         tex:SetVertexColor(1, 1, 1, 1)
     end
 
-    -- Type-colored border around the health bar.
+    -- Type-colored border around the health bar. One shared level for every type
+    -- (unit button + LVL_RAISE - 1, strips + 10): over the base border strips (+9),
+    -- under the hover/target/aggro raise (strips +11) and the text band (LVL_TEXT).
+    -- The Magic > Curse > ... priority rides the strips' OVERLAY sublevel
+    -- (2 + def.level), like the overlay's ARTWORK sublevel above.
     if (style.borderSize or 0) > 0 and PP then
         if not dd.borderHost then
             dd.borderHost = CreateFrame("Frame", nil, button)
             dd.borderHost:SetAllPoints(health)
         end
-        dd.borderHost:SetFrameLevel(health:GetFrameLevel() + 6 + def.level)
+        local ub = dd.rfUnitBtn
+        local bLvl = (ub and ub:GetFrameLevel() or health:GetFrameLevel() - 2) + ns.LVL_RAISE - 1
+        -- Change-guarded, stamped after the writes, like dd.lvl above.
+        local relevel = dd.bLvl ~= bLvl
+        if relevel then dd.borderHost:SetFrameLevel(bLvl) end
         if dd.borderMade then
             PP.UpdateBorder(dd.borderHost, style.borderSize, r, g, b, typeA)
         else
-            PP.CreateBorder(dd.borderHost, r, g, b, typeA, style.borderSize, "OVERLAY", 7)
+            PP.CreateBorder(dd.borderHost, r, g, b, typeA, style.borderSize, "OVERLAY", 2 + def.level)
             dd.borderMade = true
+        end
+        if relevel then
+            -- The strips' PP container keeps the level it was created at.
+            local ppC = PP.GetBorders(dd.borderHost)
+            if ppC then ppC:SetFrameLevel(bLvl + 1) end
+            dd.bLvl = bLvl
         end
         dd.borderHost:Show()
     elseif dd.borderHost then
         dd.borderHost:Hide()
+    end
+
+    -- Color Custom Borders: a copy of the unit frame's own border (same style, size,
+    -- offsets and exact pixels) in this type's color. It rides the slot's engine
+    -- visibility, so it covers the normal border only while the type is present.
+    -- Always exactly one level over the base border, never a tie: +9 over the base's
+    -- +8 (strips +10 over +9), so the raised hover/target/aggro recolors (ns.LVL_RAISE)
+    -- and the inner aggro border stay above it; with Show Behind, pl over the base's
+    -- pl - 1, still under the health bar (pl + 2). The base is never raised under Show
+    -- Behind, so there the type color also covers those recolors while its type is
+    -- present. The
+    -- secret-safe renderer needs no size reads and no scripts (scripts never run
+    -- under a slot button). Per-type alpha 0 opts the type out, as for the ring.
+    local cb = style.customBorder
+    local ub = dd.rfUnitBtn
+    if cb and ub and PP and typeA > 0 then
+        if not dd.cbHost then
+            -- Published only once anchored: a denied write leaves no half-built host,
+            -- and the next restyle simply tries again.
+            local host = CreateFrame("Frame", nil, button)
+            host:SetAllPoints(dd.rfBorder or ub)
+            dd.cbState = {}
+            dd.cbHost = host
+        end
+        -- Armed before the first write on the host: a draw that throws partway still
+        -- leaves the off branch able to clear whatever it drew.
+        dd.cbOn = true
+        local pl = ub:GetFrameLevel()
+        local cbLvl = cb.behind and pl or (pl + 9)
+        dd.cbHost:SetFrameLevel(cbLvl)
+        -- A solid copy's strips sit on a PP container whose level is fixed at creation.
+        local ppC = PP.GetBorders(dd.cbHost)
+        if ppC then ppC:SetFrameLevel(cbLvl + 1) end
+        EllesmereUI.ApplySecretSafeBorderStyle(dd.cbHost, dd.cbState, cb.size, r, g, b, typeA,
+            cb.tex, cb.offX, cb.offY, cb.shX, cb.shY, "unitframes", cb.size, nil, cb.px)
+        dd.cbHost:Show()
+    elseif dd.cbOn then
+        -- Size 0 hides every piece and drops the UI-scale re-apply registration.
+        EllesmereUI.ApplySecretSafeBorderStyle(dd.cbHost, dd.cbState, 0, 0, 0, 0, 0, "solid")
+        dd.cbHost:Hide()
+        -- Disarmed only once the hide landed: a denied call re-runs this at the lift.
+        dd.cbOn = nil
     end
 
     -- Dispel type icon.
@@ -712,7 +851,7 @@ local function ApplyRFDispelSlot(button, dd, style)
     end
 end
 
-local function BuildDispelStyle(s)
+local function BuildDispelStyle(s, compact)
     local typeColors = {}
     for i = 1, #DISPEL_SLOTS do
         local def = DISPEL_SLOTS[i]
@@ -722,6 +861,22 @@ local function BuildDispelStyle(s)
             g = c and c.g or def.fallback[2],
             b = c and c.b or def.fallback[3],
             a = (c and c.a) or 1,
+        }
+    end
+    -- Color Custom Borders: the frame border's own ApplyBorderStyle inputs, so each
+    -- type's copy matches it. Only over a custom border (ns.RF_CustomBorderOn): none
+    -- under a stock style (the EllesmereUI border stands down there), a Solid
+    -- Border Style or Border Size 0.
+    local customBorder
+    if not compact and s.dispelCustomBorder == true and ns.RF_CustomBorderOn(s) then
+        local bs = ns.RF_EffBorderSize(s)
+        local tex = s.borderTexture
+        customBorder = {
+            size = bs, tex = tex,
+            offX = s.borderTextureOffset, offY = s.borderTextureOffsetY,
+            shX = s.borderTextureShiftX, shY = s.borderTextureShiftY,
+            px = EllesmereUI.BorderPx(s.borderSizePx, bs, tex),
+            behind = s.borderBehind and true or false,
         }
     end
     return {
@@ -736,15 +891,20 @@ local function BuildDispelStyle(s)
         iconOffX = s.dispelIconOffsetX or 0,
         iconOffY = s.dispelIconOffsetY or 0,
         uniformAnchors = s.powerUniformAnchors == true,
+        -- The fill wash's anchors follow the fill direction (RF_AnchorCurHealth).
+        fillVert = ns.RF_IsVerticalFill(s),
+        fillInvert = ns.RF_IsInvertedFill(s),
         typeColors = typeColors,
+        customBorder = customBorder,
         applyExtra = ApplyRFDispelSlot,
     }
 end
 
-local function DispelVisible(s)
+local function DispelVisible(s, d)
     return (s.dispelOverlay or "fill") ~= "none"
         or (s.dispelBorderSize or 0) > 0
         or s.showDispelIcons == true
+        or (s.dispelCustomBorder == true and not ns.RF_ButtonCompact(d, s) and ns.RF_CustomBorderOn(s))
 end
 
 -- Fingerprints of exact settings each subsystem reads, per class ("rf:debuff:raid"/
@@ -753,7 +913,8 @@ end
 local classFP = {}
 
 local function DebuffStyleFP(s, font)
-    return FP(font, s.debuffSize, s.debuffIconZoom, s.debuffBorderSize, CK(s.debuffBorderColor),
+    return FP(font, s.debuffSize, ns.RFC_DebuffSize(s), s.debuffIconZoom, s.debuffBorderSize, CK(s.debuffBorderColor),
+        ns.RFC_AuraBorderFP(s, "debuffBorder"),
         s.debuffShowSwipe, s.debuffShowDurText, s.debuffDurTextSize, CK(s.debuffDurTextColor),
         s.debuffDurTextOffsetX, s.debuffDurTextOffsetY, s.debuffShowStacks, s.debuffStacksTextSize,
         CK(s.debuffStacksTextColor), s.debuffStacksOffsetX, s.debuffStacksOffsetY, s.debuffHideTooltips,
@@ -772,7 +933,7 @@ local function DebuffCfgFP(s)
     -- DispLocActive: the split toggles excludeDispelTypes on the MAIN groups'
     -- candidate filters, so flipping it must re-drive the main config too.
     return FP(s.debuffPosition, s.debuffGrowDirection, s.debuffWrapDirection, s.debuffOffsetX,
-        s.debuffOffsetY, s.debuffSize, s.debuffSpacing, s.debuffPerRow, s.debuffFilter,
+        s.debuffOffsetY, s.debuffSize, ns.RFC_DebuffSize(s), s.debuffSpacing, s.debuffPerRow, s.debuffFilter,
         s.debuffCap, s.hideLustDebuff, DispLocActive(s), s.powerUniformAnchors,
         (ns.DM_CfgFP and ns.DM_CfgFP()) or "")
 end
@@ -794,11 +955,40 @@ local function CKA(c)
     return CK(c) .. "," .. tostring((c and c.a) or 1)
 end
 
-local function DispelStyleFP(s)
+local function DispelStyleFP(s, key)
+    local party = key == "rf:debuff:party" or key == "rf:dispel:party"
+    local compact = key ~= "rf:debuff:extra" and key ~= "rf:dispel:extra" and ns.RF_CompactOn(s, party)
     return FP(s.dispelOverlay, s.dispelOverlayOpacity, s.dispelBorderSize, s.showDispelIcons,
         s.dispelIconSize, s.dispelIconPosition, s.dispelIconOffsetX, s.dispelIconOffsetY,
         CKA(s.dispelColorMagic), CKA(s.dispelColorCurse), CKA(s.dispelColorDisease),
-        CKA(s.dispelColorPoison), CKA(s.dispelColorBleed), s.powerUniformAnchors)
+        CKA(s.dispelColorPoison), CKA(s.dispelColorBleed), s.powerUniformAnchors,
+        compact,
+        -- The fill wash follows the fill direction (BuildDispelStyle); the axis
+        -- only moves it under Inverted Fill.
+        ns.RF_IsInvertedFill(s), ns.RF_IsInvertedFill(s) and ns.RF_IsVerticalFill(s),
+        -- Color Custom Borders copies the frame border (strata: a strata change
+        -- re-stacks child levels), so those inputs count, only while it is on.
+        s.dispelCustomBorder == true and FP(s.borderSize, s.borderTexture, s.borderSizePx,
+            s.borderTextureOffset, s.borderTextureOffsetY, s.borderTextureShiftX,
+            s.borderTextureShiftY, s.borderBehind, s.frameStrata) or false)
+end
+
+-- The fingerprint each class's shared styles were built from. A class with no finalized
+-- button never reaches ComputeClassFlags, so styles built at login can predate a
+-- settings change; PrimeClassFP compares against these and rebuilds what differs.
+local builtFP = {}
+local function StoreDispelStyle(key, s, fp)
+    AK.styles[key] = BuildDispelStyle(s, key ~= "rf:dispel:extra" and ns.RF_CompactOn(s, key == "rf:dispel:party"))
+    builtFP[key] = fp or DispelStyleFP(s, key)
+end
+-- The base debuff style and its cc twin share one fingerprint (DebuffStyleFP).
+local function StoreDebuffStyles(styleKey, s, fp)
+    local ccKey = styleKey:gsub("debuff", "debuffcc")
+    AK.styles[styleKey] = BuildDebuffStyle(s)
+    AK.styles[ccKey] = BuildDebuffCCStyle(s)
+    builtFP[styleKey] = fp or DebuffStyleFP(s,
+        (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or "")
+    return ccKey
 end
 
 -- Stores current fingerprints without restyling. Called at button setup (which just
@@ -807,13 +997,30 @@ end
 local function PrimeClassFP(styleKey, s)
     local st = classFP[styleKey]
     if not st then st = {}; classFP[styleKey] = st end
-    local font = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or ""
-    st.debuffStyle = DebuffStyleFP(s, font)
+    local font = (EllesmereUI.GetFontPath("raidFrames")) or ""
+    local dsfp = DebuffStyleFP(s, font)
+    st.debuffStyle = dsfp
     st.debuffCfg = DebuffCfgFP(s)
     st.dispLocStyle = DispLocStyleFP(s, font)
     st.dispLocCfg = DispLocCfgFP(s)
-    st.dispelStyle = DispelStyleFP(s)
+    local dfp = DispelStyleFP(s, styleKey)
+    st.dispelStyle = dfp
     st.dispelFilter = DispelFilterFP(s)
+    -- The shared styles are the stamps that must not be trusted blindly: rebuild any
+    -- built from older settings (see builtFP). One string compare each when current.
+    -- (DM tile/sized styles carry their own fingerprints; the dispel filter is per
+    -- button and reconciled in the finalize job.)
+    if AK and AK.styles[styleKey] and builtFP[styleKey] ~= dsfp then
+        local ccKey = StoreDebuffStyles(styleKey, s, dsfp)
+        AK.RestyleSoon(styleKey)
+        AK.RestyleSoon(ccKey)
+        if ns.DM_RefreshSizedStyles then ns.DM_RefreshSizedStyles(styleKey, s) end
+    end
+    local dispelStyleKey = styleKey:gsub("debuff", "dispel")
+    if AK and AK.styles[dispelStyleKey] and builtFP[dispelStyleKey] ~= dfp then
+        StoreDispelStyle(dispelStyleKey, s, dfp)
+        AK.RestyleSoon(dispelStyleKey)
+    end
 end
 
 local function ApplyDebuffConfig(container, d, s)
@@ -828,7 +1035,7 @@ local function ApplyDebuffConfig(container, d, s)
     -- Park every group (record variants and tile containers park via DM_ParkGroups).
     local declared = d.rfcDebuffGroups or {}
     for k in pairs(declared) do
-        container:SetAuraGroupMaxFrameCount(k, 0)
+        EllesmereUI.AuraKit.SetGroupCap(container, k, 0)
     end
     if ns.DM_ParkGroups then ns.DM_ParkGroups(container, declared, d) end
 end
@@ -864,7 +1071,7 @@ local function ApplyDispLocConfig(container, d, s)
         end
         if missing and not d.rfcDispLocEnsure then
             d.rfcDispLocEnsure = true
-            AK.QueueLiveBuildJob(function()
+            AKWorker:Queue(function()
                 d.rfcDispLocEnsure = nil
                 local c2 = d.rfcDispLoc
                 if not c2 then return end
@@ -892,7 +1099,7 @@ local function ApplyDispLocConfig(container, d, s)
     for i = 1, #DEBUFF_GROUPS do
         local g = DEBUFF_GROUPS[i]
         if declared[g.key] then
-            container:SetAuraGroupMaxFrameCount(g.key, DispLocGroupWanted(s, g.key) and cap or 0)
+            EllesmereUI.AuraKit.SetGroupCap(container, g.key, DispLocGroupWanted(s, g.key) and cap or 0)
             container:SetAuraGroupCandidateFilters(g.key, cand)
             container:SetAuraGroupLayout(g.key, layout)
         end
@@ -911,7 +1118,7 @@ end
 -- own secret-driven SetShown throw "Cannot be called with secrets due to existing
 -- script handlers", failing the whole container build under secrecy (field,
 -- 2026-08-14). Never install visibility scripts on engine aura buttons. Effect
--- indicators render presence-driven only; simple mode stays on the legacy renderer.
+-- indicators render presence-driven only.
 ------------------------------------------------------------------------------
 
 local BM_FRAMELVL = { behindBorders = 7, behindText = 11, medium = 13, high = 14, highest = 15 }
@@ -923,47 +1130,22 @@ local function BmScaleFor(d)
     return ns._bmScale or 1
 end
 
+-- Scaled indicator size on whole physical pixels (see ns.RFC_DebuffSize): one
+-- value for the style, the slot SetSize and the chain flow math.
+function ns.RFC_BmSize(ind, iscale)
+    return ns.RFC_SnapSize((ind.size or 18) * iscale)
+end
+
 local function BmIndicators(d)
     -- Buff Manager v2 (spell -> filter -> indicator): the adapter returns legacy-
-    -- shaped indicators with resolved spell unions, gated on the activation flag so
-    -- dormant v2 leaves the legacy system untouched. d: the button asking; its
+    -- shaped indicators with resolved spell unions. d: the button asking; its
     -- frame kind applies each indicator's Show In (party header buttons are party,
     -- also in arena and small-raid party mode; extra and friendly boss frames are
     -- raid). nil d = every indicator.
-    if ns.BM2_Enabled and ns.BM2_SpecIndicators then
-        return ns.BM2_SpecIndicators(d and (d._isParty and "party" or "raid") or nil)
-    end
-    if not (ns.BM_GetSpecIndicators and ns.db) then return nil, nil, "custom" end
-    local specKey = ns.BM_CurrentSpecKey and ns.BM_CurrentSpecKey()
-    -- Base grid and custom indicators are INDEPENDENT subsystems -- this function
-    -- serves only the custom side (nil inds parks the chains/slots); base grid
-    -- resolves via BM_BaseActive/BM_SimpleSpecKey at its own sites. Legacy either/or
-    -- bmDisplayMode key is read only inside the effective accessors, never written.
-    local mode = "custom"
-    if ns.BM_CustomActive and not ns.BM_CustomActive() then
-        return nil, specKey, mode
-    end
-    if not specKey then
-        -- Untracked spec: indicators flagged Show Own on All Specs still
-        -- render from the class-fallback spec's config.
-        local fbKey = ns.BM_ClassFallbackSpecKey and ns.BM_ClassFallbackSpecKey()
-        local all = fbKey and ns.BM_GetSpecIndicators(ns.db, fbKey)
-        if all then
-            local flagged
-            for _, ind in ipairs(all) do
-                if ind.showOwnAllSpecs then
-                    flagged = flagged or {}
-                    flagged[#flagged + 1] = ind
-                end
-            end
-            if flagged then return flagged, fbKey, mode end
-        end
-        return nil, nil, "custom"
-    end
-    return ns.BM_GetSpecIndicators(ns.db, specKey), specKey, mode
+    return ns.BM2_SpecIndicators(d and (d._isParty and "party" or "raid") or nil)
 end
 
-local function BmIncludeMap(spellID)
+local function BmIncludeMap(spellID, exact)
     local map = { [spellID] = true }
     if ns.BM_PrimaryByAlt then
         for alt, prim in pairs(ns.BM_PrimaryByAlt) do
@@ -972,7 +1154,9 @@ local function BmIncludeMap(spellID)
     end
     -- v2 curated alternates (same buff under talent/rank ids): resolution keeps ONE
     -- entry per buff family, so the family's alt ids must all match the primary's slot.
-    if ns.BM2_PresetAlts then
+    -- An exact id (the view's exactSpells) matches its own aura alone, so a
+    -- same-named family member stays with the indicator that names it.
+    if ns.BM2_PresetAlts and not exact then
         local alts = ns.BM2_PresetAlts[spellID]
         if alts then
             for i = 1, #alts do map[alts[i]] = true end
@@ -1039,13 +1223,19 @@ local function BmOwnSig(ind)
     return tostring(ind.ownOnly ~= false)
 end
 
+-- Pandemic Border is retail only: WoW Forever's buffs may have no refresh window,
+-- so a saved choice reads as off there.
+local function BmPandemicOn(ind)
+    return ind.pandemicBorderEnabled == true and not EllesmereUI.IS_FOREVER
+end
+
 -- Structural only: SLOT own-only state is NOT part of the signature -- it maps to
 -- slot filter strings, which update live (a swap here would rebuild the container on
 -- every own-only toggle). CHAIN groups bake own-only into their declaration-fixed
 -- filter string, so their uniform state IS structural and swaps.
 local function BmSignature(inds, specKey, mode)
-    -- Spec-scoped sentinel: the simple grid's container exists only for
-    -- tracked specs, so a spec change must swap even in simple mode.
+    -- Spec-scoped sentinel: with no indicators the signature still carries the
+    -- spec, so a spec change swaps the container.
     if mode == "simple" or not inds then return "simple:" .. tostring(specKey) end
     local parts = { specKey or "?" }
     for i = 1, #inds do
@@ -1059,10 +1249,18 @@ local function BmSignature(inds, specKey, mode)
             if cmode == "g" then
                 ownTag = BmEffOwnOnly(ind) and ":o" or ":a"
             end
-            -- The all-specs flag is structural: it changes which spells survive the
-            -- borrow filter in BuildBmSlots, so flipping it must swap the container.
+            -- Exact ids narrow the include maps, which slots take at
+            -- creation, so they are structural too.
+            local exTag = ""
+            local ex = ind.exactSpells
+            if ex then
+                local sp = ind.spells or {}
+                for k = 1, #sp do
+                    if ex[sp[k]] then exTag = exTag .. ":x" .. sp[k] end
+                end
+            end
             parts[#parts + 1] = tostring(ind.id or ("x" .. i)) .. ":" .. (ind.type or "icon")
-                .. ":" .. table.concat(ind.spells or {}, "-")
+                .. ":" .. table.concat(ind.spells or {}, "-") .. exTag
                 .. ":" .. tostring(ind.showWhen or "present")
                 .. ":" .. cmode .. ownTag
                 .. (ind.showOwnAllSpecs and ":s" or "")
@@ -1073,6 +1271,8 @@ local function BmSignature(inds, specKey, mode)
                 -- Anchor To is structural: the composition decides how many
                 -- groups each pool container declares.
                 .. ":@" .. tostring(ind.anchorTo or "")
+                -- Pandemic regions must be registered in the creation callback.
+                .. (((ind.type or "icon") == "icon" and BmPandemicOn(ind)) and ":p" or "")
         end
     end
     return table.concat(parts, "|")
@@ -1085,12 +1285,14 @@ end
 -- PLAYER filter token instead.
 local function BuildBmCand(ind, spells, spellID)
     local include
+    local ex = ind.exactSpells
     if spellID then
-        include = BmIncludeMap(spellID)
+        include = BmIncludeMap(spellID, ex and ex[spellID])
     else
         include = {}
         for k = 1, #(spells or {}) do
-            for id in pairs(BmIncludeMap(spells[k])) do include[id] = true end
+            local sid = spells[k]
+            for id in pairs(BmIncludeMap(sid, ex and ex[sid])) do include[id] = true end
         end
     end
     return { includeSpellIDs = include }
@@ -1121,8 +1323,12 @@ local function BmSegments(ind, spells)
     local ordered, seen = {}, {}
     local so = ind.spellOrder
     if so then
+        -- WoW Forever: an entry saved under a rank alternate orders its
+        -- family's primary (the id the resolved list holds). nil elsewhere.
+        local ap = ns.BM2_ForeverAltPrimary
         for k = 1, #so do
             local sid = so[k]
+            if ap then sid = ap[sid] or sid end
             if present[sid] and not seen[sid] and #ordered < BM_ORDER_CAP then
                 seen[sid] = true
                 ordered[#ordered + 1] = sid
@@ -1199,14 +1405,16 @@ end
 
 -- Display-level Icon Glow (v2 DISPLAY section): a PERMANENT glow on every visible
 -- icon of the group, not threshold-gated. Child frame rides button visibility;
--- StartEngineGlow renders Pixel as the genuine C-side dash march and routes other
--- driver styles to FlipBook so restricted content animates identically; params
--- cache on the overlay (our frame) so a steady glow never resets on restyles.
+-- StartSpecGlow's engine host renders Pixel as the genuine C-side dash march and
+-- routes other driver styles to FlipBook so restricted content animates
+-- identically; its change signature keeps a steady glow from resetting on restyles.
+local BM_GLOW_SPEC = {}
 local function ApplyBmIconGlow(button, dd, style)
     local Glows = EllesmereUI.Glows
-    if not Glows then return end
-    local gType = style.bmGlowType or 0
-    if gType > 0 and Glows.StartEngineGlow then
+    local spec = style.bmGlowInd
+        and Glows.SpecFromPrefix(BM_GLOW_SPEC, style.bmGlowInd, "displayGlow", 1.0, 0.776, 0.376)
+    if spec then
+        local sz = style.width or 18
         local gov = dd.bmGlow
         if not gov then
             gov = CreateFrame("Frame", nil, button)
@@ -1219,28 +1427,94 @@ local function ApplyBmIconGlow(button, dd, style)
             end
             gov:EnableMouse(false)
             dd.bmGlow = gov
+            Glows.PrewarmEngineHost(gov, sz, style.height or sz, ICON_GLOW_NEED)
+            -- The button runs the glow's animations itself (only while it
+            -- shows an aura), where the client can. A square registers no
+            -- icon of its own: built in the creation window, it gets the
+            -- hidden one that restarts its glow on a later change here.
+            local AKit = EllesmereUI.AuraKit
+            if Glows.BindEngineHost(gov, button, dd) and style.noRegions
+                and AKit.InCreationWindow(button) then
+                AKit.EnsureKickIcon(button, dd)
+            end
         end
-        local cr, cg, cb = style.bmGlowR or 1.0, style.bmGlowG or 0.776, style.bmGlowB or 0.376
-        if style.bmGlowClassColor then
-            local _, classFile = UnitClass("player")
-            local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-            if cc then cr, cg, cb = cc.r, cc.g, cc.b end
+        -- A bound host glows on every button. Without that (WoW Forever) the
+        -- animation plays while hidden too: only buttons the group can ever
+        -- show run one.
+        if Glows.IsEngineHostBound(gov) or EllesmereUI.AuraKit.ButtonCanShow(button) then
+            Glows.StartSpecGlow(gov, spec, sz, style.height or sz, "engine")
+        elseif gov._euiGlowActive then
+            Glows.StopGlow(gov)
         end
-        local sz = style.width or 18
-        if (not gov._euiGlowActive) or gov._bmStyle ~= gType or gov._bmW ~= sz
-           or gov._bmCR ~= cr or gov._bmCG ~= cg or gov._bmCB ~= cb then
-            Glows.StartEngineGlow(gov, gType, sz, cr, cg, cb)
-            gov._bmStyle, gov._bmW = gType, sz
-            gov._bmCR, gov._bmCG, gov._bmCB = cr, cg, cb
-        end
-    elseif dd.bmGlow and dd.bmGlow._euiGlowActive and Glows.StopGlow then
+    elseif dd.bmGlow and dd.bmGlow._euiGlowActive then
         Glows.StopGlow(dd.bmGlow)
     end
 end
 
--- applyExtra for icon slots: shared text pass + opacity + BM frame levels.
--- hideIcon = legacy text-only mode (icon/swipe/border hidden via style flags;
--- duration text and stacks unaffected).
+local function ApplyBmPandemicBorder(button, dd, style)
+    -- Disabled displays allocate nothing. Opted-in chains register every pooled
+    -- button at creation; per-member restyles only recolor the child textures.
+    if not style.bmPandemicEnabled and not style.bmPandemicRegister and not dd.bmPandemic then return end
+    -- The slot's extraInit sets bmRegistered right after this first style pass,
+    -- so the holder is built and registered only inside the creation window.
+    if not dd.bmPandemic and not dd.bmRegistered and button.AddPandemicRegion then
+        local holder = CreateFrame("Frame", nil, button)
+        holder:SetAllPoints(button)
+        holder:EnableMouse(false)
+        holder:Hide()
+        dd.bmPandemic = holder
+        dd.bmPandemicEdges = {}
+        for i = 1, 4 do
+            dd.bmPandemicEdges[i] = holder:CreateTexture(nil, "OVERLAY")
+        end
+        local top, bottom, left, right = unpack(dd.bmPandemicEdges)
+        top:SetPoint("TOPLEFT"); top:SetPoint("TOPRIGHT")
+        bottom:SetPoint("BOTTOMLEFT"); bottom:SetPoint("BOTTOMRIGHT")
+        left:SetPoint("TOPLEFT"); left:SetPoint("BOTTOMLEFT")
+        right:SetPoint("TOPRIGHT"); right:SetPoint("BOTTOMRIGHT")
+    end
+    local holder = dd.bmPandemic
+    if not holder then return end
+    if dd.stackCarrier then holder:SetFrameLevel(dd.stackCarrier:GetFrameLevel() - 1) end
+    local width = style.bmPandemicWidth or 2
+    local r, g, b = BmColor(style.bmPandemicColor, 1, 0.2, 0.2)
+    local alpha = style.bmPandemicEnabled and not style.hideIcon and 1 or 0
+    local border = style.bmPandemicEnabled and style.bmPandemicTextured and style.border
+    if border and (not border.texture or border.texture == "solid" or border.texture == ""
+        or not EllesmereUI.ResolveBorderTexture(border.texture)) then border = nil end
+    if border then
+        local ring = dd.bmPandemicRing
+        if not ring then
+            ring = CreateFrame("Frame", nil, holder)
+            ring:SetPoint("CENTER", holder, "CENTER")
+            ring:EnableMouse(false)
+            dd.bmPandemicRing = ring
+        end
+        ring:SetFrameLevel(holder:GetFrameLevel())
+        if dd.bmPandemicW ~= style.width or dd.bmPandemicH ~= style.height then
+            ring:SetSize(style.width, style.height)
+            dd.bmPandemicW, dd.bmPandemicH = style.width, style.height
+        end
+        -- The engine owns the holder's visibility; only draw on its child.
+        EllesmereUI.ApplySecretSafeBorderStyle(ring, ring, border.size, r, g, b, alpha,
+            border.texture, border.offsetX, border.offsetY, border.shiftX, border.shiftY,
+            "unitframes", border.size, nil, border.edgePx)
+    elseif dd.bmPandemicRing then
+        EllesmereUI.ApplySecretSafeBorderStyle(dd.bmPandemicRing, dd.bmPandemicRing,
+            0, 0, 0, 0, 0, "solid")
+        dd.bmPandemicRing:Hide()
+    end
+    for i, edge in ipairs(dd.bmPandemicEdges) do
+        if i <= 2 then edge:SetHeight(width) else edge:SetWidth(width) end
+        edge:SetColorTexture(r, g, b, border and 0 or alpha)
+    end
+    if not dd.bmPandemicBound then
+        button:AddPandemicRegion(holder)
+        dd.bmPandemicBound = true
+    end
+end
+
+-- Icon text, opacity and frame levels also apply to text-only indicators.
 local function ApplyBmIconExtra(button, dd, style)
     ApplyRFDebuffText(button, dd, style)
     -- "Hide Icons" gate: like the hidden swipe (see AuraKit's style pass), a
@@ -1291,6 +1565,7 @@ local function ApplyBmIconExtra(button, dd, style)
     if dd.stackCarrier then dd.stackCarrier:SetFrameLevel(base + BM_FRAMELVL_TEXT) end
     BmRebindDurationCurve(button, dd, style)
     ApplyBmIconGlow(button, dd, style)
+    ApplyBmPandemicBorder(button, dd, style)
 end
 
 -- Buff/HoT tooltip gate (profile-root "Hide Buff Tooltips", default hidden). Engine
@@ -1311,7 +1586,6 @@ local function BmTipsOff()
 end
 
 local function BuildBmIconStyle(ind, iscale, size)
-    local br, bg, bb = BmColor(ind.indBorderColor, 0, 0, 0)
     local hideIcon = ind.hideIcon == true
     return {
         width = size,
@@ -1319,8 +1593,7 @@ local function BuildBmIconStyle(ind, iscale, size)
         iconCrop = true,
         iconZoom = (ns.db and ns.db.profile and ns.db.profile.bmIconZoom) or 0.08,
         hideIcon = hideIcon,
-        border = (not hideIcon and (ind.indBorderSize or 1) > 0)
-            and { br, bg, bb, 1, size = ind.indBorderSize or 1 } or nil,
+        border = not hideIcon and ns.RFC_AuraBorder(ind, "indBorder") or nil,
         cooldownReverse = true,
         hideSwipe = hideIcon or (ind.showDuration == false),
         noDefaultFonts = true,
@@ -1340,11 +1613,11 @@ local function BuildBmIconStyle(ind, iscale, size)
         noTooltips = BmTipsOff(),
         tooltipCombatHide = BmTipMode() == "combat",
         tooltipAnchor = (BmTipMode() == "cursor") and "cursor" or nil,
-        bmGlowType = ind.displayGlowType or 0,
-        bmGlowClassColor = ind.displayGlowClassColor,
-        bmGlowR = ind.displayGlowR,
-        bmGlowG = ind.displayGlowG,
-        bmGlowB = ind.displayGlowB,
+        bmGlowInd = ind,
+        bmPandemicEnabled = BmPandemicOn(ind),
+        bmPandemicTextured = ind.pandemicBorderTextured == true,
+        bmPandemicColor = ind.pandemicBorderColor,
+        bmPandemicWidth = ind.pandemicBorderWidth or 2,
         applyExtra = ApplyBmIconExtra,
     }
 end
@@ -1388,8 +1661,6 @@ local function BmApplySquare(button, dd, style)
             if dd.cooldown.SetDrawSwipe then dd.cooldown:SetDrawSwipe(not hideSwipe) end
         end
     end
-    local br, bg2, bb = BmColor(ind.indBorderColor, 0, 0, 0)
-    BmUpdateBorder(dd, dd.borderHost, ind.indBorderSize or 1, br, bg2, bb, 1)
     ApplyRFDebuffText(button, dd, style)
     -- Cached base + change-guarded level: see ApplyBmIconExtra.
     local base = dd.bmBase
@@ -1401,6 +1672,23 @@ local function BmApplySquare(button, dd, style)
     if dd.bmLvl ~= lvl then
         button:SetFrameLevel(lvl)
         dd.bmLvl = lvl
+    end
+    -- Once the host was re-anchored for an explicit size (rfBorderSize) it stays on
+    -- this path, which keeps that size current; the legacy path below never resizes it.
+    if ind.indBorderTexture or ind.indBorderSizePx or dd._secretBorderEdges or dd.rfBorderSize then
+        if dd.rfBorderSize ~= style.width then
+            if not dd.rfBorderSize then
+                dd.borderHost:ClearAllPoints()
+                dd.borderHost:SetPoint("CENTER", button, "CENTER")
+            end
+            dd.borderHost:SetSize(style.width, style.height)
+            dd.rfBorderSize = style.width
+        end
+        ns.RFC_ApplyAuraBorder(dd.borderHost, dd, style.bmBorder, dd.cooldown:GetFrameLevel())
+    else
+        local br, bg2, bb = BmColor(ind.indBorderColor, 0, 0, 0)
+        BmUpdateBorder(dd, dd.borderHost, ind.indBorderSize or 1, br, bg2, bb,
+            ind.indBorderColor and ind.indBorderColor.a or 1)
     end
     if dd.stackCarrier then dd.stackCarrier:SetFrameLevel(base + BM_FRAMELVL_TEXT) end
     BmRebindDurationCurve(button, dd, style)
@@ -1447,6 +1735,15 @@ local function BmApplyBar(button, dd, style)
     end
 end
 
+-- Textured Background on a Background Color effect: the class's background texture
+-- (style.texBgPath, set with the style) under the effect's tint; its style key
+-- carries it, so a change restyles.
+function ns.RFC_BmTexBg(style, s)
+    style.texBgPath, style.texBgVert = ns.RF_TexBgPath(s), ns.RF_IsVerticalFill(s)
+end
+function ns.RFC_BmTexBgKey(s)
+    return "|" .. tostring(ns.RF_TexBgPath(s)) .. (ns.RF_IsVerticalFill(s) and "v" or "")
+end
 local function BmApplyEffect(button, dd, style)
     local ind = style.ind
     if ind.type == "healthcolor" or ind.type == "bgcolor" then
@@ -1458,6 +1755,7 @@ local function BmApplyEffect(button, dd, style)
             if ind.type == "healthcolor" then
                 ns.RF_TintOverBarFill(dd.tex, dd.bmHealthBar, r, g, b, a)
             else
+                ns.RF_TexBgTint(dd.tex, style.texBgPath, style.texBgVert)
                 dd.tex:SetColorTexture(r, g, b, a)
             end
         end
@@ -1553,17 +1851,13 @@ local function BmEffectInit(button, dd, style, ind, health)
         -- sublevels (above fill at 0), staying BELOW heal absorb/prediction (health +1)
         -- and shield bars (+3). At +1 this tied heal absorb on strata+level+layer+
         -- sublevel, so paint order fell to creation order and the tint blended over an
-        -- opaque heal absorb. Anchored to the fill texture so only the filled portion
-        -- tints, not empty/missing health.
+        -- opaque heal absorb. Anchored to the current-health area (the fill texture, or
+        -- the rest of the bar under Inverted Fill) so missing health never tints.
         button:SetFrameLevel(health:GetFrameLevel())
         dd.bmHealthBar = health  -- apply pass borrows this bar's fill texture
         dd.tex = button:CreateTexture(nil, "ARTWORK", nil, 2)
-        local fillTex = health.GetStatusBarTexture and health:GetStatusBarTexture()
-        if fillTex then
-            dd.tex:SetAllPoints(fillTex)
-        else
-            dd.tex:SetAllPoints(health)
-        end
+        ns.RF_AnchorCurHealth(dd.tex, health,
+            health.GetStatusBarTexture and health:GetStatusBarTexture())
         ns.RF_RegisterBarTint(health, dd.tex, nil, "bm")
     elseif ind.type == "bgcolor" then
         -- Background Color: whole health area, ARTWORK -2 = below fill (sublevel 0)
@@ -1575,8 +1869,8 @@ local function BmEffectInit(button, dd, style, ind, health)
         local unitButton = button:GetParent() and button:GetParent():GetParent()
         if unitButton then
             -- Slot button sits AT the unit button's level: legacy renderer
-            -- (BM_ApplyEffectBorder) levels the host at parent+11 (static)/+14
-            -- (sweep) -- exact live parity.
+            -- (BM_ApplyEffectBorder) levels the host at parent + LVL_RAISE - 1,
+            -- under the hover raise and the text band -- exact live parity.
             button:SetFrameLevel(unitButton:GetFrameLevel())
             dd.borderHost = CreateFrame("Frame", nil, button)
             -- The Party Frames kit outlines the visible party frame (our
@@ -1587,6 +1881,14 @@ local function BmEffectInit(button, dd, style, ind, health)
             -- subtree: apply pass reads its rect for the dashed-style animated
             -- ants (border host is unmeasurable outside this window).
             dd.bmFxHost = fxHost
+            -- The dashed style's animated ants run on the slot button itself
+            -- (only while it shows an aura), where the client can. The slot
+            -- registers no icon: a dashed border gets the hidden one that
+            -- restarts its march on a later change here.
+            if EllesmereUI.Glows.BindEngineHost(dd.borderHost, button, dd)
+                and ind.borderStyle == "dashed" then
+                AK.EnsureKickIcon(button, dd)
+            end
         end
     end
     BmApplyEffect(button, dd, style)
@@ -1604,13 +1906,10 @@ local function BuildBmStyleFor(kind, ind, iscale, size, spellID)
             height = size,
             noRegions = true,
             ind = ind,
+            bmBorder = ns.RFC_AuraBorder(ind, "indBorder"),
             sqColor = BmSquareColor(ind, spellID),
             noDefaultFonts = true,
-            bmGlowType = ind.displayGlowType or 0,
-            bmGlowClassColor = ind.displayGlowClassColor,
-            bmGlowR = ind.displayGlowR,
-            bmGlowG = ind.displayGlowG,
-            bmGlowB = ind.displayGlowB,
+            bmGlowInd = ind,
             hideSwipe = (ind.showDuration == false),
             hideDurationText = not ind.showDurationText,
             durSize = ind.durationTextSize,
@@ -1705,27 +2004,16 @@ local function BmAnchorOneSlot(f, m, health, hugBar, iscale)
 end
 
 -- Builds the slot spec list for the current indicator set plus the group-mode chain
--- indicators (rendered as compacting flow containers). Borrow specs (Enh/Ele/Prot/Ret)
--- only get slots for spells they can cast, mirroring the legacy lookup restriction;
--- positions renumber over the usable list.
+-- indicators (rendered as compacting flow containers).
 local function BuildBmSlots(inds, d, health, iscale, styleBase)
     local slots, meta, chains = {}, {}, {}
-    -- Borrow-spec castability filtering is a LEGACY healer-tracking notion:
-    -- v2 groups deliberately include other classes' spells (externals/raid
-    -- CDs, any caster), so the filter would gut them on borrow specs.
-    local borrow
-    if not ns.BM2_Enabled and ns.BM_BorrowSpellFilter then
-        borrow = ns.BM_BorrowSpellFilter()
-    end
     for i = 1, #inds do
         local ind = inds[i]
         if ind.enabled and ind.type ~= "framealpha" then
             local spells = {}
             for k = 1, #(ind.spells or {}) do
                 local sid = ind.spells[k]
-                if not borrow or ind.showOwnAllSpecs or borrow[sid] then
-                    spells[#spells + 1] = sid
-                end
+                spells[#spells + 1] = sid
             end
             local kind = ind.type or "icon"
             if (kind == "icon" or kind == "square") and BmChainMode(ind) == "g" then
@@ -1735,7 +2023,7 @@ local function BuildBmSlots(inds, d, health, iscale, styleBase)
             elseif kind == "icon" or kind == "square" or kind == "bar" then
                 for k = 1, #spells do
                     local spellID = spells[k]
-                    local size = (ind.size or 18) * iscale
+                    local size = ns.RFC_BmSize(ind, iscale)
                     local slotKey = "bm" .. tostring(ind.id or ("x" .. i)) .. "_" .. k
                     local styleKey = styleBase .. ":" .. tostring(ind.id or ("x" .. i)) .. ":" .. k
                     -- Meta entry built FIRST so extraInit closures below can self-
@@ -1784,6 +2072,7 @@ local function BuildBmSlots(inds, d, health, iscale, styleBase)
                 local slotKey = "bm" .. tostring(ind.id or ("x" .. i)) .. "_fx"
                 local styleKey = styleBase .. ":" .. tostring(ind.id or ("x" .. i)) .. ":fx"
                 AK.styles[styleKey] = BuildBmStyleFor(kind, ind, iscale, 1)
+                if kind == "bgcolor" then ns.RFC_BmTexBg(AK.styles[styleKey], ProxyFor(d)) end
                 local mm = { key = slotKey, styleKey = styleKey, ind = ind, kind = kind, spells = spells }
                 slots[#slots + 1] = {
                     key = slotKey,
@@ -1868,7 +2157,7 @@ local function AnchorBmChainContainer(container, health, members, iscale)
     local ind = members[1].ind
     local pos = ind.position or "TOPLEFT"
     local grow = ind.growDirection or "RIGHT"
-    local size = (ind.size or 18) * iscale
+    local size = ns.RFC_BmSize(ind, iscale)
     local ox = (ind.offsetX or 0) * iscale
     local oy = (ind.offsetY or 0) * iscale
 
@@ -1946,7 +2235,7 @@ local function AnchorBmChainContainer(container, health, members, iscale)
     for j = 1, #members do
         local mm = members[j]
         local gk = (j == 1) and "chain" or ("chain" .. j)
-        local msize = (mm.ind.size or 18) * iscale
+        local msize = ns.RFC_BmSize(mm.ind, iscale)
         local mi = mm.memberIndex or j
         -- Anchored members: Offset X/Y projects onto the run as the gap between
         -- their group and the previous one (only per-group positional lever a shared
@@ -1990,7 +2279,7 @@ local function AnchorBmChainContainer(container, health, members, iscale)
                 if cap > rem then cap = rem end
                 budgets[mi] = rem - cap
             end
-            container:SetAuraGroupMaxFrameCount(gk, cap)
+            EllesmereUI.AuraKit.SetGroupCap(container, gk, cap)
         end
     end
 end
@@ -2011,21 +2300,33 @@ local function BmVisualKey(kind, ind, size, font, spellID)
     if kind == "icon" then
         return FP(font, size, (ns.db and ns.db.profile and ns.db.profile.bmIconZoom) or 0.08,
             ind.iconOpacity, ind.hideIcon, ind.indBorderSize, CK(ind.indBorderColor),
+            ns.RFC_AuraBorderFP(ind, "indBorder"),
+            ind.pandemicBorderEnabled, CK(ind.pandemicBorderColor), ind.pandemicBorderWidth,
+            ind.pandemicBorderTextured,
             ind.showDuration, ind.showDurationText, ind.durationTextSize, CK(ind.durationTextColor),
             ind.durationTextOffsetX, ind.durationTextOffsetY, ind.thresholdEnabled, ind.threshold,
             CK(ind.thresholdColor), ind.showStacks, ind.stacksTextSize, CK(ind.stacksTextColor),
             ind.stacksOffsetX, ind.stacksOffsetY, ind.frameLevel, tostring(BmTipMode()),
             ind.displayGlowType, ind.displayGlowClassColor,
-            ind.displayGlowR, ind.displayGlowG, ind.displayGlowB)
+            ind.displayGlowR, ind.displayGlowG, ind.displayGlowB, ind.displayGlowColorMode,
+            ind.displayGlowLines, ind.displayGlowThickness, ind.displayGlowSpeed,
+            ind.displayGlowBackground, ind.displayGlowBackgroundR,
+            ind.displayGlowBackgroundG, ind.displayGlowBackgroundB,
+            ns.RF_GlowClassFP(ind.displayGlowColorMode, ind.displayGlowClassColor))
     end
     if kind == "square" then
         return FP(font, size, CK(BmSquareColor(ind, spellID)), ind.showDuration, ind.indBorderSize,
+            ns.RFC_AuraBorderFP(ind, "indBorder"),
             CK(ind.indBorderColor), ind.frameLevel, ind.showDurationText, ind.durationTextSize,
             CK(ind.durationTextColor), ind.durationTextOffsetX, ind.durationTextOffsetY,
             ind.thresholdEnabled, ind.threshold, CK(ind.thresholdColor), ind.showStacks,
             ind.stacksTextSize, CK(ind.stacksTextColor), ind.stacksOffsetX, ind.stacksOffsetY, tostring(BmTipMode()),
             ind.displayGlowType, ind.displayGlowClassColor,
-            ind.displayGlowR, ind.displayGlowG, ind.displayGlowB)
+            ind.displayGlowR, ind.displayGlowG, ind.displayGlowB, ind.displayGlowColorMode,
+            ind.displayGlowLines, ind.displayGlowThickness, ind.displayGlowSpeed,
+            ind.displayGlowBackground, ind.displayGlowBackgroundR,
+            ind.displayGlowBackgroundG, ind.displayGlowBackgroundB,
+            ns.RF_GlowClassFP(ind.displayGlowColorMode, ind.displayGlowClassColor))
     end
     if kind == "bar" then
         -- orientation is the one geometry field that is ALSO a visual: it swaps
@@ -2097,293 +2398,6 @@ local function AnchorBmSlots(d, health, iscale)
     return skipped
 end
 
-------------------------------------------------------------------------------
--- Simple Setup grid: active spec's whole tracked-buff whitelist as ONE flow group per
--- button, own casts only. Vertical growth is a single column (wraps by row width, so
--- Icons Per Row is horizontal-mode); within-grid order is engine sort, not scan order.
-------------------------------------------------------------------------------
-
-local bmSimpleFP = {}
-
-local function BmSimpleSettings()
-    return ns.db and ns.db.profile and ns.db.profile.bmSimple
-end
-
-local function BmSimpleCand()
-    local wl = ns.BM_SimpleTrackedSpellIDs and ns.BM_SimpleTrackedSpellIDs() or {}
-    -- Own-cast restriction is the PLAYER token on the group filter (the
-    -- isFromPlayerOrPlayerPet boolean matches ANY player's casts).
-    return { includeSpellIDs = wl }
-end
-
-local function BmSimpleCandFP(bs)
-    local wl = ns.BM_SimpleTrackedSpellIDs and ns.BM_SimpleTrackedSpellIDs() or {}
-    local t = {}
-    for id in pairs(wl) do t[#t + 1] = id end
-    table.sort(t)
-    return table.concat(t, ",") .. "|" .. tostring(bs.maxBuffs or 8)
-end
-
-local function BmSimpleStyleFP(bs, font, iscale)
-    return FP(font, iscale, bs.size, bs.iconZoom, bs.borderSize, CK(bs.borderColor), bs.showSwipe,
-        bs.showDurText, bs.durTextSize, CK(bs.durTextColor), bs.durTextOffsetX, bs.durTextOffsetY,
-        tostring(BmTipMode()))
-end
-
-local function BmSimpleGeoFP(bs, iscale, s)
-    -- s = class proxy; powerUniformAnchors flips re-drive the anchor pass.
-    return FP(iscale, bs.position, bs.growDirection, bs.size, bs.spacing, bs.iconsPerRow,
-        bs.offsetX, bs.offsetY, s and s.powerUniformAnchors)
-end
-
-local function ApplyBmSimpleExtra(button, dd, style)
-    ApplyRFDebuffText(button, dd, style)
-    -- Cached base + change-guarded level: see ApplyBmIconExtra.
-    local base = dd.bmBase
-    if not base then
-        base = BmBaseLevel(button)
-        dd.bmBase = base
-    end
-    local lvl = base + 13
-    if dd.bmLvl ~= lvl then
-        button:SetFrameLevel(lvl)
-        dd.bmLvl = lvl
-    end
-    if dd.cooldown then dd.cooldown:SetFrameLevel(base + 14) end
-    if dd.borderHost then dd.borderHost:SetFrameLevel(base + 14) end
-    if dd.stackCarrier then dd.stackCarrier:SetFrameLevel(base + BM_FRAMELVL_TEXT) end
-end
-
-local function BuildBmSimpleStyle(bs, iscale)
-    local br, bg, bb = ColorParts(bs.borderColor, 0, 0, 0)
-    local size = (bs.size or 18) * iscale
-    return {
-        width = size,
-        height = size,
-        iconCrop = true,
-        iconZoom = bs.iconZoom or 0.08,
-        border = (bs.borderSize or 1) > 0 and { br, bg, bb, 1, size = bs.borderSize or 1 } or nil,
-        cooldownReverse = true,
-        hideSwipe = (bs.showSwipe == false),
-        noDefaultFonts = true,
-        hideDurationText = not bs.showDurText,
-        durSize = bs.durTextSize,
-        durColor = bs.durTextColor,
-        durOffX = bs.durTextOffsetX,
-        durOffY = bs.durTextOffsetY,
-        showStacks = false, -- the legacy grid has no stack text
-        noTooltips = BmTipsOff(),
-        tooltipCombatHide = BmTipMode() == "combat",
-        tooltipAnchor = (BmTipMode() == "cursor") and "cursor" or nil,
-        applyExtra = ApplyBmSimpleExtra,
-    }
-end
-
--- Mirrors the legacy AnchorSimpleGrid: the grid's start corner pinned at the same
--- corner of the health bar, rows wrap after Icons Per Row and stack away from the
--- anchored edge; CENTER growth centers rows on the anchor point.
-local function AnchorBmSimpleContainer(container, health, bs, iscale, d)
-    if not container then return end
-    -- Uniform Icon Anchoring: bs is the bmSimple sub-table, so the toggle is
-    -- read from the button's class proxy.
-    if d and ns.RF_AnchorHost then health = ns.RF_AnchorHost(health, ProxyFor(d)) end
-    local pos = bs.position or "topright"
-    local corner = CORNERS[pos] or "TOPRIGHT"
-    local grow = bs.growDirection or "LEFT"
-    local size = (bs.size or 18) * iscale
-    local spacing = (bs.spacing or 1) * iscale
-    local perRow = bs.iconsPerRow or 4
-    local ox = (bs.offsetX or 0) * iscale
-    local oy = (bs.offsetY or 0) * iscale
-
-    local horizontal = (grow ~= "UP" and grow ~= "DOWN")
-    local bottomish = (pos == "bottomleft" or pos == "bottom" or pos == "bottomright")
-    local rightish = (pos == "topright" or pos == "right" or pos == "bottomright")
-    local vEdge = bottomish and "BOTTOM" or "TOP"
-    local gV = bottomish and "UP" or "DOWN"
-
-    container:ClearAllPoints()
-    local anchorPoint, gH
-    if not horizontal then
-        gH = rightish and "LEFT" or "RIGHT" -- moot in a single column
-        gV = grow
-        anchorPoint = (grow == "UP" and "BOTTOM" or "TOP") .. (rightish and "RIGHT" or "LEFT")
-        container:SetPoint(anchorPoint, health, corner, ox, oy)
-    elseif grow == "CENTER" then
-        gH = "RIGHT"
-        anchorPoint = vEdge .. "LEFT"
-        container:SetPoint(vEdge, health, corner, ox, oy)
-    else
-        gH = grow
-        anchorPoint = vEdge .. ((grow == "LEFT") and "RIGHT" or "LEFT")
-        container:SetPoint(anchorPoint, health, corner, ox, oy)
-    end
-    AK.SetContainerAnchor(container, anchorPoint)
-    AK.SetContainerGrowth(container, FlowDir(gH), FlowDir(gV))
-
-    local rowWidth
-    if not horizontal then
-        rowWidth = size + 0.4
-    elseif perRow and perRow >= 2 then
-        rowWidth = perRow * size + (perRow - 1) * spacing + 0.4
-    end
-    AK.SetContainerRowWidth(container, rowWidth)
-
-    container:SetAuraGroupLayout("simple", {
-        elementWidth = size, elementHeight = size,
-        elementSpacing = spacing, lineSpacing = spacing,
-    })
-end
-
-local function CreateBmSimpleContainer(button, health, d, unit, specKey)
-    local bs = BmSimpleSettings() or {}
-    local iscale = BmScaleFor(d)
-    -- PERSISTENT container (engine frames are never freed; recreating per
-    -- spec leaked a batch per spec). One un-scoped style key; spec swaps
-    -- retarget the whitelist candidate live on the same frames.
-    local styleKey = StyleKeyFor(d):gsub("debuff", "bmsimple")
-    local font = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or ""
-    AK.styles[styleKey] = BuildBmSimpleStyle(bs, iscale)
-
-    if d.rfcBmSimple then
-        local c = d.rfcBmSimple
-        c:SetUnit(unit)
-        c:SetAuraGroupMaxFrameCount("simple", bs.maxBuffs or 8)
-        c:SetAuraGroupCandidateFilters("simple", BmSimpleCand())
-        AK.RestyleSoon(styleKey)
-        AnchorBmSimpleContainer(c, health, bs, iscale, d)
-        c:SetShown(bs.showBuffs and true or false)
-        local st = bmSimpleFP[styleKey]
-        if not st then st = {}; bmSimpleFP[styleKey] = st end
-        st.style = BmSimpleStyleFP(bs, font, iscale)
-        st.cand = BmSimpleCandFP(bs)
-        st.geo = BmSimpleGeoFP(bs, iscale, ProxyFor(d))
-        return
-    end
-
-    local size = (bs.size or 18) * iscale
-    local spacing = (bs.spacing or 1) * iscale
-    -- Early-window shell when available (group add + finish are combat-
-    -- legal); fresh creation only as the OOC fallback.
-    local shell = d.rfcBmSimpleShell
-    d.rfcBmSimpleShell = nil
-    if shell then
-        AK.AddGroupToContainer(shell, {
-            key = "simple",
-            filter = { "HELPFUL", "PLAYER" },
-            maxFrameCount = bs.maxBuffs or 8,
-            candidateFilters = BmSimpleCand(),
-            sortMethod = AuraContainerSortMethod and AuraContainerSortMethod.Default or nil,
-            style = styleKey,
-            extraInit = function(btn, dd) dd.bmRegistered = true end,
-            layout = {
-                elementWidth = size, elementHeight = size,
-                elementSpacing = spacing, lineSpacing = spacing,
-            },
-        })
-        AK.FinishContainer(shell, unit)
-        d.rfcBmSimple = shell
-        AnchorBmSimpleContainer(shell, health, bs, iscale, d)
-        shell:SetShown(bs.showBuffs and true or false)
-        local st = bmSimpleFP[styleKey]
-        if not st then st = {}; bmSimpleFP[styleKey] = st end
-        st.style = BmSimpleStyleFP(bs, font, iscale)
-        st.cand = BmSimpleCandFP(bs)
-        st.geo = BmSimpleGeoFP(bs, iscale, ProxyFor(d))
-        return
-    end
-    local c = AK.CreateContainer(button, unit, {
-        point = { "CENTER", health, "CENTER" }, -- re-anchored below
-        groups = {{
-            key = "simple",
-            filter = { "HELPFUL", "PLAYER" },
-            maxFrameCount = bs.maxBuffs or 8,
-            candidateFilters = BmSimpleCand(),
-            sortMethod = AuraContainerSortMethod and AuraContainerSortMethod.Default or nil,
-            style = styleKey,
-            extraInit = function(btn, dd) dd.bmRegistered = true end,
-            layout = {
-                elementWidth = size, elementHeight = size,
-                elementSpacing = spacing, lineSpacing = spacing,
-            },
-        }},
-    })
-    d.rfcBmSimple = c
-    AnchorBmSimpleContainer(c, health, bs, iscale, d)
-    c:SetShown(bs.showBuffs and true or false)
-
-    local st = bmSimpleFP[styleKey]
-    if not st then st = {}; bmSimpleFP[styleKey] = st end
-    st.style = BmSimpleStyleFP(bs, font, iscale)
-    st.cand = BmSimpleCandFP(bs)
-    st.geo = BmSimpleGeoFP(bs, iscale, ProxyFor(d))
-end
-
-local function ReloadBmSimple(button, d, cls)
-    local bs = BmSimpleSettings()
-    if not bs then return end
-    -- Coexistence: the base grid resolves its own state -- effective
-    -- base-enabled (shim over the legacy mode key) plus its own spec key.
-    local baseOn = (ns.BM_BaseActive and ns.BM_BaseActive()) or false
-    local simpleKey = (ns.BM_SimpleSpecKey and ns.BM_SimpleSpecKey())
-        or (ns.BM_CurrentSpecKey and ns.BM_CurrentSpecKey())
-    local c = d.rfcBmSimple
-    if not c then
-        -- Enabled mid-session with no container: build on the queue
-        -- (creation is combat-legal since 68914).
-        if baseOn and simpleKey and bs.showBuffs and not d.rfcBmSimplePend then
-            d.rfcBmSimplePend = true
-            AK.QueueBuildJob(function()
-                d.rfcBmSimplePend = nil
-                if d.rfcBmSimple then return end
-                if not (ns.BM_BaseActive and ns.BM_BaseActive()) then return end
-                local sk = (ns.BM_SimpleSpecKey and ns.BM_SimpleSpecKey())
-                    or (ns.BM_CurrentSpecKey and ns.BM_CurrentSpecKey())
-                if not (sk and d.rfcHealth and d.rfcUnit) then return end
-                CreateBmSimpleContainer(button, d.rfcHealth, d, d.rfcUnit, sk)
-                -- Per-button visibility re-drive (same pattern as the rebuild path):
-                -- clears the readable cache so SetShown/secret range alpha re-apply.
-                d.rfcAssist = nil
-                if ns.RFC_ApplyAssistGate then
-                    ns.RFC_ApplyAssistGate(button, d, d.rfcUnit)
-                end
-            end, "rf:bmsimple-ensure")
-        end
-        return
-    end
-    -- Untracked specs have no whitelist; an empty include-map's semantics
-    -- are unverified, so the grid simply hides there.
-    c:SetShown(d.rfcAssist ~= false and baseOn and simpleKey ~= nil
-        and (bs.showBuffs and true or false))
-
-    if not cls.simpleChecked then
-        cls.simpleChecked = true
-        cls.simpleKey = StyleKeyFor(d):gsub("debuff", "bmsimple")
-        local st = bmSimpleFP[cls.simpleKey]
-        if not st then st = {}; bmSimpleFP[cls.simpleKey] = st end
-        local font = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or ""
-        local v = BmSimpleStyleFP(bs, font, cls.iscale)
-        if st.style ~= v then
-            st.style = v
-            AK.styles[cls.simpleKey] = BuildBmSimpleStyle(bs, cls.iscale)
-            AK.RestyleSoon(cls.simpleKey)
-        end
-        -- Whitelist is spec-resolved, so a spec change must re-drive candidates even
-        -- with unchanged settings (container REBUILD-on-spec-change is retired).
-        v = BmSimpleCandFP(bs) .. "|" .. tostring(simpleKey)
-        if st.cand ~= v then st.cand = v; cls.simpleCandDirty = true end
-        v = BmSimpleGeoFP(bs, cls.iscale, ProxyFor(d))
-        if st.geo ~= v then st.geo = v; cls.simpleGeoDirty = true end
-    end
-    if cls.simpleCandDirty then
-        c:SetAuraGroupMaxFrameCount("simple", bs.maxBuffs or 8)
-        c:SetAuraGroupCandidateFilters("simple", BmSimpleCand())
-    end
-    if cls.simpleGeoDirty then
-        AnchorBmSimpleContainer(c, d.rfcHealth, bs, cls.iscale, d)
-    end
-end
-
 -- Chain container POOL: engine frames are never freed, so recreating a chain
 -- container on every structural edit permanently leaked its 10-button batch (spec
 -- swaps leaked one set per spec). Pool entries persist for the session, keyed by
@@ -2429,6 +2443,16 @@ local function BmAcquireChain(button, d, health, ch, iscale, counters)
         totalGroups = totalGroups + (segsBy[j] and #segsBy[j] or 1)
     end
     local ck = kind .. ":" .. table.concat(ownPat)
+    local anyPandemic = false
+    if kind == "icon" then
+        for j = 1, #members do
+            anyPandemic = anyPandemic or BmPandemicOn(members[j].ind)
+        end
+        -- A shared engine pool can reuse buttons across members. Register all
+        -- buttons in the opted-in container, but keep visibility per member.
+        -- Only two variants are needed, regardless of the member enable pattern.
+        if anyPandemic then ck = ck .. ":p:" end
+    end
     if anySegs then
         -- Segment shape joins the pool key (group sets are add-only, so a
         -- differently-segmented chain needs its own container). The trailing
@@ -2443,17 +2467,18 @@ local function BmAcquireChain(button, d, health, ch, iscale, counters)
     local styleBase = StyleKeyFor(d):gsub("debuff", "bmpool") .. ":" .. poolKey
 
     -- Per-member styles (each group carries its own size/text styling).
-    local font = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or ""
+    local font = (EllesmereUI.GetFontPath("raidFrames")) or ""
     local styleKeys = {}
     for j = 1, #members do
         local mInd = members[j].ind
         local sk = (j == 1) and styleBase or (styleBase .. ":" .. j)
         styleKeys[j] = sk
-        local msize = (mInd.size or 18) * iscale
+        local msize = ns.RFC_BmSize(mInd, iscale)
         local vk = BmVisualKey(kind, mInd, msize, font)
         if bmStyleFP[sk] ~= vk then
             bmStyleFP[sk] = vk
             AK.styles[sk] = BuildBmStyleFor(kind, mInd, iscale, msize)
+            AK.styles[sk].bmPandemicRegister = anyPandemic
             AK.RestyleSoon(sk)
         end
     end
@@ -2501,7 +2526,7 @@ local function BmAcquireChain(button, d, health, ch, iscale, counters)
             pool[poolKey] = entry
         else
             pool[poolKey] = "pending"
-            AK.QueueBuildJob(function()
+            AKWorker:Queue(function()
                 local cc = AK.CreateContainerShell(button, { point = { "CENTER", health, "CENTER" } })
                 DeclareGroups(cc)
                 AK.FinishContainer(cc, button:GetAttribute("unit") or NO_UNIT)
@@ -2557,7 +2582,7 @@ local function BmParkUnbound(d, counters)
             if not bound and not entry.parked then
                 entry.parked = true
                 for j = 1, (entry.groups or 1) do
-                    entry.container:SetAuraGroupMaxFrameCount(
+                    EllesmereUI.AuraKit.SetGroupCap(entry.container, 
                         (j == 1) and "chain" or ("chain" .. j), 0)
                 end
                 entry.container:SetShown(false)
@@ -2574,19 +2599,49 @@ local function BmParkUnbound(d, counters)
     end
 end
 
+-- The dispel overlay's slots as AddSlotToContainer specs. They live in the button's
+-- debuff container (built once, never swapped), so a member's auras are processed by
+-- one container fewer. The assist gate switches them off through their candidate
+-- filters (GateDispelSlots), the container itself staying shown for the debuffs. The
+-- slots join only while the overlay draws something (DispelVisible): a slot pays its
+-- filter check on every aura update even when it renders nothing. Switching the
+-- overlay on adds them live (slot adds are combat-legal); switching it off leaves
+-- them drawing nothing until the next reload (slots cannot be removed).
+local function DispelSlotSpecs(button, health, d, s)
+    local dispelStyleKey = StyleKeyFor(d):gsub("debuff", "dispel")
+    if not AK.styles[dispelStyleKey] then StoreDispelStyle(dispelStyleKey, s) end
+    local specs = {}
+    for i = 1, #DISPEL_SLOTS do
+        local def = DISPEL_SLOTS[i]
+        specs[i] = {
+            key = def.key,
+            filter = DispelSlotFilter(s, def.token),
+            candidateFilters = { includeDispelTypes = { [def.token] = true } },
+            style = dispelStyleKey,
+            extraInit = function(slotButton, dd)
+                dd.rfHealth = health
+                dd.rfSlotDef = def
+                -- Color Custom Borders: the unit button (level base) and its
+                -- border frame (geometry) for the per-type border copy.
+                dd.rfUnitBtn = button
+                dd.rfBorder = d.borderFrame
+                -- Anchor inside the creation window: SetPoint on the returned
+                -- slot button is denied while auras are secret (12.1 access
+                -- restriction); shell setup runs on in-instance reloads.
+                slotButton:SetPoint("CENTER", health, "CENTER")
+                ApplyRFDispelSlot(slotButton, dd, AK.styles[dispelStyleKey])
+            end,
+        }
+    end
+    return specs
+end
+
 local function CreateBmContainer(button, health, d, unit)
     local inds, specKey, mode = BmIndicators(d)
     -- Party Frames kit: every buff icon joins one run right of the frame.
     if d.kit and inds and ns.RF_KitBmView then inds = ns.RF_KitBmView(inds) end
     local sig = BmSignature(inds, specKey, mode)
-    -- Base grid: independent of the custom side (coexistence). Built here
-    -- when active; mid-session enables build via ReloadBmSimple's ensure.
-    local simpleKey = (ns.BM_SimpleSpecKey and ns.BM_SimpleSpecKey()) or specKey
-    if ns.BM_BaseActive and ns.BM_BaseActive() and simpleKey then
-        CreateBmSimpleContainer(button, health, d, unit, simpleKey)
-    elseif d.rfcBmSimple then
-        d.rfcBmSimple:SetShown(false)
-    end
+
     if not inds then
         d.rfcBmSig = sig
         BmParkUnbound(d, nil) -- custom-side chain pool parks
@@ -2629,7 +2684,7 @@ local function CreateBmContainer(button, health, d, unit)
         local ch = chains[ci]
         local ind = ch.ind
         local chainKey = tostring(ind.id or ("x" .. ch.idx))
-        local size = (ind.size or 18) * iscale
+        local size = ns.RFC_BmSize(ind, iscale)
         local cc, styleKeys, anchorMembers = BmAcquireChain(button, d, health, ch, iscale, counters)
         if cc then
             chainContainers = chainContainers or {}
@@ -2648,7 +2703,7 @@ local function CreateBmContainer(button, health, d, unit)
                         styleKey = styleKeys[j + 1], ind = mch.ind, kind = mch.ind.type,
                         isChain = true, anchored = true, chainKey = chainKey,
                         groupKey = "chain" .. (j + 1),
-                        size = (mch.ind.size or 18) * iscale,
+                        size = ns.RFC_BmSize(mch.ind, iscale),
                         count = #mch.spells, spells = mch.spells }
                 end
             end
@@ -2670,11 +2725,14 @@ local function CreateBmContainer(button, health, d, unit)
 
     -- Prime the fingerprint caches with what was just built, so the next
     -- reload after a swap/login compares equal instead of storming.
-    local font = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or ""
+    local font = (EllesmereUI.GetFontPath("raidFrames")) or ""
     for i = 1, #meta do
         local m = meta[i]
         if m.styleKey then
             bmStyleFP[m.styleKey] = BmVisualKey(m.kind, m.ind, m.size, font, m.spellID)
+            if m.kind == "bgcolor" then
+                bmStyleFP[m.styleKey] = bmStyleFP[m.styleKey] .. ns.RFC_BmTexBgKey(ProxyFor(d))
+            end
         end
     end
     bmOwnFP[StyleKeyFor(d)] = BmOwnKey(meta)
@@ -2706,7 +2764,7 @@ local function BmRebindPendingChains(button, d, cls)
         local ind = ch.ind
         if #ch.spells > 0 then
             local chainKey = tostring(ind.id or ("x" .. ch.idx))
-            local size = (ind.size or 18) * iscale
+            local size = ns.RFC_BmSize(ind, iscale)
             local cc, styleKeys, anchorMembers = BmAcquireChain(button, d, health, ch, iscale, counters)
             if cc then
                 chainContainers = chainContainers or {}
@@ -2722,7 +2780,7 @@ local function BmRebindPendingChains(button, d, cls)
                             styleKey = styleKeys[j + 1], ind = mch.ind, kind = mch.ind.type,
                             isChain = true, anchored = true, chainKey = chainKey,
                             groupKey = "chain" .. (j + 1),
-                            size = (mch.ind.size or 18) * iscale,
+                            size = ns.RFC_BmSize(mch.ind, iscale),
                             count = #mch.spells, spells = mch.spells }
                     end
                 end
@@ -2750,7 +2808,7 @@ local function BmRefreshSizes(meta, iscale)
     for i = 1, #meta do
         local m = meta[i]
         if m.kind == "icon" or m.kind == "square" then
-            m.size = (m.ind.size or 18) * iscale
+            m.size = ns.RFC_BmSize(m.ind, iscale)
         end
     end
 end
@@ -2767,6 +2825,7 @@ local function BmClassPass(d)
     cls.sig = BmSignature(cls.inds, cls.specKey, cls.mode)
     cls.iscale = BmScaleFor(d)
     cls.styleKey = StyleKeyFor(d)
+    cls.s = ProxyFor(d)
     return cls
 end
 
@@ -2775,14 +2834,19 @@ end
 -- candidate-filter re-drive (per button, below) rather than a container swap.
 local function BmCheckStyles(cls, meta)
     cls.stylesChecked = true
-    local font = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or ""
+    local font = (EllesmereUI.GetFontPath("raidFrames")) or ""
     for i = 1, #meta do
         local m = meta[i]
         if m.styleKey then
             local vk = BmVisualKey(m.kind, m.ind, m.size, font, m.spellID)
+            if m.kind == "bgcolor" then vk = vk .. ns.RFC_BmTexBgKey(cls.s) end
             if bmStyleFP[m.styleKey] ~= vk then
                 bmStyleFP[m.styleKey] = vk
+                local previousStyle = AK.styles[m.styleKey]
                 AK.styles[m.styleKey] = BuildBmStyleFor(m.kind, m.ind, cls.iscale, m.size, m.spellID)
+                if m.kind == "bgcolor" then ns.RFC_BmTexBg(AK.styles[m.styleKey], cls.s) end
+                -- Pool registration applies to every member, including disabled ones.
+                AK.styles[m.styleKey].bmPandemicRegister = previousStyle and previousStyle.bmPandemicRegister
                 AK.RestyleSoon(m.styleKey)
             end
         end
@@ -2801,7 +2865,7 @@ local function ReloadBm(button, d, s, cls)
             return
         end
         -- Release the SLOTS container only (deregisters its buttons from the restyle
-        -- registry). Chain POOL and simple container persist forever -- engine frames
+        -- registry). Chain POOL persists forever -- engine frames
         -- are never freed, so releasing them leaked batches on every structural edit;
         -- the rebuild retargets them live instead.
         if d.rfcBm then AK.ReleaseContainer(d.rfcBm) end
@@ -2814,7 +2878,7 @@ local function ReloadBm(button, d, s, cls)
         ns.RF_ClearBarTints(d.rfcHealth, "bm")
         -- Rebuild through the shared scheduler; the job reads live settings
         -- at run time, so rapid consecutive changes converge.
-        AK.QueueBuildJob(function()
+        AKWorker:Queue(function()
             -- Already rebuilt by a peer job: sig restored, OR the slots
             -- container exists (sig may legitimately still be nil while
             -- pool shells are pending -- rebuilding again would orphan it).
@@ -2830,10 +2894,6 @@ local function ReloadBm(button, d, s, cls)
         end, "rf:bm-rebuild")
         return
     end
-
-    -- Coexistence: the base grid reloads on every pass regardless of the
-    -- custom side (it self-resolves enabled/spec state and no-ops cheaply).
-    ReloadBmSimple(button, d, cls)
 
     BmRebindPendingChains(button, d, cls)
 
@@ -2906,46 +2966,27 @@ local function CreateButtonShells(button, health, d)
         d.rfcDispLocGroups = {}
     end
 
-    if not (d.rfcDispelShell or d.rfcDispel) then
+    -- Dispel overlay slots, into the debuff shell (DispelSlotSpecs) while the overlay
+    -- draws something. NO unit yet: an unbound shell registers no events and parses
+    -- nothing; the debuff finish job binds the real unit.
+    if d.rfcDebuffShell and not d.rfcDispelInDebuff then
         local s = ProxyFor(d)
-        if s then
-            local dispelStyleKey = StyleKeyFor(d):gsub("debuff", "dispel")
-            AK.styles[dispelStyleKey] = AK.styles[dispelStyleKey] or BuildDispelStyle(s)
-            local c = AK.CreateContainerShell(button, { point = { "CENTER", health, "CENTER" } })
-            for i = 1, #DISPEL_SLOTS do
-                local def = DISPEL_SLOTS[i]
-                AK.AddSlotToContainer(c, {
-                    key = def.key,
-                    filter = DispelSlotFilter(s, def.token),
-                    candidateFilters = { includeDispelTypes = { [def.token] = true } },
-                    style = dispelStyleKey,
-                    extraInit = function(slotButton, dd)
-                        dd.rfHealth = health
-                        dd.rfSlotDef = def
-                        -- Anchor inside the creation window: SetPoint on the returned
-                        -- slot button is denied while auras are secret (12.1 access
-                        -- restriction); shell setup runs on in-instance reloads.
-                        slotButton:SetPoint("CENTER", health, "CENTER")
-                        ApplyRFDispelSlot(slotButton, dd, AK.styles[dispelStyleKey])
-                    end,
-                })
-            end
-            -- NO unit yet: an unbound shell registers no events and parses
-            -- nothing. The finish job binds the real unit.
-            d.rfcDispelShell = c
+        if s and DispelVisible(s, d) then
+            local specs = DispelSlotSpecs(button, health, d, s)
+            for i = 1, #specs do AK.AddSlotToContainer(d.rfcDebuffShell, specs[i]) end
+            d.rfcDispelInDebuff = true
             d.rfcTotemGen = rfcTotemGen
+            -- The filters baked above, checked at finalize: a setting changed while
+            -- this shell waited (raid shells wait for a raid) must not latch.
+            d.rfcDispelFilterFP = DispelFilterFP(s)
         end
     end
 
-    -- BuffManager shells, same early-window rule: slots container, simple-grid
-    -- container, and a bare pool shell per current-spec chain indicator. With frames
+    -- BuffManager shells, same early-window rule: slots container and a bare pool shell per current-spec chain indicator. With frames
     -- pre-born, ALL remaining BM work (slot adds, declarations, finishes, retargets)
     -- is combat-legal -- BM binds mid-combat after an in-combat /reload, not regen.
     if not d.rfcBmSlotsShell and not d.rfcBm then
         d.rfcBmSlotsShell = AK.CreateContainerShell(button, { point = { "CENTER", health, "CENTER" } })
-    end
-    if not d.rfcBmSimpleShell and not d.rfcBmSimple then
-        d.rfcBmSimpleShell = AK.CreateContainerShell(button, { point = { "CENTER", health, "CENTER" } })
     end
     if not d.rfcBmShellPool then
         d.rfcBmShellPool = {}
@@ -2976,7 +3017,7 @@ local function QueueDebuffPhase(button, health, d)
     if not ProxyFor(d) then return end
     for i = 1, #DEBUFF_GROUPS do
         local g = DEBUFF_GROUPS[i]
-        AK.QueueBuildJob(function()
+        AKWorker:Queue(function()
             local c = d.rfcDebuffShell
             if not c or d.rfcDebuffGroups[g.key] then return end
             local sNow = ProxyFor(d)
@@ -2999,14 +3040,13 @@ local function QueueDebuffPhase(button, health, d)
             local ccStyleKey = styleKey:gsub("debuff", "debuffcc")
             -- Prime here too: setup-time priming used the queue-time class,
             -- so a job-resolved class may not have style tables yet.
-            AK.styles[styleKey] = AK.styles[styleKey] or BuildDebuffStyle(sNow)
-            AK.styles[ccStyleKey] = AK.styles[ccStyleKey] or BuildDebuffCCStyle(sNow)
+            if not AK.styles[styleKey] then StoreDebuffStyles(styleKey, sNow) end
             AK.AddGroupToContainer(c, { key = g.key, filter = g.filter, maxFrameCount = 0,
                 style = (g.key == "cc") and ccStyleKey or styleKey })
             d.rfcDebuffGroups[g.key] = true
         end, "rf:debuff-group")
     end
-    AK.QueueBuildJob(function()
+    AKWorker:Queue(function()
         local c = d.rfcDebuffShell
         if not c then return end
         d.rfcDebuffShell = nil
@@ -3014,6 +3054,8 @@ local function QueueDebuffPhase(button, health, d)
         AK.FinishContainer(c, unit)
         d.rfcHealth = health
         d.rfcDebuffs = c
+        -- The dispel overlay's slots ride this container (DispelSlotSpecs).
+        if d.rfcDispelInDebuff then d.rfcDispel = c end
         d.rfcUnit = unit
         local sNow = ProxyFor(d)
         if sNow then
@@ -3031,7 +3073,7 @@ local function QueueDispLocPhase(button, health, d)
     if not ProxyFor(d) then return end
     for i = 1, #DEBUFF_GROUPS do
         local g = DEBUFF_GROUPS[i]
-        AK.QueueBuildJob(function()
+        AKWorker:Queue(function()
             local c = d.rfcDispLocShell
             if not c or d.rfcDispLocGroups[g.key] then return end
             local sNow = ProxyFor(d)
@@ -3046,7 +3088,7 @@ local function QueueDispLocPhase(button, health, d)
             d.rfcDispLocGroups[g.key] = true
         end, "rf:disploc-group")
     end
-    AK.QueueBuildJob(function()
+    AKWorker:Queue(function()
         local c = d.rfcDispLocShell
         if not c then return end
         d.rfcDispLocShell = nil
@@ -3074,38 +3116,31 @@ local function QueueButtonGroups(button, health, d)
         QueueDispLocPhase(button, health, d)
     end
 
-    AK.QueueBuildJob(function()
-        local c = d.rfcDispelShell
-        if not c then return end
-        d.rfcDispelShell = nil
-        local unit = button:GetAttribute("unit") or NO_UNIT
-        AK.FinishContainer(c, unit)
-        d.rfcDispel = c
-        local sNow = ProxyFor(d)
-        c:SetShown(DispelVisible(sNow or s))
-        d.rfcUnit = unit
-    end, "rf:dispel-finish")
-
-    -- BuffManager + finalize: consumes the early-window BM shells (slot adds, group
-    -- declarations, finishes -- all combat-legal), so it runs mid-combat too. Only pool
-    -- GROWTH beyond the pre-born shells falls back to a queued shell job in BmAcquireChain.
-    AK.QueueBuildJob(function()
+    -- BuffManager + finalize: consumes the early-window shells (the shared slots shell
+    -- with the dispel overlay's slots, chain shells; slot adds, group declarations,
+    -- finishes -- all combat-legal), so it runs mid-combat too. Only pool GROWTH beyond
+    -- the pre-born shells falls back to a queued shell job in BmAcquireChain.
+    AKWorker:Queue(function()
         d.rfcPending = nil
         d.rfcGroupsPending = nil
         local unit = button:GetAttribute("unit") or NO_UNIT
         CreateBmContainer(button, health, d, unit)
         d.rfcUnit = unit
-        -- Shells baked the dispel filters from rfcTotemKnown at build time; if a
-        -- totem flip landed mid-build, re-apply the current filters before the
-        -- fingerprint below is primed as current (which would otherwise latch the
-        -- stale filters as already-applied).
-        if d.rfcDispel and d.rfcTotemGen ~= rfcTotemGen then
-            local parts = DispelSlotFilters(ProxyFor(d) or s)
-            for i = 1, #DISPEL_SLOTS do
-                d.rfcDispel:SetAuraSlotFilterString(DISPEL_SLOTS[i].key, parts[i])
+        -- Shells baked the dispel filters (settings + rfcTotemKnown) at build time; if
+        -- a totem flip or a settings change landed since, re-apply the current filters
+        -- before the fingerprint below is primed as current (which would otherwise
+        -- latch the stale filters as already-applied).
+        if d.rfcDispel then
+            local sNow = ProxyFor(d) or s
+            if d.rfcTotemGen ~= rfcTotemGen or d.rfcDispelFilterFP ~= DispelFilterFP(sNow) then
+                local parts = DispelSlotFilters(sNow)
+                for i = 1, #DISPEL_SLOTS do
+                    d.rfcDispel:SetAuraSlotFilterString(DISPEL_SLOTS[i].key, parts[i])
+                end
             end
         end
         d.rfcTotemGen = nil
+        d.rfcDispelFilterFP = nil
         -- Everything above was configured from current settings; prime the class
         -- fingerprints so the first reload doesn't re-drive it all (class resolved
         -- here, not at queue time -- party self button).
@@ -3133,11 +3168,9 @@ function ns.RFC_SetupButton(button, health, d)
     local s = ProxyFor(d)
     if s then
         local styleKey = StyleKeyFor(d)
-        AK.styles[styleKey] = AK.styles[styleKey] or BuildDebuffStyle(s)
-        local ccStyleKey = styleKey:gsub("debuff", "debuffcc")
-        AK.styles[ccStyleKey] = AK.styles[ccStyleKey] or BuildDebuffCCStyle(s)
+        if not AK.styles[styleKey] then StoreDebuffStyles(styleKey, s) end
         local dispelStyleKey = styleKey:gsub("debuff", "dispel")
-        AK.styles[dispelStyleKey] = AK.styles[dispelStyleKey] or BuildDispelStyle(s)
+        if not AK.styles[dispelStyleKey] then StoreDispelStyle(dispelStyleKey, s) end
     end
 
     d.rfcHealthRef = health
@@ -3222,6 +3255,23 @@ end
 -- fade, which is the wanted presentation. Do not re-add a range hide here
 -- without fresh evidence of out-of-range filter degradation on the live client.
 
+-- The dispel overlay's slots follow the assist gate like the Buff Manager's
+-- containers: while the gate hides (only Friendly Boss slots on current clients),
+-- an empty dispel-type list makes every slot match nothing. Written only when the
+-- gate engages or ends (d.rfcDispelGated tracks it); each write marks the container
+-- for one rebuild on its next pass. The engine copies the candidate tables.
+local NO_DISPEL_TYPES = { includeDispelTypes = {} }
+local function GateDispelSlots(d, hide)
+    local c = d.rfcDispel or (d.rfcDispelInDebuff and d.rfcDebuffShell)
+    if not (c and c.SetAuraSlotCandidateFilters) or (d.rfcDispelGated or false) == hide then return end
+    d.rfcDispelGated = hide or nil
+    for i = 1, #DISPEL_SLOTS do
+        local def = DISPEL_SLOTS[i]
+        c:SetAuraSlotCandidateFilters(def.key, hide and NO_DISPEL_TYPES
+            or { includeDispelTypes = { [def.token] = true } })
+    end
+end
+
 local function ApplyAssistGate(button, d, unit)
     -- Group tokens always trust (see AssistProbe): on raid/party/extra buttons
     -- this only ever flips true and re-shows fresh containers. The hide branch
@@ -3240,25 +3290,10 @@ local function ApplyAssistGate(button, d, unit)
     -- login hot path -- the normal build owns first content).
     local wasDenied = d.rfcAssist == false
     d.rfcAssist = assist
-    local s = ProxyFor(d)
-    if d.rfcDispel and s then
-        d.rfcDispel:SetShown(assist and DispelVisible(s))
-    end
+    GateDispelSlots(d, not assist)
     if d.rfcBm then d.rfcBm:SetShown(assist) end
     if d.rfcBmChain then
         for _, cc in pairs(d.rfcBmChain) do cc:SetShown(assist) end
-    end
-    if d.rfcBmSimple then
-        -- Simple container PERSISTS, so the gate must be state-aware: coexistence
-        -- resolves via the effective base-enabled accessor (shim over the legacy
-        -- mode key), never the mode key directly.
-        local bs = BmSimpleSettings()
-        local baseOn = (ns.BM_BaseActive and ns.BM_BaseActive()) or false
-        -- Same option-aware key the grid tracks with (Show Own on All Specs).
-        local specKey = (ns.BM_SimpleSpecKey and ns.BM_SimpleSpecKey())
-            or (ns.BM_CurrentSpecKey and ns.BM_CurrentSpecKey())
-        d.rfcBmSimple:SetShown(assist and baseOn and specKey ~= nil
-            and (bs and bs.showBuffs) and true or false)
     end
     -- The Debuff Manager takes no part: candidate booleans are never
     -- identity-gated, so its records and tiles render on every unit.
@@ -3271,12 +3306,10 @@ local function ApplyAssistGate(button, d, unit)
     -- only on actual transitions, so a cinematic end costs one pass across
     -- the group and a vehicle exit one button.
     if assist and wasDenied then
-        if d.rfcDispel then d.rfcDispel:UpdateAllAuras() end
         if d.rfcBm then d.rfcBm:UpdateAllAuras() end
         if d.rfcBmChain then
             for _, cc in pairs(d.rfcBmChain) do cc:UpdateAllAuras() end
         end
-        if d.rfcBmSimple then d.rfcBmSimple:UpdateAllAuras() end
     end
 end
 ns.RFC_ApplyAssistGate = ApplyAssistGate
@@ -3297,7 +3330,6 @@ local function RepointStale(d, unit)
     RebindContainer(d.rfcDispLoc, unit)
     RebindContainer(d.rfcDispel, unit)
     RebindContainer(d.rfcBm, unit)
-    RebindContainer(d.rfcBmSimple, unit)
     -- Every chain container comes from the pool; a parked one sits on NO_UNIT
     -- deliberately, so leave it there.
     if d.rfcBmPool then
@@ -3309,9 +3341,10 @@ local function RepointStale(d, unit)
     end
     -- Debuff Manager tiles keep their own per-container stamp beside the binding;
     -- rebinding them here behind its back would desync the two, so let it re-point.
+    -- A parked tile sits on NO_UNIT deliberately (its own apply re-points it).
     if d.dmTiles and ns.DM_OnUnitAssigned then
         for _, c in pairs(d.dmTiles) do
-            if c:GetUnit() ~= unit then
+            if not c._dmParked and c:GetUnit() ~= unit then
                 ns.DM_OnUnitAssigned(d, unit)
                 break
             end
@@ -3324,6 +3357,8 @@ ns.RFC_RepointStale = RepointStale
 -- (re)assigns a button. SetUnit re-registers events; the explicit refresh
 -- covers assignments where the new unit's auras produce no UNIT_AURA edge.
 function ns.RFC_OnUnitAssigned(button, d, unit)
+    -- WoW Forever: Missing Buffs follows the button's member (own same-unit early-out).
+    if ns.RF_FvMissingUnit then ns.RF_FvMissingUnit(button, d, unit) end
     -- Two-phase: a button receiving its FIRST unit triggers phase B (group
     -- declarations + BM + finish) -- empty buttons only ever carry phase-A shells.
     -- Mid-combat first assignments (raid joiners) work: group jobs ride the live lane
@@ -3358,10 +3393,7 @@ function ns.RFC_OnUnitAssigned(button, d, unit)
         d.rfcDispLoc:SetUnit(unit)
         d.rfcDispLoc:UpdateAllAuras()
     end
-    if d.rfcDispel then
-        d.rfcDispel:SetUnit(unit)
-        d.rfcDispel:UpdateAllAuras()
-    end
+    -- (The dispel overlay's slots ride d.rfcDebuffs, re-pointed above.)
     if d.rfcBm then
         d.rfcBm:SetUnit(unit)
         d.rfcBm:UpdateAllAuras()
@@ -3371,10 +3403,6 @@ function ns.RFC_OnUnitAssigned(button, d, unit)
             cc:SetUnit(unit)
             cc:UpdateAllAuras()
         end
-    end
-    if d.rfcBmSimple then
-        d.rfcBmSimple:SetUnit(unit)
-        d.rfcBmSimple:UpdateAllAuras()
     end
     -- Debuff Manager tile containers re-point with everything else.
     if ns.DM_OnUnitAssigned then ns.DM_OnUnitAssigned(d, unit) end
@@ -3387,16 +3415,14 @@ end
 local function ComputeClassFlags(styleKey, s)
     local st = classFP[styleKey]
     if not st then st = {}; classFP[styleKey] = st end
-    local font = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("raidFrames")) or ""
+    local font = (EllesmereUI.GetFontPath("raidFrames")) or ""
     local flags = {}
 
     local v = DebuffStyleFP(s, font)
     if st.debuffStyle ~= v then
         st.debuffStyle = v
-        AK.styles[styleKey] = BuildDebuffStyle(s)
+        local ccStyleKey = StoreDebuffStyles(styleKey, s, v)
         AK.RestyleSoon(styleKey)
-        local ccStyleKey = styleKey:gsub("debuff", "debuffcc")
-        AK.styles[ccStyleKey] = BuildDebuffCCStyle(s)
         AK.RestyleSoon(ccStyleKey)
         -- DM per-filter sized styles derive from these; a pure style edit
         -- does not flip the config fingerprint, so refresh them here.
@@ -3422,11 +3448,11 @@ local function ComputeClassFlags(styleKey, s)
     v = DispLocCfgFP(s)
     if st.dispLocCfg ~= v then st.dispLocCfg = v; flags.dispLocCfg = true end
 
-    v = DispelStyleFP(s)
+    v = DispelStyleFP(s, styleKey)
     if st.dispelStyle ~= v then
         st.dispelStyle = v
         local dispelStyleKey = styleKey:gsub("debuff", "dispel")
-        AK.styles[dispelStyleKey] = BuildDispelStyle(s)
+        StoreDispelStyle(dispelStyleKey, s, v)
         AK.RestyleSoon(dispelStyleKey)
     end
     local parts = DispelSlotFilters(s)
@@ -3461,6 +3487,7 @@ end
 function ns.RFC_ReloadAll()
     AK = AK or EllesmereUI.AuraKit
     if not AK then return end
+    ns.RFC_ResetSnap()
 
     local dirty, clsCache = {}, {}
 
@@ -3495,7 +3522,7 @@ function ns.RFC_ReloadAll()
                         -- combat, so the shell build rides the OOC lane; groups+finish
                         -- follow the normal phase.
                         d.rfcDispLocBuild = true
-                        AK.QueueBuildJob(function()
+                        AKWorker:Queue(function()
                             d.rfcDispLocBuild = nil
                             if d.rfcDispLoc or d.rfcDispLocShell then return end
                             local s2 = ProxyFor(d)
@@ -3510,14 +3537,21 @@ function ns.RFC_ReloadAll()
                         end, "rf:disploc-shell") -- creation combat-legal since 68914
                     end
                 end
-                if d.rfcDispel then
-                    if flags.dispelFilter then
-                        for j = 1, #DISPEL_SLOTS do
-                            d.rfcDispel:SetAuraSlotFilterString(DISPEL_SLOTS[j].key,
-                                flags.dispelFilter[j])
-                        end
+                -- The dispel overlay's slots ride the debuff container (DispelSlotSpecs):
+                -- switched on, they join it live with the current filters; switched
+                -- off, they stay and draw nothing until the next reload.
+                if not d.rfcDispelInDebuff and DispelVisible(s, d) and d.rfcHealth then
+                    local specs = DispelSlotSpecs(button, d.rfcHealth, d, s)
+                    for j = 1, #specs do AK.AddSlotToContainer(container, specs[j]) end
+                    d.rfcDispelInDebuff = true
+                    d.rfcDispel = container
+                    -- Joining while the assist gate hides: they start hidden too.
+                    if d.rfcAssist == false then GateDispelSlots(d, true) end
+                elseif d.rfcDispel and flags.dispelFilter then
+                    for j = 1, #DISPEL_SLOTS do
+                        d.rfcDispel:SetAuraSlotFilterString(DISPEL_SLOTS[j].key,
+                            flags.dispelFilter[j])
                     end
-                    d.rfcDispel:SetShown(d.rfcAssist ~= false and DispelVisible(s))
                 end
                 local cls = clsCache[styleKey]
                 if not cls then
@@ -3528,6 +3562,29 @@ function ns.RFC_ReloadAll()
             end
         end
     end
+end
+
+-- Colors page edits (swatches, darken, resets, profile switches) all end in
+-- ApplyColorsToOUF. Once a Class-mode glow was printed (ns.RF_GlowClassFP), a
+-- changed class colour re-runs the fingerprinted reload, which restyles only
+-- the glows whose print changed. Calls in one frame (a profile switch can
+-- make two) collapse into one check on the next frame: the flush frame stays
+-- hidden until a call and hides itself before working.
+do
+    local flush = CreateFrame("Frame")
+    flush:Hide()
+    flush:SetScript("OnUpdate", function(self)
+        self:Hide()
+        local r0 = ns._rfGlowClassR
+        if r0 == nil then return end
+        local r, g, b = EllesmereUI.Glows.ResolveColor("class")
+        if r ~= r0 or g ~= ns._rfGlowClassG or b ~= ns._rfGlowClassB then
+            ns.RFC_ReloadAll()
+        end
+    end)
+    hooksecurefunc(EllesmereUI, "ApplyColorsToOUF", function()
+        if ns._rfGlowClassR ~= nil then flush:Show() end
+    end)
 end
 
 -- Full assist-gate sweep over every live button. Per-unit matching is
@@ -3551,6 +3608,17 @@ local bmRegen = CreateFrame("Frame")
 bmRegen:RegisterEvent("PLAYER_REGEN_ENABLED")
 bmRegen:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 bmRegen:RegisterEvent("PLAYER_ENTERING_WORLD")
+-- A new pixel grid invalidates every snapped aura size (see ns.RFC_SnapSize).
+-- EUI's own UI Scale (PP.SetUIScale) sets UIParent's scale directly, which fires
+-- no UI_SCALE_CHANGED, so it calls this through the global as well.
+bmRegen:RegisterEvent("UI_SCALE_CHANGED")
+bmRegen:RegisterEvent("DISPLAY_SIZE_CHANGED")
+function ns.RFC_PixelGridChanged()
+    -- Compact / Grid Mode re-lay their frames once their one pixel has moved.
+    ns.RF_CompactScaleChanged()
+    if InCombatLockdown() then ns._rfcScaleDirty = true else ns.RFC_ReloadAll() end
+end
+_G._ERF_PixelGridChanged = ns.RFC_PixelGridChanged
 -- The poison dispel-slot filter depends on Poison Cleansing Totem being talented
 -- (see DispelSlotFilter). Talent edits fire no spec event, and IsPlayerSpell can
 -- lag the trait event itself (the spellbook grant lands with SPELLS_CHANGED), so
@@ -3582,6 +3650,10 @@ bmRegen:SetScript("OnEvent", function(_, event, arg1)
         RecheckTotem()
         return
     end
+    if event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
+        ns.RFC_PixelGridChanged()
+        return
+    end
     if event == "PLAYER_ENTERING_WORLD" then
         -- Assistability can flip on zone transitions without a unit
         -- re-assignment (cross-faction members become assistable inside
@@ -3590,7 +3662,8 @@ bmRegen:SetScript("OnEvent", function(_, event, arg1)
         return
     end
     if ns._rfcTotemDirty then RecheckTotem() end
-    local any = false
+    local any = ns._rfcScaleDirty or false
+    ns._rfcScaleDirty = nil
     for i = 1, #registry do
         local d = ns.GetFFD and ns.GetFFD(registry[i])
         if d and d.rfcBmPending then

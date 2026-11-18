@@ -1,0 +1,845 @@
+if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+if not (EllesmereUI and EllesmereUI.IS_FOREVER) then return end -- Forever Essentials loads on WoW Forever only
+-------------------------------------------------------------------------------
+--  EUI_ForeverEssentials_Threat_Options.lua
+--  Builds the "Threat" page inside the Forever Essentials module: a live
+--  preview of the meter in the content header, then its settings. Reads go
+--  through the meter's Get (saved value, else the default); writes create only
+--  the key they change.
+-------------------------------------------------------------------------------
+local module = EllesmereUI._ModuleNS["EllesmereUIForeverEssentials"]
+local ns = module and module.ThreatMeter
+if not ns then return end  -- module disabled: no options page
+
+-- The preview surface in the content header. Exported so the module's
+-- getHeaderBuilder can hand it back when the page cache outlives its header.
+local function HeaderBuilder(header, width)
+    local building = true
+    local view = ns.CreateSettingsPreview(header, width, function(height)
+        if not building and header:IsVisible() and math.abs(header:GetHeight() - height) > 1 then
+            EllesmereUI:SetContentHeaderHeightSilent(height)
+        end
+    end)
+    building = false
+    return view.previewHeight
+end
+_G._EUI_ThreatHeaderBuilder = HeaderBuilder
+
+local ICON_STYLES = { none = "None", blizzard = "Blizzard", modern = "Modern", pixel = "Pixel", pixelsComic = "Comic", glyph = "Glyph",
+    arcade = "Arcade", legend = "Legend", midnight = "Midnight", runic = "Runic" }
+local ICON_STYLE_ORDER = { "none", "---", "blizzard", "modern", "pixel", "pixelsComic", "glyph", "arcade", "legend", "midnight", "runic" }
+local BAR_COLORS = { class = "Class Color", accent = "Accent Color", custom = "Custom Color" }
+local BAR_COLOR_ORDER = { "class", "accent", "custom" }
+local OUTLINES = { __global = "EUI Global Default", none = "Drop Shadow", outline = "Outline", thick = "Thick Outline" }
+local OUTLINE_ORDER = { "__global", "none", "outline", "thick" }
+local PCT_POSITIONS = { RIGHT = "Inside Right", LEFT = "Inside Left", CENTER = "Inside Center" }
+local PCT_POSITION_ORDER = { "RIGHT", "LEFT", "CENTER" }
+local PCT_MODES = { percent = "Threat %", gap = "Threat Gap" }
+local PCT_MODE_ORDER = { "percent", "gap" }
+
+_G._EUI_BuildThreatMeterPage = function(pageName, parent, yOffset)
+    local W = EllesmereUI.Widgets
+    local BLANK = EllesmereUI.BlankRowCfg
+    local BS = EllesmereUI.BlizzStyle
+    local Get, GetStyle = ns.Get, ns.GetStyleValue
+    local y = yOffset
+    local _, h, hdr
+    parent._showRowDivider = true
+
+    -- Style page gates: Gate() for settings neither stock look uses,
+    -- BlizzOnly() for those only Blizzard Style ignores.
+    local function Gate(cfg)
+        return BS.Gate("threatmeter", cfg)
+    end
+    local function BlizzOnly(cfg)
+        if BS.Active("threatmeter") == "blizzard" then return Gate(cfg) end
+        return cfg
+    end
+
+    ns.BarTextures()
+    EllesmereUI:SetContentHeader(HeaderBuilder)
+
+    local function off()
+        return not Get("enabled")
+    end
+    -- A row that needs the meter on and one more condition: greyed by either,
+    -- with the requirement that is actually blocking it. raw marks a whole
+    -- sentence (shown as is instead of wrapped).
+    local function Needs(cond, requirement, raw)
+        return function() return off() or cond() end,
+            function() if off() then return "Threat Meter" end return requirement end,
+            raw and function() return not off() end or nil
+    end
+    -- Writes only (read live by the meter), writes that restyle, and writes
+    -- whose toggle gates other rows.
+    local function Store(key, v)
+        ns.Cfg()[key] = v
+    end
+    local function Set(key, v)
+        ns.Cfg()[key] = v
+        ns.ApplyStyle()
+    end
+    local function SetAndRefresh(key, v)
+        Set(key, v)
+        EllesmereUI:RefreshPage()
+    end
+    -- A size whose swatch greys out at zero refreshes the page only when it
+    -- crosses zero, so a slider drag just restyles.
+    local function IsZero(group, key)
+        return (GetStyle(group, key) or 0) == 0
+    end
+    local function SetStyleSize(group, key, v)
+        local was = IsZero(group, key)
+        ns.SetStyleValue(group, key, v)
+        if IsZero(group, key) ~= was then EllesmereUI:RefreshPage() end
+    end
+    -- The separator options exist only for border styles with divider art (the
+    -- Pixels styles): role "sepH" (under a bar or the header) or "sepV" (beside
+    -- an icon), key the window or bar border's style. Read live, so a style pick
+    -- shows or hides them with the page's refresh.
+    local function DividerArt(key, role)
+        return EllesmereUI.GetBorderCompanion(GetStyle("borders", key), role) ~= nil
+    end
+
+    local function Toggle(key, text, tooltip, setValue)
+        return { type = "toggle", text = text, tooltip = tooltip,
+            disabled = off, disabledTooltip = "Threat Meter",
+            getValue = function() return Get(key) end,
+            setValue = setValue or function(v) Set(key, v) end }
+    end
+    -- The threat list's own settings, which a Damage Meters Threat window shows
+    -- too: editable whether or not this meter is on.
+    local function ListToggle(key, text, tooltip, setValue)
+        local cfg = Toggle(key, text, tooltip, setValue)
+        cfg.disabled, cfg.disabledTooltip = nil, nil
+        return cfg
+    end
+    local function Slider(key, text, low, high, tooltip)
+        return { type = "slider", text = text, min = low, max = high, step = 1, tooltip = tooltip,
+            disabled = off, disabledTooltip = "Threat Meter",
+            getValue = function() return Get(key) end,
+            setValue = function(v) Set(key, v) end }
+    end
+    local function StyleToggle(group, key, text, gates)
+        return { type = "toggle", text = text,
+            disabled = off, disabledTooltip = "Threat Meter",
+            getValue = function() return GetStyle(group, key) end,
+            setValue = function(v)
+                ns.SetStyleValue(group, key, v)
+                if gates then EllesmereUI:RefreshPage() end
+            end }
+    end
+    local function StyleSlider(group, key, text, low, high, step)
+        return { type = "slider", text = text, min = low, max = high, step = step or 1,
+            disabled = off, disabledTooltip = "Threat Meter",
+            getValue = function() return GetStyle(group, key) end,
+            setValue = function(v) ns.SetStyleValue(group, key, v) end }
+    end
+
+    -- Inline swatches. A saved colour table is shared or converted, so every
+    -- write stores a new one.
+    local function ColorSwatch(key, tooltip, disabled, disabledTooltip)
+        return { tooltip = tooltip, disabled = disabled, disabledTooltip = disabledTooltip,
+            getValue = function() local c = Get(key); return c.r, c.g, c.b end,
+            setValue = function(r, g, b) Set(key, { r = r, g = g, b = b }) end }
+    end
+    local function StyleSwatch(group, key, tooltip)
+        local sc = { tooltip = tooltip, disabled = off, disabledTooltip = "Threat Meter" }
+        if type(key) == "table" then
+            sc.getValue = function() return GetStyle(group, key[1]), GetStyle(group, key[2]), GetStyle(group, key[3]) end
+            sc.setValue = function(r, g, b) ns.SetStyleValues(group, { [key[1]] = r, [key[2]] = g, [key[3]] = b }) end
+        else
+            sc.getValue = function() local c = GetStyle(group, key); return c.r, c.g, c.b end
+            sc.setValue = function(r, g, b) ns.SetStyleValue(group, key, { r = r, g = g, b = b, a = 1 }) end
+        end
+        return sc
+    end
+    -- The custom alternative to a class or accent colour: dimmed while that one
+    -- is in use, and its first click switches to the custom colour.
+    local function Alternative(sc, isActive, activate)
+        sc.refreshAlpha = function() return isActive() and 1 or 0.3 end
+        sc.onClick = function(self)
+            if not isActive() then
+                activate()
+                EllesmereUI:RefreshPage()
+                return
+            end
+            if self._eabOrigClick then self._eabOrigClick(self) end
+        end
+        return sc
+    end
+    local function AlternativeTo(sc, group, flag)
+        return Alternative(sc, function() return not GetStyle(group, flag) end,
+            function() ns.SetStyleValue(group, flag, false) end)
+    end
+    local function Swatch(region, sc)
+        EllesmereUI.BuildInlineSwatches(region, { sc })
+    end
+    -- head (optional): a row above the offsets; the cog then takes the
+    -- settings icon, as it holds more than a position.
+    local function OffsetCog(region, title, keyX, keyY, disabled, disabledTooltip, rawTooltip, head)
+        local rows = {
+            { type = "slider", label = "X Offset", min = -20, max = 20, step = 1,
+              get = function() return GetStyle(keyX[1], keyX[2]) end,
+              set = function(v) ns.SetStyleValue(keyX[1], keyX[2], v) end },
+            { type = "slider", label = "Y Offset", min = -20, max = 20, step = 1,
+              get = function() return GetStyle(keyY[1], keyY[2]) end,
+              set = function(v) ns.SetStyleValue(keyY[1], keyY[2], v) end },
+        }
+        if head then table.insert(rows, 1, head) end
+        EllesmereUI.BuildInlineCog(region, {
+            title = title,
+            disabled = disabled, disabledTooltip = disabledTooltip, rawTooltip = rawTooltip,
+            rows = rows,
+        })
+    end
+
+    ---------------------------------------------------------------------------
+    --  THREAT METER
+    ---------------------------------------------------------------------------
+    hdr, h = W:SectionHeader(parent, "THREAT METER", y);  y = y - h
+    EllesmereUI.BuildSectionUnlockJump(hdr, { key = "EUI_ThreatMeter", disabled = off, disabledTooltip = "Threat Meter" })
+    y = BS.Note(parent, y, "threatmeter")
+
+    -- Lock state belongs to the lock icon on the meter itself.
+    _, h = EllesmereUI.BuildVisibilityRow(W, parent, y,
+        { leftCfg = { type = "toggle", text = "Enable Threat Meter",
+              tooltip = "Shows everyone's threat on your target, highest first. With a friendly target, it shows the threat on what they are fighting.",
+              getValue = function() return not off() end,
+              setValue = function(v)
+                  ns.Cfg().enabled = v
+                  ns.Apply()
+                  EllesmereUI:RefreshPage()
+              end },
+          getStore = ns.Cfg,
+          legacyKey = "visibility",
+          caps = { partyIncludesRaid = false, luaDragonriding = true, noMouseover = true },
+          -- Stored as onlyWithThreat: nil (the default) hides the meter while it
+          -- has no threat to list, false keeps it on screen.
+          extraItems = {
+              { key = "onlyWithThreat", label = "Only With Threat", default = true,
+                tooltip = "Only show the meter while there is threat to list. Unchecked keeps the header and its buttons on screen." },
+          },
+          disabledFn = off, disabledTooltip = "Threat Meter",
+          onChanged = EllesmereUI.RequestVisibilityUpdate,
+          onOptionChanged = EllesmereUI.RequestVisibilityUpdate });  y = y - h
+
+    _, h = W:DualRow(parent, y,
+        ListToggle("focusEnabled", "Enable Focus Tracking", "Adds a Target/Focus switch to the meter header.",
+            function(v)
+                ns.SetFocusEnabled(v)
+                ns.ApplyStyle()
+            end),
+        { type = "toggle", text = "Ignore Pets",
+          tooltip = "Leaves pets out of the list.",
+          getValue = function() return not Get("pets") end,
+          setValue = function(v) Set("pets", not v) end }
+    );  y = y - h
+
+    _, h = W:Spacer(parent, y, 20);  y = y - h
+
+    ---------------------------------------------------------------------------
+    --  WARNING (its settings are built while the sound is on)
+    ---------------------------------------------------------------------------
+    _, h = W:SectionHeader(parent, "WARNING", y);  y = y - h
+
+    local warnOn = Get("warnSound")
+    local warnToggle = Toggle("warnSound", "Warning Sound",
+        "Plays once when your threat climbs past the threshold, and again only after it has dropped back below.",
+        EllesmereUI.SectionToggleSetValue(function(v) Store("warnSound", v) end))
+    if warnOn then
+        local sndValues, sndOrder = EllesmereUI.BuildSoundDropdownValues(ns.Sounds())
+        _, h = W:DualRow(parent, y, warnToggle,
+            { type = "dropdown", text = "Sound", values = sndValues, order = sndOrder,
+              disabled = off, disabledTooltip = "Threat Meter",
+              getValue = function() return Get("warnSoundKey") end,
+              setValue = function(v) Store("warnSoundKey", v) end }
+        );  y = y - h
+
+        _, h = W:DualRow(parent, y,
+            { type = "slider", text = "Warn At (%)", min = 50, max = 100, step = 1,
+              tooltip = "100% is where you pull aggro.",
+              disabled = off, disabledTooltip = "Threat Meter",
+              getValue = function() return Get("warnAt") end,
+              setValue = function(v) Store("warnAt", v) end },
+            Toggle("warnSkipTank", "Not While Tanking",
+                "No warning while you are the tank.",
+                function(v) Store("warnSkipTank", v) end)
+        );  y = y - h
+    else
+        _, h = W:DualRow(parent, y, warnToggle, BLANK());  y = y - h
+    end
+
+    _, h = W:Spacer(parent, y, 20);  y = y - h
+
+    ---------------------------------------------------------------------------
+    --  THREAT % TEXT (the Nameplates and Unit Frames settings; a module that
+    --  is off has no row)
+    ---------------------------------------------------------------------------
+    local np = EllesmereUI._ModuleNS["EllesmereUINameplates"]
+    local uf = EllesmereUI._ModuleNS["EllesmereUIUnitFrames"]
+    local hasNP = np and np.db
+    local hasUF = uf and uf.db
+    if hasNP or hasUF then
+        _, h = W:SectionHeader(parent, "THREAT % TEXT", y);  y = y - h
+
+        -- Toggle | Position, the Threat % cog on the dropdown. blocked (optional)
+        -- greys the row with blockedTip; a toggle left on stays clickable so it
+        -- can still be turned off. positions / positionOrder (optional) replace
+        -- the three inside spots. withGap (the nameplates) moves Color by Threat
+        -- out of the cog into a Text Shows | Color by Threat row below.
+        local function PctRow(text, tooltip, profile, apply, blocked, blockedTip, positions, positionOrder, withGap)
+            local function PGet(key) return profile()[key] end
+            local function PSet(key, v)
+                profile()[key] = v
+                apply(key, v)
+            end
+            local function pctOff() return (blocked and blocked()) or not PGet("threatPctEnabled") end
+            local function pctOffTip()
+                if blocked and blocked() then return blockedTip end
+                return text
+            end
+            local function Offset(key, label, low, high)
+                return { type = "slider", label = label, min = low, max = high, step = 1,
+                    get = function() return PGet(key) end,
+                    set = function(v) PSet(key, v) end }
+            end
+            local row
+            row, h = W:DualRow(parent, y,
+                { type = "toggle", text = text, tooltip = tooltip,
+                  disabled = blocked and function() return blocked() and not PGet("threatPctEnabled") end,
+                  disabledTooltip = blocked and blockedTip,
+                  getValue = function() return PGet("threatPctEnabled") end,
+                  setValue = function(v)
+                      PSet("threatPctEnabled", v)
+                      -- The withGap row is built while the text is on.
+                      EllesmereUI:RefreshPage(withGap)
+                  end },
+                { type = "dropdown", text = "Position",
+                  values = positions or PCT_POSITIONS, order = positionOrder or PCT_POSITION_ORDER,
+                  disabled = pctOff, disabledTooltip = pctOffTip,
+                  getValue = function() return PGet("threatPctPosition") end,
+                  setValue = function(v) PSet("threatPctPosition", v) end }
+            );  y = y - h
+            do
+                local rows = {
+                    Offset("threatPctSize", "Size", 6, 20),
+                    Offset("threatPctXOffset", "X Offset", -300, 300),
+                    Offset("threatPctYOffset", "Y Offset", -300, 300),
+                }
+                if not withGap then
+                    table.insert(rows, 1, { type = "toggle", label = "Color by Threat",
+                        tooltip = "Colors the number by threat status. Off shows it in white.",
+                        get = function() return PGet("threatPctColorByThreat") end,
+                        set = function(v) PSet("threatPctColorByThreat", v) end })
+                end
+                EllesmereUI.BuildInlineCog(row._rightRegion, {
+                    title = "Threat %", disabled = pctOff, disabledTooltip = pctOffTip,
+                    rows = rows,
+                })
+            end
+            -- What the text shows and how it is coloured. The Threat Gap colours
+            -- sit on Color by Threat while the gap is picked.
+            if withGap and PGet("threatPctEnabled") then
+                local function Gap() return PGet("threatPctMode") == "gap" end
+                local function ColorOff() return not PGet("threatPctColorByThreat") end
+                local modeRow
+                modeRow, h = W:DualRow(parent, y,
+                    { type = "dropdown", text = "Text Shows", values = PCT_MODES, order = PCT_MODE_ORDER,
+                      tooltip = "Threat Gap shows on your target's plate only.",
+                      getValue = function() return PGet("threatPctMode") or "percent" end,
+                      setValue = EllesmereUI.DependentSetValue(Gap, function(v) PSet("threatPctMode", v) end) },
+                    { type = "toggle", text = "Color by Threat",
+                      tooltip = "Colors the number. Off shows it in white.",
+                      getValue = function() return PGet("threatPctColorByThreat") end,
+                      setValue = function(v)
+                          PSet("threatPctColorByThreat", v)
+                          EllesmereUI:RefreshPage()
+                      end }
+                );  y = y - h
+                if Gap() and not EllesmereUI._prebuilding then
+                    local function GapSwatch(key, label)
+                        return { tooltip = label, disabled = ColorOff, disabledTooltip = "Color by Threat",
+                            getValue = function()
+                                local c = PGet(key)
+                                if c then return c.r, c.g, c.b end
+                                return 1, 1, 1
+                            end,
+                            setValue = function(r, g, b) PSet(key, { r = r, g = g, b = b }) end }
+                    end
+                    EllesmereUI.BuildInlineSwatches(modeRow._rightRegion, {
+                        GapSwatch("threatGapAheadColor", "Ahead Color"),
+                        GapSwatch("threatGapBehindColor", "Behind Color"),
+                    })
+                end
+            end
+            return row, pctOff, pctOffTip
+        end
+
+        if hasNP then
+            PctRow("Show on Nameplates",
+                "Shows your threat percentage on each enemy nameplate while you are in combat with it.",
+                function() return np.db.profile end,
+                function() np.RefreshThreatPct() end,
+                nil, nil, nil, nil, true)
+        end
+        if hasUF then
+            -- The unit frames add the outside spots (the Unit Frames page's list).
+            local row, pctOff, pctOffTip = PctRow("Show on Target Frame",
+                "Shows your threat percentage on the target frame while you are in combat with it. The cog adds the focus frame.",
+                function() return uf.db.profile end,
+                function(key, v)
+                    if key == "threatPctEnabled" then uf.SetThreatPctEnabled(v) else uf.RefreshThreatPct() end
+                end,
+                function() return not (uf.frames.target or uf.frames.focus) end,
+                "This option requires an EllesmereUI Target or Focus frame.",
+                uf._threatPctPositions, uf._threatPctPositionOrder)
+            do
+                EllesmereUI.BuildInlineCog(row._leftRegion, {
+                    title = "Threat % Units", disabled = pctOff, disabledTooltip = pctOffTip,
+                    rows = {
+                        { type = "toggle", label = "Show on Focus",
+                          get = function() return uf.db.profile.threatPctFocus end,
+                          set = function(v)
+                              uf.db.profile.threatPctFocus = v
+                              uf.RefreshThreatPct()
+                          end },
+                    },
+                })
+            end
+        end
+
+        _, h = W:Spacer(parent, y, 20);  y = y - h
+    end
+
+    ---------------------------------------------------------------------------
+    --  BARS
+    ---------------------------------------------------------------------------
+    _, h = W:SectionHeader(parent, "BARS", y);  y = y - h
+
+    _, h = W:DualRow(parent, y,
+        Slider("barHeight", "Bar Height", 8, 40),
+        Slider("barSpacing", "Bar Spacing", 0, 10)
+    );  y = y - h
+
+    local texValues, texOrder = {}, {}
+    do
+        local lookup, names = ns.BarTextures(), ns.BarTextureNames
+        for _, key in ipairs(ns.BarTextureOrder) do
+            if key ~= "---" then texValues[key] = names[key] or key end
+            texOrder[#texOrder + 1] = key
+        end
+        texValues._menuOpts = { itemHeight = 28, background = function(key) return lookup[key] end }
+    end
+    local iconRow
+    iconRow, h = W:DualRow(parent, y,
+        { type = "dropdown", text = "Bar Texture", values = texValues, order = texOrder,
+          disabled = off, disabledTooltip = "Threat Meter",
+          getValue = function() return GetStyle("bars", "barTexture") end,
+          setValue = function(v) ns.SetStyleValue("bars", "barTexture", v) end },
+        { type = "dropdown", text = "Icon Style", values = ICON_STYLES, order = ICON_STYLE_ORDER,
+          disabled = off, disabledTooltip = "Threat Meter",
+          getValue = function() return GetStyle("bars", "iconStyle") end,
+          setValue = function(v) ns.SetStyleValue("bars", "iconStyle", v) end }
+    );  y = y - h
+    do
+        local zoomOff, zoomTip = Needs(function() return GetStyle("bars", "iconStyle") == "none" end, "Icon Style")
+        EllesmereUI.BuildInlineCog(iconRow._rightRegion, {
+            title = "Icon Settings", disabled = zoomOff, disabledTooltip = zoomTip,
+            rows = {
+                { type = "slider", label = "Zoom", min = 0, max = 0.20, step = 0.01,
+                  get = function() return GetStyle("bars", "iconZoom") end,
+                  set = function(v) ns.SetStyleValue("bars", "iconZoom", v) end },
+                Gate({ type = "toggle", label = "Separator",
+                  tooltip = "Adds a divider between each icon and its bar.",
+                  hidden = function() return not DividerArt("borderTexture", "sepV") end,
+                  disabled = function() return IsZero("borders", "borderSize") end,
+                  disabledTooltip = "Bar Border Size",
+                  get = function() return GetStyle("bars", "iconSeparator") end,
+                  set = function(v) ns.SetStyleValue("bars", "iconSeparator", v) end }),
+            },
+        })
+    end
+
+    local pullRow
+    pullRow, h = W:DualRow(parent, y,
+        ListToggle("pullBar", "Pull Aggro Bar", "An extra bar showing how much threat takes aggro from the tank.",
+            function(v) SetAndRefresh("pullBar", v) end),
+        Toggle("growUp", "Grow Upward", "Lists the highest threat at the bottom instead of the top.")
+    );  y = y - h
+    if not EllesmereUI._prebuilding then
+        Swatch(pullRow._leftRegion, ColorSwatch("pullColor", "Pull Aggro Bar Color",
+            function() return not Get("pullBar") end, "Pull Aggro Bar"))
+    end
+
+    _, h = W:Spacer(parent, y, 20);  y = y - h
+
+    ---------------------------------------------------------------------------
+    --  HEADER (its settings are built while the header is shown)
+    ---------------------------------------------------------------------------
+    _, h = W:SectionHeader(parent, "HEADER", y);  y = y - h
+
+    local headerToggle = Toggle("showHeader", "Show Header",
+        "A title row with the name of the mob whose threat is shown.",
+        EllesmereUI.SectionToggleSetValue(function(v) Set("showHeader", v) end))
+    if Get("showHeader") then
+        _, h = W:DualRow(parent, y, headerToggle, StyleSlider("header", "hdrHeight", "Header Height", 14, 40));  y = y - h
+
+        local textRow
+        textRow, h = W:DualRow(parent, y,
+            StyleSlider("header", "hdrFontSize", "Header Text Size", 8, 20),
+            StyleToggle("header", "hdrTextUseAccent", "Accent Header Text", true)
+        );  y = y - h
+        do
+            OffsetCog(textRow._leftRegion, "Title Position", { "header", "hdrTextOffX" }, { "header", "hdrTextOffY" },
+                off, "Threat Meter")
+            if not EllesmereUI._prebuilding then
+                Swatch(textRow._rightRegion, AlternativeTo(StyleSwatch("header", "hdrTextColor", "Header Text Color"),
+                    "header", "hdrTextUseAccent"))
+            end
+        end
+
+        -- While the Bottom Separator shows, it stands in for the plain line.
+        local function SeparatorShown()
+            return GetStyle("header", "hdrBottomSeparator") and GetStyle("borders", "windowBorderIncludeHeader") ~= false
+                and not IsZero("borders", "windowBorderSize") and DividerArt("windowBorderTexture", "sepH")
+        end
+        local function LineState() return not off() and SeparatorShown() and "disabled" or nil end
+        local bgRow
+        bgRow, h = W:DualRow(parent, y,
+            StyleSlider("header", "hdrBgAlpha", "Header Opacity", 0, 1, 0.01),
+            Gate({ type = "slider", text = "Header Bottom Border", min = 0, max = 4, step = 1,
+              disabled = function() return off() or SeparatorShown() end,
+              disabledTooltip = function() return off() and "Threat Meter" or "Bottom Separator" end,
+              requireState = LineState,
+              getValue = function() return GetStyle("header", "hdrBottomBorderSize") end,
+              setValue = function(v) SetStyleSize("header", "hdrBottomBorderSize", v) end })
+        );  y = y - h
+        do
+            if not EllesmereUI._prebuilding then
+                Swatch(bgRow._leftRegion, Gate(StyleSwatch("header", "hdrBgColor", "Header Background")))
+            end
+            local sepRgn = bgRow._rightRegion
+            local sepCog = EllesmereUI.BuildInlineCog(sepRgn, Gate({
+                title = "Header Settings", disabled = off, disabledTooltip = "Threat Meter",
+                rows = {
+                    { type = "toggle", label = "Bottom Separator",
+                      tooltip = "Draws a divider under the header in the window border's style.",
+                      disabled = function()
+                          return GetStyle("borders", "windowBorderIncludeHeader") == false or IsZero("borders", "windowBorderSize")
+                      end,
+                      disabledTooltip = function()
+                          if GetStyle("borders", "windowBorderIncludeHeader") == false then return "Include Header in Border" end
+                          return "Window Border Size"
+                      end,
+                      get = function() return GetStyle("header", "hdrBottomSeparator") end,
+                      set = function(v)
+                          ns.SetStyleValue("header", "hdrBottomSeparator", v)
+                          EllesmereUI:RefreshPage()
+                      end },
+                },
+            }))
+            if not EllesmereUI._prebuilding then
+                local lineSwatch = StyleSwatch("header", "hdrBottomBorderColor", "Header Border Color")
+                lineSwatch.disabled = function()
+                    return off() or SeparatorShown() or IsZero("header", "hdrBottomBorderSize")
+                end
+                lineSwatch.disabledTooltip = function()
+                    if off() then return "Threat Meter" end
+                    return SeparatorShown() and "Bottom Separator" or "Header Bottom Border"
+                end
+                lineSwatch.requireState = LineState
+                Swatch(sepRgn, Gate(lineSwatch))
+                -- The swatch sits left of the cog while the cog shows, else beside
+                -- the slider; re-anchored only when the cog's shown state flips.
+                local lineSw, sepShown = sepRgn._lastInline, nil
+                local function SyncSepCog()
+                    local shown = DividerArt("windowBorderTexture", "sepH")
+                    sepCog:SetShown(shown)
+                    if shown ~= sepShown then
+                        sepShown = shown
+                        lineSw:ClearAllPoints()
+                        EllesmereUI.PanelPP.Point(lineSw, "RIGHT", shown and sepCog or sepRgn._control, "LEFT", -8, 0)
+                    end
+                end
+                SyncSepCog()
+                EllesmereUI.RegisterWidgetRefresh(SyncSepCog)
+            end
+        end
+    else
+        _, h = W:DualRow(parent, y, headerToggle, BLANK());  y = y - h
+    end
+
+    _, h = W:Spacer(parent, y, 20);  y = y - h
+
+    ---------------------------------------------------------------------------
+    --  COLORS
+    ---------------------------------------------------------------------------
+    _, h = W:SectionHeader(parent, "COLORS", y);  y = y - h
+
+    local function BarColorMode()
+        if GetStyle("colors", "showClassColor") ~= false then return "class" end
+        if GetStyle("colors", "barColorUseAccent") ~= false then return "accent" end
+        return "custom"
+    end
+    local function SetBarColorMode(v)
+        if v == "class" then
+            ns.SetStyleValue("colors", "showClassColor", true)
+        else
+            ns.SetStyleValues("colors", { showClassColor = false, barColorUseAccent = v == "accent" })
+        end
+    end
+    local fillRow
+    fillRow, h = W:DualRow(parent, y,
+        { type = "dropdown", text = "Bar Color", values = BAR_COLORS, order = BAR_COLOR_ORDER,
+          disabled = off, disabledTooltip = "Threat Meter",
+          getValue = BarColorMode,
+          setValue = function(v)
+              SetBarColorMode(v)
+              EllesmereUI:RefreshPage()
+          end },
+        StyleSlider("colors", "barFillAlpha", "Bar Opacity", 0, 1, 0.01)
+    );  y = y - h
+    if not EllesmereUI._prebuilding then
+        Swatch(fillRow._leftRegion, Alternative(StyleSwatch("colors", "barColor", "Custom Color"),
+            function() return BarColorMode() == "custom" end,
+            function() SetBarColorMode("custom") end))
+    end
+
+    local customRow
+    customRow, h = W:DualRow(parent, y,
+        ListToggle("playerColorOn", "Custom Player Color", "Your own bar in a fixed color instead of your class color.",
+            function(v) SetAndRefresh("playerColorOn", v) end),
+        ListToggle("tankColorOn", "Custom Tank Color", "The bar of whoever holds aggro in a fixed color instead of their class color.",
+            function(v) SetAndRefresh("tankColorOn", v) end)
+    );  y = y - h
+    do
+        EllesmereUI.BuildInlineCog(customRow._leftRegion, {
+            title = "Player Bar Settings", disabled = off, disabledTooltip = "Threat Meter",
+            rows = {
+                { type = "toggle", label = "Show Player Marker",
+                  tooltip = "Shows a white stripe on your own bar.",
+                  get = function() return Get("showPlayerMarker") end,
+                  set = function(v) Set("showPlayerMarker", v) end },
+            },
+        })
+        if not EllesmereUI._prebuilding then
+            Swatch(customRow._leftRegion, ColorSwatch("playerColor", "Player Color",
+                function() return not Get("playerColorOn") end, "Custom Player Color"))
+            Swatch(customRow._rightRegion, ColorSwatch("tankColor", "Tank Color",
+                function() return not Get("tankColorOn") end, "Custom Tank Color"))
+        end
+    end
+
+    local barBgRow
+    barBgRow, h = W:DualRow(parent, y,
+        BlizzOnly(StyleToggle("colors", "barBgUseClassColor", "Class-Colored Background", true)),
+        BlizzOnly(StyleSlider("colors", "barBgAlpha", "Bar Background Opacity", 0, 1, 0.01))
+    );  y = y - h
+    if not EllesmereUI._prebuilding then
+        Swatch(barBgRow._leftRegion, BlizzOnly(AlternativeTo(StyleSwatch("colors", { "barBgR", "barBgG", "barBgB" },
+            "Bar Background"), "colors", "barBgUseClassColor")))
+    end
+
+    _, h = W:Spacer(parent, y, 20);  y = y - h
+
+    ---------------------------------------------------------------------------
+    --  BAR TEXT
+    ---------------------------------------------------------------------------
+    _, h = W:SectionHeader(parent, "BAR TEXT", y);  y = y - h
+
+    _, h = W:DualRow(parent, y,
+        Slider("fontSize", "Text Size", 8, 24),
+        { type = "dropdown", text = "Displayed Value",
+          tooltip = "Pull % reaches 100 where a player would take aggro, Tank % where they match the tank's threat.",
+          values = ns.DisplayValues, order = ns.DisplayOrder,
+          getValue = ns.GetDisplayedValue,
+          setValue = function(v)
+              ns.SetDisplayedValue(v)
+              ns.ApplyStyle()
+              EllesmereUI:RefreshPage()
+          end }
+    );  y = y - h
+
+    do
+        local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
+        _, h = W:DualRow(parent, y,
+            { type = "dropdown", text = "Font", values = fontValues, order = fontOrder,
+              disabled = off, disabledTooltip = "Threat Meter",
+              getValue = function() return Get("font") end,
+              setValue = function(v) Set("font", v) end },
+            { type = "dropdown", text = "Font Outline", values = OUTLINES, order = OUTLINE_ORDER,
+              disabled = off, disabledTooltip = "Threat Meter",
+              getValue = function() return Get("outlineMode") end,
+              setValue = function(v) Set("outlineMode", v) end }
+        );  y = y - h
+    end
+
+    -- Value text settings do nothing while no value is displayed.
+    local valueOff, valueTip, valueRaw = Needs(function() return ns.GetDisplayedValue() == "none" end,
+        "This option requires a Displayed Value other than None.", true)
+    local valuesToggle = StyleToggle("colors", "rightTextUseClassColor", "Class-Colored Values", true)
+    valuesToggle.disabled, valuesToggle.disabledTooltip, valuesToggle.rawTooltip = valueOff, valueTip, valueRaw
+    valuesToggle.setValue = function(v)
+        ns.SetStyleValues("colors", { rightTextUseClassColor = v, rightTextUseThreatGradient = false })
+        EllesmereUI:RefreshPage()
+    end
+    local nameRow
+    nameRow, h = W:DualRow(parent, y,
+        StyleToggle("colors", "leftTextUseClassColor", "Class-Colored Names", true),
+        valuesToggle
+    );  y = y - h
+    do
+        -- Name Text: the Name Format (a player's first or last name; First and
+        -- Last is the unset default) above the name's offsets.
+        OffsetCog(nameRow._leftRegion, "Name Text", { "bars", "leftTextOffsetX" }, { "bars", "leftTextOffsetY" },
+            off, "Threat Meter", nil,
+            EllesmereUI.NameFormatCogRow(function() return Get("nameFormat") end,
+                function(v) Set("nameFormat", v) end))
+        if not EllesmereUI._prebuilding then
+            Swatch(nameRow._leftRegion, AlternativeTo(StyleSwatch("colors", "leftTextColor", "Name Color"),
+                "colors", "leftTextUseClassColor"))
+        end
+        OffsetCog(nameRow._rightRegion, "Value Position", { "bars", "rightTextOffsetX" }, { "bars", "rightTextOffsetY" },
+            valueOff, valueTip, valueRaw)
+        if not EllesmereUI._prebuilding then
+            local valueSwatch = Alternative(StyleSwatch("colors", "rightTextColor", "Value Color"),
+                function() return not GetStyle("colors", "rightTextUseClassColor") and not GetStyle("colors", "rightTextUseThreatGradient") end,
+                function() ns.SetStyleValues("colors", { rightTextUseClassColor = false, rightTextUseThreatGradient = false }) end)
+            valueSwatch.disabled, valueSwatch.disabledTooltip, valueSwatch.rawTooltip = valueOff, valueTip, valueRaw
+            Swatch(nameRow._rightRegion, valueSwatch)
+            -- Threat gradient: a swatch showing its colour scale, toggled by a click.
+            Swatch(nameRow._rightRegion, {
+                tooltip = "Colors each value from green to red as that player nears pulling aggro.",
+                gradient = { { 0, 1, 0 }, { 1, 1, 0 }, { 1, 0, 0 } },
+                disabled = valueOff, disabledTooltip = valueTip, rawTooltip = valueRaw,
+                getValue = function() return 1, 1, 1 end,
+                setValue = function() end,
+                refreshAlpha = function() return GetStyle("colors", "rightTextUseThreatGradient") and 1 or 0.3 end,
+                onClick = function()
+                    ns.SetStyleValues("colors", { rightTextUseClassColor = false,
+                        rightTextUseThreatGradient = not GetStyle("colors", "rightTextUseThreatGradient") })
+                    EllesmereUI:RefreshPage()
+                end,
+            })
+        end
+    end
+
+    _, h = W:Spacer(parent, y, 20);  y = y - h
+
+    ---------------------------------------------------------------------------
+    --  WINDOW & BORDERS
+    ---------------------------------------------------------------------------
+    _, h = W:SectionHeader(parent, "WINDOW & BORDERS", y);  y = y - h
+
+    local windowBorderOff, windowBorderTip = Needs(function() return IsZero("borders", "windowBorderSize") end,
+        "Window Border Size")
+    local includeHeader = StyleToggle("borders", "windowBorderIncludeHeader", "Include Header in Border", true)
+    includeHeader.disabled, includeHeader.disabledTooltip = windowBorderOff, windowBorderTip
+    local bgRow
+    bgRow, h = W:DualRow(parent, y,
+        Gate({ type = "dropdown", text = "Background Texture", values = texValues, order = texOrder,
+          disabled = off, disabledTooltip = "Threat Meter",
+          getValue = function() return GetStyle("colors", "bgTexture") end,
+          setValue = function(v) ns.SetStyleValue("colors", "bgTexture", v) end }),
+        StyleSlider("colors", "bgAlpha", "Background", 0, 1, 0.01)
+    );  y = y - h
+    if not EllesmereUI._prebuilding then
+        Swatch(bgRow._rightRegion, BlizzOnly(StyleSwatch("colors", { "bgR", "bgG", "bgB" }, "Background Color")))
+    end
+
+    local borderValues, borderOrder = EllesmereUI.GetBorderTextureDropdown()
+    -- Shadow is drawn behind its surface, and the bars have no layer behind
+    -- them, so their list leaves it out (as the Damage Meters bars do).
+    local barValues, barOrder = EllesmereUI.GetBorderTextureDropdown()
+    barValues.shadow = nil
+    for i = #barOrder, 1, -1 do
+        if barOrder[i] == "shadow" then table.remove(barOrder, i) end
+    end
+    local function BorderStyle(window, text)
+        local key = window and "windowBorderTexture" or "borderTexture"
+        return { type = "dropdown", text = text,
+            values = window and borderValues or barValues, order = window and borderOrder or barOrder,
+            disabled = off, disabledTooltip = "Threat Meter",
+            getValue = function() return GetStyle("borders", key) end,
+            setValue = function(v)
+                local color = EllesmereUI.GetBorderStyleSelectDefaults(v)
+                local size = EllesmereUI.GetBorderDefaultSize(ns.BORDER_KEY, v) or 1
+                local patch = { [key] = v }
+                if window then
+                    patch.windowBorderSize, patch.windowBorderSizePx = size, false
+                    patch.windowBorderColor = { r = color.r, g = color.g, b = color.b, a = 1 }
+                else
+                    patch.borderSize, patch.borderSizePx = size, false
+                    patch.borderR, patch.borderG, patch.borderB = color.r, color.g, color.b
+                    patch.borderTextureOffset, patch.borderTextureOffsetY = false, false
+                    patch.borderTextureShiftX, patch.borderTextureShiftY = 0, 0
+                end
+                ns.SetStyleValues("borders", patch)
+                EllesmereUI:RefreshPage()
+            end }
+    end
+    -- One slider write can change both the size step and its exact pixels; they
+    -- land together in one restyle.
+    local pending = {}
+    local function BorderSize(window, text)
+        local stepKey = window and "windowBorderSize" or "borderSize"
+        local pxKey = window and "windowBorderSizePx" or "borderSizePx"
+        local texKey = window and "windowBorderTexture" or "borderTexture"
+        return EllesmereUI.BorderPxSliderCfg({ text = text,
+            disabled = off, disabledTooltip = "Threat Meter",
+            getStep = function() return GetStyle("borders", stepKey) end,
+            setStep = function(v) pending[stepKey] = v end,
+            getTex = function() return GetStyle("borders", texKey) end,
+            getPx = function() return GetStyle("borders", pxKey) end,
+            setPx = function(v) pending[pxKey] = v end,
+            apply = function()
+                local was = IsZero("borders", stepKey)
+                ns.SetStyleValues("borders", pending)
+                wipe(pending)
+                if IsZero("borders", stepKey) ~= was then EllesmereUI:RefreshPage() end
+            end })
+    end
+
+    local windowRow
+    windowRow, h = W:DualRow(parent, y,
+        Gate(BorderStyle(true, "Window Border Style")),
+        Gate(BorderSize(true, "Window Border Size"))
+    );  y = y - h
+    if not EllesmereUI._prebuilding then
+        local sc = StyleSwatch("borders", "windowBorderColor", "Window Border Color")
+        sc.disabled, sc.disabledTooltip = windowBorderOff, windowBorderTip
+        Swatch(windowRow._rightRegion, Gate(sc))
+    end
+
+    local barBorderRow
+    barBorderRow, h = W:DualRow(parent, y,
+        Gate(BorderStyle(false, "Bar Border Style")),
+        Gate(BorderSize(false, "Bar Border Size"))
+    );  y = y - h
+    do
+        local sepCog = EllesmereUI.BuildInlineCog(barBorderRow._leftRegion, Gate({
+            title = "Bar Border Settings", disabled = off, disabledTooltip = "Threat Meter",
+            rows = {
+                { type = "toggle", label = "Separators",
+                  tooltip = "Replaces each bar's border with a divider under it.",
+                  disabled = function() return IsZero("borders", "borderSize") end,
+                  disabledTooltip = "Bar Border Size",
+                  get = function() return GetStyle("borders", "barSeparators") end,
+                  set = function(v) ns.SetStyleValue("borders", "barSeparators", v) end },
+            },
+        }))
+        if not EllesmereUI._prebuilding then
+            local function SyncSepCog() sepCog:SetShown(DividerArt("borderTexture", "sepH")) end
+            SyncSepCog()
+            EllesmereUI.RegisterWidgetRefresh(SyncSepCog)
+            local sc = StyleSwatch("borders", { "borderR", "borderG", "borderB" }, "Bar Border Color")
+            sc.disabled, sc.disabledTooltip = Needs(function() return IsZero("borders", "borderSize") end, "Bar Border Size")
+            Swatch(barBorderRow._rightRegion, Gate(sc))
+        end
+    end
+
+    _, h = W:DualRow(parent, y, Gate(includeHeader), BLANK());  y = y - h
+
+    return math.abs(y)
+end

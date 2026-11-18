@@ -5,6 +5,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Pages: Class, Power and Health Bars | Cast Bar | Unlock Mode
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
+-- The options page pool's table (EllesmereUI_PixelPerfect.lua makes it; the
+-- options addon fills it in place), read through this local and never through
+-- the public slot.
+local POOL = EllesmereUI._Pool
 
 local function DB()
 	local db = _G._ERB_AceDB
@@ -20,6 +24,17 @@ end
 ns._ERB_IsThresholdCardShadowed = function(entries, idx)
     local cur = entries and entries[idx]
     if not cur or not cur.specIDs then return false end
+    -- WoW Forever: the class resolves as one spec (ns.ForeverThresholdPick; nil
+    -- = All Specs only), so a live card naming specs of the player's class, none
+    -- of them that one, never applies on this character.
+    if EllesmereUI.IS_FOREVER then
+        local pick = ns.ForeverThresholdPick(entries)
+        if not ns.ThresholdCardLiveFor(cur, pick) then
+            for _, s in ipairs(cur.specIDs) do
+                if EllesmereUI.IsPlayerSpec(s) and ns.ThresholdCardLiveFor(cur, s) then return true end
+            end
+        end
+    end
     local curGate = cur.talentSpellID
     local curAll, curSet = false, {}
     for _, s in ipairs(cur.specIDs) do
@@ -49,7 +64,11 @@ ns.ERB_OverlayHealOnShow = function(ov, obg, olbl, bgAlpha)
 	for p = 1, ov:GetNumPoints() do pts[p] = { ov:GetPoint(p) } end
 	local ovH = ov:GetHeight()
 	ov:SetScript("OnShow", function()
+		-- An overlay of the options page pool dressed again before the next
+		-- frame belongs to another build by then: the heal leaves it alone.
+		local gen = POOL.Gen and POOL.Gen(ov)
 		C_Timer.After(0, function()
+			if POOL.Gen and POOL.Gen(ov) ~= gen then return end
 			if not ov:IsVisible() then return end
 			if #pts > 0 then
 				ov:ClearAllPoints()
@@ -77,7 +96,9 @@ ns.ERB_SimpleOverrideOverlay = function(parent, topY, botY, sectionKey)
 	local EGc  = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
 	local CPAD = EllesmereUI.CONTENT_PAD or 45
 	local PP   = EllesmereUI.PanelPP or EllesmereUI.PP
-	local ov   = CreateFrame("Button", nil, parent)
+	-- On an options page (an options page pool host) the overlay is pooled
+	-- with the page.
+	local ov   = POOL.CreateFrame("Button", nil, parent)
 	-- Anchor via PP so it lines up with the section header/rows.
 	PP.Point(ov, "TOPLEFT", parent, "TOPLEFT", CPAD, topY)
 	PP.Point(ov, "TOPRIGHT", parent, "TOPRIGHT", -CPAD, topY)
@@ -88,7 +109,7 @@ ns.ERB_SimpleOverrideOverlay = function(parent, topY, botY, sectionKey)
 	local olbl = EllesmereUI.MakeFont(ov, 12, nil, 1, 1, 1); olbl:SetPoint("CENTER")
 	olbl:SetTextColor(1, 1, 1, 0.7)
 	olbl:SetText(EllesmereUI.L("Active spec uses Advanced settings")
-		.. "   —   " .. EllesmereUI.L("click to edit"))
+		.. "   \226\128\148   " .. EllesmereUI.L("click to edit"))
 	ns.ERB_OverlayHealOnShow(ov, obg, olbl, 0.9)
 	ov:SetScript("OnEnter", function() olbl:SetTextColor(EGc.r, EGc.g, EGc.b, 1) end)
 	ov:SetScript("OnLeave", function() olbl:SetTextColor(1, 1, 1, 0.7) end)
@@ -100,7 +121,7 @@ ns.ERB_SimpleOverrideOverlay = function(parent, topY, botY, sectionKey)
 		p.barDisplayMode = "advanced"
 		EllesmereUI:RefreshPage(true)
 		-- Clicking to edit navigates to the top of the Advanced page
-		if EllesmereUI.ScrollToTop then EllesmereUI:ScrollToTop() end
+		EllesmereUI:ScrollToTop()
 	end)
 end
 
@@ -116,6 +137,15 @@ ns.IsEntryBarType = function(entry)
 end
 local SpecName = function(specID)
 	if specID == 0 then return "All Specs" end
+	-- WoW Forever: the spec and class names from the shared spec table, in the
+	-- same "<Spec> <Class>" shape as below.
+	if EllesmereUI.IS_FOREVER then
+		local token = EllesmereUI.SpecClassOf(specID)
+		if token then
+			local sn, cn = EllesmereUI.RetailSpecName(specID), EllesmereUI.ForeverClassName(token)
+			return sn and (sn .. " " .. cn) or cn
+		end
+	end
 	-- The by-id lookup has no namespaced form and is absent on WoW Forever.
 	local _, name, className
 	if GetSpecializationInfoByID then
@@ -128,6 +158,33 @@ ns.EntryLabel = function(entry)
 	if not entry or not entry.specIDs or #entry.specIDs == 0 then return "Unknown" end
 	if entry.specIDs[1] == 0 then return "All Specs" end
 	local names = {}
+	-- WoW Forever: a class the card holds whole reads as the class; a partial
+	-- class lists its specs, so cards for different specs stay distinct.
+	if EllesmereUI.IS_FOREVER then
+		local held, done = {}, {}
+		for _, sid in ipairs(entry.specIDs) do held[sid] = true end
+		for _, sid in ipairs(entry.specIDs) do
+			local token = EllesmereUI.SpecClassOf(sid)
+			local classIDs = EllesmereUI.ForeverClassSpecIDs(token)
+			if not classIDs then
+				names[#names + 1] = SpecName(sid)
+			elseif not done[token] then
+				done[token] = true
+				local whole = true
+				for i = 1, #classIDs do
+					if not held[classIDs[i]] then whole = false; break end
+				end
+				if whole then
+					names[#names + 1] = EllesmereUI.ForeverClassName(token)
+				else
+					for i = 1, #classIDs do
+						if held[classIDs[i]] then names[#names + 1] = SpecName(classIDs[i]) end
+					end
+				end
+			end
+		end
+		return table.concat(names, ", ")
+	end
 	for _, sid in ipairs(entry.specIDs) do names[#names + 1] = SpecName(sid) end
 	return table.concat(names, ", ")
 end
@@ -140,6 +197,9 @@ ns.IsBarTypeSecondary = function()
 	local info = gsr and gsr()
 	if info and info.power == "IRONFUR_BAR" then return true end            -- Guardian Ironfur bar
 	if info and info.power == "IGNOREPAIN_BAR" then return true end         -- Prot Warrior Ignore Pain bar
+	-- WoW Forever: no bar-type class resource exists there (the runtime never
+	-- builds one), so the retail spec positions below do not apply.
+	if EllesmereUI.IS_FOREVER then return false end
 	if cf == "DRUID" and spec == 1 then return true end                     -- Balance (Astral Power bar)
 	if cf == "SHAMAN" and spec == 1 then return true end                    -- Elemental
 	if cf == "PRIEST" and spec == 3 then return true end                    -- Shadow
@@ -171,41 +231,13 @@ ns.SpecsConflict = function(aIDs, bIDs)
 	return false
 end
 
-ns.IsCRSpecClaimed = function(specID)
-	local p = DB()
-	local sec = p and p.secondary
-	if not sec or not sec.thresholdSpecs then return false end
-	for _, entry in ipairs(sec.thresholdSpecs) do
-		if entry.specIDs then
-			for _, sid in ipairs(entry.specIDs) do
-				if sid == 0 then return true end
-				if sid == specID then return true end
-			end
-		end
-	end
-	return false
-end
-
-ns.HasCRAllSpecs = function()
-	local p = DB()
-	local sec = p and p.secondary
-	if not sec or not sec.thresholdSpecs then return false end
-	for _, entry in ipairs(sec.thresholdSpecs) do
-		if entry.specIDs then
-			for _, sid in ipairs(entry.specIDs) do
-				if sid == 0 then return true end
-			end
-		end
-	end
-	return false
-end
-
 -- An entry counts as configured when its single threshold is on (a missing flag
--- means on, for migrated entries) or when multi-band coloring replaces it. The
--- band fallbacks mirror ResolveThresholdSpecEntry's ResolveBandConfig: both the
--- enable flag and the band list fall back to the bar table.
+-- means on, for migrated entries), it has hash lines, or when multi-band coloring
+-- replaces it. The band fallbacks mirror ResolveThresholdSpecEntry's
+-- ResolveBandConfig: both the enable flag and the band list fall back to the bar table.
 local function ThresholdEntryConfigured(bd, entry)
 	if entry.thresholdEnabled ~= false then return true end
+	if entry.hashValues and entry.hashValues ~= "" then return true end
 	local multi = entry.multiBandEnabled
 	if multi == nil then multi = bd.multiBandEnabled end
 	if not multi then return false end
@@ -214,24 +246,23 @@ local function ThresholdEntryConfigured(bd, entry)
 end
 
 -- Threshold notice: the spec names holding a configured threshold on a bar table,
--- for the info badge on the Threshold Settings button. pageSpecID is set on the
--- Advanced per-spec pages, where thresholdSpecs is collapsed to a single
--- implied-spec entry (specIDs = {0}) and the page's own spec is the real scope --
--- druid form mode lives there too, its per-form entries carry no specIDs at all.
--- Returns nil when nothing is configured, else the comma-joined name list plus
--- whether one of those entries applies to the spec being played.
-ns.ThresholdNoticeInfo = function(bd, pageSpecID)
+-- for the info badge on the Threshold & Hash Lines button. Entries with no specIDs
+-- (legacy druid form-mode lists) name no spec. Returns nil when nothing is
+-- configured, else the comma-joined name list plus whether one of those entries
+-- applies to the spec being played.
+ns.ThresholdNoticeInfo = function(bd)
 	local entries = bd and bd.thresholdSpecs
 	if not entries or #entries == 0 then return nil end
 	local activeSpecID = _G._ERB_ResolveSpecIDCached and _G._ERB_ResolveSpecIDCached()
+	-- WoW Forever: the spec the thresholds resolve as (ns.ForeverThresholdPick; nil = All Specs only).
+	if EllesmereUI.IS_FOREVER then
+		activeSpecID = ns.ForeverThresholdPick(entries)
+	end
 	local names, seen, active = {}, {}, false
 	for _, entry in ipairs(entries) do
 		if ThresholdEntryConfigured(bd, entry) then
 			local label, hitsActive
-			if pageSpecID then
-				label = SpecName(pageSpecID)
-				hitsActive = (pageSpecID == activeSpecID)
-			elseif entry.specIDs and #entry.specIDs > 0 then
+			if entry.specIDs and #entry.specIDs > 0 then
 				label = ns.EntryLabel(entry)
 				for _, sid in ipairs(entry.specIDs) do
 					if sid == 0 or sid == activeSpecID then hitsActive = true; break end

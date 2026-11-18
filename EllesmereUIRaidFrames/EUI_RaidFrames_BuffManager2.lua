@@ -19,12 +19,13 @@
 -- bmSimple/bmDisplayMode, override-banked configs) are LEFT INTACT and
 -- ignored: profiles are shared with the 12.0 client through SavedVariables,
 -- so wiping them here would destroy the user's retail Buff Manager. Physical
--- deletion belongs to the at-launch cleanup pass. This file also overrides
--- the coexistence shims: under v2 the simple grid is retired (BM_BaseActive
--- false) and indicators are always the system (BM_CustomActive true).
+-- deletion belongs to the at-launch cleanup pass.
 
 local _, ns = ...
 local EllesmereUI = _G.EllesmereUI
+-- WoW Forever one-time buff clear (EllesmereUI_Migration.lua); nil on every
+-- other client.
+local FVBW = EllesmereUI.FvBW
 
 -------------------------------------------------------------------------------
 -- Preset filter definitions
@@ -39,6 +40,41 @@ ns.BM2_PRESET_FILTERS = PRESET_FILTERS
 -- Curated spell lists: see the parent catalogue (shape documented there).
 local DEFAULT_FILTER_SPELLS = EllesmereUI.BUFF_PRESETS.spells
 ns.BM2_DEFAULT_FILTER_SPELLS = DEFAULT_FILTER_SPELLS
+
+-- Profiles shared between retail and WoW Forever: the other client's curated
+-- ids per preset key, and the preset keys only that client offers (see the
+-- parent catalogue). Preset filters keep both stored untouched; here they are
+-- inert and hidden.
+local OTHER_IDS = EllesmereUI.BUFF_PRESET_OTHER_IDS
+local OTHER_ONLY_PRESETS = {}
+do
+    local offered = {}
+    for i = 1, #PRESET_FILTERS do offered[PRESET_FILTERS[i].key] = true end
+    local other = EllesmereUI.BUFF_PRESET_OTHER_FILTERS
+    for i = 1, #other do
+        if not offered[other[i].key] then OTHER_ONLY_PRESETS[other[i].key] = true end
+    end
+end
+
+-- A stored preset filter only the other client offers: kept untouched for
+-- the profile's next visit there, invisible to every list and lookup here.
+local function OtherClientPreset(f)
+    local key = f.preset
+    return key ~= nil and OTHER_ONLY_PRESETS[key] == true
+end
+
+-- A spell a preset filter keeps only because the other client's catalogue
+-- curates it there (not curated here, not user-added): its stored state
+-- waits for that client, and here it counts as absent -- no editor row, no
+-- resolution, no filter color.
+local function OtherClientSpell(f, id)
+    local key = f.preset
+    local other = key and OTHER_IDS[key]
+    if not (other and other[id]) then return false end
+    local curated = DEFAULT_FILTER_SPELLS[key]
+    return not (curated and curated[id]) and not (f.custom and f.custom[id])
+end
+ns.BM2_OtherClientSpell = OtherClientSpell
 
 -- Primary -> alternates, built from the curated data at load. Resolution
 -- expands every primary so alternates follow their primary's checkbox state.
@@ -59,6 +95,17 @@ for _, spells in pairs(DEFAULT_FILTER_SPELLS) do
 end
 ns.BM2_PresetAlts = PRESET_ALTS
 ns.BM2_SpellClass = SPELL_CLASS
+-- WoW Forever: alternate -> primary over the curated families (disjoint on
+-- that catalogue). A direct pick or user filter holding a rank alternate
+-- resolves to its family's primary, so it keeps matching every rank. nil on
+-- every other client.
+if EllesmereUI.IS_FOREVER == true then
+    local ap = {}
+    for id, alts in pairs(PRESET_ALTS) do
+        for i = 1, #alts do ap[alts[i]] = id end
+    end
+    ns.BM2_ForeverAltPrimary = ap
+end
 
 -- Sorted array of every curated spell id: the Search Spells popup universe.
 function ns.BM2_AllPresetSpells()
@@ -235,6 +282,13 @@ local function Store()
     local p = P()
     if not p then return nil end
     local b = p.bm2
+    -- WoW Forever: the one-time buff clear ("fvBuffWipe" is its frozen mark,
+    -- EllesmereUI_Migration.lua). A missing store is built blank there, so the
+    -- legacy one-shot below never runs on that client.
+    if FVBW and not (b and b.fvBuffWipe) then
+        local nb = FVBW.ClearBM(p)
+        if nb then b = nb; ns.BM2_Invalidate() end
+    end
     if not b then
         b = { filters = { nextId = 1, list = {} }, specs = {}, seeded = {} }
         p.bm2 = b
@@ -265,7 +319,10 @@ end
 -- empty either way.
 function _G._ERF_BM2PresetFork(kind)
     local out = { specs = {}, seeded = {} }
-    if kind ~= "empty" then return out end
+    -- WoW Forever builds "default" exactly like "empty": nothing seeds there,
+    -- and the pre-seeded payload reads blank on the other client as well
+    -- (EllesmereUI_Migration.lua).
+    if kind ~= "empty" and not (FVBW and FVBW.ClientOK()) then return out end
     local function Empty(key)
         out.specs[key] = { nextId = 1000001, inds = {} }
         out.seeded[key] = true
@@ -284,12 +341,18 @@ function _G._ERF_BM2ApplyLayer(layer)
     local b = Store()
     if not b or not layer then return end
     if not layer.bm2 then
-        layer.bm2 = ns.BM2_ConvertLegacySet(layer.indicators, layer.displayMode)
+        -- WoW Forever never converts legacy layers: it starts blank there.
+        if not (FVBW and FVBW.BlankLayer(layer)) then
+            layer.bm2 = ns.BM2_ConvertLegacySet(layer.indicators, layer.displayMode)
+        end
     end
     wipe(b.specs)
     for k, v in pairs(layer.bm2.specs or {}) do b.specs[k] = LegacyCopy(v) end
     wipe(b.seeded)
     for k, v in pairs(layer.bm2.seeded or {}) do b.seeded[k] = v end
+    -- WoW Forever: the starter seed reads which layer live now holds
+    -- (EllesmereUI_Migration.lua).
+    if FVBW then FVBW.Painted(layer) end
     ns.BM2_Invalidate()
 end
 
@@ -334,27 +397,68 @@ local function EnsureFilters()
         -- existing profiles too, or its seeded state lingers forever, still
         -- resolving onto frames and undeletable in the Filter Editor (no
         -- f.custom membership = no remove control). f.custom spells and
-        -- still-curated states stay; clearing a key in pairs() is legal in 5.1.
+        -- still-curated states stay, and so does every id the other client's
+        -- catalogue curates under this preset: a profile shared with that
+        -- client keeps those checkbox states for its next visit there
+        -- (OtherClientSpell keeps them inert here). Clearing a key in pairs()
+        -- is legal in 5.1.
+        local other = OTHER_IDS[def.key]
         for id in pairs(f.spells) do
-            if not (curated and curated[id]) and not f.custom[id] then
+            if not (curated and curated[id]) and not f.custom[id]
+                and not (other and other[id]) then
                 f.spells[id] = nil
             end
         end
     end
+    -- WoW Forever: the starter seed, decided once per store now that the
+    -- preset filters exist ("fvBmSeed" is its frozen mark,
+    -- EllesmereUI_Migration.lua). A marked store costs one field read.
+    if FVBW and b.fvBmSeed == nil and FVBW.SeedStarter(P(), b) then
+        ns.BM2_Invalidate()
+    end
     return b
 end
 
+-- The filter list every picker and editor shows: the stored list itself, or,
+-- on a client missing presets the other one offers, a fresh copy without them.
 function ns.BM2_Filters()
     local b = EnsureFilters()
-    return b and b.filters.list or nil
+    if not b then return nil end
+    local list = b.filters.list
+    if next(OTHER_ONLY_PRESETS) == nil then return list end
+    local out = {}
+    for i = 1, #list do
+        if not OtherClientPreset(list[i]) then out[#out + 1] = list[i] end
+    end
+    return out
 end
 
+-- nil for a preset only the other client offers: resolution, pickers and
+-- colors treat an assignment to it as a dangling id.
 function ns.BM2_GetFilter(id)
     local b = Store()
     if not b then return nil end
     for i = 1, #b.filters.list do
-        if b.filters.list[i].id == id then return b.filters.list[i] end
+        local f = b.filters.list[i]
+        if f.id == id then
+            if OtherClientPreset(f) then return nil end
+            return f
+        end
     end
+end
+
+-- True for a stored filter id that belongs to a preset only the other client
+-- offers (BM2_GetFilter returns nil for it); false for every other id,
+-- dangling ones included. Always false while this client offers every preset.
+function ns.BM2_HiddenPresetFilter(id)
+    if next(OTHER_ONLY_PRESETS) == nil then return false end
+    local b = Store()
+    if not b then return false end
+    for i = 1, #b.filters.list do
+        local f = b.filters.list[i]
+        if f.id == id then return OtherClientPreset(f) end
+    end
+    return false
 end
 
 -- Square per-FILTER colors (ind.filterColors[fid], options swatches): fan the
@@ -370,32 +474,61 @@ end
 -- include map and inherit its slot color).
 function ns.BM2_SquareFilterColors(ind)
     local fc = ind.filterColors
-    if not fc or not ind.filters or ind.type ~= "square" then return nil end
+    if ind.type ~= "square" then return nil end
+    -- WoW Forever: a rank alternate resolves to its family's primary
+    -- (BM2_ResolveSpellsOwn), so colors key by that primary. nil elsewhere.
+    local ap = ns.BM2_ForeverAltPrimary
     local fids
-    for fid in pairs(ind.filters) do
-        if fc[fid] then
-            fids = fids or {}
-            fids[#fids + 1] = fid
+    if fc and ind.filters then
+        for fid in pairs(ind.filters) do
+            if fc[fid] then
+                fids = fids or {}
+                fids[#fids + 1] = fid
+            end
         end
     end
-    if not fids then return nil end
-    table.sort(fids)
     local merged
-    for i = 1, #fids do
-        local c = fc[fids[i]]
-        local f = ns.BM2_GetFilter(fids[i])
-        if f and f.spells then
-            for id, on in pairs(f.spells) do
-                if on then
-                    merged = merged or {}
-                    if merged[id] == nil then merged[id] = c end
+    if fids then
+        table.sort(fids)
+        for i = 1, #fids do
+            local c = fc[fids[i]]
+            local f = ns.BM2_GetFilter(fids[i])
+            if f and f.spells then
+                for id, on in pairs(f.spells) do
+                    if on and not OtherClientSpell(f, id) then
+                        local k = (ap and ap[id]) or id
+                        merged = merged or {}
+                        if merged[k] == nil then merged[k] = c end
+                    end
                 end
             end
         end
     end
-    if not merged then return nil end
-    if ind.spellColors then
-        for id, c in pairs(ind.spellColors) do merged[id] = c end
+    local sc = ind.spellColors
+    if not merged then
+        -- No filter color: the raw spellColors reference stands, unless a
+        -- direct color sits under a rank alternate (WoW Forever).
+        if not (ap and sc) then return nil end
+        for id in pairs(sc) do
+            if ap[id] then merged = {}; break end
+        end
+        if not merged then return nil end
+    end
+    if sc then
+        local won -- primary -> the alternate whose direct color it holds
+        for id, c in pairs(sc) do
+            -- An alternate's direct color lands on its primary unless the
+            -- primary has a direct color of its own; among alternates the
+            -- lowest id wins.
+            local k = ap and ap[id]
+            if not k then
+                merged[id] = c
+            elseif sc[k] == nil and not (won and won[k] and won[k] < id) then
+                merged[k] = c
+                won = won or {}
+                won[k] = id
+            end
+        end
     end
     return merged
 end
@@ -437,25 +570,61 @@ function ns.BM2_DeleteFilter(id)
     ns.BM2_Invalidate()
 end
 
--- Checkbox state: true/false explicit; nil on a CUSTOM spell removes it.
+-- Checkbox state: true/false explicit; nil on a CUSTOM spell removes it,
+-- its typed mark included.
 function ns.BM2_SetSpellState(filterId, spellID, state)
     local f = ns.BM2_GetFilter(filterId)
     if not f then return end
     if state == nil and f.custom[spellID] then
         f.custom[spellID] = nil
         f.spells[spellID] = nil
+        local fx = f.exact
+        if fx then
+            fx[spellID] = nil
+            if next(fx) == nil then f.exact = nil end
+        end
     else
         f.spells[spellID] = state and true or false
     end
     ns.BM2_Invalidate()
 end
 
-function ns.BM2_AddCustomSpell(filterId, spellID)
+-- A filter's own typed mark on id (f.exact[id], written by BM2_AddCustomSpell):
+-- void where the filter's preset curates the id, since a curated spell
+-- always keeps its family.
+local function FilterExact(f, id)
+    local fx = f.exact
+    if not (fx and fx[id]) then return false end
+    local curated = f.preset and DEFAULT_FILTER_SPELLS[f.preset]
+    return not (curated and curated[id])
+end
+
+-- An id kept only for the other client counts as absent: adding it makes it
+-- the user's own on both clients. typed (the Filter Editor's Add Spell ID,
+-- never its Search Spells pick or a copy from another library): the id tracks
+-- that aura alone from now on (f.exact[id]), and typing one the filter
+-- already holds as the user's own narrows it the same way; ids saved before
+-- carry no mark and keep their family. No mark on WoW Forever, where a typed
+-- rank stands for every rank of its spell.
+function ns.BM2_AddCustomSpell(filterId, spellID, typed)
     local f = ns.BM2_GetFilter(filterId)
     if not (f and spellID and spellID > 0) then return false end
-    if f.spells[spellID] ~= nil then return false end -- already present
-    f.custom[spellID] = true
-    f.spells[spellID] = true
+    local mark = typed == true and EllesmereUI.IS_FOREVER ~= true
+    if f.spells[spellID] ~= nil and not OtherClientSpell(f, spellID) then
+        -- Already present: only a typed id not yet marked, and not one the
+        -- filter's preset curates, changes anything.
+        local curated = f.preset and DEFAULT_FILTER_SPELLS[f.preset]
+        if not mark or (curated and curated[spellID]) or (f.exact and f.exact[spellID]) then
+            return false
+        end
+    else
+        f.custom[spellID] = true
+        f.spells[spellID] = true
+    end
+    if mark then
+        f.exact = f.exact or {}
+        f.exact[spellID] = true
+    end
     ns.BM2_Invalidate()
     return true
 end
@@ -463,17 +632,43 @@ end
 -------------------------------------------------------------------------------
 -- Spec indicators (seeding + access)
 -------------------------------------------------------------------------------
+-- WoW Forever: the Buff Manager spec a class acts as. While a spec override's
+-- Buff Manager fork is live (outside a conditional's editing session), the
+-- player's class acts as the spec that fork serves (published by Spec
+-- Overrides, seeded from the saved pointer at the first read); otherwise
+-- every class acts as its first spec. token nil = the player's class.
+function ns.BM2_ForeverSpecID(token)
+    if not EllesmereUI._SO_BmForkSeeded then EllesmereUI._SO_SeedForkSpec(false) end
+    local fk = EllesmereUI.SpecOverrides_BmForkSpecID
+    if fk and not EllesmereUI._bmSessionGid
+       and (token == nil or token == EllesmereUI.SpecClassOf(fk)) then
+        return fk
+    end
+    return EllesmereUI.ForeverClassSpec(token)
+end
+-- The bucket a class row edits: the healer key of a healer spec, else the
+-- spec's own "spec<ID>" bucket (as on retail).
+function ns.BM2_ForeverKey(token)
+    local sid = ns.BM2_ForeverSpecID(token)
+    if not sid then return nil end
+    return (ns.BM_SpecKeyForSpecID and ns.BM_SpecKeyForSpecID(sid)) or ("spec" .. sid)
+end
+
 -- ACTIVE config key: the healer/Aug spec key on a tracked spec, else the shared
 -- "nonhealer" bucket -- every spec outside the editor's healer list shares ONE
 -- config (class-agnostic display; filters resolve it at runtime).
 -- Resolved WITHOUT borrow (BM_SpecKeyForSpecID, never BM_CurrentSpecKey):
--- BM_CurrentSpecKey routes Ret/Prot -> Holy and Ele/Enh -> Resto, which is the
--- LEGACY simple-grid model where a castability strip then narrowed the borrowed
--- set to the spec's own spells. v2 disabled that strip, so borrowing here handed
--- Ret/Prot Holy's FULL healer config and kept them out of the All Non Healers/Aug
--- bucket (field reports, maintainer ruling 2026-08-13: non-healer specs edit and
--- render the shared bucket; the simple grid keeps its borrow separately).
+-- BM_CurrentSpecKey routes Ret/Prot -> Holy and Ele/Enh -> Resto, and v2 has no
+-- castability strip to narrow a borrowed set, so borrowing here would hand
+-- Ret/Prot Holy's FULL healer config and keep them out of the All Non
+-- Healers/Aug bucket (maintainer ruling 2026-08-13: non-healer specs edit and
+-- render the shared bucket).
 function ns.BM2_SpecKey()
+    -- WoW Forever: the same formula with the spec the class acts as.
+    if EllesmereUI.IS_FOREVER then
+        local sid = ns.BM2_ForeverSpecID()
+        return (sid and ns.BM_SpecKeyForSpecID and ns.BM_SpecKeyForSpecID(sid)) or "nonhealer"
+    end
     local specIdx = GetSpecialization and GetSpecialization()
     local specID = specIdx and GetSpecializationInfo and GetSpecializationInfo(specIdx)
     return (specID and ns.BM_SpecKeyForSpecID and ns.BM_SpecKeyForSpecID(specID)) or "nonhealer"
@@ -490,6 +685,15 @@ end
 
 -- Seeds the starter groups: group 1 center, healing corners top-left/right.
 local function SeedSpec(b, specKey)
+    -- WoW Forever never runs this per-bucket seed: its own All Specs starter
+    -- seed is placed once per store from EnsureFilters (EllesmereUI_Migration.lua).
+    -- A seeded bucket with its arrays costs plain reads; anything else passes
+    -- the gate once.
+    if FVBW then
+        local bk = b.seeded[specKey] and b.specs[specKey]
+        if type(bk) == "table" and bk.inds and bk.nextId then return end
+        if FVBW.SeedEmpty(b, specKey) then return end
+    end
     if b.seeded[specKey] then return end
     b.seeded[specKey] = true
     local spec = b.specs[specKey]
@@ -678,30 +882,58 @@ function ns.BM2_AddIndicator(indType, key)
     return ind
 end
 
-function ns.BM2_DeleteIndicator(id)
-    local b = Store()
-    if not b then return end
-    local spec = b.specs[ns.BM2_SpecKey()]
-    if not spec then return end
-    for i = #spec.inds, 1, -1 do
-        if spec.inds[i].id == id then table.remove(spec.inds, i) end
-    end
-    ns.BM2_Invalidate()
-end
-
 -------------------------------------------------------------------------------
 -- Resolution: indicator -> effective spell array
 -------------------------------------------------------------------------------
+-- Whether a source that keeps the curated family brings id into the
+-- indicator: a direct spell with no typed mark, or an assigned filter that
+-- holds it switched on without one. Asked only for the few ids a source typed.
+local function FamilySource(ind, id)
+    local sp = ind.spells
+    if sp then
+        local ex = ind.exactSpells
+        if not (ex and ex[id]) then
+            for i = 1, #sp do
+                if sp[i] == id then return true end
+            end
+        end
+    end
+    if ind.filters then
+        for fid in pairs(ind.filters) do
+            local f = ns.BM2_GetFilter(fid)
+            if f and f.spells[id] and not FilterExact(f, id) and not OtherClientSpell(f, id) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 -- Union of direct spells + enabled spells of assigned filters, plus per-spell
 -- OWNERSHIP: each source (filter or direct extra) has its own flag (ind.ownFilters[fid]
 -- / ind.ownExtras[sid]); a spell from several sources is own-only ONLY if all say so
 -- (show-all wins, the less restrictive intent). Alternates inherit their primary's
--- state. Returns (sortedList, ownMap), stable-sorted for deterministic signatures.
+-- state. Returns (sortedList, ownMap, exactMap), stable-sorted for deterministic
+-- signatures. exactMap (nil when empty) holds the ids every source typed (a
+-- direct one through BM2_SetSpellExact, a filter's through BM2_AddCustomSpell):
+-- those match their own aura alone. One source that keeps the family (a pick
+-- from Presets, a filter's curated or saved spell) and the family counts.
 -- Rebuilt every call (cheap: once per class per reload) because the LEGACY editor
 -- mutates ind.spells without bumping the edit generation, so a generation-keyed cache
 -- would serve stale unions after a spell edit.
 function ns.BM2_ResolveSpellsOwn(ind)
     local set = {} -- id -> own-only boolean
+    -- WoW Forever: a rank alternate counts as its family's primary (nil on
+    -- every other client). Per-extra own flags stay keyed by the stored id.
+    local ap = ns.BM2_ForeverAltPrimary
+    -- Typed marks are never read on WoW Forever, where a typed rank stands
+    -- for every rank of its spell. typed = the ids some source marks, made
+    -- only when one does.
+    local typed
+    if not ap and ind.exactSpells then
+        typed = {}
+        for id in pairs(ind.exactSpells) do typed[id] = true end
+    end
     local function Add(id, own)
         local cur = set[id]
         if cur == nil then
@@ -714,7 +946,7 @@ function ns.BM2_ResolveSpellsOwn(ind)
         local oe = ind.ownExtras
         for i = 1, #ind.spells do
             local id = ind.spells[i]
-            Add(id, oe and oe[id])
+            Add((ap and ap[id]) or id, oe and oe[id])
         end
     end
     if ind.filters then
@@ -723,8 +955,15 @@ function ns.BM2_ResolveSpellsOwn(ind)
             local f = ns.BM2_GetFilter(fid)
             if f then
                 local fOwn = of and of[fid]
+                local fx = (not ap) and f.exact or nil
                 for id, on in pairs(f.spells) do
-                    if on then Add(id, fOwn) end
+                    if on and not OtherClientSpell(f, id) then
+                        Add((ap and ap[id]) or id, fOwn)
+                        if fx and fx[id] then
+                            typed = typed or {}
+                            typed[id] = true
+                        end
+                    end
                 end
             end
         end
@@ -737,13 +976,18 @@ function ns.BM2_ResolveSpellsOwn(ind)
         local direct
         if ind.spells then
             direct = {}
-            for i = 1, #ind.spells do direct[ind.spells[i]] = true end
+            for i = 1, #ind.spells do
+                local id = ind.spells[i]
+                direct[(ap and ap[id]) or id] = true
+            end
         end
         for fid in pairs(ind.negFilters) do
             local f = ns.BM2_GetFilter(fid)
             if f then
                 for id, on in pairs(f.spells) do
-                    if on and not (direct and direct[id]) then set[id] = nil end
+                    local k = (ap and ap[id]) or id
+                    if on and not (direct and direct[k])
+                        and not OtherClientSpell(f, id) then set[k] = nil end
                 end
             end
         end
@@ -755,12 +999,55 @@ function ns.BM2_ResolveSpellsOwn(ind)
     local out = {}
     for id in pairs(set) do out[#out + 1] = id end
     table.sort(out)
-    return out, set
+    local exact
+    if typed then
+        for id in pairs(typed) do
+            if set[id] ~= nil and not FamilySource(ind, id) then
+                exact = exact or {}
+                exact[id] = true
+            end
+        end
+    end
+    return out, set, exact
 end
 
 function ns.BM2_ResolveSpells(ind)
     local out = ns.BM2_ResolveSpellsOwn(ind)
     return out
+end
+
+-- A spell ID typed through Custom Spell ID tracks that aura alone
+-- (ind.exactSpells[id]); a pick from the Presets list, like a filter, keeps the
+-- other ids of its curated family. Not written on WoW Forever, where a typed
+-- rank stands for every rank of its spell.
+function ns.BM2_SetSpellExact(ind, id, exact)
+    if exact then
+        if EllesmereUI.IS_FOREVER == true then return end
+        ind.exactSpells = ind.exactSpells or {}
+        ind.exactSpells[id] = true
+    elseif ind.exactSpells then
+        ind.exactSpells[id] = nil
+        if next(ind.exactSpells) == nil then ind.exactSpells = nil end
+    end
+end
+
+-- The Custom Spell ID top action of an Extra Spells menu (the indicator
+-- editor's and the New Indicator popup's): onID(id) takes each number
+-- confirmed in its popup.
+function ns.BM2_SpellIdAction(onID)
+    return { isTopAction = true, label = "Custom Spell ID", onClick = function()
+        EllesmereUI:ShowInputPopup({
+            title = EllesmereUI.L("Add Spell ID"),
+            message = EllesmereUI.L("Enter the spell ID to track on this indicator."),
+            placeholder = EllesmereUI.L("Spell ID"),
+            confirmText = EllesmereUI.L("Add"),
+            cancelText = EllesmereUI.L("Cancel"),
+            onConfirm = function(text)
+                local id = tonumber(text or "")
+                if id and id > 0 then onID(id) end
+            end,
+        })
+    end }
 end
 
 -- Preferred DISPLAY spell (sidebar tile icon etc.): a resolved spell the
@@ -800,11 +1087,17 @@ end
 -- resolved spell arrays, recomputed per call (the legacy editor mutates
 -- indicator tables directly, so an edit-generation cache is unsound).
 -- Indicators resolving to EMPTY are skipped (empty include map = unverified
--- semantics). The views are STABLE, one per store indicator (weak keys) and
--- refreshed IN PLACE: the container machinery captures them in its per-button
--- meta at build time and re-reads them on every geometry fingerprint/anchor
--- pass, so a fresh table per call freezes position/growth edits until reload.
-local bm2ViewCache = setmetatable({}, { __mode = "k" })
+-- semantics). The views are STABLE, one per bucket + indicator id (its
+-- position in the bucket's list when id-less), and refreshed IN PLACE: the
+-- container machinery captures them in its per-button meta at build time and
+-- re-reads them on every geometry fingerprint/anchor pass, so a fresh table
+-- per call freezes position/growth edits until reload. Not keyed by the store
+-- table: an override layer swap replaces every store indicator with a copy
+-- (_ERF_BM2ApplyLayer) without changing the container signature. Bounded by
+-- the indicators ever rendered this session. [bucket][id] -> view: the
+-- per-button container builds call this too, so the key is the id itself (a
+-- string only for id-less legacy rows).
+local bm2ViewCache = {}
 
 -- Show In as rendered: an Anchor To member continues its root's run, so the
 -- terminal root's value decides (the member's own is not offered while it is
@@ -840,7 +1133,12 @@ function ns.BM2_SpecIndicators(frameKind)
     local ownInds, allInds, roleInds
     local specIdx = GetSpecialization and GetSpecialization()
     local specID = specIdx and GetSpecializationInfo and GetSpecializationInfo(specIdx)
+    -- WoW Forever: the spec the class acts as (no role group there).
+    if EllesmereUI.IS_FOREVER then specID = ns.BM2_ForeverSpecID() end
     local tracked = specID and ns.BM_SpecKeyForSpecID and ns.BM_SpecKeyForSpecID(specID) or nil
+    -- WoW Forever: no role groups there, All Non Healers/Aug included -- an
+    -- untracked class renders its own bucket and All Specs only.
+    if EllesmereUI.IS_FOREVER and not tracked then inds = nil end
     if specID and not tracked then
         ownInds = ns.BM2_SpecInds("spec" .. specID)
     end
@@ -861,8 +1159,9 @@ function ns.BM2_SpecIndicators(frameKind)
     -- groupKey marks a GROUP bucket's contribution: the active spec's
     -- per-spec disable set drops those indicators here (render side); the
     -- indicator itself is untouched for every other spec.
-    local function Append(list, idOffset, groupKey)
+    local function Append(list, idOffset, groupKey, bucket)
         if not list then return end
+        local views  -- this bucket's stable views, fetched on first use
         for i = 1, #list do
             local ind = list[i]
             local drop = groupKey and inhDis and inhDis[groupKey .. ":" .. ind.id]
@@ -871,13 +1170,25 @@ function ns.BM2_SpecIndicators(frameKind)
                 if showIn == "raid" then drop = frameKind == "party"
                 elseif showIn == "party" then drop = frameKind ~= "party" end
             end
-            local resolved = not drop and ns.BM2_ResolveSpells(ind) or nil
+            local resolved, exact
+            if not drop then
+                local _
+                resolved, _, exact = ns.BM2_ResolveSpellsOwn(ind)
+            end
             if resolved and #resolved > 0 then
-                local v = bm2ViewCache[ind]
-                if not v then v = {}; bm2ViewCache[ind] = v end
+                if not views then
+                    views = bm2ViewCache[bucket or "?"]
+                    if not views then views = {}; bm2ViewCache[bucket or "?"] = views end
+                end
+                local viewKey = ind.id or ("x" .. i)
+                local v = views[viewKey]
+                if not v then v = {}; views[viewKey] = v end
                 for k in pairs(v) do v[k] = nil end
                 for k, val in pairs(ind) do v[k] = val end
                 v.spells = resolved
+                -- Exact ids, which match their own aura alone (nil = every id
+                -- keeps its curated family; BmIncludeMap reads it).
+                v.exactSpells = exact
                 -- Per-filter square colors fan out into the view's spellColors
                 -- (fresh merged table; readers reach it through the stable
                 -- view, so the identity-stability contract holds).
@@ -896,55 +1207,38 @@ function ns.BM2_SpecIndicators(frameKind)
     end
     -- For non-healer specs the active bucket IS the All Non Healers/Aug
     -- group, so its rows honor the per-spec disable set too.
-    Append(inds, nil, (not tracked) and "nonhealer" or nil)
-    Append(ownInds, 1000000, nil)
-    Append(allInds, 2000000, "allspecs")
-    Append(roleInds, 3000000, roleKey)
+    Append(inds, nil, (not tracked) and "nonhealer" or nil, specKey)
+    Append(ownInds, 1000000, nil, specID and ("spec" .. specID))
+    Append(allInds, 2000000, "allspecs", "allspecs")
+    Append(roleInds, 3000000, roleKey, roleKey)
     return out, specKey, "custom"
-end
-
--------------------------------------------------------------------------------
--- Activation flag. ACTIVE: v2 runs INSIDE the legacy page shell (storage
--- accessor swap + Assigned Filters section + modal Filter Editor). Set false
--- and the runtime adapter and page redirect go inert, the legacy Buff Manager
--- (page + storage + Base Icons coexistence) runs untouched, and the
--- coexistence shims stay owned by the Debuff Manager file.
--------------------------------------------------------------------------------
-ns.BM2_Enabled = true
-
--- Retirement overrides (simple grid off, indicators always on) apply only
--- while v2 is live: dormant v2 must not perturb the legacy coexistence.
-if ns.BM2_Enabled then
-    function ns.BM_BaseActive()
-        return false
-    end
-    function ns.BM_CustomActive()
-        return true
-    end
 end
 
 -------------------------------------------------------------------------------
 -- Cross-module filter bridge (parent-published): the ONE-TIME filter copies
 -- between this library and Player Aura Bars ride it (both Filter Editors'
--- copy buttons). Absence of the table = this module (or v2) is off, and the
+-- copy buttons). Absence of the table = this module is off, and the
 -- other side's button hides, so consumers must read it lazily at call time.
 -- Mutators already Invalidate internally; Refresh repaints raid frames after
 -- a copy lands new spell content here.
 -------------------------------------------------------------------------------
-if ns.BM2_Enabled then
-    EllesmereUI._BM2FilterBridge = {
-        Filters        = function() return ns.BM2_Filters() end,
-        GetFilter      = function(id) return ns.BM2_GetFilter(id) end,
-        AddFilter      = function(name) return ns.BM2_AddFilter(name) end,
-        SetSpellState  = function(id, spellID, state) return ns.BM2_SetSpellState(id, spellID, state) end,
-        AddCustomSpell = function(id, spellID) return ns.BM2_AddCustomSpell(id, spellID) end,
-        PresetAlts     = function() return ns.BM2_PresetAlts end,
-        CuratedSpells  = function(presetKey) return presetKey and DEFAULT_FILTER_SPELLS[presetKey] or nil end,
-        Refresh        = function()
-            if ns.BM2_Invalidate then ns.BM2_Invalidate() end
-            if ns.ReloadFrames then ns.ReloadFrames() end
-        end,
-    }
-end
+EllesmereUI._BM2FilterBridge = {
+    Filters        = function() return ns.BM2_Filters() end,
+    GetFilter      = function(id) return ns.BM2_GetFilter(id) end,
+    AddFilter      = function(name) return ns.BM2_AddFilter(name) end,
+    SetSpellState  = function(id, spellID, state) return ns.BM2_SetSpellState(id, spellID, state) end,
+    AddCustomSpell = function(id, spellID) return ns.BM2_AddCustomSpell(id, spellID) end,
+    -- True for an id typed into filter f: it tracks that aura alone here,
+    -- so a copy does not fan it out to its alternates.
+    SpellExact     = function(f, id) return EllesmereUI.IS_FOREVER ~= true and FilterExact(f, id) end,
+    PresetAlts     = function() return ns.BM2_PresetAlts end,
+    CuratedSpells  = function(presetKey) return presetKey and DEFAULT_FILTER_SPELLS[presetKey] or nil end,
+    -- True for an id a preset filter keeps only for the other client.
+    OtherClientSpell = OtherClientSpell,
+    Refresh        = function()
+        if ns.BM2_Invalidate then ns.BM2_Invalidate() end
+        if ns.ReloadFrames then ns.ReloadFrames() end
+    end,
+}
 
 

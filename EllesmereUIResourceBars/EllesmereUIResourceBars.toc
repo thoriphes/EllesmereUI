@@ -1,20 +1,37 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 16001
+## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
 ## Title: |cff0cd29fEllesmereUI|r Resource Bars
 ## Category: |cff0cd29fEllesmere|rUI
 ## Group: EllesmereUI
 ## Notes: Custom Resource Bars with thresholds, hash lines and more.
 ## Author: Ellesmere
-## Version: 9.2.3
+## Version: 9.8.9
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUIResourceBarsDB
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
 # Main Luas
+EUI_ResourceBars_HealthIndicators.lua
 EllesmereUIResourceBars.lua
+EUI_ResourceBars_Thresholds.lua
+EUI_ResourceBars_Defaults.lua
+EUI_ResourceBars_Frames.lua
+EUI_ResourceBars_Anchors.lua
+EUI_ResourceBars_Build.lua
+EUI_ResourceBars_Update.lua
+EUI_ResourceBars_Style.lua
+EUI_ResourceBars_Groups.lua
+EUI_ResourceBars_CastBar.lua
+EUI_ResourceBars_GCD.lua
+EUI_ResourceBars_Totem.lua
+EUI_ResourceBars_Events.lua
 EUI_ResourceBars_EbonMight121.lua
 EUI_ResourceBars_ArcaneSoul.lua
 EUI_ResourceBars_SwingTimer.lua
+EUI_ResourceBars_MirrorTimer.lua
+EUI_ResourceBars_ForeverDruidMana.lua
+EUI_ResourceBars_CallTotemBar.lua
 EUI_ResourceBars_WarriorCharges.lua
+EUI_ResourceBars_BlizzClassArt.lua
 
 # Options
 EUI_ResourceBars_Helpers.lua

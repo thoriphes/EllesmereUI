@@ -2,7 +2,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 --  EUI_PartyMode_Options.lua
 --  Party Mode options page for EllesmereUI
---  Shared across all EllesmereUI addons — only the first to load runs.
+--  Shared across all EllesmereUI addons -- only the first to load runs.
 --  DEFERRED: body runs on first EllesmereUI:EnsureLoaded() call, not at load.
 -------------------------------------------------------------------------------
 if _G._EllesmereUIPartyModeOptionsLoaded then return end
@@ -10,6 +10,10 @@ _G._EllesmereUIPartyModeOptionsLoaded = true
 
 local EllesmereUI = _G.EllesmereUI
 EllesmereUI._deferredInits[#EllesmereUI._deferredInits + 1] = function()
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
 
 -- EnsureLoaded runs after PLAYER_LOGIN, so execute the init body directly.
 do
@@ -18,6 +22,8 @@ do
     local PP = EllesmereUI.PanelPP
 
     local PAGE_PARTY = "Party Mode"
+    local PAGE_AFK   = "AFK"
+    local PAGE_HOROSCOPE = "Should I Raid Tonight?"
 
     ---------------------------------------------------------------------------
     --  Build the Party Mode page
@@ -44,13 +50,17 @@ do
                 end
             end
         );  y = y - h
-        -- Grab the label FontString from the button child
+        -- Grab the label FontString from the button child: the SHOWN button and
+        -- label (a pooled row also holds the hidden children and regions an
+        -- earlier dress left there, so the first child is not necessarily it).
         if not EllesmereUI._prebuilding then
-            local btn = select(1, activateBtnFrame:GetChildren())
+            local btn
+            for _, c in ipairs({ activateBtnFrame:GetChildren() }) do
+                if c:IsShown() and c:IsObjectType("Button") then btn = c; break end
+            end
             if btn then
-                for i = 1, btn:GetNumRegions() do
-                    local rgn = select(i, btn:GetRegions())
-                    if rgn and rgn.GetText and rgn:GetText() then
+                for _, rgn in ipairs({ btn:GetRegions() }) do
+                    if rgn:IsShown() and rgn:IsObjectType("FontString") and rgn:GetText() then
                         activateBtnLbl = rgn
                         break
                     end
@@ -85,131 +95,22 @@ do
             PP.Point(label, "LEFT", kbFrame, "LEFT", SIDE_PAD, 0)
             label:SetText(EllesmereUI.L("Toggle On/Off Keybind"))
 
-            local KB_W, KB_H = 140, 30
-            local kbBtn = CreateFrame("Button", nil, kbFrame)
-            PP.Size(kbBtn, KB_W, KB_H)
-            PP.Point(kbBtn, "RIGHT", kbFrame, "RIGHT", -SIDE_PAD, 0)
-            kbBtn:SetFrameLevel(kbFrame:GetFrameLevel() + 2)
-            kbBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-            local kbBg = EllesmereUI.SolidTex(kbBtn, "BACKGROUND", EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-            kbBg:SetAllPoints()
-            kbBtn._border = EllesmereUI.MakeBorder(kbBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, EllesmereUI.PanelPP)
-            local kbLbl = EllesmereUI.MakeFont(kbBtn, 13, nil, 1, 1, 1)
-            kbLbl:SetAlpha(EllesmereUI.DD_TXT_A)
-            kbLbl:SetPoint("CENTER")
-
-            local function FormatKey(key)
-                if not key then return EllesmereUI.L("Not Bound") end
-                local parts = {}
-                for mod in key:gmatch("(%u+)%-") do
-                    parts[#parts + 1] = mod:sub(1, 1) .. mod:sub(2):lower()
-                end
-                local actualKey = key:match("[^%-]+$") or key
-                parts[#parts + 1] = actualKey
-                return table.concat(parts, " + ")
-            end
-
-            local function RefreshLabel()
-                local key = EllesmereUIDB and EllesmereUIDB.partyModeKey
-                kbLbl:SetText(FormatKey(key))
-            end
-            RefreshLabel()
-
-            local listening = false
-
-            kbBtn:SetScript("OnClick", function(self, button)
-                if button == "RightButton" then
-                    if listening then
-                        listening = false
-                        self:EnableKeyboard(false)
-                    end
+            local kbBtn, refresh = EllesmereUI.BuildKeybindButton(kbFrame, {
+                w = 140, h = 30, font = 13,
+                get = function() return EllesmereUIDB and EllesmereUIDB.partyModeKey end,
+                set = function(fullKey)
                     if not EllesmereUIDB then EllesmereUIDB = {} end
-                    if EllesmereUIDB.partyModeKey then
+                    if fullKey then
+                        ClearOverrideBindings(EllesmereUIPartyModeBindBtn)
+                        SetOverrideBindingClick(EllesmereUIPartyModeBindBtn, true, fullKey, "EllesmereUIPartyModeBindBtn")
+                    elseif EllesmereUIDB.partyModeKey then
                         ClearOverrideBindings(EllesmereUIPartyModeBindBtn)
                     end
-                    EllesmereUIDB.partyModeKey = nil
-                    RefreshLabel()
-                    return
-                end
-                if listening then return end
-                listening = true
-                kbLbl:SetText(EllesmereUI.L("Press a key..."))
-                kbBtn:EnableKeyboard(true)
-            end)
-
-            kbBtn:SetScript("OnKeyDown", function(self, key)
-                if not listening then
-                    self:SetPropagateKeyboardInput(true)
-                    return
-                end
-                if key == "LSHIFT" or key == "RSHIFT" or key == "LCTRL" or key == "RCTRL"
-                   or key == "LALT" or key == "RALT" or key == "LMETA" or key == "RMETA" then
-                    self:SetPropagateKeyboardInput(true)
-                    return
-                end
-                self:SetPropagateKeyboardInput(false)
-                if key == "ESCAPE" then
-                    listening = false
-                    self:EnableKeyboard(false)
-                    RefreshLabel()
-                    return
-                end
-                -- Blizzard's canonical chord order is ALT-CTRL-SHIFT-KEY, and
-                -- CreateKeyChordStringUsingMetaKeyState is what produces it.
-                -- Hand-rolling the modifiers built SHIFT-CTRL-ALT-KEY, a chord
-                -- string the engine never generates, so any bind using more
-                -- than one modifier was stored in a form nothing could match.
-                -- Single-modifier binds happen to agree, which is why this
-                -- survived.
-                local fullKey
-                if CreateKeyChordStringUsingMetaKeyState then
-                    fullKey = CreateKeyChordStringUsingMetaKeyState(key)
-                else
-                    local mods = ""
-                    if IsAltKeyDown() then mods = mods .. "ALT-" end
-                    if IsControlKeyDown() then mods = mods .. "CTRL-" end
-                    if IsShiftKeyDown() then mods = mods .. "SHIFT-" end
-                    if IsMetaKeyDown and IsMetaKeyDown() then
-                        mods = mods .. "META-"
-                    end
-                    fullKey = mods .. key
-                end
-
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                ClearOverrideBindings(EllesmereUIPartyModeBindBtn)
-                SetOverrideBindingClick(EllesmereUIPartyModeBindBtn, true, fullKey, "EllesmereUIPartyModeBindBtn")
-                EllesmereUIDB.partyModeKey = fullKey
-
-                listening = false
-                self:EnableKeyboard(false)
-                RefreshLabel()
-            end)
-
-            kbBtn:SetScript("OnEnter", function(self)
-                kbBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA)
-                if kbBtn._border and kbBtn._border.SetColor then
-                    kbBtn._border:SetColor(1, 1, 1, 0.3)
-                end
-                EllesmereUI.ShowWidgetTooltip(self, "Left-click to set a keybind.\nRight-click to unbind.")
-            end)
-            kbBtn:SetScript("OnLeave", function()
-                if listening then return end
-                kbBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-                if kbBtn._border and kbBtn._border.SetColor then
-                    kbBtn._border:SetColor(1, 1, 1, EllesmereUI.DD_BRD_A)
-                end
-                EllesmereUI.HideWidgetTooltip()
-            end)
-
-            EllesmereUI.RegisterWidgetRefresh(RefreshLabel)
-
-            kbFrame:SetScript("OnHide", function()
-                if listening then
-                    listening = false
-                    kbBtn:EnableKeyboard(false)
-                    RefreshLabel()
-                end
-            end)
+                    EllesmereUIDB.partyModeKey = fullKey
+                end,
+            })
+            PP.Point(kbBtn, "RIGHT", kbFrame, "RIGHT", -SIDE_PAD, 0)
+            EllesmereUI.RegisterWidgetRefresh(refresh)
 
             y = y - ROW_H
         end
@@ -265,23 +166,52 @@ do
             nil
         );  y = y - h
 
-        -- Row 3b: Spinning Action Bars (+ speed cog)
-        -- The behaviour lives in EllesmereUIActionBars (ns.PartySpin_Refresh);
-        -- this page owns only the shared EllesmereUIDB keys, so the option is a
-        -- harmless no-op when that addon is disabled.
+        -- Row 3b: Spinning (checkbox dropdown + speed cog). Full-width row
+        -- (nil right slot expands the left region), matching the rest of
+        -- this section. Each target's spin lives in its own module; this page
+        -- owns only the shared EllesmereUIDB keys, so a target whose addon is
+        -- disabled is a harmless no-op. partyModeSpinBars is a boolean (Action
+        -- Bars only) or a per-target table: EllesmereUI.PartySpinOn reads
+        -- both and EllesmereUI.PartySpinSet turns a boolean into the table on
+        -- its first write, with the same meaning. One speed drives every target.
         do
+            local SPIN_ITEMS = {
+                { key = "actionBars", label = "Action Bars" },
+                { key = "dataBars",   label = "Data Bars" },
+                { key = "unitFrames", label = "Unit Frames" },
+                { key = "resource",   label = "Resource Bars" },
+                { key = "power",      label = "Power Bars" },
+                { key = "partyFrames", label = "Party Frames" },
+                { key = "raidFrames",  label = "Raid Frames" },
+            }
             local spinRow
-            spinRow, h = W:Toggle(parent, "Spinning Action Bars", y,
-                function() return EllesmereUIDB and EllesmereUIDB.partyModeSpinBars or false end,
-                function(v)
-                    if not EllesmereUIDB then EllesmereUIDB = {} end
-                    EllesmereUIDB.partyModeSpinBars = v
-                    if EllesmereUI.PartySpin_Refresh then EllesmereUI.PartySpin_Refresh() end
-                end,
-                "Slowly orbits your action bar buttons around each bar's centre while Party Mode is active. The buttons stay upright, so clicking, cooldowns and keybinds are unaffected. Pauses in combat, where moving a button is blocked."
+            spinRow, h = W:DualRow(parent, y,
+                { type="dropdown", text="Spinning",
+                  tooltip="Orbits the checked elements while Party Mode is active.",
+                  values={ ["_placeholder"]="..." }, order={ "_placeholder" },
+                  getValue=function() return "_placeholder" end,
+                  setValue=function() end },
+                nil
             );  y = y - h
-            if not EllesmereUI._prebuilding then
-                local _, cogShow = EllesmereUI.BuildCogPopup({
+            do
+                local rgn = spinRow._leftRegion
+                if not EllesmereUI._prebuilding then
+                    if rgn._control then rgn._control:Hide() end
+                    local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                        rgn, 200, rgn:GetFrameLevel() + 2,
+                        SPIN_ITEMS,
+                        -- The setting itself, whether or not Party Mode is on.
+                        function(k) return EllesmereUI.PartySpinOn(k, true) end,
+                        function(k, v)
+                            EllesmereUI.PartySpinSet(k, v)
+                            EllesmereUI.PartySpin_RefreshAll()
+                        end)
+                    PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+                    rgn._control = cbDD
+                    rgn._lastInline = nil
+                    EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
+                end
+                EllesmereUI.BuildInlineCog(rgn, {
                     title = "Spin",
                     rows = {
                         { type="slider", label="Speed", min=0, max=720, step=10,
@@ -294,22 +224,10 @@ do
                           set=function(v)
                               if not EllesmereUIDB then EllesmereUIDB = {} end
                               EllesmereUIDB.partyModeSpinSpeed = v
+                              EllesmereUI.PartySpin_RefreshAll()
                           end },
                     },
                 })
-                local cogBtn = CreateFrame("Button", nil, spinRow)
-                cogBtn:SetSize(26, 26)
-                -- Canonical inline-cog spacing: the toggle control is 40 wide
-                -- at RIGHT -20, and cogs sit 9px left of the control's edge
-                -- (same as the General options rows).
-                cogBtn:SetPoint("RIGHT", spinRow, "RIGHT", -20 - 40 - 9, 0)
-                cogBtn:SetFrameLevel(spinRow:GetFrameLevel() + 5)
-                cogBtn:SetAlpha(0.4)
-                local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
-                cogTex:SetAllPoints(); cogTex:SetTexture(EllesmereUI.COGS_ICON)
-                cogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-                cogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-                cogBtn:SetScript("OnClick", function(self) cogShow(self) end)
             end
         end
 
@@ -331,11 +249,11 @@ do
                 iconAtlas = function(key)
                     if key == "none" then return nil end
                     if not sndPaths[key] then return nil end
-                    return "common-icon-sound"
+                    return EllesmereUI.SOUND_ICON_ATLAS
                 end,
                 iconPressedAtlas = function(key)
                     if key == "none" then return nil end
-                    return "common-icon-sound-pressed"
+                    return EllesmereUI.SOUND_ICON_PRESSED_ATLAS
                 end,
                 iconOnClick = function(key)
                     local path = sndPaths[key]
@@ -383,15 +301,35 @@ do
             local rl = EllesmereUI._widgetRefreshList
             if rl then for i = 1, #rl do rl[i]() end end
         end }
+        -- Bloodlust is debuff-triggered with a hardcoded 40s celebration; it is
+        -- intentionally NOT wired into the Auto Celebration Duration slider, so
+        -- it has its own setValue rather than the shared TriggerSet.
+        local bloodlustCheckbox = { type = "checkbox", text = "Bloodlust",
+            getValue = TriggerGet("partyModeTriggerBloodlust"),
+            setValue = function(v)
+                if not EllesmereUIDB then EllesmereUIDB = {} end
+                EllesmereUIDB.partyModeTriggerBloodlust = v
+                if EllesmereUI_UpdatePartyModeLustListener then EllesmereUI_UpdatePartyModeLustListener() end
+                local rl = EllesmereUI._widgetRefreshList
+                if rl then for i = 1, #rl do rl[i]() end end
+            end }
+        local levelUpCheckbox = { type = "checkbox", text = "Level Up",
+            getValue = TriggerGet("partyModeTriggerLevelUp"),
+            setValue = function(v)
+                if not EllesmereUIDB then EllesmereUIDB = {} end
+                EllesmereUIDB.partyModeTriggerLevelUp = v
+                if EllesmereUI_UpdatePartyModeLevelUpListener then EllesmereUI_UpdatePartyModeLevelUpListener() end
+                local rl = EllesmereUI._widgetRefreshList
+                if rl then for i = 1, #rl do rl[i]() end end
+            end }
 
         if EllesmereUI.IS_FOREVER then
-            -- WoW Forever has no Mythic+, Mythic or Raid Finder difficulties and no
-            -- rated PvP, so those triggers can never fire there. Show only the ones
-            -- that can: Randomly | Normal Boss Kill | Heroic Boss Kill
+            -- WoW Forever has no keystones, no rated PvP, no Sated or Exhaustion
+            -- debuffs for the Bloodlust trigger and no Mythic, Heroic or Raid
+            -- Finder difficulties, and its vanilla raids report difficulty 9 or
+            -- 148, which no boss kill trigger maps. Show only what can fire there.
             _, h = W:TripleRow(parent, y,
-                randomlyCheckbox,
-                { type = "checkbox", text = "Normal Boss Kill", getValue = TriggerGet("partyModeTriggerNormalBoss"), setValue = TriggerSet("partyModeTriggerNormalBoss") },
-                { type = "checkbox", text = "Heroic Boss Kill", getValue = TriggerGet("partyModeTriggerHeroicBoss"), setValue = TriggerSet("partyModeTriggerHeroicBoss") },
+                randomlyCheckbox, levelUpCheckbox, nil,
                 CB_SPLITS
             );  y = y - h
         else
@@ -419,33 +357,12 @@ do
                 CB_SPLITS
             );  y = y - h
 
+            -- Row 4: Bloodlust | Level Up
+            _, h = W:TripleRow(parent, y,
+                bloodlustCheckbox, levelUpCheckbox, nil,
+                CB_SPLITS
+            );  y = y - h
         end
-
-        -- Row 4: Bloodlust (debuff-triggered, hardcoded 40s; intentionally NOT
-        -- wired into the Auto Celebration Duration slider, so it has its own
-        -- setValue rather than the shared TriggerSet).
-        _, h = W:TripleRow(parent, y,
-            { type = "checkbox", text = "Bloodlust",
-              getValue = TriggerGet("partyModeTriggerBloodlust"),
-              setValue = function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.partyModeTriggerBloodlust = v
-                  if EllesmereUI_UpdatePartyModeLustListener then EllesmereUI_UpdatePartyModeLustListener() end
-                  local rl = EllesmereUI._widgetRefreshList
-                  if rl then for i = 1, #rl do rl[i]() end end
-              end },
-            { type = "checkbox", text = "Level Up",
-              getValue = TriggerGet("partyModeTriggerLevelUp"),
-              setValue = function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.partyModeTriggerLevelUp = v
-                  if EllesmereUI_UpdatePartyModeLevelUpListener then EllesmereUI_UpdatePartyModeLevelUpListener() end
-                  local rl = EllesmereUI._widgetRefreshList
-                  if rl then for i = 1, #rl do rl[i]() end end
-              end },
-            nil,
-            CB_SPLITS
-        );  y = y - h
 
         -- Bottom border for the checkbox grid (matches SectionHeader separator style)
         -- Placed 1px above current y so the next row's background doesn't cover it
@@ -495,8 +412,9 @@ do
                 suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
                 suffix:SetTextColor(1, 1, 1, 0.35)
                 local durLabel
-                for i = 1, durFrame:GetNumRegions() do
-                    local reg = select(i, durFrame:GetRegions())
+                local regions = { durFrame:GetRegions() }
+                for i = 1, #regions do
+                    local reg = regions[i]
                     if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Auto Celebration Duration" then
                         durLabel = reg
                         break
@@ -525,8 +443,9 @@ do
             if not EllesmereUI._prebuilding then
                 -- Find the label and slider control regions
                 local durLabel, durControl
-                for i = 1, durFrame:GetNumRegions() do
-                    local reg = select(i, durFrame:GetRegions())
+                local regions = { durFrame:GetRegions() }
+                for i = 1, #regions do
+                    local reg = regions[i]
                     if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Auto Celebration Duration" then
                         durLabel = reg
                         break
@@ -594,8 +513,9 @@ do
                 suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
                 suffix:SetTextColor(1, 1, 1, 0.35)
                 local cdLabel
-                for i = 1, cdFrame:GetNumRegions() do
-                    local reg = select(i, cdFrame:GetRegions())
+                local regions = { cdFrame:GetRegions() }
+                for i = 1, #regions do
+                    local reg = regions[i]
                     if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Random Celebrations Minimum Cooldown" then
                         cdLabel = reg
                         break
@@ -619,10 +539,11 @@ do
             EllesmereUI.RegisterWidgetRefresh(RefreshCdDisabled)
 
             -- Disabled tooltip for cooldown slider (split: label zone + control zone)
-            do
+            if not EllesmereUI._prebuilding then
                 local cdLabel
-                for i = 1, cdFrame:GetNumRegions() do
-                    local reg = select(i, cdFrame:GetRegions())
+                local regions = { cdFrame:GetRegions() }
+                for i = 1, #regions do
+                    local reg = regions[i]
                     if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Random Celebrations Minimum Cooldown" then
                         cdLabel = reg
                         break
@@ -675,17 +596,155 @@ do
     end
 
     ---------------------------------------------------------------------------
+    --  Build the AFK page
+    ---------------------------------------------------------------------------
+    local function BuildAfkPage(pageName, parent, yOffset)
+        local W = EllesmereUI.Widgets
+        local y = yOffset
+        local _, h
+        parent._showRowDivider = true
+
+        -------------------------------------------------------------------
+        --  AFK SCREEN
+        -------------------------------------------------------------------
+        _, h = W:SectionHeader(parent, "AFK SCREEN", y);  y = y - h
+
+        local function AfkOff() return not (EllesmereUIDB and EllesmereUIDB.partyModeAfk) end
+        _, h = W:DualRow(parent, y,
+            { type="toggle", text="Bouncing Logo When AFK",
+              tooltip="Dims the screen and bounces the EUI logo around it while you are AFK. Click anywhere to dismiss. Type /afk to preview.",
+              getValue=function() return not AfkOff() end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfk = v
+                  EllesmereUI_UpdateAfkScreen()
+                  EllesmereUI:RefreshPage()
+              end },
+            { type="slider", text="Logo Speed", min=50, max=1000, step=10,
+              disabled=AfkOff, disabledTooltip="Bouncing Logo When AFK",
+              getValue=function() return (EllesmereUIDB and EllesmereUIDB.partyModeAfkSpeed) or 150 end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfkSpeed = v
+              end }
+        );  y = y - h
+
+        _, h = W:DualRow(parent, y,
+            { type="toggle", text="Spin Logo",
+              tooltip="Spins the logo while it bounces.",
+              disabled=AfkOff, disabledTooltip="Bouncing Logo When AFK",
+              getValue=function() return EllesmereUIDB and EllesmereUIDB.partyModeAfkSpin or false end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfkSpin = v
+                  EllesmereUI_UpdateAfkScreen()
+                  EllesmereUI:RefreshPage()
+              end },
+            { type="slider", text="Spin Speed", min=30, max=720, step=10,
+              tooltip="Degrees per second. 360 is one full turn a second.",
+              disabled=function() return AfkOff() or not EllesmereUIDB.partyModeAfkSpin end,
+              disabledTooltip="Spin Logo",
+              getValue=function() return (EllesmereUIDB and EllesmereUIDB.partyModeAfkSpinSpeed) or 180 end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfkSpinSpeed = v
+                  EllesmereUI_UpdateAfkScreen()
+              end }
+        );  y = y - h
+
+        _, h = W:DualRow(parent, y,
+            { type="toggle", text="Horizontal Spin",
+              tooltip="Spins the logo around its upright axis, like a flipped coin.",
+              disabled=AfkOff, disabledTooltip="Bouncing Logo When AFK",
+              getValue=function() return EllesmereUIDB and EllesmereUIDB.partyModeAfkFlip or false end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfkFlip = v
+                  EllesmereUI_UpdateAfkScreen()
+                  EllesmereUI:RefreshPage()
+              end },
+            { type="slider", text="Horizontal Spin Speed", min=30, max=720, step=10,
+              tooltip="Degrees per second. 360 is one full turn a second.",
+              disabled=function() return AfkOff() or not EllesmereUIDB.partyModeAfkFlip end,
+              disabledTooltip="Horizontal Spin",
+              getValue=function() return (EllesmereUIDB and EllesmereUIDB.partyModeAfkFlipSpeed) or 180 end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfkFlipSpeed = v
+                  EllesmereUI_UpdateAfkScreen()
+              end }
+        );  y = y - h
+
+        local cornerRow
+        cornerRow, h = W:DualRow(parent, y,
+            { type="toggle", text="Party Lights on Corner Hit",
+              tooltip="Starts Party Mode whenever the logo lands in a corner. Set how long it lasts with the cog.",
+              disabled=AfkOff, disabledTooltip="Bouncing Logo When AFK",
+              getValue=function() return EllesmereUIDB and EllesmereUIDB.partyModeAfkCorner or false end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfkCorner = v
+                  EllesmereUI:RefreshPage()
+              end },
+            { type="slider", text="Corner Odds", min=5, max=50, step=5,
+              tooltip="How easily a bounce counts as a corner. Lower is rarer.",
+              disabled=function() return AfkOff() or not EllesmereUIDB.partyModeAfkCorner end,
+              disabledTooltip="Party Lights on Corner Hit",
+              getValue=function() return (EllesmereUIDB and EllesmereUIDB.partyModeAfkCornerSize) or 50 end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfkCornerSize = v
+              end }
+        );  y = y - h
+
+        _, h = W:DualRow(parent, y,
+            { type="slider", text="Logo Size", min=0.5, max=3.0, step=0.05,
+              tooltip="Scales the logo and its text. Applies the next time the AFK screen shows.",
+              disabled=AfkOff, disabledTooltip="Bouncing Logo When AFK",
+              getValue=function() return (EllesmereUIDB and EllesmereUIDB.partyModeAfkScale) or 1 end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.partyModeAfkScale = v
+              end },
+            EllesmereUI.BlankRowCfg()
+        );  y = y - h
+        do
+            local function CornerOff() return AfkOff() or not EllesmereUIDB.partyModeAfkCorner end
+            EllesmereUI.BuildInlineCog(cornerRow._leftRegion, {
+                disabled = CornerOff, disabledTooltip = "Party Lights on Corner Hit",
+                title = "Corner Party",
+                rows = {
+                    { type="slider", label="Duration", min=1, max=15, step=1,
+                      tooltip="Seconds Party Mode runs after a corner hit.",
+                      get=function() return (EllesmereUIDB and EllesmereUIDB.partyModeAfkCornerSecs) or 15 end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.partyModeAfkCornerSecs = v
+                      end },
+                },
+            })
+        end
+
+        return math.abs(y)
+    end
+
+    ---------------------------------------------------------------------------
     --  Register the module
     ---------------------------------------------------------------------------
     EllesmereUI:RegisterModule("EllesmereUIPartyMode", {
         title       = "Party Mode",
         description = "Disco lights overlay for celebrations.",
-        pages       = { PAGE_PARTY },
+        pages       = { PAGE_PARTY, PAGE_HOROSCOPE, PAGE_AFK },
         buildPage   = function(pageName, parent, yOffset)
             if pageName == PAGE_PARTY then
                 return BuildPartyModePage(pageName, parent, yOffset)
+            elseif pageName == PAGE_AFK then
+                return BuildAfkPage(pageName, parent, yOffset)
+            elseif pageName == PAGE_HOROSCOPE then
+                return EllesmereUI._BuildRaidHoroscopePage(parent, yOffset)
             end
         end,
+        resetScope  = "account",
         onReset     = function()
             -- Stop party mode (restores CVars if dimmed)
             if EllesmereUIDB and EllesmereUIDB.partyMode then
@@ -712,9 +771,24 @@ do
                 EllesmereUIDB.partyModeRandomCooldown = nil
                 EllesmereUIDB.partyModeDimLights = nil
                 EllesmereUIDB.partyModeSoundKey = nil
+                EllesmereUIDB.partyModeAfk = nil
+                EllesmereUIDB.partyModeAfkSpeed = nil
+                EllesmereUIDB.partyModeAfkSpin = nil
+                EllesmereUIDB.partyModeAfkSpinSpeed = nil
+                EllesmereUIDB.partyModeAfkCorner = nil
+                EllesmereUIDB.partyModeAfkCornerSize = nil
+                EllesmereUIDB.partyModeAfkCornerSecs = nil
+                EllesmereUIDB.partyModeAfkScale = nil
+                EllesmereUIDB.partyModeAfkFlip = nil
+                EllesmereUIDB.partyModeAfkFlipSpeed = nil
+                EllesmereUI.ClearCharField("horoscope")
             end
+            EllesmereUI_UpdateAfkScreen()
             -- Stop random trigger timer
             EllesmereUI_StopRandomTrigger()
+            -- Drop the Bloodlust and Level Up event listeners with their keys
+            if EllesmereUI_UpdatePartyModeLustListener then EllesmereUI_UpdatePartyModeLustListener() end
+            if EllesmereUI_UpdatePartyModeLevelUpListener then EllesmereUI_UpdatePartyModeLevelUpListener() end
             -- Clear any override bindings
             if EllesmereUIPartyModeBindBtn then
                 ClearOverrideBindings(EllesmereUIPartyModeBindBtn)

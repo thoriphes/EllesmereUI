@@ -266,7 +266,7 @@ local Apply                    -- forward: the event handler closes over it
 --
 -- The keybind clicks the button, which is the only thing that works during combat. Out
 -- of combat the same snippet is run through SecureHandlerExecute instead of being
--- re-implemented in Lua. EllesmereUIRaidFrames.lua does exactly this, for exactly this
+-- re-implemented in Lua. EUI_RaidFrames_BossFrames.lua does exactly this, for exactly this
 -- reason: the driver manager only fires the attribute handlers on value CHANGES, so a
 -- reapply with unchanged states would otherwise never run.
 local RUN_APPLY = [[ self:RunAttribute("apply") ]]
@@ -383,21 +383,27 @@ local COLLAPSE_SNIPPET = [[
 -- these panels would be the only ones in the suite ignoring the Global Font setting.
 local FONT_KEY = "extras"      -- QoL's key in EllesmereUI._addonKeyToFolder
 local fontOwners = {}          -- filled at build: shells + holders
-local function TrackFont(owner, fs, size)
+-- family: a font family string (a text that shows players' names), which takes
+-- every font through SetFontFamily, never a plain SetFont
+local function TrackFont(owner, fs, size, family)
     local t = owner._fonts
     if not t then t = {}; owner._fonts = t end
-    t[#t + 1] = { fs = fs, size = size }
+    t[#t + 1] = { fs = fs, size = size, family = family }
     return fs
 end
 local function ApplyFonts()
-    local path = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath(FONT_KEY)
+    local path = EllesmereUI.GetFontPath(FONT_KEY)
     if not path then return end
     for _, owner in ipairs(fontOwners) do
         local t = owner._fonts
         if t then
             for _, e in ipairs(t) do
-                local _, _, flags = e.fs:GetFont()
-                e.fs:SetFont(path, e.size, flags or "")
+                if e.family then
+                    EllesmereUI.SetFontFamily(e.fs, path, e.size, "", false)
+                else
+                    local _, _, flags = e.fs:GetFont()
+                    e.fs:SetFont(path, e.size, flags or "")
+                end
             end
         end
     end
@@ -408,7 +414,7 @@ local markerButtons = {}       -- secure buttons, dimmed on assist
 local pullButtons = {}         -- fixed set of 3; only the ones above 0s show
 -- Created once at build; the layout pass decides which reach the screen. Ready
 -- Check has no switch by design.
-local readyButton, roleButton, convertButton, disbandButton, stopButton
+local readyButton, roleButton, convertButton, disbandButton, stopButton, buffButton
 local compactReadyButton, compactPullButton, compactDivider
 local compactMarkerButtons = {}
 local ShowCompactTip, HideCompactTip
@@ -476,6 +482,15 @@ local DB_DEFAULTS = {
         showRoleCheck = true,
         showConvert   = true,
         showDisband   = true,
+        -- Raid Buff Check (EllesmereUIQoL_RaidBuffCheck.lua): the feature, its
+        -- ready check trigger and window state. Off by default.
+        buffCheck            = false,
+        buffCheckOnReady     = true,
+        buffCheckOnlyMissing = true,
+        buffCheckRuneRequired = true,
+        buffCheckVantusRequired = false,
+        -- Opt-in Buff Check group button (needs buffCheck).
+        showBuffCheck = false,
         -- Per-section: pos[key] = { point, relPoint, x, y }
         pos           = {},
     },
@@ -497,6 +512,7 @@ local DB_DEFAULTS = {
 local function P()
     return db and db.profile and db.profile.raidTools
 end
+ns.RaidToolsProfile = P
 
 local function Mode()
     local p = P()
@@ -649,15 +665,22 @@ local function MakeMarkerButton(parent, index, kind)
     icon:SetAlpha(0.8)
     b._baseAlpha = 0.8
     if kind == "compact" then
-        local active = b:CreateTexture(nil, "OVERLAY")
+        -- The "marker is down" underline rides its own child FRAME: its
+        -- visibility follows an answer that can be secret (see
+        -- RefreshCompactMarkerState), and SetAlphaFromBoolean -- the
+        -- secret-safe switch -- renders nothing on a texture. A plain frame
+        -- takes no mouse input, so the host never eats the button's clicks.
+        local host = CreateFrame("Frame", nil, b)
+        host:SetAllPoints(b)
+        host:SetAlpha(0)
+        local active = host:CreateTexture(nil, "OVERLAY")
         active:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 2, -2)
         active:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -2, -2)
         active:SetHeight(2)
         local ar, ag, ab = 0.05, 0.82, 0.62
         if EllesmereUI.GetAccentColor then ar, ag, ab = EllesmereUI.GetAccentColor() end
         active:SetColorTexture(ar, ag, ab, 0.95)
-        active:Hide()
-        b._activeLine = active
+        b._activeHost = host
     end
     b:SetScript("OnEnter", function(self)
         if (self._baseAlpha or 0.8) >= 0.8 then self.icon:SetAlpha(1) end
@@ -698,6 +721,35 @@ local function IsLeader()
     return UnitIsGroupLeader("player")
 end
 
+-- The Raid Buff Check window (EllesmereUIQoL_RaidBuffCheck.lua) wears these panels'
+-- dress and font. Text: a font string on parent in the QoL font, kept current by
+-- ApplyFonts through owner (registered with AddFontOwner).
+ns.RT = {
+    TOPBAR_H = TOPBAR_H,
+    SkinPanelBg = SkinPanelBg,
+    SkinPanelBorder = SkinPanelBorder,
+    SkinButtonChrome = SkinButtonChrome,
+    HasAssist = HasAssist,
+    AddFontOwner = function(owner) fontOwners[#fontOwners + 1] = owner end,
+    Text = function(owner, parent, size, r, g, b)
+        local fs = TrackFont(owner, EllesmereUI.MakeFont(parent, size, nil, r, g, b), size)
+        local path = EllesmereUI.GetFontPath(FONT_KEY)
+        if path then
+            local _, _, flags = fs:GetFont()
+            fs:SetFont(path, size, flags or "")
+        end
+        return fs
+    end,
+    -- Text for a player's name: the same font as a font family, which draws the
+    -- scripts the font lacks (no outline, no shadow, as Text has)
+    NameText = function(owner, parent, size, r, g, b)
+        local fs = TrackFont(owner, parent:CreateFontString(nil, "OVERLAY"), size, true)
+        EllesmereUI.SetFontFamily(fs, EllesmereUI.GetFontPath(FONT_KEY) or EllesmereUI.EXPRESSWAY, size, "", false)
+        if r then fs:SetTextColor(r, g, b, 1) end
+        return fs
+    end,
+}
+
 -- In a RAID, every control on the panel needs leader or assist: ready check,
 -- role check, the countdown, convert, disband and the marker buttons are all
 -- refused by the server without it. So the feature steps off the screen there
@@ -720,6 +772,17 @@ end
 local function ButtonShown(key)
     local p = P()
     return not p or p[key] ~= false
+end
+
+-- The Buff Check button needs Raid Buff Check on (and a retail client: the
+-- feature file publishes ns.ToggleBuffCheck only there).
+local function BuffCheckShown()
+    local p = P()
+    return p and p.showBuffCheck == true and p.buffCheck == true and ns.ToggleBuffCheck ~= nil
+end
+
+local function ToggleBuffCheck()
+    if ns.ToggleBuffCheck then ns.ToggleBuffCheck() end
 end
 
 -- The pull durations worth a button, in slot order. 0 (and anything below it)
@@ -749,7 +812,8 @@ local function RefreshPermissions(force)
 
     for _, b in ipairs(groupButtons) do
         local allowed
-        if b.needsLeader then allowed = leader else allowed = assist end
+        if b.ungated then allowed = true
+        elseif b.needsLeader then allowed = leader else allowed = assist end
         SetButtonEnabled(b, allowed)
     end
 
@@ -793,7 +857,7 @@ local function StartPull(secs)
     local handler = BossModPullHandler()
     if handler then handler(tostring(secs)) end
     if ChatLocked() then
-        EllesmereUI.Print("|cff0cd29fEllesmereUI:|r " .. EllesmereUI.L("In-game countdown unavailable in combat; the boss mod pull timer still started."))
+        EllesmereUI.Print(EllesmereUI.COLOR_CODES.BRAND .. "EllesmereUI:|r " .. EllesmereUI.L("In-game countdown unavailable in combat; the boss mod pull timer still started."))
         return
     end
     C_PartyInfo.DoCountdown(secs)
@@ -951,6 +1015,7 @@ local function LayoutGroupContent()
     end
     Add(readyButton)
     if ButtonShown("showRoleCheck") then Add(roleButton) end
+    if BuffCheckShown()             then Add(buffButton) end
     if ButtonShown("showConvert")   then Add(convertButton) end
     if ButtonShown("showDisband")   then Add(disbandButton) end
     if #pair > 0 then rows[#rows + 1] = pair end
@@ -1004,6 +1069,8 @@ local function BuildGroupContent()
 
     readyButton = MakeGroupButton(f, "Ready Check", full, function() DoReadyCheck() end)
     roleButton  = MakeGroupButton(f, "Role Check", full, function() InitiateRolePoll() end)
+    buffButton  = MakeGroupButton(f, "Buff Check", full, ToggleBuffCheck)
+    buffButton.ungated = true   -- only reads auras: needs no leader or assist
 
     convertButton = MakeGroupButton(f, "Convert to Raid", full, function()
         if IsInRaid() then C_PartyInfo.ConvertToParty() else C_PartyInfo.ConvertToRaid() end
@@ -1030,8 +1097,8 @@ end
 -- Row order matches how they are used: unit markers first, ground markers
 -- under them. Labels reach L as variables (see the SECTIONS comment).
 local MARKER_ROWS = {
-    { kind = "target", label = "Target" },
-    { kind = "world",  label = "World"  },
+    { kind = "target", label = "Target Markers" },
+    { kind = "world",  label = "World Markers"  },
 }
 
 local function BuildMarkersContent()
@@ -1072,7 +1139,7 @@ do
     local TIP_PAD, TIP_ROW_GAP, TIP_COL_GAP, TIP_FONT_SIZE = 10, 3, 18, 12
 
     local function SetTipFont(fs)
-        local path = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath(FONT_KEY)
+        local path = EllesmereUI.GetFontPath(FONT_KEY)
         local _, _, flags = fs:GetFont()
         if not path and GameFontNormal then
             local fallbackPath, _, fallbackFlags = GameFontNormal:GetFont()
@@ -1270,11 +1337,28 @@ local function RefreshCompactPullState()
     LayoutCompactMarkers()
 end
 
+-- The compact band's marker state: a symbol greys out, and the accent line
+-- under it lights, while that world marker is on the ground.
+--
+-- IsRaidMarkerActive answers a SECRET boolean during chat messaging lockdown:
+-- on every dungeon and raid map, in or out of combat, and through boss
+-- encounters, keystones and PvP matches. So the answer is never tested here.
+-- It goes through C_CurveUtil into the icon's desaturation and into the line
+-- host's SetAlphaFromBoolean, both of which take a secret from our code, and
+-- the client resolves it; a plain answer takes the same calls. Nothing is
+-- kept, so the next RAID_TARGET_UPDATE repaints from scratch.
 local function RefreshCompactMarkerState()
+    -- Hidden buttons are left alone: switching back to the band runs
+    -- ApplyLayout, which ends by calling this.
+    if ShowAs() ~= "compact" then return end
     for _, b in ipairs(compactMarkerButtons) do
-        local active = b._worldID and IsRaidMarkerActive and IsRaidMarkerActive(b._worldID)
-        if b.icon.SetDesaturated then b.icon:SetDesaturated(active and true or false) end
-        if b._activeLine then b._activeLine:SetShown(active and true or false) end
+        -- The clear button carries no world marker and never greys out.
+        local id = b._worldID
+        if id and IsRaidMarkerActive then
+            local active = IsRaidMarkerActive(id)
+            b.icon:SetDesaturation(C_CurveUtil.EvaluateColorValueFromBoolean(active, 1, 0))
+            b._activeHost:SetAlphaFromBoolean(active, 1, 0)
+        end
     end
 end
 
@@ -1295,19 +1379,20 @@ local function BuildCompactContent()
     compactReadyButton = MakeCompactActionButton(compactHolder,
         "RC",
         function()
+            local actions = { { "Left Click", "Ready Check" } }
             if ButtonShown("showRoleCheck") then
-                return "Ready Check", {
-                    { "Left Click", "Ready Check" },
-                    { "Right Click", "Role Check" },
-                }
+                actions[#actions + 1] = { "Right Click", "Role Check" }
             end
-            return "Ready Check", {
-                { "Left Click", "Ready Check" },
-            }
+            if BuffCheckShown() then
+                actions[#actions + 1] = { "Shift + Left Click", "Buff Check" }
+            end
+            return "Ready Check", actions
         end,
         function(_, button)
             if button == "RightButton" then
                 if ButtonShown("showRoleCheck") then InitiateRolePoll() end
+            elseif IsShiftKeyDown() and BuffCheckShown() then
+                ToggleBuffCheck()
             else
                 DoReadyCheck()
             end
@@ -1743,12 +1828,45 @@ end
 -- Build the first-free run from live marker state. Protected attributes cannot
 -- be changed during combat, so the secure Place button consumes the last run
 -- prepared out of combat and PLAYER_REGEN_ENABLED refreshes it afterward.
+--
+-- IsRaidMarkerActive answers a SECRET boolean during chat messaging lockdown:
+-- on every dungeon and raid map, in or out of combat, and through boss
+-- encounters, keystones and PvP matches. A secret cannot choose which
+-- attributes to write; no snippet can read marker state, and the one secure
+-- action that tests it (the worldmarker toggle) flips a single fixed marker,
+-- so it cannot pick the first free one. While the answer is secret the run
+-- already prepared is kept, and Place, Undo and Clear carry on by position
+-- exactly as they do in combat. A full Star to Skull run starts instead when
+-- the instance changed (runtime.qfZonedPending, latched at PLAYER_ENTERING_WORLD
+-- so a zone-in during combat still lands here), when no run exists yet, or
+-- when the run is used up -- clears are invisible while secret (ours, /cwm,
+-- another player's), so an exhausted run starts over rather than going dead.
+-- Markers already on the ground are not skipped then. The answers are all
+-- read before anything is written, so a secret never leaves a half-built run.
+-- An instance change also empties the Undo stack: its markers are gone.
 local function PrimeQuickFire(place)
     if not place or InCombatLockdown() then return end
+    local zoned = runtime.qfZonedPending
+    local free = runtime.qfFree
+    if not free then free = {}; runtime.qfFree = free end
+    for i = 1, 8 do
+        local active = IsRaidMarkerActive and IsRaidMarkerActive(SYMBOL_TO_WORLD[i])
+        if issecretvalue(active) then
+            local n = tonumber(place:GetAttribute("qfAvailCount"))
+            if zoned or not n or (tonumber(place:GetAttribute("qfAvailPos")) or 0) >= n then
+                for j = 1, 8 do place:SetAttribute("qfAvail" .. j, j) end
+                place:SetAttribute("qfAvailCount", 8)
+                place:SetAttribute("qfAvailPos", 0)
+                if zoned or not n then place:SetAttribute("qfDepth", 0) end
+                runtime.qfZonedPending = nil
+            end
+            return
+        end
+        free[i] = not active
+    end
     local count = 0
     for i = 1, 8 do
-        local marker = SYMBOL_TO_WORLD[i]
-        if not IsRaidMarkerActive or not IsRaidMarkerActive(marker) then
+        if free[i] then
             count = count + 1
             place:SetAttribute("qfAvail" .. count, i)
         end
@@ -1756,6 +1874,8 @@ local function PrimeQuickFire(place)
     for i = count + 1, 8 do place:SetAttribute("qfAvail" .. i, nil) end
     place:SetAttribute("qfAvailCount", count)
     place:SetAttribute("qfAvailPos", 0)
+    if zoned then place:SetAttribute("qfDepth", 0) end
+    runtime.qfZonedPending = nil
 end
 
 -- The three invisible buttons are created only after Quick Fire is enabled.
@@ -1939,12 +2059,25 @@ local function EnsureEvents()
                 return
             end
             if Mode() == "never" then return end
-            if event == "RAID_TARGET_UPDATE" and ShowAs() == "compact" then
+            -- A zone change repaints the band too: the markers it showed belong
+            -- to the ground just left.
+            if (event == "RAID_TARGET_UPDATE" or event == "PLAYER_ENTERING_WORLD")
+               and ShowAs() == "compact" then
                 RefreshCompactMarkerState()
             end
-            -- Both features share this event, but each only does work while
-            -- enabled. An old Quick Fire frame can survive being disabled.
-            if event == "RAID_TARGET_UPDATE" or event == "PLAYER_REGEN_ENABLED" then
+            -- Both features share these events, but each only does work while
+            -- enabled. An old Quick Fire frame can survive being disabled. An
+            -- instance change is latched for the next prime out of combat (see
+            -- PrimeQuickFire); a loading screen inside the same instance is not one.
+            if event == "PLAYER_ENTERING_WORLD" then
+                local zone = select(8, GetInstanceInfo())
+                if zone ~= runtime.qfZone then
+                    runtime.qfZone = zone
+                    runtime.qfZonedPending = true
+                end
+            end
+            if event == "RAID_TARGET_UPDATE" or event == "PLAYER_REGEN_ENABLED"
+               or event == "PLAYER_ENTERING_WORLD" then
                 local p = P()
                 if p and p.quickFire == true and runtime.qfPlace then
                     PrimeQuickFire(runtime.qfPlace)
@@ -2118,10 +2251,9 @@ end
 -- protected as Hide). So in combat the whole request is parked behind applyPending,
 -- with the REGEN listener guaranteed alive to finish it.
 function Apply()
-    -- Secure handlers end to end (state-driven shells, click handlers):
-    -- stands down on a client that cannot compile snippets (WoW Forever
-    -- beta). Nothing is built, so there is nothing to tear down either.
-    if not EllesmereUI.SecureSnippetsOK() then return end
+    -- Raid Buff Check registers plain events only, so it follows the settings
+    -- even in combat and with the panels on Never.
+    if ns.BuffCheckSync then ns.BuffCheckSync() end
     if InCombatLockdown() then
         applyPending = true
         EnsureEvents()
@@ -2203,17 +2335,17 @@ end
 SLASH_EUIRAIDTOOLS1 = "/euiraid"
 SlashCmdList["EUIRAIDTOOLS"] = function()
     if Mode() == "never" then
-        EllesmereUI.Print("|cff0cd29fEllesmereUI:|r " .. EllesmereUI.L("Raid Tools is disabled in the EllesmereUI options."))
+        EllesmereUI.Print(EllesmereUI.COLOR_CODES.BRAND .. "EllesmereUI:|r " .. EllesmereUI.L("Raid Tools is disabled in the EllesmereUI options."))
         return
     end
     if InCombatLockdown() then
-        EllesmereUI.Print("|cff0cd29fEllesmereUI:|r " .. EllesmereUI.L("Raid Tools cannot be toggled by slash command in combat -- use the keybind."))
+        EllesmereUI.Print(EllesmereUI.COLOR_CODES.BRAND .. "EllesmereUI:|r " .. EllesmereUI.L("Raid Tools cannot be toggled by slash command in combat -- use the keybind."))
         return
     end
     -- The snippet would refuse anyway (enabled is false while the gate is
     -- shut); saying so beats a slash command that looks broken.
     if AssistSuppressed() then
-        EllesmereUI.Print("|cff0cd29fEllesmereUI:|r " .. EllesmereUI.L("Raid Tools is hidden in a raid without leader or assist -- none of its buttons work there."))
+        EllesmereUI.Print(EllesmereUI.COLOR_CODES.BRAND .. "EllesmereUI:|r " .. EllesmereUI.L("Raid Tools is hidden in a raid without leader or assist -- none of its buttons work there."))
         return
     end
     BuildAll()

@@ -6,8 +6,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  to keep enabled. Visual style mirrors the Spec Assign popup (dimmer +
 --  dark panel + white border + Check All / Uncheck All links + Done button).
 --
---  Layout: three columns (Core / QoL / UI Reskin), one checkbox per row,
---  groups build down independently.
+--  Layout: one column per group (the sidebar's groups: Core / Secondary /
+--  Utility / UI Enhancements), one checkbox per row, groups build down
+--  independently.
 --
 --  Fires at PLAYER_LOGIN, BEFORE the conflict-check popup (see EllesmereUI.lua
 --  which now gates its conflict check on EllesmereUIDB.firstInstallPopupShown).
@@ -51,14 +52,22 @@ local GROUPS = {
             { label = "Unit Frames",      addon = "EllesmereUIUnitFrames" },
             { label = "Cooldown Manager", addon = "EllesmereUICooldownManager" },
             { label = "Resource Bars",    addon = "EllesmereUIResourceBars" },
-            { label = "Raid Frames",      addon = "EllesmereUIRaidFrames" },
+            { label = "Raid & Party Frames", addon = "EllesmereUIRaidFrames" },
         },
     },
     {
-        header = "QoL Addons",
+        header = "Secondary Addons",
+        entries = {
+            { label = "Mythic+ Tools",       addon = "EllesmereUIMythicTimer" },
+            { label = "Damage Meters",       addon = "EllesmereUIDamageMeters" },
+            { label = "AuraBuff Reminders",  addon = "EllesmereUIAuraBuffReminders" },
+        },
+    },
+    {
+        header = "Utility Addons",
         entries = {
             { label = "Quality of Life",     addon = "EllesmereUIQoL" },
-            { label = "AuraBuff Reminders",  addon = "EllesmereUIAuraBuffReminders" },
+            { label = "Forever Essentials",  addon = "EllesmereUIForeverEssentials" },
             { label = "DataBars",            addon = "EllesmereUIDataBars" },
             { label = "Quickdraw",           addon = "EllesmereUIQuickdraw" },
             -- Cursor Circle is a feature inside the QoL addon (cursor.enabled).
@@ -68,27 +77,26 @@ local GROUPS = {
         },
     },
     {
-        header = "UI Reskin Addons",
+        header = "UI Enhancements",
         entries = {
-            { label = "Blizz UI Enhanced", addon = "EllesmereUIBlizzardSkin" },
-            { label = "Friends List",      addon = "EllesmereUIFriends" },
-            { label = "Damage Meters",     addon = "EllesmereUIDamageMeters" },
+            { label = "Blizzard Skins+",   addon = "EllesmereUIBlizzardSkin" },
             { label = "Chat",              addon = "EllesmereUIChat" },
             { label = "Bags",              addon = "EllesmereUIBags" },
-            { label = "Mythic+ Tools",     addon = "EllesmereUIMythicTimer" },
             { label = "Quest Tracker",     addon = "EllesmereUIQuestTracker" },
+            { label = "Friends List",      addon = "EllesmereUIFriends" },
         },
     },
 }
 
--- WoW Forever: addons switched off for the whole client leave the picker
--- (the set lives with the roster in EllesmereUI.lua).
-if EUI_CLIENT_FOREVER == true and EllesmereUI.FOREVER_HIDDEN_ADDONS then
+-- Addons the running client leaves out (switched off on WoW Forever, or
+-- Forever-only everywhere else) leave the picker (the sets live with the
+-- roster in EllesmereUI.lua).
+do
+    local hidden = EllesmereUI._CLIENT_HIDDEN_ADDONS
     for _, group in ipairs(GROUPS) do
         for i = #group.entries, 1, -1 do
             local addon = group.entries[i].addon
-            local stood = EllesmereUI.FOREVER_STOOD_DOWN_ADDONS
-            if addon and (EllesmereUI.FOREVER_HIDDEN_ADDONS[addon] or (stood and stood[addon])) then
+            if addon and hidden[addon] then
                 table.remove(group.entries, i)
             end
         end
@@ -137,55 +145,15 @@ local function ShowFirstInstallPopup()
     local contentH = HEADER_H + HEADER_PAD + tallestRows * ROW_H
     local POPUP_H  = CONTENT_TOP + contentH + 110  -- room for links + button
 
-    local ppScale = (EllesmereUI.GetPopupScale and EllesmereUI.GetPopupScale()) or 1
-
-    -- Dimmer
-    local dimmer = CreateFrame("Frame", "EUIFirstInstallDimmer", UIParent)
-    dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
-    dimmer:SetAllPoints(UIParent)
-    dimmer:EnableMouse(true)
-    dimmer:EnableMouseWheel(true)
-    dimmer:SetScript("OnMouseWheel", function() end)
-    dimmer:SetScale(ppScale)
-    local dimTex = dimmer:CreateTexture(nil, "BACKGROUND")
-    dimTex:SetAllPoints()
-    dimTex:SetColorTexture(0, 0, 0, 0.35)
-
-    -- Popup
-    local popup = CreateFrame("Frame", "EUIFirstInstallPopup", dimmer)
-    popup:SetScale(EllesmereUI.PopupBump(1))
-    popup:SetFrameStrata("FULLSCREEN_DIALOG")
-    popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
-    PP.Size(popup, POPUP_W, POPUP_H)
-    -- This popup is modal and has no Escape route, so it must never exceed the
-    -- display (see ClampPopupToScreen).
-    if EllesmereUI.ClampPopupToScreen then
-        EllesmereUI.ClampPopupToScreen(popup, POPUP_W, POPUP_H)
-    end
-    popup:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    popup:EnableMouse(true)
-
-    local bg = popup:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints()
-    bg:SetColorTexture(0.06, 0.08, 0.10, 1)
-
-    -- 1 physical-pixel white border (announcement-popup chrome), scale-derived
-    -- so each edge stays exactly one physical pixel. Snap disabled.
-    local onePhys = 1 / (popup:GetEffectiveScale() or 1)
-    local BRD_A = 0.15
-    local function MakeEdge()
-        local t = popup:CreateTexture(nil, "BORDER")
-        t:SetColorTexture(1, 1, 1, BRD_A)
-        if t.SetSnapToPixelGrid then t:SetSnapToPixelGrid(false); t:SetTexelSnappingBias(0) end
-        return t
-    end
-    local spT = MakeEdge(); spT:SetPoint("TOPLEFT", 0, 0); spT:SetPoint("TOPRIGHT", 0, 0); spT:SetHeight(onePhys)
-    local spB = MakeEdge(); spB:SetPoint("BOTTOMLEFT", 0, 0); spB:SetPoint("BOTTOMRIGHT", 0, 0); spB:SetHeight(onePhys)
-    local spL = MakeEdge(); spL:SetPoint("TOPLEFT", spT, "BOTTOMLEFT"); spL:SetPoint("BOTTOMLEFT", spB, "TOPLEFT"); spL:SetWidth(onePhys)
-    local spR = MakeEdge(); spR:SetPoint("TOPRIGHT", spT, "BOTTOMRIGHT"); spR:SetPoint("BOTTOMRIGHT", spB, "TOPRIGHT"); spR:SetWidth(onePhys)
+    -- Escape is disabled (no onEscape): the user must click Reload UI so their
+    -- addon selection always takes effect. The popup is modal with no Escape
+    -- route, so it is clamped to never exceed the display.
+    local dimmer, popup = EllesmereUI.BuildPopupShell("EUIFirstInstall", {
+        w = POPUP_W, h = POPUP_H, bump = 1, clamp = true,
+    })
 
     -- Decorative header visual (announcement-popup style): three mini module
-    -- cards echoing the three picker columns below, each with the green top
+    -- cards in the look of the picker columns below, each with the green top
     -- accent and a checked box beside stand-in text lines. The center card is
     -- slightly taller/brighter, matching the sibling popups' motif.
     do
@@ -202,7 +170,7 @@ local function ShowFirstInstallPopup()
             PP.Point(card, "CENTER", popup, "TOP", (i - 2) * (CARD_W + CARD_GAP), MIDLINE)
             local cbg = card:CreateTexture(nil, "BACKGROUND")
             cbg:SetAllPoints()
-            cbg:SetColorTexture(0.12, 0.13, 0.15, 1)
+            cbg:SetColorTexture(0.121, 0.113, 0.106, 1)
 
             -- Green top accent (the suite's hero-card signature).
             local accent = card:CreateTexture(nil, "ARTWORK")
@@ -298,13 +266,10 @@ local function ShowFirstInstallPopup()
     uncheckAllBtn:SetScript("OnEnter", function() uncheckAllLbl:SetTextColor(1, 1, 1, 0.80) end)
     uncheckAllBtn:SetScript("OnLeave", function() uncheckAllLbl:SetTextColor(1, 1, 1, 0.45) end)
 
-    -- Track all checkbox rows for check-all / uncheck-all + change detection
+    -- Track all checkbox rows for check-all / uncheck-all
     local allRows = {}
 
-    -- Track initial states so we can tell if user changed anything
-    local initialState = {}
-
-    -- Build the three columns
+    -- One column per group
     for colIdx, group in ipairs(GROUPS) do
         local col = CreateFrame("Frame", nil, popup)
         col:SetFrameLevel(popup:GetFrameLevel() + 1)
@@ -335,12 +300,13 @@ local function ShowFirstInstallPopup()
             local boxBg = box:CreateTexture(nil, "BACKGROUND")
             boxBg:SetAllPoints()
             boxBg:SetColorTexture(CB_BOX_R, CB_BOX_G, CB_BOX_B, 1)
-            local boxBorder = MakeBorder(box, BORDER_R, BORDER_G, BORDER_B, CB_BRD_A, PP)
+            local boxBorder = EllesmereUI.MakeRoundedBorder(box, BORDER_R, BORDER_G, BORDER_B, CB_BRD_A, boxBg)
 
             local check = box:CreateTexture(nil, "ARTWORK")
             PP.Point(check, "TOPLEFT", box, "TOPLEFT", CHECK_INSET, -CHECK_INSET)
             PP.Point(check, "BOTTOMRIGHT", box, "BOTTOMRIGHT", -CHECK_INSET, CHECK_INSET)
             check:SetColorTexture(ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 1)
+            EllesmereUI.RoundBody(box, check, 1)
 
             local lbl = row:CreateFontString(nil, "OVERLAY")
             lbl:SetFont(FONT, 17, "")
@@ -363,7 +329,6 @@ local function ShowFirstInstallPopup()
             else
                 checked = false
             end
-            initialState[entry.label] = checked
 
             row._entry = entry
             row._checked = checked
@@ -397,15 +362,13 @@ local function ShowFirstInstallPopup()
             end)
             row:SetScript("OnEnter", function(self)
                 if self._informational then
-                    if EllesmereUI.ShowWidgetTooltip then
-                        EllesmereUI.ShowWidgetTooltip(self, "Coming soon")
-                    end
+                    EllesmereUI.ShowWidgetTooltip(self, "Coming soon")
                     return
                 end
                 self._lbl:SetTextColor(1, 1, 1, 0.90)
             end)
             row:SetScript("OnLeave", function(self)
-                if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+                EllesmereUI.HideWidgetTooltip()
                 if self._informational then return end
                 self._lbl:SetTextColor(1, 1, 1, 0.65)
             end)
@@ -423,8 +386,8 @@ local function ShowFirstInstallPopup()
     PP.Point(doneBtn, "BOTTOM", popup, "BOTTOM", 0, 38)
     local doneBg = doneBtn:CreateTexture(nil, "BACKGROUND")
     doneBg:SetAllPoints()
-    doneBg:SetColorTexture(0.06, 0.08, 0.10, 0.92)
-    local doneBrd = MakeBorder(doneBtn, EG.r, EG.g, EG.b, 0.9, PP)
+    doneBg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
+    local doneBrd = EllesmereUI.MakeRoundedBorder(doneBtn, EG.r, EG.g, EG.b, 0.9, doneBg)
     local doneLbl = doneBtn:CreateFontString(nil, "OVERLAY")
     doneLbl:SetFont(FONT, 16, "")
     PP.Point(doneLbl, "CENTER", doneBtn, "CENTER", 0, 0)
@@ -437,15 +400,6 @@ local function ShowFirstInstallPopup()
         doneLbl:SetTextColor(EG.r, EG.g, EG.b, 0.9)
         doneBrd:SetColor(EG.r, EG.g, EG.b, 0.9)
     end)
-
-    local function HasChanges()
-        for _, row in ipairs(allRows) do
-            if not row._informational and row._checked ~= initialState[row._entry.label] then
-                return true
-            end
-        end
-        return false
-    end
 
     local function RefreshButtonLabel()
         -- Picking addons always ends in a reload so the enable/disable choices
@@ -489,9 +443,14 @@ local function ShowFirstInstallPopup()
         if not EllesmereUIDB then EllesmereUIDB = {} end
         EllesmereUIDB.firstInstallPopupShown = true
         EllesmereUIDB.bagsUserChosen = true
+        -- WoW Forever: the stamp the loader below set at ADDON_LOADED is still
+        -- set unless a look was settled while this popup was up (an import, a
+        -- Style page change).
+        local lookOpen = EllesmereUIDB.styleChoicePending
         -- The style picker (EllesmereUI_StyleChoicePopup.lua) follows on the
-        -- next login, after this popup's reload: EllesmereUI look or Blizzard.
-        EllesmereUIDB.styleChoicePending = true
+        -- next login, after this popup's reload; on WoW Forever only while
+        -- no look was settled here.
+        EllesmereUIDB.styleChoicePending = (lookOpen or not EllesmereUI.IS_FOREVER) and true or nil
         EllesmereUI._firstInstallPending = nil
 
         -- Write QoL cursor setting directly into the profile table so it
@@ -521,13 +480,24 @@ local function ShowFirstInstallPopup()
         end
 
         if triggerReload then
-            -- Apply addon enable/disable changes then reload
-            for _, row in ipairs(allRows) do
-                if row._entry.addon then
-                    SetAddonEnabled(row._entry.addon, row._checked)
+            -- The reload first in the click, then what it applies as its
+            -- pre-reload work (RequestReload): the addon enable/disable
+            -- changes and, on WoW Forever, the look a fresh install starts
+            -- on, written so the style picker opens on the look in use (its
+            -- card then closes the picker without a second reload). The
+            -- options addon loads for it, never in combat; in combat, or when
+            -- it cannot load, the picker offers the look as its default instead.
+            EllesmereUI.RequestReload(nil, nil, function()
+                for _, row in ipairs(allRows) do
+                    if row._entry.addon then
+                        SetAddonEnabled(row._entry.addon, row._checked)
+                    end
                 end
-            end
-            ReloadUI()
+                if EllesmereUI.IS_FOREVER and lookOpen and not InCombatLockdown()
+                    and EllesmereUI.EnsureOptionsLoaded() then
+                    EllesmereUI.ApplyFirstInstallLook("forever")
+                end
+            end)
             return
         end
 
@@ -546,14 +516,9 @@ local function ShowFirstInstallPopup()
         Close(true)
     end)
 
-    -- Escape is disabled: the user must click Reload UI so their addon
-    -- selection always takes effect. Consume Escape; let other keys propagate.
-    popup:EnableKeyboard(true)
-    popup:SetScript("OnKeyDown", function(self, key)
-        self:SetPropagateKeyboardInput(key ~= "ESCAPE")
-    end)
-
     dimmer:Show()
+    -- Controller cursor: the picker has no other way out, so bring the gamepad pointer up.
+    if EllesmereUI.PadNative() then EllesmereUI.RaiseGamePadCursor() end
 end
 
 EllesmereUI.ShowFirstInstallPopup = ShowFirstInstallPopup
@@ -603,10 +568,11 @@ loader:SetScript("OnEvent", function(self, event, addonName)
         if addonName ~= "EllesmereUI" then return end
         self:UnregisterEvent("ADDON_LOADED")
         _showPopupOnLogin = ComputeShowOnLogin()
-        -- WoW Forever: a fresh install starts from the base layout, seeded
-        -- before any module opens its profile (EllesmereUI_ForeverLayout.lua).
-        if _showPopupOnLogin and EllesmereUI.SeedForeverBaseLayout then
-            EllesmereUI.SeedForeverBaseLayout()
+        -- WoW Forever: the style picker (WoW Forever by default there) is due
+        -- even if this session ends before the module picker's reload.
+        if _showPopupOnLogin and EllesmereUI.IS_FOREVER then
+            if not EllesmereUIDB then EllesmereUIDB = {} end
+            EllesmereUIDB.styleChoicePending = true
         end
         if _showPopupOnLogin then
             -- Handshake for other first-login popups (e.g. CDM's Edit Mode
@@ -625,12 +591,6 @@ loader:SetScript("OnEvent", function(self, event, addonName)
             -- installer's import stamps first-install state, and a session
             -- with no registration brings the picker back).
             if EllesmereUI._externalInstaller then return end
-            -- TEMPORARY, WoW Forever only (EllesmereUI.FOREVER_SV_BUG): while
-            -- the beta client loses settings on reload, the picker's choices
-            -- would not survive its own forced reload, so it stays off. The
-            -- pending handshake stays armed on purpose: every reload-prompting
-            -- popup keeps quiet, since a reload would reset the user.
-            if EllesmereUI.FOREVER_SV_BUG then return end
             ShowFirstInstallPopup()
         end)
     end

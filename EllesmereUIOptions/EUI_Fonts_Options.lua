@@ -21,6 +21,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local PAGE_FONTS = "Fonts"
 local GLOBAL_KEY = "_EUIGlobal"
 
+-- Options page pool (EllesmereUI_FramePool.lua): frames made here on a pool
+-- host are reset and dressed again by the next build instead of made anew;
+-- elsewhere this is CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 -- Session-only card expand state (never saved).
 local _ftExpanded = {}
 
@@ -111,50 +116,7 @@ local function ModuleOutlineCfg(folder, display)
         end }
 end
 
--- Fresh table per call: DualRow configs must never be shared across rows.
-local function BLANK() return { type = "label", text = "" } end
-
--- Custom link row: label on the left, an Open Settings button on the right,
--- jumping to the module page that owns a selection-bound settings family.
-local function LinkRow(parent, y, label, module, page, section, highlight)
-    local PP = EllesmereUI.PanelPP
-    local ROW_H = 40
-    local row = CreateFrame("Frame", nil, parent)
-    PP.Size(row, parent:GetWidth() - EllesmereUI.CONTENT_PAD * 2, ROW_H)
-    PP.Point(row, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y)
-    row._skipRowDivider = true
-    if EllesmereUI.RowBg then EllesmereUI.RowBg(row, parent) end
-
-    local lbl = EllesmereUI.MakeFont(row, 13, nil, 1, 1, 1)
-    lbl:SetAlpha(0.9)
-    lbl:SetPoint("LEFT", row, "LEFT", 20, 0)
-    lbl:SetText(EllesmereUI.L(label))
-
-    local btn = CreateFrame("Button", nil, row)
-    PP.Size(btn, 122, 26)
-    btn:SetPoint("RIGHT", row, "RIGHT", -20, 0)
-    btn:SetFrameLevel(row:GetFrameLevel() + 2)
-    EllesmereUI.MakeStyledButton(btn, "Open Settings", 11, EllesmereUI.WB_COLOURS, function()
-        EllesmereUI:NavigateToElementSettings(module, page, section, nil, highlight)
-    end)
-
-    return y - ROW_H
-end
-
--- Dim note row shown inside a card when its module is disabled.
-local function NoteRow(parent, y, text)
-    local PP = EllesmereUI.PanelPP
-    local ROW_H = 34
-    local row = CreateFrame("Frame", nil, parent)
-    PP.Size(row, parent:GetWidth() - EllesmereUI.CONTENT_PAD * 2, ROW_H)
-    PP.Point(row, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y)
-    row._skipRowDivider = true
-    local lbl = EllesmereUI.MakeFont(row, 12, nil, 1, 1, 1)
-    lbl:SetAlpha(0.45)
-    lbl:SetPoint("LEFT", row, "LEFT", 20, 0)
-    lbl:SetText(EllesmereUI.L(text))
-    return y - ROW_H
-end
+local BLANK, LinkRow, NoteRow = EllesmereUI.BlankRowCfg, EllesmereUI.BuildLinkRow, EllesmereUI.BuildNoteRow
 
 -------------------------------------------------------------------------------
 --  Per-module card content builders
@@ -165,7 +127,7 @@ end
 --  namespace is nil and the card shows only the module font/outline layer.
 -------------------------------------------------------------------------------
 
-local function NS(folder) return EllesmereUI._ModuleNS and EllesmereUI._ModuleNS[folder] end
+local NS = EllesmereUI.ModuleNS
 
 local function TileActionBars(parent, y, W, tile)
     local ns = NS(tile.folder)
@@ -190,9 +152,11 @@ local function TileActionBars(parent, y, W, tile)
     if ns then
         _, h = W:DualRow(parent, y, ModuleOutlineCfg(tile.folder, tile.display),
             dataBarCfg("XP Bar Text Size", "XPBar"));  y = y - h
+        -- WoW Forever has no House Favor bar: its slot is blank there.
         _, h = W:DualRow(parent, y,
             dataBarCfg("Reputation Bar Text Size", "RepBar"),
-            dataBarCfg("House Favor Bar Text Size", "FavorBar"));  y = y - h
+            EllesmereUI.IS_FOREVER and BLANK()
+                or dataBarCfg("House Favor Bar Text Size", "FavorBar"));  y = y - h
         y = LinkRow(parent, y, "Keybind, Macro, Charges & Cooldown Text (per bar)",
             tile.folder, "Bar Display", "TEXT", "Keybind Text Size")
     else
@@ -239,6 +203,12 @@ local function TileNameplates(parent, y, W, tile)
     _, h = W:DualRow(parent, y,
         size("Left Text Size", "textSlotLeftSize", 6, 30, 10),
         size("Right Text Size", "textSlotRightSize", 6, 30, 10));  y = y - h
+    _, h = W:DualRow(parent, y,
+        size("Top Left Text Size", "textSlotTopLeftSize", 6, 30, 10),
+        size("Top Right Text Size", "textSlotTopRightSize", 6, 30, 10));  y = y - h
+    _, h = W:DualRow(parent, y,
+        size("Bottom Left Text Size", "textSlotBottomLeftSize", 6, 30, 10),
+        size("Bottom Right Text Size", "textSlotBottomRightSize", 6, 30, 10));  y = y - h
     _, h = W:DualRow(parent, y,
         size("Cast Name Size", "castNameSize", 6, 20, 10),
         size("Cast Timer Size", "castTimerSize", 6, 20, 10));  y = y - h
@@ -314,12 +284,14 @@ local function TileRaidFrames(parent, y, W, tile)
         size("Name Size", "nameSize", 6, 26, 10));  y = y - h
     _, h = W:DualRow(parent, y,
         size("Health Text Size", "healthTextSize", 6, 26, 9),
-        size("Heal Absorb Text Size", "healAbsorbTextSize", 6, 26, 9));  y = y - h
+        size("Power Text Size", "powerTextSize", 6, 26, 8));  y = y - h
     _, h = W:DualRow(parent, y,
-        size("Status Text Size", "statusTextSize", 6, 30, 14),
-        size("Group Number Size", "groupNumberSize", 6, 30, 10));  y = y - h
+        size("Heal Absorb Text Size", "healAbsorbTextSize", 6, 26, 9),
+        size("Status Text Size", "statusTextSize", 6, 30, 14));  y = y - h
     _, h = W:DualRow(parent, y,
-        size("Top Name Bar Text Size", "topNameBarTextSize", 6, 30, 11),
+        size("Group Number Size", "groupNumberSize", 6, 30, 10),
+        size("Top Name Bar Text Size", "topNameBarTextSize", 6, 30, 11));  y = y - h
+    _, h = W:DualRow(parent, y,
         { type = "slider", text = "Healer Mana Text Size", min = 8, max = 24, step = 1,
           getValue = function()
               local p = db()
@@ -331,7 +303,8 @@ local function TileRaidFrames(parent, y, W, tile)
               if not p.healerMana then p.healerMana = {} end
               p.healerMana.textSize = v
               if ns.HM_Rebuild then ns.HM_Rebuild() else RFApply() end
-          end });  y = y - h
+          end },
+        size("Level Size", "levelTextSize", 6, 26, 10));  y = y - h
     y = LinkRow(parent, y, "Party-Specific Text Sizes",
         tile.folder, "Party", "TEXT DISPLAY")
     y = LinkRow(parent, y, "Buff Manager Text (per indicator)",
@@ -492,6 +465,17 @@ local function TileQoL(parent, y, W, tile)
                 if fn then fn() end
             end }
     end
+    -- Quality of Life keys that follow profiles (EllesmereUI.QoLExtrasGet / QoLExtrasSet,
+    -- defined by that module, which is loaded here: the tile is a note while it is off).
+    local function psize(label, key, minV, maxV, def, applyName)
+        return { type = "slider", text = label, min = minV, max = maxV, step = 1,
+            getValue = function() return EllesmereUI.QoLExtrasGet(key) or def end,
+            setValue = function(v)
+                EllesmereUI.QoLExtrasSet(key, v)
+                local fn = EllesmereUI[applyName]
+                if fn then fn() end
+            end }
+    end
     local function brDB()
         local d = _G._EUI_BattleRes_DB and _G._EUI_BattleRes_DB()
         return d and d.profile and d.profile.battleRes
@@ -526,13 +510,18 @@ local function TileQoL(parent, y, W, tile)
                 if _G._EUI_Bloodlust_Apply then _G._EUI_Bloodlust_Apply() end
             end }
     end
-    _, h = W:DualRow(parent, y, ModuleOutlineCfg(tile.folder, tile.display),
-        gsize("Map Coordinates Text Size", "mapCoordsTextSize", 8, 24, 12, "_applyMapCoords"));  y = y - h
-    _, h = W:DualRow(parent, y,
-        gsize("Group Death Alert Text Size", "groupDeathTextSize", 14, 64, 34, "_applyGroupDeathAlert"),
-        gsize("Combat Alert Text Size", "combatAlertTextSize", 14, 64, 22, "_applyCombatAlertFrame"));  y = y - h
-    _, h = W:DualRow(parent, y,
-        { type = "slider", text = "FPS Counter Text Size", min = 8, max = 30, step = 1,
+    -- Slots fill left to right, top to bottom. WoW Forever has no keystone
+    -- popup, no Battle Res indicator and no Bloodlust Tracker, so their slots
+    -- are left out there and the rest close up, with a blank only in an odd
+    -- last slot.
+    local FOREVER = EllesmereUI.IS_FOREVER
+    local slots = {}
+    local function add(cfg) slots[#slots + 1] = cfg end
+    add(ModuleOutlineCfg(tile.folder, tile.display))
+    add(gsize("Map Coordinates Text Size", "mapCoordsTextSize", 8, 24, 12, "_applyMapCoords"))
+    add(psize("Group Death Alert Text Size", "groupDeathTextSize", 14, 64, 34, "_applyGroupDeathAlert"))
+    add(psize("Combat Alert Text Size", "combatAlertTextSize", 14, 64, 22, "_applyCombatAlertFrame"))
+    add({ type = "slider", text = "FPS Counter Text Size", min = 8, max = 30, step = 1,
           getValue = function()
               if EllesmereUI.QoLExtrasGet then
                   return EllesmereUI.QoLExtrasGet("fpsTextSize") or 12
@@ -542,58 +531,57 @@ local function TileQoL(parent, y, W, tile)
           setValue = function(v)
               if EllesmereUI.QoLExtrasSet then EllesmereUI.QoLExtrasSet("fpsTextSize", v) end
               if EllesmereUI._applyFPSDisplay then EllesmereUI._applyFPSDisplay() end
-          end },
-        gsize("Durability Warning Text Size", "durWarnTextSize", 10, 50, 30, "_durWarnApplySettings"));  y = y - h
-    _, h = W:DualRow(parent, y,
-        gsize("Target Distance Text Size", "targetDistanceTextSize", 10, 48, 18, "_applyTargetDistanceFrame"),
-        { type = "slider", text = "Keystone Popup Text Size", min = 8, max = 16, step = 1,
-          getValue = function()
-              local t = EllesmereUIDB and EllesmereUIDB.keystonePopup
-              return (t and t.textSize) or 11
-          end,
-          setValue = function(v)
-              if not EllesmereUIDB then EllesmereUIDB = {} end
-              if not EllesmereUIDB.keystonePopup then EllesmereUIDB.keystonePopup = {} end
-              EllesmereUIDB.keystonePopup.textSize = v
-              if _G._EUI_RefreshKeystonePopup then _G._EUI_RefreshKeystonePopup() end
-          end });  y = y - h
-    _, h = W:DualRow(parent, y,
-        brSize("Battle Res Duration Size", "durationSize", 8, 30, 12),
-        brSize("Battle Res Count Size", "countSize", 8, 20, 11));  y = y - h
-    local brFontValues, brFontOrder = EllesmereUI.BuildFontDropdownData()
-    _, h = W:DualRow(parent, y,
-        brSize("Battle Res Text Size", "textSize", 8, 40, 14),
-        { type = "dropdown", text = "Battle Res Font",
-          values = brFontValues, order = brFontOrder,
-          getValue = function()
-              local p = brDB()
-              return (p and p.font) or "__global"
-          end,
-          setValue = function(v)
-              local p = brDB(); if not p then return end
-              p.font = v
-              if _G._EUI_BattleRes_Apply then _G._EUI_BattleRes_Apply() end
-          end });  y = y - h
-    _, h = W:DualRow(parent, y,
-        { type = "dropdown", text = "Battle Res Outline",
-          values = { ["__global"] = { text = "EUI Global Default" },
-                     ["none"]     = { text = "Drop Shadow" },
-                     ["outline"]  = { text = "Outline" },
-                     ["thick"]    = { text = "Thick Outline" } },
-          order = { "__global", "none", "outline", "thick" },
-          getValue = function()
-              local p = brDB()
-              return (p and p.outlineMode) or "__global"
-          end,
-          setValue = function(v)
-              local p = brDB(); if not p then return end
-              p.outlineMode = v
-              if _G._EUI_BattleRes_Apply then _G._EUI_BattleRes_Apply() end
-          end },
-        blSize("Bloodlust Duration Size", "durationSize", 8, 30, 12));  y = y - h
-    _, h = W:DualRow(parent, y,
-        blSize("Bloodlust Count Size", "countSize", 8, 20, 11),
-        { type = "slider", text = "Movement Alert Text Size", min = 8, max = 72, step = 1,
+          end })
+    add(psize("Durability Warning Text Size", "durWarnTextSize", 10, 50, 30, "_durWarnApplySettings"))
+    add(psize("Target Distance Text Size", "targetDistanceTextSize", 10, 48, 18, "_applyTargetDistanceFrame"))
+    if not FOREVER then
+        add({ type = "slider", text = "Keystone Popup Text Size", min = 8, max = 16, step = 1,
+              getValue = function()
+                  local t = EllesmereUIDB and EllesmereUIDB.keystonePopup
+                  return (t and t.textSize) or 11
+              end,
+              setValue = function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  if not EllesmereUIDB.keystonePopup then EllesmereUIDB.keystonePopup = {} end
+                  EllesmereUIDB.keystonePopup.textSize = v
+                  if _G._EUI_RefreshKeystonePopup then _G._EUI_RefreshKeystonePopup() end
+              end })
+    end
+    if not FOREVER then
+        add(brSize("Battle Res Duration Size", "durationSize", 8, 30, 12))
+        add(brSize("Battle Res Count Size", "countSize", 8, 20, 11))
+        add(brSize("Battle Res Text Size", "textSize", 8, 40, 14))
+        local brFontValues, brFontOrder = EllesmereUI.BuildFontDropdownData()
+        add({ type = "dropdown", text = "Battle Res Font",
+              values = brFontValues, order = brFontOrder,
+              getValue = function()
+                  local p = brDB()
+                  return (p and p.font) or "__global"
+              end,
+              setValue = function(v)
+                  local p = brDB(); if not p then return end
+                  p.font = v
+                  if _G._EUI_BattleRes_Apply then _G._EUI_BattleRes_Apply() end
+              end })
+        add({ type = "dropdown", text = "Battle Res Outline",
+              values = { ["__global"] = { text = "EUI Global Default" },
+                         ["none"]     = { text = "Drop Shadow" },
+                         ["outline"]  = { text = "Outline" },
+                         ["thick"]    = { text = "Thick Outline" } },
+              order = { "__global", "none", "outline", "thick" },
+              getValue = function()
+                  local p = brDB()
+                  return (p and p.outlineMode) or "__global"
+              end,
+              setValue = function(v)
+                  local p = brDB(); if not p then return end
+                  p.outlineMode = v
+                  if _G._EUI_BattleRes_Apply then _G._EUI_BattleRes_Apply() end
+              end })
+        add(blSize("Bloodlust Duration Size", "durationSize", 8, 30, 12))
+        add(blSize("Bloodlust Count Size", "countSize", 8, 20, 11))
+    end
+    add({ type = "slider", text = "Movement Alert Text Size", min = 8, max = 72, step = 1,
           tooltip = "Sizes the movement alert's free text, bar number and icon countdown. Switching the alert's Display Mode re-seeds this value.",
           getValue = function()
               local d = _G._EUI_MovementAlert_DB and _G._EUI_MovementAlert_DB()
@@ -608,7 +596,10 @@ local function TileQoL(parent, y, W, tile)
               if EllesmereUI._applyMovementAlert then EllesmereUI._applyMovementAlert() end
               if EllesmereUI._applyTimeSpiral then EllesmereUI._applyTimeSpiral() end
               if EllesmereUI._applyGateway then EllesmereUI._applyGateway() end
-          end });  y = y - h
+          end })
+    for i = 1, #slots, 2 do
+        _, h = W:DualRow(parent, y, slots[i], slots[i + 1] or BLANK());  y = y - h
+    end
     return y
 end
 
@@ -751,7 +742,7 @@ local function TileMythicTimer(parent, y, W, tile)
         return NoteRow(parent, y, EllesmereUI.Lf("Enable %1$s to edit its text settings.", EllesmereUI.L(tile.display)))
     end
     local function db() return _G._EMT_AceDB and _G._EMT_AceDB.profile end
-    local function MTApply() if _G._EMT_Apply then _G._EMT_Apply() end end
+    local function MTApply() if _G._EMT_ApplyTimer then _G._EMT_ApplyTimer() end end
     local function size(label, key, minV, maxV, def, fallbackKey)
         return { type = "slider", text = label, min = minV, max = maxV, step = 1,
             getValue = function()
@@ -781,6 +772,7 @@ local function TileMythicTimer(parent, y, W, tile)
     local function tsb() local p = db(); return p and p.tsb end
     local function tfbT() local p = db(); return p and p.tfb and p.tfb.target end
     local function tfbF() local p = db(); return p and p.tfb and p.tfb.focus end
+    local function kt() local p = db(); return p and p.kickTracker end
     local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
     _, h = W:DualRow(parent, y, ModuleOutlineCfg(tile.folder, tile.display),
         { type = "dropdown", text = "Timer Font",
@@ -808,10 +800,10 @@ local function TileMythicTimer(parent, y, W, tile)
         size("+1 Threshold Text Size", "thresholdPlusOneSize", 6, 20, 12, "thresholdSize"),
         size("Enemy Forces Text Size", "enemyForcesTextSize", 8, 24, 12, "objectivesSize"));  y = y - h
     _, h = W:DualRow(parent, y,
-        subSize("Targeted Bars Name Size", tsb, 6, 20, 10, "nameSize", "TSB_Refresh"),
-        subSize("Targeted Bars Timer Size", tsb, 6, 20, 10, "timerSize", "TSB_Refresh"));  y = y - h
+        subSize("Cast Bars Name Size", tsb, 6, 20, 10, "nameSize", "TSB_Refresh"),
+        subSize("Cast Bars Timer Size", tsb, 6, 20, 10, "timerSize", "TSB_Refresh"));  y = y - h
     _, h = W:DualRow(parent, y,
-        subSize("Targeted Bars Target Size", tsb, 6, 20, 10, "targetSize", "TSB_Refresh"),
+        subSize("Cast Bars Target Size", tsb, 6, 20, 10, "targetSize", "TSB_Refresh"),
         subSize("Target Cast Bar Name Size", tfbT, 6, 22, 11, "nameSize", "TFB_Refresh"));  y = y - h
     _, h = W:DualRow(parent, y,
         subSize("Target Cast Bar Timer Size", tfbT, 6, 22, 11, "timerSize", "TFB_Refresh"),
@@ -820,7 +812,11 @@ local function TileMythicTimer(parent, y, W, tile)
         subSize("Focus Cast Bar Name Size", tfbF, 6, 22, 11, "nameSize", "TFB_Refresh"),
         subSize("Focus Cast Bar Timer Size", tfbF, 6, 22, 11, "timerSize", "TFB_Refresh"));  y = y - h
     _, h = W:DualRow(parent, y,
-        subSize("Focus Cast Bar Target Size", tfbF, 6, 20, 10, "targetSize", "TFB_Refresh"), BLANK());  y = y - h
+        subSize("Focus Cast Bar Target Size", tfbF, 6, 20, 10, "targetSize", "TFB_Refresh"),
+        subSize("Kick Tracker Timer Size", kt, 6, 24, 11, "timerSize", "KT_Refresh"));  y = y - h
+    _, h = W:DualRow(parent, y,
+        subSize("Kick Tracker Bar Name Size", kt, 6, 24, 11, "barNameSize", "KT_Refresh"),
+        subSize("Kick Tracker Bar Timer Size", kt, 6, 24, 11, "barTimerSize", "KT_Refresh"));  y = y - h
     return y
 end
 
@@ -921,6 +917,12 @@ local function TileBags(parent, y, W, tile)
     _, h = W:DualRow(parent, y,
         size("Set Name Text Size", "bagSetNameFontSize", 7, 14, 9, TextSizes),
         size("BoE / Warbound Text Size", "bagBindTypeFontSize", 8, 16, 11, TextSizes));  y = y - h
+    _, h = W:DualRow(parent, y,
+        size("List Text Size", "bagListFontSize", 8, 16, 11, function()
+            if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+            if _G.EUI_BankFrame and _G.EUI_BankFrame.RefreshBank then _G.EUI_BankFrame:RefreshBank() end
+        end),
+        BLANK());  y = y - h
     return y
 end
 
@@ -1022,13 +1024,25 @@ local function TileQuestTracker(parent, y, W, tile)
           setValue = function(v)
               local p = db(); if not p then return end
               p.font = v
+              -- The custom tracker (WoW Forever) restyles live.
+              if ns.UseCustomTracker and ns.UseCustomTracker() then
+                  EllesmereUI.InvalidateFontCache()
+                  QTApply()
+                  return
+              end
               FontReload()
           end });  y = y - h
     _, h = W:DualRow(parent, y,
         size("Header Font Size", "headerFontSize", 13),
         size("Title Font Size", "titleFontSize", 12));  y = y - h
-    _, h = W:DualRow(parent, y,
-        size("Objective Font Size", "objectiveFontSize", 10), BLANK());  y = y - h
+    if ns.UseCustomTracker and ns.UseCustomTracker() then
+        _, h = W:DualRow(parent, y,
+            size("Objective Font Size", "objectiveFontSize", 10),
+            size("Zone Header Font Size", "customZoneFontSize", 13));  y = y - h
+    else
+        _, h = W:DualRow(parent, y,
+            size("Objective Font Size", "objectiveFontSize", 10), BLANK());  y = y - h
+    end
     return y
 end
 
@@ -1050,8 +1064,7 @@ local function TileBlizzardSkin(parent, y, W, tile)
               if not EllesmereUIDB then EllesmereUIDB = {} end
               EllesmereUIDB.tooltipFontScale = v
           end });  y = y - h
-    _, h = W:DualRow(parent, y,
-        { type = "slider", text = "Enchant Text Size", min = 6, max = 20, step = 1,
+    local enchSizeCfg = { type = "slider", text = "Enchant Text Size", min = 6, max = 20, step = 1,
           getValue = function()
               return (EllesmereUIDB and EllesmereUIDB.charSheetEnchantSize) or 9
           end,
@@ -1059,7 +1072,12 @@ local function TileBlizzardSkin(parent, y, W, tile)
               if not EllesmereUIDB then EllesmereUIDB = {} end
               EllesmereUIDB.charSheetEnchantSize = v
               if EllesmereUI._refreshCharSheetSlotLabels then EllesmereUI._refreshCharSheetSlotLabels() end
-          end },
+          end }
+    -- WoW Forever has no skyriding (the Dragon Riding HUD never loads there),
+    -- so the enchant size sits alone in the last row.
+    _, h = W:DualRow(parent, y,
+        enchSizeCfg,
+        EllesmereUI.IS_FOREVER and BLANK() or
         { type = "slider", text = "Dragonriding Speed Text Size", min = 6, max = 32, step = 1,
           getValue = function()
               local p = ns.edrDB and ns.edrDB.profile and ns.edrDB.profile.speedText
@@ -1103,7 +1121,7 @@ local function TileCombatText(parent, y, W, tile)
           setValue = function(v)
               if InCombatLockdown() then return end
               v = math.floor(v * 10 + 0.5) / 10
-              SetCVar("WorldTextScale_v2", v)
+              EllesmereUI.SetCVar("WorldTextScale_v2", v)
           end },
         BLANK());  y = y - h
     y = LinkRow(parent, y, "Combat Text Font (logout required)",
@@ -1132,8 +1150,11 @@ local TILE_BUILDERS = {
     EllesmereUICooldownManager   = { TileCooldownManager,  "Icon duration, stacks, keybinds and tracking bar text" },
     EllesmereUIResourceBars      = { TileResourceBars,     "Health, power, class resource, cast and totem bar text" },
     EllesmereUIAuraBuffReminders = { TileAuraBuffReminders,"Reminder names, item counts and the mana warning" },
-    EllesmereUIQoL               = { TileQoL,              "Alerts, trackers, battle res and popup text" },
-    EllesmereUIBlizzardSkin      = { TileBlizzardSkin,     "Tooltip text scale, enchant text and dragonriding speed" },
+    EllesmereUIQoL               = { TileQoL,              EllesmereUI.IS_FOREVER and "Alert and tracker text"
+                                                               or "Alerts, trackers, battle res and popup text" },
+    EllesmereUIForeverEssentials = { TileFontOnly,         "Font face and outline only" },
+    EllesmereUIBlizzardSkin      = { TileBlizzardSkin,     EllesmereUI.IS_FOREVER and "Tooltip text scale and enchant text"
+                                                               or "Tooltip text scale, enchant text and dragonriding speed" },
     EllesmereUIFriends           = { TileFontOnly,         "Font face and outline only" },
     EllesmereUIMythicTimer       = { TileMythicTimer,      "M+ timer, objectives, thresholds and spell bar text" },
     EllesmereUIQuestTracker      = { TileQuestTracker,     "Tracker font and per-line text sizes" },
@@ -1143,6 +1164,7 @@ local TILE_BUILDERS = {
     EllesmereUIBags              = { TileBags,             "Item count, item level, category and label text" },
     EllesmereUIDataBars          = { TileDataBars,         "Per-bar text scale" },
     EllesmereUIQuickdraw         = { TileFontOnly,         "Font face and outline only" },
+    EllesmereUISimpleLootCouncil = { TileFontOnly,         "Font face and outline only" },
 }
 
 local function BuildTileList()
@@ -1169,200 +1191,58 @@ end
 --  Font card (adapted from the Window Skins card pattern)
 -------------------------------------------------------------------------------
 
-local FT_ARROW_DOWN = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-down3.png"
-local FT_ARROW_UP   = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-up3.png"
-local FT_HEADER_H   = 54
-local FT_CARD_GAP   = 14
-
 local function BuildFontCard(parent, y, W, tile)
-    local PP = EllesmereUI.PanelPP
-    local EG = EllesmereUI.ELLESMERE_GREEN
-    local L  = EllesmereUI.L
-    -- A disabled module's card is fully inert (same treatment as settings-less
-    -- Window Skins cards): no expand, no header dropdown, no hover -- just a
-    -- dimmed header with a tooltip explaining why.
-    local enabled = (not tile.folder) or NS(tile.folder) ~= nil
-    local expanded = enabled and _ftExpanded[tile.key]
-    local cardTop = y
-    local brd
-
-    -- Explicit size + single TOPLEFT anchor (the widget contract; see the
-    -- Window Skins card for why a second point would zero the width).
-    local cardW = parent:GetWidth() - EllesmereUI.CONTENT_PAD * 2
-    local hdr = CreateFrame("Button", nil, parent)
-    PP.Size(hdr, cardW, FT_HEADER_H)
-    PP.Point(hdr, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y)
-    hdr:SetFrameLevel(parent:GetFrameLevel() + 3)
-
-    -- Search metadata: the header acts as its own pseudo-section so searching
-    -- the module name lands on the card; the deep-link pre-hook below expands
-    -- all cards first.
-    local searchName = tile.display .. " " .. (tile.desc or "")
-    hdr._isSectionHeader = true
-    hdr._sectionName = searchName
-    local searchNameLoc = L(tile.display) .. " " .. L(tile.desc or "")
-    if searchNameLoc ~= searchName then hdr._sectionNameLoc = searchNameLoc end
-    if EllesmereUI._RegisterSearchEntry then
-        local titleLoc = L(tile.display)
-        local descSearch = tile.desc or ""
-        local descLoc = L(tile.desc or "")
-        if descLoc ~= descSearch then descSearch = descSearch .. " " .. descLoc end
-        EllesmereUI._RegisterSearchEntry(tile.display,
-            titleLoc ~= tile.display and titleLoc or nil,
-            descSearch,
-            EllesmereUI._buildingModule, EllesmereUI._buildingPage,
-            searchName, nil, nil, true)
-    end
-
-    local hbg = EllesmereUI.SolidTex(hdr, "BACKGROUND", 0, 0, 0, 0)
-    hbg:SetAllPoints()
-
-    -- "Aa" glyph rendered in the module's currently resolved face, so the
-    -- card shows the active font at a glance.
-    local glyph = CreateFrame("Frame", nil, hdr)
-    PP.Size(glyph, 26, 20)
-    PP.Point(glyph, "LEFT", hdr, "LEFT", 14, 0)
-    local glyphText = glyph:CreateFontString(nil, "OVERLAY")
-    glyphText:SetPoint("CENTER")
-    local addonKey = tile.folder and EllesmereUI._folderToAddonKey and EllesmereUI._folderToAddonKey[tile.folder]
-    local glyphPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath(addonKey))
-        or "Fonts\\FRIZQT__.TTF"
-    glyphText:SetFont(glyphPath, 15, "")
-    glyphText:SetTextColor(1, 1, 1, 0.85)
-    glyphText:SetText("Aa")
-
-    local title = EllesmereUI.MakeFont(hdr, 14, nil, 1, 1, 1, 0.9)
-    PP.Point(title, "TOPLEFT", hdr, "TOPLEFT", 50, -12)
-    title:SetText(L(tile.display))
-
-    local desc = EllesmereUI.MakeFont(hdr, 11, nil, 1, 1, 1, 0.42)
-    PP.Point(desc, "TOPLEFT", title, "BOTTOMLEFT", 0, -4)
-    desc:SetWidth(440)
-    desc:SetJustifyH("LEFT")
-    desc:SetWordWrap(false)
-    desc:SetText(L(tile.desc or ""))
-
-    if not enabled then
-        glyphText:SetTextColor(1, 1, 1, 0.3)
-        title:SetAlpha(0.4)
-        desc:SetAlpha(0.22)
-    end
-
-    local chev
-    if enabled then
-        chev = hdr:CreateTexture(nil, "OVERLAY")
-        PP.Size(chev, 16, 16)
-        PP.Point(chev, "RIGHT", hdr, "RIGHT", -16, 0)
-        chev:SetTexture(expanded and FT_ARROW_UP or FT_ARROW_DOWN)
-        chev:SetAlpha(0.45)
-        if expanded then chev:SetVertexColor(EG.r, EG.g, EG.b) end
-    end
-
-    -- Module font dropdown on the header: the per-module override layer
-    -- (the old PER ADDON FONTS entry), editable without expanding the card.
-    local dd
-    if tile.hasFontDD and enabled then
-        local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
-        dd = EllesmereUI.BuildDropdownControl(hdr, 190, hdr:GetFrameLevel() + 2,
-            fontValues, fontOrder,
-            function()
-                local entry = FindModuleFontEntry(tile.folder)
-                return (entry and entry.font) or "__global"
-            end,
-            function(v)
-                local entry = FindModuleFontEntry(tile.folder)
-                local cur = (entry and entry.font) or "__global"
-                if v == cur then return end
-                if v == "__global" then
-                    if entry then
-                        entry.font = "__global"
-                        PruneModuleFontEntry(tile.folder)
+    return EllesmereUI.BuildModuleCard(parent, y, W, tile, {
+        enabled = (not tile.folder) or NS(tile.folder) ~= nil,
+        expanded = _ftExpanded, descW = 440,
+        -- "Aa" glyph rendered in the module's currently resolved face, so the
+        -- card shows the active font at a glance.
+        glyph = function(hdr, enabled)
+            local PP = EllesmereUI.PanelPP
+            local glyph = CreateFrame("Frame", nil, hdr)
+            PP.Size(glyph, 26, 20)
+            PP.Point(glyph, "LEFT", hdr, "LEFT", 14, 0)
+            local glyphText = glyph:CreateFontString(nil, "OVERLAY")
+            glyphText:SetPoint("CENTER")
+            local addonKey = tile.folder and EllesmereUI._folderToAddonKey and EllesmereUI._folderToAddonKey[tile.folder]
+            local glyphPath = (EllesmereUI.GetFontPath(addonKey))
+                or "Fonts\\FRIZQT__.TTF"
+            glyphText:SetFont(glyphPath, 15, "")
+            glyphText:SetTextColor(1, 1, 1, enabled and 0.85 or 0.3)
+            glyphText:SetText("Aa")
+        end,
+        -- Module font dropdown on the header: the per-module override layer
+        -- (the old PER ADDON FONTS entry), editable without expanding the card.
+        headerDD = tile.hasFontDD and function(hdr)
+            local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
+            local dd = EllesmereUI.BuildDropdownControl(hdr, 190, hdr:GetFrameLevel() + 2,
+                fontValues, fontOrder,
+                function()
+                    local entry = FindModuleFontEntry(tile.folder)
+                    return (entry and entry.font) or "__global"
+                end,
+                function(v)
+                    local entry = FindModuleFontEntry(tile.folder)
+                    local cur = (entry and entry.font) or "__global"
+                    if v == cur then return end
+                    if v == "__global" then
+                        if entry then
+                            entry.font = "__global"
+                            PruneModuleFontEntry(tile.folder)
+                        end
+                    else
+                        EnsureModuleFontEntry(tile.folder, tile.display).font = v
                     end
-                else
-                    EnsureModuleFontEntry(tile.folder, tile.display).font = v
-                end
-                FontReload()
-            end)
-        PP.Point(dd, "RIGHT", hdr, "RIGHT", -44, 0)
-        -- A module whose stock style keeps Blizzard's own text: the override
-        -- has nothing to apply to there.
-        local styleKey = TILE_STYLE_KEYS[tile.folder]
-        if styleKey and EllesmereUI.BlizzStyle then EllesmereUI.BlizzStyle.BlockInline(styleKey, dd) end
-    end
-
-    local strip
-    local function ApplyHeaderHover()
-        hbg:SetColorTexture(1, 1, 1, 0.05)
-        title:SetAlpha(1)
-        if chev then chev:SetAlpha(0.85) end
-        if brd then brd:SetColor(1, 1, 1, 0.22) end
-    end
-    local function ClearHeaderHover()
-        if hdr:IsMouseOver() then return end
-        hbg:SetColorTexture(0, 0, 0, 0)
-        title:SetAlpha(0.9)
-        if chev then chev:SetAlpha(0.45) end
-        if brd then brd:SetColor(1, 1, 1, expanded and 0.16 or 0.12) end
-    end
-    if enabled then
-        hdr:SetScript("OnEnter", ApplyHeaderHover)
-        hdr:SetScript("OnLeave", ClearHeaderHover)
-        if dd then
-            dd:HookScript("OnEnter", ApplyHeaderHover)
-            dd:HookScript("OnLeave", ClearHeaderHover)
-        end
-        hdr:SetScript("OnClick", function()
-            _ftExpanded[tile.key] = not _ftExpanded[tile.key]
-            EllesmereUI:RefreshPage(true)
-        end)
-    else
-        local tag = EllesmereUI.MakeFont(hdr, 11, nil, 1, 1, 1)
-        tag:SetAlpha(0.3)
-        PP.Point(tag, "RIGHT", hdr, "RIGHT", -16, 0)
-        tag:SetText(L("Module Disabled"))
-        hdr:SetScript("OnEnter", function(self)
-            EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.Lf("Enable %1$s to edit these settings.", L(tile.display)))
-        end)
-        hdr:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-    end
-
-    y = y - FT_HEADER_H
-
-    if expanded then
-        local div = hdr:CreateTexture(nil, "ARTWORK")
-        div:SetColorTexture(1, 1, 1, 0.07)
-        div:SetHeight(1)
-        PP.Point(div, "BOTTOMLEFT", hdr, "BOTTOMLEFT", 1, 0)
-        PP.Point(div, "BOTTOMRIGHT", hdr, "BOTTOMRIGHT", -1, 0)
-        PP.DisablePixelSnap(div)
-
-        y = y - 8
-        y = tile.buildContent(parent, y, W, tile)
-        y = y - 8
-    end
-
-    -- Card background + border spanning header and expanded content (header
-    -- child so inline search re-flows it with the header; see WS card notes).
-    local bg = CreateFrame("Frame", nil, hdr)
-    bg:SetFrameLevel(parent:GetFrameLevel())
-    PP.Size(bg, cardW, cardTop - y)
-    PP.Point(bg, "TOPLEFT", hdr, "TOPLEFT", 0, 0)
-    local fill = EllesmereUI.SolidTex(bg, "BACKGROUND", 0.06, 0.08, 0.10, 0.5)
-    fill:SetAllPoints()
-    brd = EllesmereUI.MakeBorder(bg, 1, 1, 1, expanded and 0.16 or 0.12, PP)
-
-    strip = bg:CreateTexture(nil, "ARTWORK")
-    strip:SetWidth(2)
-    if enabled then
-        strip:SetColorTexture(EG.r, EG.g, EG.b, 0.7)
-    else
-        strip:SetColorTexture(1, 1, 1, 0.10)
-    end
-    PP.Point(strip, "TOPLEFT", hdr, "TOPLEFT", 1, -1)
-    PP.Point(strip, "BOTTOMLEFT", hdr, "BOTTOMLEFT", 1, 1)
-    if strip.SetSnapToPixelGrid then strip:SetSnapToPixelGrid(false); strip:SetTexelSnappingBias(0) end
-
-    return y - FT_CARD_GAP
+                    FontReload()
+                end)
+            EllesmereUI.PanelPP.Point(dd, "RIGHT", hdr, "RIGHT", -44, 0)
+            -- A module whose stock style keeps Blizzard's own text: the override
+            -- has nothing to apply to there.
+            local styleKey = TILE_STYLE_KEYS[tile.folder]
+            if styleKey and EllesmereUI.BlizzStyle then EllesmereUI.BlizzStyle.BlockInline(styleKey, dd) end
+            return dd
+        end or nil,
+    })
 end
 
 -------------------------------------------------------------------------------
@@ -1373,6 +1253,10 @@ end
 do
     local origNav = EllesmereUI.NavigateToElementSettings
     function EllesmereUI:NavigateToElementSettings(moduleName, pageName, sectionName, preSelectFn, highlightText)
+        -- The original refuses in combat: no page state changes then.
+        if InCombatLockdown() then
+            return origNav(self, moduleName, pageName, sectionName, preSelectFn, highlightText)
+        end
         if moduleName == GLOBAL_KEY and pageName == PAGE_FONTS and (sectionName or highlightText) then
             local changed = false
             for _, tile in ipairs(BuildTileList()) do
@@ -1455,15 +1339,13 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
                 font = EllesmereUI.MEDIA_PATH .. "fonts\\Expressway.TTF" }
             fontDropOrder[#fontDropOrder + 1] = EllesmereUI.EXPRESSWAY_FORCED_KEY
         end
-        if EllesmereUI.AppendExternalSharedMediaFonts then
-            EllesmereUI.AppendExternalSharedMediaFonts(fontDropValues, fontDropOrder)
-        end
+        EllesmereUI.AppendExternalSharedMediaFonts(fontDropValues, fontDropOrder)
     else
         -- Blizzard Default first: the client's own standard UI font. The
         -- glyph-restricted branch above skips it (its "System Default" entry
         -- already is the client's own font).
         fontDropValues[EllesmereUI.BLIZZARD_FONT_KEY] = { text = "Blizzard Default",
-            font = _G.STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF" }
+            font = EllesmereUI.GetBlizzardFontPath() }
         fontDropOrder[#fontDropOrder + 1] = EllesmereUI.BLIZZARD_FONT_KEY
         fontDropOrder[#fontDropOrder + 1] = "---"
         local FONT_DIR_GLOBAL = EllesmereUI.MEDIA_PATH .. "fonts\\"
@@ -1478,9 +1360,7 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
                 fontDropOrder[#fontDropOrder + 1] = name
             end
         end
-        if EllesmereUI.AppendSharedMediaFonts then
-            EllesmereUI.AppendSharedMediaFonts(fontDropValues, fontDropOrder, { keyByName = true })
-        end
+        EllesmereUI.AppendSharedMediaFonts(fontDropValues, fontDropOrder, { keyByName = true })
     end
 
     local outlineModeValues = {
@@ -1490,7 +1370,9 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
     }
     local outlineModeOrder = { "none", "outline", "thick" }
 
-    _, h = W:DualRow(parent, y,
+    -- Global Font (+ cog: Apply to All Game Text) | Outline Mode
+    local globalFontRow
+    globalFontRow, h = W:DualRow(parent, y,
         { type="dropdown", text="Global Font",
           values=fontDropValues, order=fontDropOrder,
           getValue=function()
@@ -1523,33 +1405,50 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
               if rl then for i2 = 1, #rl do rl[i2]() end end
               FontReload()
           end });  y = y - h
+    do
+        EllesmereUI.BuildInlineCog(globalFontRow._leftRegion, {
+            title = "Global Font",
+            rows = {
+                { type="toggle", label="Apply to All Game Text",
+                  tooltip="Applies your Global Font to Blizzard's default game text (menus, tooltips, quest log, character panes, and more). Requires a UI reload.",
+                  get=function() return EllesmereUI.GetFontsDB().applyToAllGameText == true end,
+                  set=function(v)
+                      EllesmereUI.GetFontsDB().applyToAllGameText = v and true or false
+                      FontReload()
+                  end },
+            },
+        })
+    end
 
     -- Outline Icon Text: per-module control over icon-overlay text (stack
-    -- counts, durations, keybinds). Checked (default) forces a crisp outline; unchecked follows Outline Mode above. Left slot = per-module
-    -- checkbox dropdown, right = "Apply to All Game Text".
+    -- counts, durations, keybinds). Checked (default) forces a crisp outline;
+    -- unchecked follows Outline Mode above. Left slot = per-module checkbox
+    -- dropdown, right = Disable Slug Outline: per-profile (rides profile
+    -- export/import), drops the SLUG token from every outline (body/icon/aura
+    -- text, Outline Mode itself). Off by default; needs reload.
+    local oitRow
+    oitRow, h = W:DualRow(parent, y,
+        { type="dropdown", text="Outline Icon Text",
+          tooltip="Forces a crisp outline on icon text (stack counts, durations, keybinds). Uncheck a module to make its icon text follow the Outline Mode setting above instead.",
+          values={ ["_placeholder"]="..." }, order={ "_placeholder" },
+          getValue=function() return "_placeholder" end,
+          setValue=function() end },
+        { type="toggle", text="Disable Slug Outline",
+          tooltip="Slug outline renders higher quality outlines compared to the base WoW outline mode but may make outline effects appear slightly thicker.",
+          getValue=function() return EllesmereUI.IsSlugDisabled() end,
+          setValue=function(v)
+              EllesmereUI.GetFontsDB().neverShowSlug = v and true or false
+              FontReload()
+          end }
+    );  y = y - h
     if not EllesmereUI._prebuilding then
         local oitItems = {
             { key = "actionBars", label = "Action Bars Icons" },
             { key = "unitFrames", label = "Unit Frames Icons" },
             { key = "cdm",        label = "CDM Icons" },
-            { key = "raidFrames", label = "Raid Frames Icons" },
+            { key = "raidFrames", label = "Raid & Party Frames Icons" },
             { key = "bags",       label = "Bags Icons" },
         }
-        local oitRow
-        oitRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Outline Icon Text",
-              tooltip="Forces a crisp outline on icon text (stack counts, durations, keybinds). Uncheck a module to make its icon text follow the Outline Mode setting above instead.",
-              values={ ["_placeholder"]="..." }, order={ "_placeholder" },
-              getValue=function() return "_placeholder" end,
-              setValue=function() end },
-            { type="toggle", text="Apply to All Game Text",
-              tooltip="Applies your Global Font to Blizzard's default game text (menus, tooltips, quest log, character panes, and more). Requires a UI reload.",
-              getValue=function() return EllesmereUI.GetFontsDB().applyToAllGameText == true end,
-              setValue=function(v)
-                  EllesmereUI.GetFontsDB().applyToAllGameText = v and true or false
-                  FontReload()
-              end }
-        );  y = y - h
         local rgn = oitRow._leftRegion
         if rgn._control then rgn._control:Hide() end
         local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
@@ -1605,18 +1504,18 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
         end
     end
 
-    -- Never Show Slug: per-profile toggle (rides profile export/import) dropping the SLUG token from every outline (body/icon/aura text,
-    -- Outline Mode itself). Off by default; needs reload.
+    -- Name Font | Game Text Scale. Game Text Scale multiplies Blizzard
+    -- font-object sizes in the same login pass as Apply to All Game Text
+    -- (EllesmereUI.ApplyGlobalFontToGameText) but works with or without the
+    -- face swap. 100 = untouched (stored as nil); the pass runs once from
+    -- native sizes, so no compounding. The reload prompt is drag-aware:
+    -- mid-drag setValues only mark pending (EllesmereUI._sliderDragging, the
+    -- same contract CommitInput reads), and EndDrag's final setValue runs with
+    -- the counter already cleared, so one prompt fires per drag -- or
+    -- immediately for a typed value.
     do
-        local nssRow
-        nssRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Disable Slug Outline",
-              tooltip="Slug outline renders higher quality outlines compared to the base WoW outline mode but may make outline effects appear slightly thicker.",
-              getValue=function() return EllesmereUI.IsSlugDisabled() end,
-              setValue=function(v)
-                  EllesmereUI.GetFontsDB().neverShowSlug = v and true or false
-                  FontReload()
-              end },
+        local gtsPending
+        _, h = W:DualRow(parent, y,
             { type="dropdown", text="Name Font",
               -- Coloured inline rather than via tooltipOpts.color, which would tint the explanation red along with the warning.
               tooltip="Sets the font for the names that float above players, NPCs and enemies in the world.\n\nSeparate from Global Font - changing this does not affect the rest of the UI, and Global Font does not affect it.\n\nBlizzard Default leaves the name text completely untouched.\n\n|cffff4d4dRequires a re-log or restart of WoW to take effect.|r",
@@ -1639,21 +1538,7 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
                       confirmText = "Okay",
                       cancelText  = "Later",
                   })
-              end }
-        );  y = y - h
-    end
-
-    -- Game Text Scale: multiplies Blizzard font-object sizes in the same
-    -- login pass as Apply to All Game Text (EllesmereUI.ApplyGlobalFontToGameText)
-    -- but works with or without the face swap. 100 = untouched (stored as
-    -- nil); the pass runs once from native sizes, so no compounding. The
-    -- reload prompt is drag-aware: mid-drag setValues only mark pending
-    -- (EllesmereUI._sliderDragging, the same contract CommitInput reads),
-    -- and EndDrag's final setValue runs with the counter already cleared,
-    -- so one prompt fires per drag -- or immediately for a typed value.
-    do
-        local gtsPending
-        _, h = W:DualRow(parent, y,
+              end },
             { type="slider", text="Game Text Scale", min=75, max=125, step=5,
               tooltip="Scales the size of Blizzard's default game text (menus, tooltips, quest log, and more). Requires a UI reload.",
               getValue=function() return EllesmereUI.GetFontsDB().gameTextScale or 100 end,
@@ -1671,8 +1556,7 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
                       gtsPending = nil
                       FontReload()
                   end
-              end },
-            { type="label", text="" });  y = y - h
+              end });  y = y - h
     end
 
     _, h = W:Spacer(parent, y, 20);  y = y - h

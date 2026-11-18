@@ -18,7 +18,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  string onto the bar's real timer FS -- the exact passthrough mechanics it
 --  already uses for Blizzard's FontString, just reading a decimal source.
 --
---  Contract with the tick (EllesmereUICdmBuffBars.lua):
+--  Contract with the tick (EUI_CDM_BuffBarTick.lua):
 --    * bar._tbbEngineText = the bound slot button, bar._tbbEngineFS = the
 --      hidden engine-written FS (both set/cleared ONLY here). While set, the
 --      tick mirrors engineFS -> bar._timerText, gated on the slot button's
@@ -158,7 +158,13 @@ local signature      -- signature string of the live container's slot set
 local boundIndex = {}   -- bar index -> slot button (rebuilt per container)
 local boundThr = {}     -- bar index -> threshold its binding was registered with
 local pendingRegen      -- true while a combat-deferred rebuild is queued
-local regenFrame
+
+local function SyncAfterCombat()
+    if pendingRegen then
+        pendingRegen = nil
+        ns.TBBDecimals_Sync()
+    end
+end
 
 local function UnmarkAll()
     for idx in pairs(boundIndex) do
@@ -360,17 +366,7 @@ function ns.TBBDecimals_Sync()
 
     if InCombatLockdown() then
         pendingRegen = true
-        if not regenFrame then
-            regenFrame = ns.TakeShell()
-            regenFrame:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                if pendingRegen then
-                    pendingRegen = nil
-                    ns.TBBDecimals_Sync()
-                end
-            end)
-        end
-        regenFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        ns.CombatQueue.Defer("TBBDecimalsSync", SyncAfterCombat)
         return
     end
     pendingRegen = nil

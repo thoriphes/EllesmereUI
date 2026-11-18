@@ -1,7 +1,7 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 -------------------------------------------------------------------------------
 --  EllesmereUI_PartyMode.lua
---  Full-screen disco spotlight overlay — toggled from Global Settings.
+--  Full-screen disco spotlight overlay -- toggled from Global Settings.
 --  Cone-shaped beams shine down from the top of the screen like stage
 --  spotlights. Each beam uses 3 overlapping layers (wide dim outer,
 --  medium mid, narrow bright core) to create the cone/spotlight look.
@@ -11,11 +11,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Beams are extra tall so edges never show at screen bottom.
 --
 --  Performance:
---    • Zero CPU when disabled — container hidden, OnUpdate doesn't fire.
---    • OnUpdate throttled to ~30fps.
---    • Screen dimensions cached; refreshed on resize.
+--    - Zero CPU when disabled -- container hidden, OnUpdate doesn't fire.
+--    - OnUpdate throttled to ~30fps.
+--    - Screen dimensions cached; refreshed on resize.
 --
---  Shared across all EllesmereUI addons — only the first to load runs.
+--  Shared across all EllesmereUI addons -- only the first to load runs.
 -------------------------------------------------------------------------------
 if _G._EllesmereUIPartyModeLoaded then return end
 _G._EllesmereUIPartyModeLoaded = true
@@ -43,7 +43,7 @@ local math_pi     = math.pi
 local math_rad    = math.rad
 
 -------------------------------------------------------------------------------
---  Keybind registration (pure Lua — no Bindings.xml needed)
+--  Keybind registration (pure Lua -- no Bindings.xml needed)
 --  Uses a hidden button + SetOverrideBindingClick. Only the first addon
 --  to load creates the button; subsequent addons skip if it already exists.
 --  The bound key is saved in EllesmereUIDB.partyModeKey (nil = unbound).
@@ -60,6 +60,7 @@ end
 --  Celebration / dim-lights state
 -------------------------------------------------------------------------------
 local celebrationTimer = nil
+local celebrationEnd = nil  -- end hook of the running celebration (Random's reschedule)
 local randomTimer = nil
 local randomScheduledTimer = nil
 local randomCooldownTimer = nil
@@ -78,6 +79,8 @@ function EllesmereUI_ApplyDimLights()
     if dimLightsActive then return end
     savedContrast = tonumber(GetCVar("contrast")) or 50
     savedBrightness = tonumber(GetCVar("brightness")) or 50
+    -- Plain SetCVar: graphics settings stay out of Uninstall EUI's record (this
+    -- puts them back itself, on toggle-off and at logout).
     SetCVar("contrast", math.max(0, math.min(100, savedContrast + 14)))
     SetCVar("brightness", math.max(0, savedBrightness - (savedBrightness - 10) * 0.7))
     dimLightsActive = true
@@ -91,7 +94,7 @@ function EllesmereUI_RestoreDimLights()
 end
 
 -------------------------------------------------------------------------------
---  Beam definitions — 12 beams
+--  Beam definitions -- 12 beams
 --  Each beam gets 3 layers: wide outer glow, medium mid, narrow core
 --  This creates the cone/spotlight spread effect
 --
@@ -104,9 +107,9 @@ end
 --  brightness, hue, phaseOff: visual tuning
 -------------------------------------------------------------------------------
 local BEAM_DEFS = {
-    -- Far left edge — steep inward angle
+    -- Far left edge -- steep inward angle
     { originX=-0.65, baseAngle=-60, sweepDeg=20, sweepSpeed=1.6, width=0.10, brightness=0.90, hue=0.00, phaseOff=0.0 },
-    -- Left — moderate inward
+    -- Left -- moderate inward
     { originX=-0.40, baseAngle=-35, sweepDeg=22, sweepSpeed=2.0, width=0.10, brightness=0.85, hue=0.12, phaseOff=1.8 },
     -- Left-center
     { originX=-0.20, baseAngle=-18, sweepDeg=18, sweepSpeed=1.8, width=0.10, brightness=0.90, hue=0.25, phaseOff=3.5 },
@@ -120,13 +123,13 @@ local BEAM_DEFS = {
     { originX= 0.25, baseAngle= 20, sweepDeg=20, sweepSpeed=1.9, width=0.10, brightness=0.85, hue=0.72, phaseOff=4.1 },
     -- Right
     { originX= 0.40, baseAngle= 35, sweepDeg=22, sweepSpeed=2.3, width=0.10, brightness=0.85, hue=0.82, phaseOff=5.8 },
-    -- Far right edge — steep inward angle
+    -- Far right edge -- steep inward angle
     { originX= 0.65, baseAngle= 60, sweepDeg=20, sweepSpeed=1.6, width=0.10, brightness=0.90, hue=0.92, phaseOff=1.3 },
     -- Extra center fill
     { originX=-0.10, baseAngle=-10, sweepDeg=16, sweepSpeed=2.4, width=0.10, brightness=0.80, hue=0.45, phaseOff=3.0 },
-    -- Far top-left gap filler — steep inward
+    -- Far top-left gap filler -- steep inward
     { originX=-0.50, baseAngle=-48, sweepDeg=18, sweepSpeed=1.8, width=0.10, brightness=0.88, hue=0.06, phaseOff=4.6 },
-    -- Far top-right gap filler — steep inward
+    -- Far top-right gap filler -- steep inward
     { originX= 0.50, baseAngle= 48, sweepDeg=18, sweepSpeed=1.8, width=0.10, brightness=0.88, hue=0.88, phaseOff=2.0 },
 }
 local NUM_BEAMS = #BEAM_DEFS
@@ -267,9 +270,7 @@ local function GetSoundTables()
     if not _soundPaths then
         local EUI = _G.EllesmereUI
         _soundPaths, _soundNames, _soundOrder = EUI.BuildAlertSoundTables()
-        if EUI.AppendSharedMediaSounds then
-            EUI.AppendSharedMediaSounds(_soundPaths, _soundNames, _soundOrder)
-        end
+        EUI.AppendSharedMediaSounds(_soundPaths, _soundNames, _soundOrder)
     end
     return _soundPaths, _soundNames, _soundOrder
 end
@@ -299,18 +300,34 @@ function EllesmereUI_StartPartyMode()
     if EllesmereUIDB and (EllesmereUIDB.partyModeDimLights ~= false) then
         EllesmereUI_ApplyDimLights()
     end
+    -- Party Mode visibility lanes (Visibility > Party Mode) have no game event.
+    if EllesmereUI.FireVisEdge then EllesmereUI.FireVisEdge() end
 end
 
 function EllesmereUI_StopPartyMode()
     if container then container:Hide() end
     EllesmereUI_RestoreDimLights()
+    if EllesmereUI.FireVisEdge then EllesmereUI.FireVisEdge() end
 end
 
 -------------------------------------------------------------------------------
 --  Keybind toggle function
 -------------------------------------------------------------------------------
+-- Ends a running celebration's timer and runs its end hook, so Random still
+-- reschedules when something other than the timer ends the celebration.
+local function CancelCelebration()
+    if not celebrationTimer then return end
+    celebrationTimer:Cancel()
+    celebrationTimer = nil
+    local onEnd = celebrationEnd
+    celebrationEnd = nil
+    if onEnd then onEnd() end
+end
+
 function EllesmereUI_TogglePartyMode()
     if not EllesmereUIDB then EllesmereUIDB = {} end
+    -- A manual toggle takes over: no celebration timer may end it later.
+    CancelCelebration()
     if EllesmereUIDB.partyMode then
         EllesmereUIDB.partyMode = false
         EllesmereUI_StopPartyMode()
@@ -318,6 +335,21 @@ function EllesmereUI_TogglePartyMode()
         EllesmereUIDB.partyMode = true
         EllesmereUI_StartPartyMode()
     end
+end
+
+-- Automatic celebration: Party Mode on for `duration` seconds. A session the
+-- user started by hand (on, no timer) is left alone, so a trigger never ends it.
+local function Celebrate(duration, onEnd)
+    if EllesmereUIDB.partyMode and not celebrationTimer then return end
+    EllesmereUIDB.partyMode = true
+    EllesmereUI_StartPartyMode()
+    if celebrationTimer then celebrationTimer:Cancel() end
+    celebrationEnd = onEnd or celebrationEnd  -- a replacing trigger keeps Random's hook
+    celebrationTimer = C_Timer.NewTimer(duration, function()
+        if EllesmereUIDB then EllesmereUIDB.partyMode = false end
+        EllesmereUI_StopPartyMode()
+        CancelCelebration()
+    end)
 end
 
 -------------------------------------------------------------------------------
@@ -345,14 +377,7 @@ local function ScheduleRandomActivation()
             end)
             return
         end
-        EllesmereUIDB.partyMode = true
-        EllesmereUI_StartPartyMode()
-        if celebrationTimer then celebrationTimer:Cancel() end
-        local duration = (EllesmereUIDB and EllesmereUIDB.partyModeMPlusDuration) or 30
-        celebrationTimer = C_Timer.NewTimer(duration, function()
-            celebrationTimer = nil
-            if EllesmereUIDB then EllesmereUIDB.partyMode = false end
-            EllesmereUI_StopPartyMode()
+        Celebrate(EllesmereUIDB.partyModeMPlusDuration or 30, function()
             -- Start cooldown, then schedule next random window
             randomCooldownTimer = C_Timer.NewTimer(GetRandomCooldown(), function()
                 randomCooldownTimer = nil
@@ -377,15 +402,15 @@ end
 --  Pause random trigger while EUI settings panel is open
 -------------------------------------------------------------------------------
 local function OnSettingsOpen()
-    -- Cancel any pending random activation / cooldown
-    EllesmereUI_StopRandomTrigger()
     -- If party mode is running from a celebration timer (auto-triggered), stop it
     if celebrationTimer then
-        celebrationTimer:Cancel()
-        celebrationTimer = nil
+        CancelCelebration()
         if EllesmereUIDB then EllesmereUIDB.partyMode = false end
         EllesmereUI_StopPartyMode()
     end
+    -- Cancel any pending random activation / cooldown (after the end hook, which
+    -- schedules one); the panel close restarts the trigger.
+    EllesmereUI_StopRandomTrigger()
 end
 
 local function OnSettingsClose()
@@ -399,7 +424,7 @@ EllesmereUI:RegisterOnShow(OnSettingsOpen)
 EllesmereUI:RegisterOnHide(OnSettingsClose)
 
 -------------------------------------------------------------------------------
---  Init frame — handles PLAYER_LOGIN, events, PLAYER_LOGOUT
+--  Init frame -- handles PLAYER_LOGIN, events, PLAYER_LOGOUT
 -------------------------------------------------------------------------------
 -- Bloodlust celebration trigger: same player-only Sated/Exhaustion debuff edge
 -- detection used by the CDM lust bar. Fires a celebration the instant lust goes
@@ -423,9 +448,11 @@ pmInit:RegisterEvent("PLAYER_LOGOUT")
 
 -- Register the player-only UNIT_AURA listener only while the Bloodlust trigger
 -- is enabled (UNIT_AURA is high-frequency). Global so the options checkbox can
--- toggle it live, mirroring EllesmereUI_StartRandomTrigger.
+-- toggle it live, mirroring EllesmereUI_StartRandomTrigger. WoW Forever has no
+-- Sated or Exhaustion debuffs, so the listener never registers there, even when
+-- the saved trigger key is on.
 function EllesmereUI_UpdatePartyModeLustListener()
-    if EllesmereUIDB and EllesmereUIDB.partyModeTriggerBloodlust then
+    if not EllesmereUI.IS_FOREVER and EllesmereUIDB and EllesmereUIDB.partyModeTriggerBloodlust then
         _pmSatedPresent = _pmPlayerHasSated()  -- baseline so only NEW edges fire
         pmInit:RegisterUnitEvent("UNIT_AURA", "player")
     else
@@ -455,6 +482,9 @@ pmInit:SetScript("OnEvent", function(self, event, ...)
         if EllesmereUIDB and EllesmereUIDB.partyMode then
             EllesmereUI_StartPartyMode()
         end
+        if EllesmereUIDB and EllesmereUIDB.partyModeAfk then
+            EllesmereUI_UpdateAfkScreen()
+        end
         -- Register events
         self:RegisterEvent("CHALLENGE_MODE_COMPLETED")
         self:RegisterEvent("ENCOUNTER_END")
@@ -474,14 +504,7 @@ pmInit:SetScript("OnEvent", function(self, event, ...)
         if present and not _pmSatedPresent then
             -- Rising edge: lust just went out. Hardcoded 40s (NOT the slider),
             -- and this trigger never enables the Auto Celebration Duration setting.
-            EllesmereUIDB.partyMode = true
-            EllesmereUI_StartPartyMode()
-            if celebrationTimer then celebrationTimer:Cancel() end
-            celebrationTimer = C_Timer.NewTimer(40, function()
-                celebrationTimer = nil
-                if EllesmereUIDB then EllesmereUIDB.partyMode = false end
-                EllesmereUI_StopPartyMode()
-            end)
+            Celebrate(40)
         end
         _pmSatedPresent = present
 
@@ -497,15 +520,7 @@ pmInit:SetScript("OnEvent", function(self, event, ...)
             onTime = ot
         end
         if not onTime then return end
-        EllesmereUIDB.partyMode = true
-        EllesmereUI_StartPartyMode()
-        if celebrationTimer then celebrationTimer:Cancel() end
-        local duration = (EllesmereUIDB and EllesmereUIDB.partyModeMPlusDuration) or 30
-        celebrationTimer = C_Timer.NewTimer(duration, function()
-            celebrationTimer = nil
-            if EllesmereUIDB then EllesmereUIDB.partyMode = false end
-            EllesmereUI_StopPartyMode()
-        end)
+        Celebrate(EllesmereUIDB.partyModeMPlusDuration or 30)
 
     elseif event == "ENCOUNTER_END" then
         local encounterID, encounterName, difficultyID, groupSize, success = ...
@@ -521,25 +536,15 @@ pmInit:SetScript("OnEvent", function(self, event, ...)
         local key = diffMap[difficultyID]
         if not key then return end
         if not (EllesmereUIDB and EllesmereUIDB[key]) then return end
-        EllesmereUIDB.partyMode = true
-        EllesmereUI_StartPartyMode()
-        if celebrationTimer then celebrationTimer:Cancel() end
-        local duration = (EllesmereUIDB and EllesmereUIDB.partyModeMPlusDuration) or 30
-        celebrationTimer = C_Timer.NewTimer(duration, function()
-            celebrationTimer = nil
-            if EllesmereUIDB then EllesmereUIDB.partyMode = false end
-            EllesmereUI_StopPartyMode()
-        end)
+        Celebrate(EllesmereUIDB.partyModeMPlusDuration or 30)
 
     elseif event == "PVP_MATCH_COMPLETE" then
         local winner = ...
-        if not EllesmereUIDB then return end
-        -- Determine if the player's faction won
-        local playerFaction = UnitFactionGroup("player")
-        local playerWon = false
-        if playerFaction == "Horde" and winner == 0 then playerWon = true end
-        if playerFaction == "Alliance" and winner == 1 then playerWon = true end
-        if not playerWon then return end
+        local db = EllesmereUIDB
+        if not (db and (db.partyModeTriggerRatedBG or db.partyModeTriggerRatedArena)) then return end
+        -- winner is a team index; compare it to the player's team, not faction
+        local myTeam = GetBattlefieldArenaFaction()
+        if myTeam == nil or winner ~= myTeam then return end
         -- Check which type of rated PvP
         local triggered = false
         if C_PvP and C_PvP.IsRatedBattleground and C_PvP.IsRatedBattleground() and EllesmereUIDB.partyModeTriggerRatedBG then
@@ -549,29 +554,562 @@ pmInit:SetScript("OnEvent", function(self, event, ...)
             triggered = true
         end
         if not triggered then return end
-        EllesmereUIDB.partyMode = true
-        EllesmereUI_StartPartyMode()
-        if celebrationTimer then celebrationTimer:Cancel() end
-        local duration = (EllesmereUIDB and EllesmereUIDB.partyModeMPlusDuration) or 30
-        celebrationTimer = C_Timer.NewTimer(duration, function()
-            celebrationTimer = nil
-            if EllesmereUIDB then EllesmereUIDB.partyMode = false end
-            EllesmereUI_StopPartyMode()
-        end)
+        Celebrate(EllesmereUIDB.partyModeMPlusDuration or 30)
 
     elseif event == "PLAYER_LEVEL_UP" then
         if not (EllesmereUIDB and EllesmereUIDB.partyModeTriggerLevelUp) then return end
-        EllesmereUIDB.partyMode = true
-        EllesmereUI_StartPartyMode()
-        if celebrationTimer then celebrationTimer:Cancel() end
-        local duration = (EllesmereUIDB and EllesmereUIDB.partyModeMPlusDuration) or 30
-        celebrationTimer = C_Timer.NewTimer(duration, function()
-            celebrationTimer = nil
-            if EllesmereUIDB then EllesmereUIDB.partyMode = false end
-            EllesmereUI_StopPartyMode()
-        end)
+        Celebrate(EllesmereUIDB.partyModeMPlusDuration or 30)
 
     elseif event == "PLAYER_LOGOUT" then
+        -- An automatic celebration only lives as long as its timer, so never save
+        -- it as on: the next login would start Party Mode with nothing to stop it.
+        -- A session the user turned on by hand has no timer and stays saved.
+        if celebrationTimer and EllesmereUIDB then EllesmereUIDB.partyMode = false end
         EllesmereUI_RestoreDimLights()
     end
 end)
+
+-------------------------------------------------------------------------------
+--  Party Mode spin engine. EllesmereUI.PartySpin_Create(opts) -> refresh()
+--  opts: target (one key of the Spinning setting, read through
+--  EllesmereUI.PartySpinOn; every target turns at partyModeSpinSpeed, deg/s,
+--  default 120), collect() -> { { pivot = frame, frames = {...} }, ... }
+--  (runs about once a second while spinning, so it reuses its tables), and
+--  optional onClaim() (idempotent, same cadence) and onRestore().
+--  opts.homeInCombat: members go home as each fight starts instead of
+--  freezing mid-orbit (frames clicked in combat: party and raid frames).
+--  EllesmereUI.PartySpin_RefreshAll() re-applies every engine.
+--  A SetPoint post-hook marks a member dirty when its module re-anchors it.
+--  Pauses in combat and while Unlock Mode is open (members go home to drag).
+-------------------------------------------------------------------------------
+do
+local SPIN_TARGETS = { "actionBars", "dataBars", "unitFrames", "resource", "power",
+                       "partyFrames", "raidFrames" }
+
+-- EllesmereUIDB.partyModeSpinBars: nil / false = nothing spins, true = Action
+-- Bars only, a table = one boolean per target. Every reader comes through
+-- here: a plain truthiness test would take a table for "on". settingOnly
+-- skips the Party Mode check (the options checkmarks).
+local function SpinOn(target, settingOnly)
+    local db = EllesmereUIDB
+    if not (db and (settingOnly or db.partyMode)) then return false end
+    local v = db.partyModeSpinBars
+    if type(v) == "table" then return v[target] == true end
+    return v == true and target == "actionBars"
+end
+EllesmereUI.PartySpinOn = SpinOn
+
+-- The options writer: a boolean store becomes the per-target table on its
+-- first write, keeping its Action Bars meaning.
+function EllesmereUI.PartySpinSet(target, on)
+    local db = EllesmereUIDB
+    if not db then return end
+    local v = db.partyModeSpinBars
+    if type(v) ~= "table" then
+        local ab = (v == true)
+        v = {}
+        for i = 1, #SPIN_TARGETS do v[SPIN_TARGETS[i]] = false end
+        v.actionBars = ab
+        db.partyModeSpinBars = v
+    end
+    v[target] = on and true or false
+end
+
+local function Speed()
+    local v = EllesmereUIDB and EllesmereUIDB.partyModeSpinSpeed
+    if v == nil then v = 120 end
+    return v
+end
+
+-- Per-frame records live here, never on the frame: some members are
+-- Blizzard-owned (stance and pet buttons). A record outlives its membership,
+-- so a re-claim reuses its tables and the one SetPoint hook.
+local recOf = setmetatable({}, { __mode = "k" })
+local guardDepth = 0
+local refreshers = {}
+local EMPTY = {}
+
+local function OnMemberSetPoint(self)
+    if guardDepth > 0 then return end
+    local r = recOf[self]
+    if r then r.dirty = true end
+end
+
+local function Measure(f, rec)
+    local pts, n = rec.points, 0
+    for i = 1, f:GetNumPoints() do
+        local a, rel, b, x, y = f:GetPoint(i)
+        -- Skip our own orbit point if the module anchored without clearing it.
+        if not (rec.ox and a == "CENTER" and rel == UIParent and b == "BOTTOMLEFT"
+                and x == rec.ox and y == rec.oy) then
+            n = n + 1
+            local p = pts[n]
+            if not p then p = {}; pts[n] = p end
+            p[1], p[2], p[3], p[4], p[5] = a, rel, b, x, y
+        end
+    end
+    for i = n + 1, #pts do pts[i] = nil end
+    rec.n = n
+    -- A member sized by two or more anchors (SetAllPoints) loses its size
+    -- under a single orbit point, so its rest size is carried explicitly.
+    rec.multi = n > 1
+    rec.w, rec.h = f:GetWidth(), f:GetHeight()
+    local cx, cy = f:GetCenter()
+    local px, py = rec.pivot:GetCenter()
+    -- No rect yet: Tick retries it on rec.dx. Left dirty, it would make the
+    -- settle pass restore the whole set every frame.
+    if not (cx and px) then rec.dx, rec.dirty = nil, false; return end
+    local fs, ps = f:GetEffectiveScale(), rec.pivot:GetEffectiveScale()
+    rec.dx, rec.dy = cx * fs - px * ps, cy * fs - py * ps
+    rec.dirty = false
+end
+
+-- Back onto the captured rest anchors. A member its module re-anchored since
+-- the last tick is re-measured first, so that newer anchor is the one kept.
+local function Restore(f, rec)
+    if rec.dirty then Measure(f, rec) end
+    local n = rec.n or 0
+    if n == 0 then return end
+    guardDepth = guardDepth + 1
+    f:ClearAllPoints()
+    local pts = rec.points
+    for i = 1, n do
+        local p = pts[i]
+        f:SetPoint(p[1], p[2], p[3], p[4], p[5])
+    end
+    guardDepth = guardDepth - 1
+    rec.ox, rec.oy = nil, nil
+end
+
+local function RefreshAll()
+    for i = 1, #refreshers do refreshers[i]() end
+end
+EllesmereUI.PartySpin_RefreshAll = RefreshAll
+
+function EllesmereUI.PartySpin_Create(opts)
+    local target = opts.target
+    local driver, combatWatch
+    local angle, held, since, claimed = 0, false, 0, false
+    local members = {}     -- frame -> its recOf record
+    local order = {}       -- array of frames (stable iteration)
+    local seen = {}        -- Claim scratch, wiped after each pass
+
+    local function On() return SpinOn(target) end
+
+    local function RestoreAll()
+        for i = 1, #order do
+            local f = order[i]
+            Restore(f, members[f])
+        end
+        wipe(members); wipe(order)
+        claimed = false
+        if combatWatch then combatWatch:UnregisterEvent("PLAYER_REGEN_DISABLED") end
+        if opts.onRestore then opts.onRestore() end
+    end
+
+    -- InCombatLockdown() already reports true at PLAYER_REGEN_DISABLED, but
+    -- protected writes stay legal until its handler returns (the DataBars
+    -- tooltip host relies on the same window). Registered only while claimed.
+    local function WatchCombat()
+        if not opts.homeInCombat then return end
+        if not combatWatch then
+            combatWatch = CreateFrame("Frame")
+            combatWatch:SetScript("OnEvent", function()
+                if not claimed then return end
+                RestoreAll()
+                angle, held = 0, true
+            end)
+        end
+        combatWatch:RegisterEvent("PLAYER_REGEN_DISABLED")
+    end
+
+    local function Claim()
+        claimed = true
+        local groups = opts.collect() or EMPTY
+        for g = 1, #groups do
+            local grp = groups[g]
+            local pivot, list = grp.pivot, grp.frames
+            if pivot and list then
+                for i = 1, #list do
+                    local f = list[i]
+                    if f and f.GetCenter and not seen[f] then
+                        seen[f] = true
+                        if not members[f] then
+                            local rec = recOf[f]
+                            if not rec then
+                                rec = { points = {} }
+                                recOf[f] = rec
+                                hooksecurefunc(f, "SetPoint", OnMemberSetPoint)
+                            end
+                            rec.pivot = pivot
+                            members[f] = rec
+                            order[#order + 1] = f
+                            -- Measured by the next tick, with the set at rest.
+                            rec.dirty = true
+                        end
+                    end
+                end
+            end
+        end
+        -- Members that left the collection (block removed, frame gone) go home.
+        for i = #order, 1, -1 do
+            local f = order[i]
+            if not seen[f] then
+                Restore(f, members[f])
+                members[f] = nil
+                table.remove(order, i)
+            end
+        end
+        wipe(seen)
+        WatchCombat()
+        if opts.onClaim then opts.onClaim() end
+    end
+
+    local function Tick(c, s)
+        guardDepth = guardDepth + 1
+        -- Settle: re-anchored or new members are measured with every other
+        -- member back on its rest anchors. Header buttons anchor to each other,
+        -- so one still mid-orbit would skew the next one's rest.
+        local settle = false
+        for i = 1, #order do
+            if members[order[i]].dirty then settle = true; break end
+        end
+        if settle then
+            for i = 1, #order do
+                local f = order[i]
+                local rec = members[f]
+                if not rec.dirty then Restore(f, rec) end
+            end
+            for i = 1, #order do
+                local f = order[i]
+                local rec = members[f]
+                if rec.dirty then Measure(f, rec) end
+            end
+        end
+        -- Members come grouped by pivot, so each pivot is read once a tick.
+        local lastPivot, px, py, ps
+        for i = 1, #order do
+            local f = order[i]
+            local rec = members[f]
+            -- No position yet: retry.
+            if not rec.dx then Measure(f, rec) end
+            local pivot = rec.pivot
+            if pivot ~= lastPivot then
+                lastPivot = pivot
+                px, py = pivot:GetCenter()
+                ps = pivot:GetEffectiveScale()
+            end
+            if rec.dx and px then
+                local fs = f:GetEffectiveScale()
+                if fs and fs > 0 then
+                    local x = px * ps + rec.dx * c - rec.dy * s
+                    local y = py * ps + rec.dx * s + rec.dy * c
+                    rec.ox, rec.oy = x / fs, y / fs
+                    f:ClearAllPoints()
+                    f:SetPoint("CENTER", UIParent, "BOTTOMLEFT", rec.ox, rec.oy)
+                    if rec.multi then f:SetSize(rec.w, rec.h) end
+                end
+            end
+        end
+        guardDepth = guardDepth - 1
+    end
+
+    local refresh
+    refresh = function()
+        local on = On()
+        -- Off with nothing claimed: nothing to put back, so nothing runs.
+        if not on and not claimed then
+            if driver then driver:Hide() end
+            angle, held = 0, false
+            return
+        end
+        -- Moving a protected member is blocked in combat, so only the safe
+        -- half (Show/Hide of our own driver) runs there; the rest re-runs on
+        -- PLAYER_REGEN_ENABLED with the member table left intact.
+        if InCombatLockdown() then
+            EllesmereUI.CombatQueue.Defer(refresh, refresh)
+            if not on then
+                if driver then driver:Hide() end
+                angle = 0
+            elseif driver then
+                driver:Show()
+            end
+            return
+        end
+        if not on then
+            if driver then driver:Hide() end
+            angle, held = 0, false
+            RestoreAll()
+            return
+        end
+        if not driver then
+            driver = CreateFrame("Frame")
+            driver:Hide()
+            driver:SetScript("OnUpdate", function(_, elapsed)
+                if not On() then refresh(); return end
+                if InCombatLockdown() then return end
+                if EllesmereUI._unlockActive then
+                    if not held then held = true; RestoreAll() end
+                    return
+                end
+                if held then held = false; Claim() end
+                -- Pick up late spawns / added blocks about once a second.
+                since = since + elapsed
+                if since > 1 then since = 0; Claim() end
+                angle = (angle + math.rad(Speed()) * elapsed) % (math.pi * 2)
+                if #order > 0 then Tick(math.cos(angle), math.sin(angle)) end
+            end)
+        end
+        Claim()
+        driver:Show()
+    end
+
+    refreshers[#refreshers + 1] = refresh
+    return refresh
+end
+
+-- Party Mode starts from the options page, a keybind, a random timer or
+-- Bloodlust; its two public entry points catch all of them.
+hooksecurefunc("EllesmereUI_StartPartyMode", RefreshAll)
+hooksecurefunc("EllesmereUI_StopPartyMode", RefreshAll)
+end
+
+-------------------------------------------------------------------------------
+--  AFK Screen: while the player is AFK, the EUI logo bounces around a dimmed
+--  screen and changes colour on every wall hit. Each leg between walls is one
+--  Translation animation, so Lua only runs once per bounce. Click to dismiss.
+-------------------------------------------------------------------------------
+do
+local LOGO_TEX  = "Interface\\AddOns\\EllesmereUI\\media\\logo-full.tga"
+local LOGO_SIZE = 96
+local BOX_W, BOX_H = 160, LOGO_SIZE + 34
+local boxW, boxH, boxScale = BOX_W, BOX_H, 1
+local DIM_ALPHA = 0.75
+
+local afkEvents = CreateFrame("Frame")
+local overlay, box, logo, word, anim, slide, spin, turn, flip, flipIn, flipOut
+local x, y, dx, dy, hue = 0, 0, 1, 1, 0
+local dismissed = false
+
+local function AfkSpeed()
+    local v = EllesmereUIDB and EllesmereUIDB.partyModeAfkSpeed
+    if v == nil then v = 150 end
+    return v
+end
+
+local function SpinSpeed(key)
+    local v = EllesmereUIDB and EllesmereUIDB[key]
+    if v == nil then v = 180 end
+    return math.max(v, 10)
+end
+
+-- Corner Odds 50 at Logo Speed 750 lands about one corner a minute on any
+-- screen size: the hit rate grows with window * speed / play area, so the
+-- window scales with the play area.
+local function CornerPx(maxX, maxY)
+    local v = EllesmereUIDB and EllesmereUIDB.partyModeAfkCornerSize
+    if v == nil then v = 50 end
+    return math.min(v * maxX * maxY / 4500000, math.min(maxX, maxY) * 0.5)
+end
+
+local function CornerSecs()
+    local v = EllesmereUIDB and EllesmereUIDB.partyModeAfkCornerSecs
+    if v == nil then v = 15 end
+    return v
+end
+
+-- A corner hit starts Party Mode as a timed celebration, like the other
+-- triggers. A session the user turned on by hand is left alone.
+local function CornerParty()
+    local db = EllesmereUIDB
+    if not (db and db.partyModeAfkCorner) then return end
+    Celebrate(CornerSecs())
+end
+
+local function Recolor()
+    hue = (hue + 0.2 + math_random() * 0.6) % 1
+    local r, g, b = HSVtoRGB(hue, 0.85, 1)
+    logo:SetVertexColor(r, g, b)
+    word:SetTextColor(r, g, b)
+end
+
+local function Place()
+    box:ClearAllPoints()
+    box:SetPoint("BOTTOMLEFT", overlay, "BOTTOMLEFT", x / boxScale, y / boxScale)
+end
+
+local function NextLeg()
+    local maxX, maxY = overlay:GetWidth() - boxW, overlay:GetHeight() - boxH
+    if maxX <= 0 or maxY <= 0 then return end
+    x = math.max(0, math.min(x, maxX))
+    y = math.max(0, math.min(y, maxY))
+    local s = math.max(AfkSpeed(), 10)
+    local tx = (dx > 0 and (maxX - x) or x) / s
+    local ty = (dy > 0 and (maxY - y) or y) / s
+    local t = math.max(math.min(tx, ty), 0.01)
+    local ex = math.max(0, math.min(x + dx * s * t, maxX))
+    local ey = math.max(0, math.min(y + dy * s * t, maxY))
+    anim._ex, anim._ey = ex, ey
+    anim._hitX, anim._hitY = tx <= t + 0.001, ty <= t + 0.001
+    -- Corner: the leg ends on one wall with the other wall close by.
+    anim._corner = math.abs(tx - ty) * s <= CornerPx(maxX, maxY)
+    slide:SetOffset((ex - x) / boxScale, (ey - y) / boxScale)
+    slide:SetDuration(t)
+    anim:Play()
+end
+
+local function HideAfk()
+    if not overlay then return end
+    anim:Stop()
+    spin:Stop()
+    flip:Stop()
+    overlay:Hide()
+end
+
+local function Build()
+    overlay = CreateFrame("Frame", "EllesmereUIAfkScreen", UIParent)
+    overlay:SetFrameStrata("FULLSCREEN_DIALOG")
+    overlay:SetAllPoints(UIParent)
+    overlay:EnableMouse(true)
+    overlay:Hide()
+    local bg = overlay:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(0, 0, 0, DIM_ALPHA)
+    overlay:SetScript("OnMouseDown", function()
+        dismissed = true
+        HideAfk()
+    end)
+    overlay:SetScript("OnSizeChanged", function(self)
+        if not self:IsShown() then return end
+        anim:Stop()
+        Place()
+        NextLeg()
+    end)
+
+    box = CreateFrame("Frame", nil, overlay)
+    box:SetSize(BOX_W, BOX_H)
+    logo = box:CreateTexture(nil, "ARTWORK")
+    logo:SetTexture(LOGO_TEX)
+    logo:SetSize(LOGO_SIZE, LOGO_SIZE)
+    logo:SetPoint("TOP")
+    spin = logo:CreateAnimationGroup()
+    spin:SetLooping("REPEAT")
+    turn = spin:CreateAnimation("Rotation")
+    turn:SetDegrees(-360)
+    turn:SetOrigin("CENTER", 0, 0)
+
+    -- Horizontal spin: the width squeezes to an edge and opens back out.
+    flip = logo:CreateAnimationGroup()
+    flip:SetLooping("REPEAT")
+    flipIn = flip:CreateAnimation("Scale")
+    flipIn:SetScaleFrom(1, 1)
+    flipIn:SetScaleTo(0.02, 1)
+    flipIn:SetSmoothing("IN")
+    flipIn:SetOrder(1)
+    flipOut = flip:CreateAnimation("Scale")
+    flipOut:SetScaleFrom(0.02, 1)
+    flipOut:SetScaleTo(1, 1)
+    flipOut:SetSmoothing("OUT")
+    flipOut:SetOrder(2)
+
+    word = box:CreateFontString(nil, "ARTWORK")
+    word:SetFont(EllesmereUI.GetFontPath(), 22, "")
+    word:SetPoint("BOTTOM")
+    word:SetText("EllesmereUI")
+
+    anim = box:CreateAnimationGroup()
+    slide = anim:CreateAnimation("Translation")
+    anim:SetScript("OnFinished", function(self)
+        x, y = self._ex, self._ey
+        if self._hitX then dx = -dx end
+        if self._hitY then dy = -dy end
+        Place()
+        Recolor()
+        if self._corner then CornerParty() end
+        NextLeg()
+    end)
+end
+
+local function ApplySpin()
+    if EllesmereUIDB and EllesmereUIDB.partyModeAfkSpin then
+        local d = 360 / SpinSpeed("partyModeAfkSpinSpeed")
+        if turn:GetDuration() ~= d then
+            spin:Stop()
+            turn:SetDuration(d)
+        end
+        if not spin:IsPlaying() then spin:Play() end
+    else
+        spin:Stop()
+    end
+    if EllesmereUIDB and EllesmereUIDB.partyModeAfkFlip then
+        -- Each squeeze or open is a quarter turn.
+        local d = 90 / SpinSpeed("partyModeAfkFlipSpeed")
+        if flipIn:GetDuration() ~= d then
+            flip:Stop()
+            flipIn:SetDuration(d)
+            flipOut:SetDuration(d)
+        end
+        if not flip:IsPlaying() then flip:Play() end
+    else
+        flip:Stop()
+    end
+end
+
+-- Logo Size scales the whole box. Positions are kept in overlay units and
+-- divided by the scale where they reach the box (its points and offsets are
+-- in its own scaled units).
+local function ApplySize()
+    boxScale = (EllesmereUIDB and EllesmereUIDB.partyModeAfkScale) or 1
+    box:SetScale(boxScale)
+    boxW, boxH = BOX_W * boxScale, BOX_H * boxScale
+end
+
+local function ShowAfk()
+    if not overlay then Build() end
+    ApplySpin()
+    if overlay:IsShown() then return end
+    ApplySize()
+    overlay:Show()
+    x = math_random() * math.max(overlay:GetWidth() - boxW, 0)
+    y = math_random() * math.max(overlay:GetHeight() - boxH, 0)
+    dx = math_random() < 0.5 and -1 or 1
+    dy = math_random() < 0.5 and -1 or 1
+    Place()
+    Recolor()
+    NextLeg()
+end
+
+local function Check()
+    local afk = UnitIsAFK("player")
+    -- Secret during the chat messaging lockdown (keys, encounters, /euidev):
+    -- no screen then, and a dismissal still stands once it can be read.
+    if issecretvalue(afk) then
+        HideAfk()
+        return
+    end
+    if afk and not InCombatLockdown() then
+        if not dismissed then ShowAfk() end
+    else
+        dismissed = false
+        HideAfk()
+    end
+end
+
+afkEvents:SetScript("OnEvent", function(_, event)
+    if event == "PLAYER_REGEN_DISABLED" then HideAfk() return end
+    Check()
+end)
+
+-- Events live only while the setting is on. Called at login and by the options toggle.
+function EllesmereUI_UpdateAfkScreen()
+    if EllesmereUIDB and EllesmereUIDB.partyModeAfk then
+        afkEvents:RegisterUnitEvent("PLAYER_FLAGS_CHANGED", "player")
+        afkEvents:RegisterEvent("PLAYER_REGEN_DISABLED")
+        Check()
+    else
+        afkEvents:UnregisterAllEvents()
+        dismissed = false
+        HideAfk()
+    end
+end
+end

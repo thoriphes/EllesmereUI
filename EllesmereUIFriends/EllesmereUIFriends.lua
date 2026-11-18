@@ -4,8 +4,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  native ScrollBox and buttons: no custom DataProvider, no friend groups.
 -------------------------------------------------------------------------------
 local ADDON_NAME = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
-EllesmereUI._ModuleNS[ADDON_NAME] = select(2, ...)  -- LOD options files read this module ns via the registry
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.FriendsKit and EllesmereUI.NewFrameData and EllesmereUI.SetFontFamily) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (friends' names and notes take the parent's font families)
+local ns = select(2, ...)
+EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
+ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
 local EBS = EllesmereUI.Lite.NewAddon("EllesmereUIFriends")
 
@@ -14,12 +16,7 @@ local PP = EllesmereUI.PP
 local EG = EllesmereUI.ELLESMERE_GREEN
 
 -- External weak-keyed lookup table for frame state (prevents tainting Blizzard frames)
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -- Master kill-switch for modules held back from public release (Coming Soon), keyed by
 -- module name; overrides that module's "enabled" flag to off regardless of the user's SavedVariables.
@@ -76,7 +73,7 @@ end
 -- Legacy FriendsFrame stays loaded-but-hidden under the Social UI; skinning it
 -- re-anchors Blizzard scroll boxes and hooks mouse wheel, tainting Battle.net
 -- whisper handling (SetTellTarget on a secret target) -- so the skin stays off
--- there (EUI_Friends_Groups_121.lua owns that window); checked live since the switch can flip mid-session.
+-- there; checked live since the switch can flip mid-session.
 local function LegacyFriendsRetired()
     -- The Style page's stock styles keep Blizzard's own friends window on
     -- either path, so the legacy skin stands down for them too.
@@ -90,29 +87,18 @@ end
 -------------------------------------------------------------------------------
 --  Combat safety
 -------------------------------------------------------------------------------
-local pendingApply = false
 local ApplyAll  -- forward declaration
 
-local combatFrame = CreateFrame("Frame")
-combatFrame:SetScript("OnEvent", function(self)
-    self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-    if pendingApply then
-        pendingApply = false
-        ApplyAll()
-    end
-end)
-
--- Regen listener is armed only while an apply is pending: zero cost otherwise.
+-- Keyed queue entry: repeat requests before regen collapse into one apply.
 local function QueueApplyAll()
-    if pendingApply then return end
-    pendingApply = true
-    combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    ns.CombatQueue.Defer("ApplyAll", ApplyAll)
 end
 
 local function StripTextures(f)
     if not f then return end
-    for i = 1, select("#", f:GetRegions()) do
-        local region = select(i, f:GetRegions())
+    local regions = { f:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region:IsObjectType("Texture") then
             region:SetAlpha(0)
         end
@@ -130,25 +116,13 @@ local function SkinRaidRoleIcon(icon)
     -- No-op: CreateTexture on protected parent taints
 end
 
-local function SkinRaidRoleCount(frame)
-    if not frame or GetFFD(frame).skinned then return end
-    GetFFD(frame).skinned = true
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    for i = 1, select("#", frame:GetRegions()) do
-        local region = select(i, frame:GetRegions())
-        if region:IsObjectType("FontString") then
-            region:SetFont(fontPath, 10, "")
-            region:SetTextColor(1, 1, 1, 0.8)
-        end
-    end
-end
-
 local function SkinRaidTabButton(btn)
     if not btn or GetFFD(btn).btnSkinned then return end
     GetFFD(btn).btnSkinned = true
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    for i = 1, select("#", btn:GetRegions()) do
-        local region = select(i, btn:GetRegions())
+    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+    local regions = { btn:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region:IsObjectType("Texture") then
             region:SetTexture("")
             region:SetAlpha(0)
@@ -215,13 +189,14 @@ local RAID_TAB_BUTTONS = {
 local function SkinCheckbox(checkbox)
     if not checkbox or GetFFD(checkbox).skinned then return end
     GetFFD(checkbox).skinned = true
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
     if checkbox.SetNormalTexture then checkbox:SetNormalTexture("") end
     if checkbox.SetPushedTexture then checkbox:SetPushedTexture("") end
     if checkbox.SetHighlightTexture then checkbox:SetHighlightTexture("") end
     if checkbox.SetDisabledTexture then checkbox:SetDisabledTexture("") end
-    for i = 1, select("#", checkbox:GetRegions()) do
-        local region = select(i, checkbox:GetRegions())
+    local regions = { checkbox:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region:IsObjectType("Texture") then
             region:SetTexture("")
         end
@@ -236,11 +211,12 @@ end
 local function SkinRaidGroup(group)
     if not group or GetFFD(group).skinned then return end
     GetFFD(group).skinned = true
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
     local ar, ag, ab = EG.r, EG.g, EG.b
     local groupName = group:GetName()
-    for i = 1, select("#", group:GetRegions()) do
-        local region = select(i, group:GetRegions())
+    local regions = { group:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region:IsObjectType("Texture") then
             region:SetTexture("")
         end
@@ -257,17 +233,18 @@ local function SkinRaidGroup(group)
     end
     local labelFrame = _G[groupName .. "Label"]
     if labelFrame then
-        for i = 1, select("#", labelFrame:GetRegions()) do
-            local region = select(i, labelFrame:GetRegions())
+        local regions2 = { labelFrame:GetRegions() }
+        for i = 1, #regions2 do
+            local region = regions2[i]
             if region and region:IsObjectType("FontString") then
-                if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(region, true) end
+                EllesmereUI.PrimeFontShadow(region, true)
                 region:SetFont(fontPath, 10, "")
                 region:SetTextColor(ar, ag, ab, 1)
             end
         end
         local fontString = labelFrame.GetFontString and labelFrame:GetFontString()
         if fontString and fontString.SetFont then
-            if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fontString, true) end
+            EllesmereUI.PrimeFontShadow(fontString, true)
             fontString:SetFont(fontPath, 10, "")
             fontString:SetTextColor(ar, ag, ab, 1)
         end
@@ -277,9 +254,10 @@ end
 local function SkinRaidSlot(slot)
     if not slot or GetFFD(slot).skinned then return end
     GetFFD(slot).skinned = true
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    for i = 1, select("#", slot:GetRegions()) do
-        local region = select(i, slot:GetRegions())
+    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+    local regions = { slot:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region:IsObjectType("Texture") then
             region:SetTexture("")
         end
@@ -294,8 +272,9 @@ local function SkinRaidSlot(slot)
         slot:SetBackdropColor(0.045, 0.045, 0.05, 0.9)
         slot:SetBackdropBorderColor(0.15, 0.15, 0.15, 0.7)
     end
-    for i = 1, select("#", slot:GetRegions()) do
-        local region = select(i, slot:GetRegions())
+    local regions2 = { slot:GetRegions() }
+    for i = 1, #regions2 do
+        local region = regions2[i]
         if region and region:IsObjectType("FontString") then
             region:SetFont(fontPath, 9, "")
         end
@@ -311,9 +290,10 @@ end
 local function SkinRaidGroupButton(btn)
     if not btn or GetFFD(btn).skinned then return end
     GetFFD(btn).skinned = true
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
-    for i = 1, select("#", btn:GetRegions()) do
-        local region = select(i, btn:GetRegions())
+    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+    local regions = { btn:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region:IsObjectType("Texture") then
             region:SetTexture("")
         end
@@ -328,10 +308,19 @@ local function SkinRaidGroupButton(btn)
         btn:SetBackdropColor(0.06, 0.06, 0.07, 0.95)
         btn:SetBackdropBorderColor(0.3, 0.3, 0.3, 0.9)
     end
-    for i = 1, select("#", btn:GetRegions()) do
-        local region = select(i, btn:GetRegions())
+    -- The member's name takes the font as a font family (it draws the scripts the
+    -- font lacks), with the drop shadow its template font gives it
+    local btnName = btn.GetName and btn:GetName()
+    local nameFS = btnName and _G[btnName .. "Name"]
+    local regions2 = { btn:GetRegions() }
+    for i = 1, #regions2 do
+        local region = regions2[i]
         if region and region:IsObjectType("FontString") then
-            region:SetFont(fontPath, 9, "")
+            if region == nameFS then
+                EllesmereUI.SetFontFamily(region, fontPath, 9, "", true)
+            else
+                region:SetFont(fontPath, 9, "")
+            end
         end
     end
     btn:HookScript("OnEnter", function()
@@ -377,11 +366,13 @@ local function SkinRaidTab()
     end
     local raidFrame = _G.RaidFrame
     if raidFrame then
-        for i = 1, select("#", raidFrame:GetChildren()) do
-            local child = select(i, raidFrame:GetChildren())
+        local children = { raidFrame:GetChildren() }
+        for i = 1, #children do
+            local child = children[i]
             if child then
-                for j = 1, select("#", child:GetRegions()) do
-                    local region = select(j, child:GetRegions())
+                local regions = { child:GetRegions() }
+                for j = 1, #regions do
+                    local region = regions[j]
                     if region and region:IsObjectType("Texture") then
                         local tex = region:GetTexture()
                         if tex and type(tex) == "string" then
@@ -519,28 +510,10 @@ end
 -------------------------------------------------------------------------------
 local friendsSkinned = false
 
-local CLASS_ICON_SPRITE_BASE = "Interface\\AddOns\\EllesmereUI\\media\\icons\\class-full\\"
-
-local CLASS_ICON_SPRITE_TEX = {}
-for _, style in ipairs({"modern", "dark", "light", "clean"}) do
-    CLASS_ICON_SPRITE_TEX[style] = CLASS_ICON_SPRITE_BASE .. style .. ".tga"
-end
+-- The class icon sprites, the status orb art and the region icon button come
+-- from the friends kit (EllesmereUI_FriendsKit.lua), shared with the tiles.
+local FriendsKit = EllesmereUI.FriendsKit
 local CLASS_SPRITE_COORDS = EllesmereUI.CLASS_ICON_SPRITE_COORDS
-
-local classFileByLocalName = {}
-local function BuildClassNameLookup()
-    if next(classFileByLocalName) then return end
-    if LOCALIZED_CLASS_NAMES_MALE then
-        for token, name in pairs(LOCALIZED_CLASS_NAMES_MALE) do
-            classFileByLocalName[name] = token
-        end
-    end
-    if LOCALIZED_CLASS_NAMES_FEMALE then
-        for token, name in pairs(LOCALIZED_CLASS_NAMES_FEMALE) do
-            classFileByLocalName[name] = token
-        end
-    end
-end
 
 -- Filled on demand for displayed rows; only search needs the complete list.
 -- BNet keyed [id], WoW [id+10000].
@@ -608,7 +581,6 @@ local function RefreshFriendCache()
 end
 
 local function GetFriendClassFile(bnetInfo, wowInfo)
-    BuildClassNameLookup()
     if bnetInfo and bnetInfo.gameAccountInfo then
         local gi = bnetInfo.gameAccountInfo
         if gi.classID and gi.classID > 0 then
@@ -616,55 +588,15 @@ local function GetFriendClassFile(bnetInfo, wowInfo)
             return classFile
         end
         if gi.className then
-            return classFileByLocalName[gi.className]
+            return EllesmereUI.ClassTokenFromLocalized(gi.className)
         end
     elseif wowInfo and wowInfo.className then
-        return classFileByLocalName[wowInfo.className]
+        return EllesmereUI.ClassTokenFromLocalized(wowInfo.className)
     end
     return nil
 end
 
--- Group tag ||EUI:GroupName|| in Blizzard friend notes; display only, stripped.
-local EUI_NOTE_TAG = "||EUI:"
-local EUI_NOTE_END = "||"
-
-local function ParseGroupFromNote(note)
-    if not note or note == "" then return nil, note end
-    local tagStart = note:find(EUI_NOTE_TAG, 1, true)
-    if not tagStart then return nil, note end
-    local groupStart = tagStart + #EUI_NOTE_TAG
-    local tagEnd = note:find(EUI_NOTE_END, groupStart, true)
-    if not tagEnd then return nil, note end
-    local group = note:sub(groupStart, tagEnd - 1)
-    local clean = note:sub(1, tagStart - 1)
-    clean = clean:match("^(.-)%s*$") or clean
-    if group == "" then return nil, clean end
-    return group, clean
-end
-
-local OFFLINE_ICON = "Interface\\AddOns\\EllesmereUIFriends\\Media\\offline.png"
-
-local MINI_DISPLAY = {
-    namerica = "North America", samerica = "South America",
-    australia = "Australia", europe = "Europe",
-    russia = "Russia", korea = "Korea",
-    taiwan = "Taiwan", china = "China",
-}
-
--- Status orb (online/away/dnd): first of the atlas' 6 columns, top of 2 rows.
-local _orbFile, _orbL, _orbR, _orbT, _orbB
-do
-    local orbInfo = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("lootroll-animreveal-a")
-    if orbInfo and orbInfo.file then
-        _orbFile = orbInfo.file
-        local aL = orbInfo.leftTexCoord or 0
-        local aR = orbInfo.rightTexCoord or 1
-        local aT = orbInfo.topTexCoord or 0
-        local aB = orbInfo.bottomTexCoord or 1
-        local aW, aH = aR - aL, aB - aT
-        _orbL, _orbR, _orbT, _orbB = aL, aL + aW/6, aT, aT + aH/2
-    end
-end
+local OFFLINE_ICON = "Interface\\AddOns\\EllesmereUI\\media\\friends\\offline.png"
 
 local function UpdateClassIcon(button, bnetInfo, wowInfo)
     if button.buttonType == FRIENDS_BUTTON_TYPE_DIVIDER then return end
@@ -722,7 +654,7 @@ local function UpdateClassIcon(button, bnetInfo, wowInfo)
         else
             local coords = CLASS_SPRITE_COORDS[classFile]
             if coords then
-                icon:SetTexture(CLASS_ICON_SPRITE_TEX[style] or (CLASS_ICON_SPRITE_BASE .. style .. ".tga"))
+                icon:SetTexture(FriendsKit.ClassIconSprite(style))
                 icon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
             end
         end
@@ -756,18 +688,8 @@ local function UpdateClassIcon(button, bnetInfo, wowInfo)
     icon:Show()
 end
 
--- Class color hex cache (lazy-built); shared via _G._EFR_* with 12.1 Tiles/Groups (this file loads first).
-local _classColorCodes = {}
-local function _getClassColorCode(classFile)
-    local code = _classColorCodes[classFile]
-    if code then return code end
-    local cc = RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-    if not cc then return nil end
-    code = format("|cff%02x%02x%02x", cc.r * 255, cc.g * 255, cc.b * 255)
-    _classColorCodes[classFile] = code
-    return code
-end
-_G._EFR_ClassColorCode = _getClassColorCode
+-- Class color escape per class file (lazy-built cache, EllesmereUI_FriendsKit.lua)
+local _getClassColorCode = EllesmereUI.FriendsKit.ClassColorCode
 
 local function UpdateNameColor(button, bnetInfo, wowInfo)
     local p = EBS.db.profile.friends
@@ -794,9 +716,9 @@ local function UpdateNameColor(button, bnetInfo, wowInfo)
     end
 end
 
-local FACTION_TEX_ALLIANCE = "Interface\\AddOns\\EllesmereUIFriends\\Media\\alliance.png"
-local FACTION_TEX_HORDE    = "Interface\\AddOns\\EllesmereUIFriends\\Media\\horde.png"
-local FACTION_TEX_NEUTRAL  = "Interface\\AddOns\\EllesmereUIFriends\\Media\\neutral.png"
+local FACTION_TEX_ALLIANCE = "Interface\\AddOns\\EllesmereUI\\media\\friends\\alliance.png"
+local FACTION_TEX_HORDE    = "Interface\\AddOns\\EllesmereUI\\media\\friends\\horde.png"
+local FACTION_TEX_NEUTRAL  = "Interface\\AddOns\\EllesmereUI\\media\\friends\\neutral.png"
 
 local function UpdateFactionOverlay(button, bnetInfo, wowInfo)
     local factionName
@@ -841,11 +763,17 @@ local function SkinFriendButton(button)
     if GetFFD(button).skinned then return end
     GetFFD(button).skinned = true
 
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
 
-    local function ApplyFont(fs, size)
+    -- family: the friend's name and info line (place, note) show other players'
+    -- writing and take the font as a font family, which draws the scripts it lacks
+    local function ApplyFont(fs, size, family)
         if not fs or not fs.SetFont then return end
-        if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, true) end
+        if family then
+            EllesmereUI.SetFontFamily(fs, fontPath, size, "", true)
+            return
+        end
+        EllesmereUI.PrimeFontShadow(fs, true)
         fs:SetFont(fontPath, size, "")
     end
 
@@ -871,9 +799,9 @@ local function SkinFriendButton(button)
     button:HookScript("OnLeave", function() hover:Hide(); hoverFill:Hide() end)
 
     local nameText = button.name or button.Name
-    ApplyFont(nameText, 12)
+    ApplyFont(nameText, 12, true)
     local infoText = button.info or button.Info
-    ApplyFont(infoText, 9)
+    ApplyFont(infoText, 9, true)
     local statusText = button.status or button.Status
     ApplyFont(statusText, 9)
     local gameText = button.gameText or button.GameText
@@ -953,22 +881,16 @@ local function PostUpdateFriendButton(button)
         local userNote
         if button.buttonType == FRIENDS_BUTTON_TYPE_BNET then
             local cached = _friendCache[button.id]
-            if cached and cached.note then
-                local _, clean = ParseGroupFromNote(cached.note)
-                if clean and clean ~= "" then userNote = clean end
-            end
+            if cached then userNote = EllesmereUI.StripFriendNoteTag(cached.note) end
         elseif button.buttonType == FRIENDS_BUTTON_TYPE_WOW then
             local cached = _friendCache[button.id + _FC_WOW_OFFSET]
-            if cached and cached.notes then
-                local _, clean = ParseGroupFromNote(cached.notes)
-                if clean and clean ~= "" then userNote = clean end
-            end
+            if cached then userNote = EllesmereUI.StripFriendNoteTag(cached.notes) end
         end
         if userNote then
             if origInfo ~= "" then
                 infoText:SetText(origInfo .. "  |cff888888|  " .. userNote .. "|r")
             else
-                infoText:SetText("|cff888888" .. userNote .. "|r")
+                infoText:SetText(EllesmereUI.COLOR_CODES.DIM .. userNote .. "|r")
             end
         end
     end
@@ -993,13 +915,7 @@ local function PostUpdateFriendButton(button)
     if not GetFFD(button).statusOrb then
         GetFFD(button).statusOrb = button:CreateTexture(nil, "OVERLAY", nil, 3)
         GetFFD(button).statusOrb:SetSize(18, 18)
-        if _orbFile then
-            GetFFD(button).statusOrb:SetTexture(_orbFile)
-            GetFFD(button).statusOrb:SetTexCoord(_orbL, _orbR, _orbT, _orbB)
-        else
-            GetFFD(button).statusOrb:SetAtlas("lootroll-animreveal-a")
-            GetFFD(button).statusOrb:SetTexCoord(0, 1/6, 0, 0.5)
-        end
+        FriendsKit.StatusOrbArt(GetFFD(button).statusOrb)
     end
     local orb = GetFFD(button).statusOrb
     orb:ClearAllPoints()
@@ -1028,55 +944,8 @@ local function PostUpdateFriendButton(button)
 
     -- Region icon: shown only when the friend's region differs from ours.
     local fp2 = EBS.db and EBS.db.profile and EBS.db.profile.friends
-    if fp2 and fp2.showRegionIcons == false then
-        if GetFFD(button).regionBtn then GetFFD(button).regionBtn:Hide() end
-    else
-        local myFull = EllesmereUI.GetMyFullRegion and EllesmereUI.GetMyFullRegion()
-        local friendMini
-        if bnetInfo and bnetInfo.gameAccountInfo then
-            friendMini = EllesmereUI.GetFriendMiniRegion and EllesmereUI.GetFriendMiniRegion(bnetInfo.gameAccountInfo)
-        end
-        local friendFull = friendMini and EllesmereUI.GetFullRegion and EllesmereUI.GetFullRegion(friendMini)
-
-        if friendMini and friendFull and friendFull ~= myFull then
-            if not GetFFD(button).regionBtn then
-                local rb = CreateFrame("Button", nil, button)
-                rb:SetFrameLevel(button:GetFrameLevel() + 5)
-                rb._tex = rb:CreateTexture(nil, "OVERLAY", nil, 7)
-                rb._tex:SetAllPoints()
-                rb._tex:SetAlpha(0.25)
-                rb:SetScript("OnEnter", function(self)
-                    if EllesmereUI.ShowWidgetTooltip then
-                        EllesmereUI.ShowWidgetTooltip(self, self._regionLabel or "")
-                    end
-                end)
-                rb:SetScript("OnLeave", function()
-                    if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
-                end)
-                local hh = button:GetHeight()
-                local iconH = math.floor(hh * 0.8)
-                rb:SetSize(iconH, iconH)
-                local tpBtn = button.travelPassButton
-                if tpBtn then
-                    rb:SetPoint("RIGHT", tpBtn, "LEFT", -2, 0)
-                else
-                    rb:SetPoint("RIGHT", button, "RIGHT", -30, 0)
-                end
-                GetFFD(button).regionBtn = rb
-            end
-            local rb = GetFFD(button).regionBtn
-            if rb._lastMini ~= friendMini then
-                rb._lastMini = friendMini
-                local iconPath = EllesmereUI.GetRegionIcon and EllesmereUI.GetRegionIcon(friendMini)
-                rb._tex:SetTexture(iconPath)
-                rb._tex:SetTexCoord(0, 1, 0, 1)
-                rb._regionLabel = MINI_DISPLAY[friendMini] or friendMini
-            end
-            rb:Show()
-        else
-            if GetFFD(button).regionBtn then GetFFD(button).regionBtn:Hide() end
-        end
-    end
+    FriendsKit.UpdateRegionButton(button, GetFFD(button), bnetInfo and bnetInfo.gameAccountInfo,
+        button.travelPassButton, not (fp2 and fp2.showRegionIcons == false))
 end
 
 local function ProcessFriendButtons(force)
@@ -1245,7 +1114,7 @@ local function SkinBottomButton(btn)
     if not btn or GetFFD(btn).btnSkinned then return end
     GetFFD(btn).btnSkinned = true
 
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
 
     StripTextures(btn)
 
@@ -1337,6 +1206,185 @@ end
 local FRAME_BG_R, FRAME_BG_G, FRAME_BG_B = 0.03, 0.045, 0.05
 
 -------------------------------------------------------------------------------
+--  Window-skin layer over this window's chrome. Follows the Window Skins
+--  "Friends List" card (winKey socialui): EllesmereUI = the Character Sheet
+--  look, Modern = the global Modern backdrop, Blizz Default / the window-skin
+--  kill switch / Blizz UI Enhanced not loaded = this module's own flat look.
+--  Repaints only regions and frames SkinFriendsFrame already created.
+-------------------------------------------------------------------------------
+local CHROME = {
+    BG_TEX = "Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png",
+    DARKEN = 0.38,                        -- the window shell's 0.62 black overlay, folded into the vertex color
+    TAB    = { 0.068, 0.056, 0.052 },     -- Character Sheet tab block
+    TAB_HL = 0.02,
+    PANE   = { 0, 0, 0, 0.1 },            -- Character Sheet pane wash
+    EDIT   = { 0.02, 0.02, 0.02, 1 },     -- window engine input box fill
+    EDGE   = { 0.2, 0.2, 0.2, 1 },        -- window engine control border
+    MENU   = { 0.08, 0.08, 0.08, 0.97 },  -- window engine fill, kept opaque over the list
+    CLOSE  = "|A:uitools-icon-close:14:14|a",
+}
+
+-- The window-skin engine, when Blizz UI Enhanced is loaded (not a dependency).
+-- Probed for this build's exports: a mismatched install paints the flat look.
+local function ChromeEngine()
+    local bs = EllesmereUI._ModuleNS.EllesmereUIBlizzardSkin
+    local ws = bs and bs.WSkin
+    return ws and ws.CoverFit and ws or nil
+end
+
+local function ChromeStyle(ws)
+    local s = ws and ws.GetStyle("socialui")
+    if s == "eui" or s == "modern" then return s end
+    return "flat"
+end
+
+-- One input box or menu: its fill texture (ours) and the PP border on its host.
+local function PaintControl(tex, host, shell, fill, fr, fg, fb, fa, edgeA)
+    if not (tex and host) then return end
+    if shell then
+        local edge = CHROME.EDGE
+        tex:SetColorTexture(fill[1], fill[2], fill[3], fill[4])
+        PP.SetBorderColor(host, edge[1], edge[2], edge[3], edge[4])
+    else
+        tex:SetColorTexture(fr, fg, fb, fa)
+        PP.SetBorderColor(host, 1, 1, 1, edgeA)
+    end
+end
+
+-- The look PaintChrome last painted (style, and the Modern color on Modern):
+-- the style-refresh gate below compares against it.
+local chromePainted = {}
+
+local function PaintChrome()
+    local frame = FriendsFrame
+    if not (friendsSkinned and frame) or LegacyFriendsRetired() then return end
+    local ws = ChromeEngine()
+    local style = ChromeStyle(ws)
+    local shell = style ~= "flat"
+    local fd = GetFFD(frame)
+    local p = EBS.db.profile.friends
+    local seen = chromePainted
+    seen.style = style
+    if style == "modern" then seen.r, seen.g, seen.b, seen.a = ws.GetModernBG() end
+
+    local bg = fd.bg
+    if bg then
+        if style == "eui" then
+            bg:SetTexture(CHROME.BG_TEX)
+            ws.CoverFit(bg, frame:GetSize())
+            bg:SetVertexColor(CHROME.DARKEN, CHROME.DARKEN, CHROME.DARKEN, 1)
+        else
+            bg:SetTexCoord(0, 1, 0, 1)
+            bg:SetVertexColor(1, 1, 1, 1)
+            if style == "modern" then
+                bg:SetColorTexture(seen.r, seen.g, seen.b, seen.a)
+            else
+                bg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B)
+            end
+        end
+        bg:SetAlpha(1)
+    end
+
+    -- Frame border: the thin border under the flat look; the window skin's
+    -- atlas frame otherwise, hung on that same border container (ours).
+    local r, g, b, a = GetBorderColor(p)
+    local bsz = p.borderSize or 1
+    if shell or bsz <= 0 then
+        PP.SetBorderColor(frame, r, g, b, 0)
+    else
+        PP.UpdateBorder(frame, bsz, r, g, b, a)
+    end
+    if shell and fd.atlasFrame == nil then
+        local host = PP.GetBorders(frame)
+        if host then
+            ws.AtlasBorder(host)
+            fd.atlasFrame = ws.GetFFD(host).atlasBorderFrame or false
+        end
+    end
+    if fd.atlasFrame then fd.atlasFrame:SetShown(shell) end
+
+    -- Tabs, tab bar, panes.
+    local tr, tg, tb = FRAME_BG_R, FRAME_BG_G, FRAME_BG_B
+    if shell then tr, tg, tb = CHROME.TAB[1], CHROME.TAB[2], CHROME.TAB[3] end
+    local tabs = fd.tabs
+    if tabs then
+        for i = 1, #tabs do
+            local td = FFD[tabs[i]]
+            if td then
+                if td.bg then td.bg:SetColorTexture(tr, tg, tb, 1) end
+                if td.activeHL then td.activeHL:SetColorTexture(1, 1, 1, shell and CHROME.TAB_HL or 0.05) end
+            end
+        end
+    end
+    if fd.tabBarBg then
+        fd.tabBarBg:SetColorTexture(tr, tg, tb)
+        fd.tabBarBg:SetAlpha(1)
+    end
+    local pane = CHROME.PANE
+    if fd.listBg then
+        if shell then fd.listBg:SetColorTexture(pane[1], pane[2], pane[3], pane[4])
+        else fd.listBg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B, 1) end
+    end
+    if fd.whoBg then
+        if shell then fd.whoBg:SetColorTexture(pane[1], pane[2], pane[3], pane[4])
+        else fd.whoBg:SetColorTexture(0, 0.08, 0.10, 0.35) end
+    end
+
+    -- Who / Quick Join button fills (SkinBottomButton's own texture): none
+    -- under a window skin, so every bottom button is outline-only like the
+    -- Contacts pair, which carries no fill.
+    local fillA = shell and 0 or 0.92
+    for i = 1, #KNOWN_BUTTONS do
+        local btn = _G[KNOWN_BUTTONS[i]]
+        local bd = btn and FFD[btn]
+        if bd and bd.bg then bd.bg:SetColorTexture(0.025, 0.035, 0.045, fillA) end
+    end
+    local qjf = _G.QuickJoinFrame
+    local jb = qjf and qjf.JoinQueueButton
+    local jd = jb and FFD[jb]
+    if jd and jd.bg then jd.bg:SetColorTexture(0.025, 0.035, 0.045, fillA) end
+
+    -- Input boxes and the search results menu: the window engine's control
+    -- recipe under a skin, this module's creation values otherwise.
+    PaintControl(fd.searchBg, fd.searchBox, shell, CHROME.EDIT, 0, 0, 0, 0.4, 0.1)
+    PaintControl(fd.whoEditBg, fd.whoEdit, shell, CHROME.EDIT, 0, 0, 0, 0.4, 0.1)
+    PaintControl(fd.searchMenuBg, fd.searchDropdown, shell, CHROME.MENU, 0.04, 0.05, 0.06, 0.97, 0.15)
+
+    -- Close glyph: the house close atlas inline in our own FontString.
+    local cb = fd.closeBtn
+    local cd = cb and FFD[cb]
+    if cd and cd.x then
+        cd.idleA  = shell and 0.75 or 0.5
+        cd.hoverA = shell and 1 or 0.9
+        cd.x:SetText(shell and CHROME.CLOSE or "x")
+        cd.x:SetTextColor(1, 1, 1, 1)
+        cd.x:SetAlpha(cd.idleA)
+        cd.x:ClearAllPoints()
+        cd.x:SetPoint("CENTER", cb, "CENTER", -2, shell and 0 or -3)
+    end
+end
+
+-- Window Skins refresh (a style pick or Modern color edit on ANY card): paint
+-- only when this window's look changed. Its other inputs (border size/color,
+-- class color, accent) change through ApplyFriends, which paints directly.
+local function OnChromeStylesChanged()
+    local ws = ChromeEngine()
+    local style = ChromeStyle(ws)
+    local seen = chromePainted
+    if style == seen.style then
+        if style ~= "modern" then return end
+        local r, g, b, a = ws.GetModernBG()
+        if r == seen.r and g == seen.g and b == seen.b and a == seen.a then return end
+    end
+    PaintChrome()
+end
+
+-- Options: the Border rows stand down while a window skin draws the frame.
+EllesmereUI._ModuleNS[ADDON_NAME].FR_ChromeShell = function()
+    return ChromeStyle(ChromeEngine()) ~= "flat"
+end
+
+-------------------------------------------------------------------------------
 --  SkinFriendsFrame (one-time structural setup)
 -------------------------------------------------------------------------------
 local function SkinFriendsFrame()
@@ -1345,7 +1393,7 @@ local function SkinFriendsFrame()
     if not frame or friendsSkinned then return end
     friendsSkinned = true
     local p = EBS.db.profile.friends
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+    local fontPath = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
 
     if frame.NineSlice then frame.NineSlice:Hide() end
     if frame.Bg then frame.Bg:Hide() end
@@ -1513,8 +1561,9 @@ local function SkinFriendsFrame()
     for i = 1, frame.numTabs or 4 do
         local tab = _G["FriendsFrameTab" .. i]
         if tab then
-            for j = 1, select("#", tab:GetRegions()) do
-                local region = select(j, tab:GetRegions())
+            local regions = { tab:GetRegions() }
+            for j = 1, #regions do
+                local region = regions[j]
                 if region and region:IsObjectType("Texture") then
                     region:SetTexture("")
                     if region.SetAtlas then region:SetAtlas("") end
@@ -1572,6 +1621,7 @@ local function SkinFriendsFrame()
             customTabs[i] = tab
         end
     end
+    GetFFD(frame).tabs = customTabs
 
     local _activeSubTab = 1
 
@@ -1696,10 +1746,12 @@ local function SkinFriendsFrame()
     local _, battleTag = BNGetInfo()
     local titleText = battleTag or (FRIENDS or "Friends")
     local titleBtn = CreateFrame("Button", nil, frame)
-    titleBtn:SetFrameLevel(frame:GetFrameLevel() + 5)
+    -- Above the window skin's atlas frame (+7), below the search results (+10).
+    titleBtn:SetFrameLevel(frame:GetFrameLevel() + 8)
 
+    -- The player's BattleTag: a font family, which draws the scripts the font lacks
     local titleLabel = titleBtn:CreateFontString(nil, "OVERLAY")
-    titleLabel:SetFont(fontPath, 12, "")
+    EllesmereUI.SetFontFamily(titleLabel, fontPath, 12, "", false)
     titleLabel:SetTextColor(1, 1, 1, 0.75)
     titleLabel:SetPoint("CENTER", titleBtn, "CENTER", 0, 0)
     titleLabel:SetJustifyH("CENTER")
@@ -1755,14 +1807,14 @@ local function SkinFriendsFrame()
 
             local bg = copyPopup:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints()
-            bg:SetColorTexture(0.06, 0.08, 0.10, 0.97)
+            bg:SetColorTexture(0.077, 0.068, 0.058, 0.97)
             PP.CreateBorder(copyPopup, 1, 1, 1, 0.15, 1, "OVERLAY", 7)
 
             local hint = copyPopup:CreateFontString(nil, "OVERLAY")
             hint:SetFont(fontPath, 8, "")
             hint:SetTextColor(1, 1, 1, 0.5)
             hint:SetPoint("TOP", copyPopup, "TOP", 0, -6)
-            hint:SetText("Ctrl+C to copy, Escape to close")
+            hint:SetText(EllesmereUI.L("Ctrl+C to copy, Escape to close"))
 
             local eb = CreateFrame("EditBox", nil, copyPopup)
             eb:SetSize(160, 16)
@@ -1771,7 +1823,7 @@ local function SkinFriendsFrame()
             eb:SetAutoFocus(false)
             eb:SetJustifyH("CENTER")
             local ebBg = eb:CreateTexture(nil, "BACKGROUND")
-            ebBg:SetColorTexture(0.10, 0.12, 0.16, 1)
+            ebBg:SetColorTexture(0.112, 0.105, 0.098, 1)
             ebBg:SetPoint("TOPLEFT", -6, 4); ebBg:SetPoint("BOTTOMRIGHT", 6, -4)
             PP.CreateBorder(eb, 1, 1, 1, 0.02, 1, "OVERLAY", 7)
             eb:SetScript("OnEscapePressed", function(self) self:ClearFocus(); HideCopyPopup() end)
@@ -1814,13 +1866,15 @@ local function SkinFriendsFrame()
     local bnetFrame = _G.FriendsFrameBattlenetFrame
     if bnetFrame then
         StripTextures(bnetFrame)
-        for i = 1, select("#", bnetFrame:GetChildren()) do
-            local child = select(i, bnetFrame:GetChildren())
+        local children = { bnetFrame:GetChildren() }
+        for i = 1, #children do
+            local child = children[i]
             child:SetAlpha(0)
             child:EnableMouse(false)
         end
-        for i = 1, select("#", bnetFrame:GetRegions()) do
-            local region = select(i, bnetFrame:GetRegions())
+        local regions = { bnetFrame:GetRegions() }
+        for i = 1, #regions do
+            local region = regions[i]
             if region:IsObjectType("FontString") then
                 region:SetAlpha(0)
             end
@@ -1860,8 +1914,9 @@ local function SkinFriendsFrame()
         if not tabSystem then return end
 
         local blizSubTabs = {}
-        for i = 1, select("#", tabSystem:GetChildren()) do
-            local st = select(i, tabSystem:GetChildren())
+        local children = { tabSystem:GetChildren() }
+        for i = 1, #children do
+            local st = children[i]
             if st and st:IsObjectType("Button") then
                 local text = st:GetFontString()
                 local name = text and text:GetText() or ("Tab " .. i)
@@ -2055,26 +2110,24 @@ local function SkinFriendsFrame()
                 if InCombatLockdown() then return end
                 local status = GetPlayerStatusName()
                 if status == (FRIENDS_LIST_ONLINE or "Online") then
-                    SendChatMessage("", "AFK")
+                    C_ChatInfo.SendChatMessage("", "AFK")
                     if BNSetAFK then BNSetAFK(true) end
                 elseif status == (AWAY or "Away") then
-                    SendChatMessage("", "AFK")
-                    SendChatMessage("", "DND")
+                    C_ChatInfo.SendChatMessage("", "AFK")
+                    C_ChatInfo.SendChatMessage("", "DND")
                     if BNSetAFK then BNSetAFK(false) end
                     if BNSetDND then BNSetDND(true) end
                 else
-                    SendChatMessage("", "DND")
+                    C_ChatInfo.SendChatMessage("", "DND")
                     if BNSetDND then BNSetDND(false) end
                     if BNSetAFK then BNSetAFK(false) end
                 end
             end)
             orbBtn:SetScript("OnEnter", function(self)
-                if EllesmereUI.ShowWidgetTooltip then
-                    EllesmereUI.ShowWidgetTooltip(self, "Status: " .. GetPlayerStatusName() .. "\nClick to change")
-                end
+                EllesmereUI.ShowWidgetTooltip(self, "Status: " .. GetPlayerStatusName() .. "\nClick to change")
             end)
             orbBtn:SetScript("OnLeave", function()
-                if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+                EllesmereUI.HideWidgetTooltip()
             end)
 
             -- Listener runs only while the panel is shown; the Show hook repaints once on open to catch flags changed while closed.
@@ -2099,12 +2152,10 @@ local function SkinFriendsFrame()
             bcIcon:SetVertexColor(1, 1, 1)
             bcBtn:SetAlpha(0.6)
             bcBtn:SetScript("OnEnter", function(self)
-                if EllesmereUI.ShowWidgetTooltip then
-                    EllesmereUI.ShowWidgetTooltip(self, "Set Status Message")
-                end
+                EllesmereUI.ShowWidgetTooltip(self, "Set Status Message")
             end)
             bcBtn:SetScript("OnLeave", function()
-                if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+                EllesmereUI.HideWidgetTooltip()
             end)
             bcBtn:SetScript("OnClick", function()
                 if InCombatLockdown() then return end
@@ -2189,6 +2240,7 @@ local function SkinFriendsFrame()
         sBg:SetAllPoints()
         sBg:SetColorTexture(0, 0, 0, 0.4)
         PP.CreateBorder(search, 1, 1, 1, 0.1, 1, "OVERLAY", 7)
+        GetFFD(frame).searchBg = sBg
 
         local sPh = search:CreateFontString(nil, "OVERLAY")
         sPh:SetFont(fontPath, 10, "")
@@ -2232,89 +2284,7 @@ local function SkinFriendsFrame()
         ddBg:SetAllPoints()
         ddBg:SetColorTexture(0.04, 0.05, 0.06, 0.97)
         PP.CreateBorder(dropdown, 1, 1, 1, 0.15, 1, "OVERLAY", 7)
-
-        -- Accent border flash highlight (matches EUI options panel search flash)
-        local _searchHL
-        local function GetSearchHL()
-            if _searchHL then return _searchHL end
-            local hl = CreateFrame("Frame", nil, UIParent)
-            hl:SetFrameStrata("HIGH")
-            hl:Hide()
-            local c = EG
-            local function MkEdge()
-                local t = hl:CreateTexture(nil, "OVERLAY", nil, 7)
-                t:SetColorTexture(c.r, c.g, c.b, 1)
-                return t
-            end
-            hl._top = MkEdge()
-            hl._bot = MkEdge()
-            hl._lft = MkEdge()
-            hl._rgt = MkEdge()
-            local ppM = PP.mult or 1
-            PP.DisablePixelSnap(hl._top)
-            PP.DisablePixelSnap(hl._bot)
-            PP.DisablePixelSnap(hl._lft)
-            PP.DisablePixelSnap(hl._rgt)
-            hl._top:SetHeight(ppM)
-            hl._top:SetPoint("TOPLEFT"); hl._top:SetPoint("TOPRIGHT")
-            hl._bot:SetHeight(ppM)
-            hl._bot:SetPoint("BOTTOMLEFT"); hl._bot:SetPoint("BOTTOMRIGHT")
-            hl._lft:SetWidth(ppM)
-            hl._lft:SetPoint("TOPLEFT", hl._top, "BOTTOMLEFT")
-            hl._lft:SetPoint("BOTTOMLEFT", hl._bot, "TOPLEFT")
-            hl._rgt:SetWidth(ppM)
-            hl._rgt:SetPoint("TOPRIGHT", hl._top, "BOTTOMRIGHT")
-            hl._rgt:SetPoint("BOTTOMRIGHT", hl._bot, "TOPRIGHT")
-            _searchHL = hl
-            return hl
-        end
-
-        local function FlashHighlightOnButton(targetBtn)
-            local hl = GetSearchHL()
-            -- Position using absolute coords (don't anchor to Blizzard button)
-            local left = targetBtn:GetLeft()
-            local top = targetBtn:GetTop()
-            local right = targetBtn:GetRight()
-            local bottom = targetBtn:GetBottom()
-            if not left or not top then return end
-            local scale = targetBtn:GetEffectiveScale()
-            local ovScale = hl:GetEffectiveScale()
-            local ratio = scale / ovScale
-            hl:ClearAllPoints()
-            hl:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left * ratio, top * ratio)
-            hl:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", right * ratio, bottom * ratio)
-            hl:SetFrameLevel(20)
-            hl:SetAlpha(0)
-            hl:Show()
-            -- Fade in 0.15s, hold 0.6s, fade out 0.3s
-            local elapsed = 0
-            local phase = "in"
-            hl:SetScript("OnUpdate", function(self, dt)
-                elapsed = elapsed + dt
-                if phase == "in" then
-                    if elapsed >= 0.15 then
-                        self:SetAlpha(0.8)
-                        phase = "hold"
-                        elapsed = 0
-                    else
-                        self:SetAlpha(0.8 * (elapsed / 0.15))
-                    end
-                elseif phase == "hold" then
-                    if elapsed >= 0.6 then
-                        phase = "out"
-                        elapsed = 0
-                    end
-                elseif phase == "out" then
-                    if elapsed >= 0.3 then
-                        self:SetAlpha(0)
-                        self:Hide()
-                        self:SetScript("OnUpdate", nil)
-                    else
-                        self:SetAlpha(0.8 * (1 - elapsed / 0.3))
-                    end
-                end
-            end)
-        end
+        GetFFD(frame).searchMenuBg = ddBg
 
         local ROW_H = 24
         local MAX_RESULTS = 8
@@ -2331,8 +2301,9 @@ local function SkinFriendsFrame()
             hover:SetAllPoints()
             hover:SetColorTexture(1, 1, 1, 0.06)
 
+            -- A friend's name: a font family, which draws the scripts the font lacks
             local nameFS = row:CreateFontString(nil, "OVERLAY")
-            nameFS:SetFont(fontPath, 11, "")
+            EllesmereUI.SetFontFamily(nameFS, fontPath, 11, "", false)
             nameFS:SetPoint("LEFT", row, "LEFT", 8, 0)
             nameFS:SetWidth((FriendsListFrame:GetWidth() - 30) * 0.75)
             nameFS:SetJustifyH("LEFT")
@@ -2649,6 +2620,7 @@ local function SkinFriendsFrame()
                 local whoBg = whoInset:CreateTexture(nil, "BACKGROUND", nil, -5)
                 whoBg:SetAllPoints()
                 whoBg:SetColorTexture(0, 0.08, 0.10, 0.35)
+                GetFFD(frame).whoBg = whoBg
                 PP.CreateBorder(whoInset, 1, 1, 1, 0.1, 1, "OVERLAY", 5)
             end
 
@@ -2739,6 +2711,8 @@ local function SkinFriendsFrame()
                 ebBg:SetAllPoints()
                 editBox:SetTextColor(1, 1, 1, 0.8)
                 PP.CreateBorder(editBox, 1, 1, 1, 0.1, 1, "OVERLAY", 7)
+                GetFFD(frame).whoEdit = editBox
+                GetFFD(frame).whoEditBg = ebBg
             end
 
             local totalCount = _G.WhoFrameTotals
@@ -2894,6 +2868,7 @@ local function SkinFriendsFrame()
         local sbBg = overlay:CreateTexture(nil, "BACKGROUND", nil, -8)
         sbBg:SetAllPoints()
         sbBg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B, 1)
+        GetFFD(frame).listBg = sbBg
         GetFFD(frame).listOverlay = overlay
 
         local bdr = CreateFrame("Frame", nil, frame)
@@ -2908,7 +2883,7 @@ local function SkinFriendsFrame()
     SkinRaidTab()
     do
         local BTN_H = 22
-        local btnFont = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
+        local btnFont = EllesmereUI.GetFontPath("friends") or STANDARD_TEXT_FONT
         local addBtn = _G.FriendsFrameAddFriendButton
         local msgBtn = _G.FriendsFrameSendMessageButton
         local fp8 = EBS.db and EBS.db.profile and EBS.db.profile.friends
@@ -3033,18 +3008,26 @@ local function SkinFriendsFrame()
     local closeBtn = frame.CloseButton or _G.FriendsFrameCloseButton
     if closeBtn then
         StripTextures(closeBtn)
+        GetFFD(frame).closeBtn = closeBtn
         GetFFD(closeBtn).x = closeBtn:CreateFontString(nil, "OVERLAY")
         GetFFD(closeBtn).x:SetFont(fontPath, 14, "")
         GetFFD(closeBtn).x:SetText("x")
-        GetFFD(closeBtn).x:SetTextColor(1, 1, 1, 0.5)
+        GetFFD(closeBtn).x:SetTextColor(1, 1, 1, 1)
+        GetFFD(closeBtn).x:SetAlpha(0.5)
         GetFFD(closeBtn).x:SetPoint("CENTER", -2, -3)
+        -- Idle / hover alphas follow the window-skin look (PaintChrome).
         closeBtn:HookScript("OnEnter", function()
-            GetFFD(closeBtn).x:SetTextColor(1, 1, 1, 0.9)
+            local cd = GetFFD(closeBtn); cd.x:SetAlpha(cd.hoverA or 0.9)
         end)
         closeBtn:HookScript("OnLeave", function()
-            GetFFD(closeBtn).x:SetTextColor(1, 1, 1, 0.5)
+            local cd = GetFFD(closeBtn); cd.x:SetAlpha(cd.idleA or 0.5)
         end)
     end
+
+    -- Window Skins style picks and the Modern color repaint this live. The
+    -- first paint follows every build call (ApplyFriends, EBS:OnEnable).
+    local ws = ChromeEngine()
+    if ws then ws.OnStylesChanged(OnChromeStylesChanged) end
 
     C_Timer.After(0, UpdateCustomTabs)
 end
@@ -3070,21 +3053,9 @@ local function ApplyFriends()
     if not FriendsFrame then return end
     SkinFriendsFrame()
 
-    local r, g, b, a = GetBorderColor(p)
-    local bs = p.borderSize or 1
-    if bs > 0 then
-        PP.UpdateBorder(FriendsFrame, bs, r, g, b, a)
-    else
-        PP.SetBorderColor(FriendsFrame, r, g, b, 0)
-    end
-    if GetFFD(FriendsFrame).bg then
-        GetFFD(FriendsFrame).bg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B)
-        GetFFD(FriendsFrame).bg:SetAlpha(1)
-    end
-    if GetFFD(FriendsFrame).tabBarBg then
-        GetFFD(FriendsFrame).tabBarBg:SetColorTexture(FRAME_BG_R, FRAME_BG_G, FRAME_BG_B)
-        GetFFD(FriendsFrame).tabBarBg:SetAlpha(1)
-    end
+    -- Backdrop, frame border, tabs, panes, inputs and close glyph for the
+    -- current window-skin look (this module's own flat look when none applies).
+    PaintChrome()
 
     local scrollBox = FriendsListFrame and FriendsListFrame.ScrollBox
     if scrollBox then
@@ -3130,6 +3101,13 @@ end
 -------------------------------------------------------------------------------
 --  Lifecycle
 -------------------------------------------------------------------------------
+-- This profile's friends table: the settings the shared friends kit reads
+-- (EllesmereUI_FriendsKit.lua: the 12.1 tiles and the invite auto-accept).
+local function FriendsSettings()
+    local db = EBS.db
+    return db and db.profile and db.profile.friends
+end
+
 function EBS:OnInitialize()
     EBS.db = EllesmereUI.Lite.NewDB("EllesmereUIFriendsDB", defaults)
 
@@ -3138,49 +3116,10 @@ function EBS:OnInitialize()
     _G._EFR_ApplyFriends         = ApplyFriends
     _G._EFR_ProcessFriendButtons = function() ProcessFriendButtons(true) end
 
-    -- Auto-accept group invites from friends (and guildmates, from its cog).
-    -- Independent of the friends window and of the Style page look: an invite
-    -- is answered whichever window Blizzard shows. PARTY_INVITE_REQUEST is
-    -- registered only while the toggle is on; GROUP_ROSTER_UPDATE only
-    -- between an accept and its popup cleanup.
-    local autoAcceptHidePopup = false
-    local autoAcceptFrame = CreateFrame("Frame")
-    autoAcceptFrame:SetScript("OnEvent", function(self, event, _, _, _, _, _, _, inviterGUID)
-        if event == "PARTY_INVITE_REQUEST" then
-            local fp = EBS.db and EBS.db.profile and EBS.db.profile.friends
-            if not fp or fp.enabled == false or not fp.autoAcceptFriendInvites then return end
-            if not inviterGUID or inviterGUID == "" or IsInGroup() then return end
-            local isFriend = false
-            if C_BattleNet and C_BattleNet.GetGameAccountInfoByGUID then
-                isFriend = C_BattleNet.GetGameAccountInfoByGUID(inviterGUID) ~= nil
-            end
-            if not isFriend and C_FriendList and C_FriendList.IsFriend then
-                isFriend = C_FriendList.IsFriend(inviterGUID)
-            end
-            if not isFriend and fp.autoAcceptGuildInvites then
-                isFriend = IsGuildMember(inviterGUID)
-            end
-            if isFriend then
-                AcceptGroup()
-                autoAcceptHidePopup = true
-                self:RegisterEvent("GROUP_ROSTER_UPDATE")
-            end
-        elseif event == "GROUP_ROSTER_UPDATE" and autoAcceptHidePopup then
-            autoAcceptHidePopup = false
-            self:UnregisterEvent("GROUP_ROSTER_UPDATE")
-            StaticPopup_Hide("PARTY_INVITE")
-            if LFGInvitePopup then
-                StaticPopupSpecial_Hide(LFGInvitePopup)
-            end
-        end
-    end)
+    -- Auto-accept group invites from friends (and guildmates, from its cog):
+    -- EllesmereUI_FriendsKit.lua, reading this profile's friends table.
     _G._EFR_SyncAutoAccept = function()
-        local fp = EBS.db and EBS.db.profile and EBS.db.profile.friends
-        if fp and fp.enabled ~= false and fp.autoAcceptFriendInvites then
-            autoAcceptFrame:RegisterEvent("PARTY_INVITE_REQUEST")
-        else
-            autoAcceptFrame:UnregisterEvent("PARTY_INVITE_REQUEST")
-        end
+        EllesmereUI.FriendsKit.SyncAutoAccept(FriendsSettings)
     end
     _G._EFR_SyncAutoAccept()
 
@@ -3204,9 +3143,7 @@ function EBS:OnInitialize()
     local function RegisterVis()
         if visRegistered then return end
         visRegistered = true
-        if EllesmereUI.RegisterVisibilityUpdater then
-            EllesmereUI.RegisterVisibilityUpdater(UpdateFriendsVisibility)
-        end
+        EllesmereUI.RegisterVisibilityUpdater(UpdateFriendsVisibility)
         if visProxy then
             EllesmereUI.RegisterMouseoverTarget(visProxy, VisWantsHover)
         end
@@ -3214,9 +3151,7 @@ function EBS:OnInitialize()
     local function UnregisterVis()
         if not visRegistered then return end
         visRegistered = false
-        if EllesmereUI.UnregisterVisibilityUpdater then
-            EllesmereUI.UnregisterVisibilityUpdater(UpdateFriendsVisibility)
-        end
+        EllesmereUI.UnregisterVisibilityUpdater(UpdateFriendsVisibility)
         if visProxy and EllesmereUI.UnregisterMouseoverTarget then
             EllesmereUI.UnregisterMouseoverTarget(visProxy)
         end
@@ -3275,9 +3210,48 @@ function EBS:OnEnable()
                 end
             end)
         else
-            if EBS.db.profile.friends.enabled then
+            if EBS.db.profile.friends.enabled and not friendsSkinned then
                 SkinFriendsFrame()
+                PaintChrome()
             end
         end
     end
+end
+
+-------------------------------------------------------------------------------
+--  12.1 Social UI tiles (EllesmereUI_FriendsKit.lua)
+-------------------------------------------------------------------------------
+-- Style page choice for this module: "eui" | "blizzard" | "classic", read from
+-- the real profile once and latched for the session (a profile switch prompts
+-- for a reload instead). Both stock styles mean the same to the tiles -- there
+-- is no vanilla version of this list -- so they keep Blizzard's own list and
+-- cards and add only the EllesmereUI decoration (class icon, class-coloured
+-- name, region mark). The legacy-skin switch above reads it too.
+function ns.FR_Style()
+    local v = ns._frStyle
+    if v == nil then
+        local db = EBS.db
+        local p = db and db.profile and db.profile.friends
+        if not p then return "eui" end
+        v = (p.useClassicStyle and "classic") or (p.useBlizzardStyle and "blizzard") or "eui"
+        ns._frStyle = v
+    end
+    return v
+end
+
+-- Options-driven repaints of the decorated cards and rows
+_G._EFR_RedecorateTiles = EllesmereUI.FriendsKit.RedecorateTiles
+
+-- The kit hooks the card mixin at PLAYER_LOGIN, before any card exists.
+do
+    local boot = CreateFrame("Frame")
+    boot:RegisterEvent("PLAYER_LOGIN")
+    boot:SetScript("OnEvent", function(self)
+        self:UnregisterEvent("PLAYER_LOGIN")
+        EllesmereUI.FriendsKit.StartTiles({
+            Settings = FriendsSettings,
+            style    = ns.FR_Style(),
+            fontKey  = "friends",
+        })
+    end)
 end

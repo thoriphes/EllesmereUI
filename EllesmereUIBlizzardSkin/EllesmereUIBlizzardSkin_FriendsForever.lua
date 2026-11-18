@@ -3,12 +3,14 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Friends list on WoW Forever
 --
 --  The Friends module (the retail friends list) stays off the Forever client,
---  and the Social UI pack in EllesmereUIBlizzardSkin_WindowPacks.lua never
---  applies there (its addon does not load), so Blizzard's own friends window
---  took no treatment. This gives it the standard window treatment under the
+--  and the Social UI pack in EllesmereUIBlizzardSkin_WindowPacks.lua skins
+--  only the Social UI window, so Blizzard's legacy friends window took no
+--  treatment. This gives it the standard window treatment under the
 --  SAME "Friends List" card and key the Social UI pack uses (winKey
 --  "socialui", enable key reskinSocialUI, the per-window style dropdown), so
---  every standard option applies and no retail table gains a key:
+--  every standard option applies and no enable or style key is added (the
+--  card's own settings, friendsListCard, joined the export allowlist and the
+--  module's reset list):
 --    - the shell, border, top bar and house close button through the engine;
 --      the corner portrait art, the nested inset box and the stock tab art
 --      gone; the title in the house font;
@@ -19,10 +21,24 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --      thin scrollbar under the window;
 --    - the pooled list rows keep Blizzard's own row colouring and icons and
 --      take the house font; the category headers lose their art.
+--  The card also hosts what the Friends module gives retail's friends list,
+--  from the shared friends kit (EllesmereUI_FriendsKit.lua), with its own
+--  settings on the card (EllesmereUIDB.friendsListCard): the EllesmereUI
+--  tiles on the Social UI window's friend cards while the card is skinned,
+--  and auto-accepting group invites from friends whatever the card's skin.
+--  The custom friends list, the parent's EllesmereUI_FriendsList.lua, starts
+--  here after the tiles: rows of our own over Blizzard's list, for the card's
+--  Tile Height and friend groups. Its switch, Custom Friends List Tiles,
+--  follows the card's look until picked (on while the card is skinned,
+--  EllesmereUI or Modern; off under Blizz Default, where the kit's host
+--  starts for the list alone and Blizzard's cards stay Blizzard's own).
 --
 --  Cost: a one-time pass at login on frames that already exist, then one
---  font pass per row initialisation (Blizzard's own, on rows it recycles).
---  No events of our own. Nothing here runs on retail (IS_FOREVER is false).
+--  font pass per row initialisation (Blizzard's own, on rows it recycles),
+--  and the kit's paint per card initialisation; auto-accept's invite event
+--  only while it is on. Under Blizz Default with the custom list off,
+--  nothing of the kit or the list starts. Nothing here runs on retail
+--  (IS_FOREVER is false).
 --------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
 local EllesmereUI = _G.EllesmereUI
@@ -32,12 +48,7 @@ if not (WSkin and WSkin.RegisterWindow and WSkin.Shell) then return end
 
 local WIN = "socialui"
 
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -- One pooled list frame: a category header (carries a Title) loses its art
 -- and takes the house font; a friend or ignore row keeps Blizzard's colours
@@ -53,8 +64,10 @@ local function SkinListRow(btn)
         WSkin.White(btn.Title)
         return
     end
-    if btn.name then WSkin.Font(btn.name) end
-    if btn.info then WSkin.Font(btn.info) end
+    -- A friend's or ignored player's name and its info line (place, broadcast):
+    -- font families, which draw the scripts the house font lacks
+    if btn.name then WSkin.FontFamily(btn.name) end
+    if btn.info then WSkin.FontFamily(btn.info) end
 end
 
 -- The rows are recycled by the scroll box: the frames alive now, then every
@@ -97,7 +110,7 @@ local function SkinFriends()
         local bn = hdr.BattlenetFrame or _G.FriendsFrameBattlenetFrame
         if bn then
             WSkin.FadeRegions(bn)
-            if bn.Tag then WSkin.Font(bn.Tag); WSkin.White(bn.Tag) end
+            if bn.Tag then WSkin.FontFamily(bn.Tag); WSkin.White(bn.Tag) end
             if bn.UnavailableLabel then WSkin.Font(bn.UnavailableLabel) end
             local bf = bn.BroadcastFrame
             if bf then
@@ -160,3 +173,92 @@ WSkin.RegisterWindow({
     key   = WIN,
     apply = SkinFriends,
 })
+
+--------------------------------------------------------------------------------
+--  The card's own settings: the friends kit reads them through a view that
+--  looks like the Friends module's profile table (an unset key reads that
+--  module's default); the options card writes through FriendsCardSet.
+--------------------------------------------------------------------------------
+local CARD_DEFAULTS = {
+    enabled = true, showClassIcons = true, iconStyle = "modern", classColorNames = true,
+    factionBanners = false, showRegionIcons = true,
+    autoAcceptFriendInvites = false, autoAcceptGuildInvites = false,
+    -- The custom friends list (EllesmereUI_FriendsList.lua): the tile height
+    -- starts at that list's own default
+    tileHeight = select(3, EllesmereUI.FriendsList.TileRange()),
+}
+-- Custom Friends List Tiles (customTiles) unset: the card's look decides, on
+-- while the card is skinned (EllesmereUI or Modern) and off under Blizz
+-- Default. A pick is kept only where it differs from that (FriendsCardSet),
+-- so a card that never deviated keeps following its look.
+local function CustomTilesDefault()
+    return EllesmereUI.GetBlizzWindowStyle(WIN) ~= "off"
+end
+
+local cardView = setmetatable({}, { __index = function(_, k)
+    local t = EllesmereUIDB and EllesmereUIDB.friendsListCard
+    local v = t and t[k]
+    if v == nil then
+        if k == "customTiles" then return CustomTilesDefault() end
+        v = CARD_DEFAULTS[k]
+    end
+    return v
+end })
+local function CardSettings() return cardView end
+
+-- The card's look as it stood at login: the tiles on Blizzard's cards follow
+-- it for the session (a change across Blizz Default reloads)
+local loggedIn, skinnedAtLogin = false, false
+
+-- The kit's host, then the custom friends list, which draws with it: each
+-- once per session, the list's switch deciding whether it shows. The kit
+-- hooks Blizzard's cards only while the card was skinned at login; under
+-- Blizz Default the host serves the list alone, so it may also start later,
+-- when the switch is first turned on. The list's online friends wear
+-- Blizzard's own card art at the alpha given here (onlineCards): whole under
+-- Blizz Default, a quarter of it under the card's own tiles.
+local function StartHost()
+    if not loggedIn then return end
+    EllesmereUI.FriendsKit.StartTiles({ Settings = CardSettings, style = "eui", fontKey = "blizzardSkin",
+        cards = skinnedAtLogin, onlineCards = skinnedAtLogin and 0.25 or 1 })
+    EllesmereUI.FriendsList.Start()
+end
+
+function ns.FriendsCardGet(k)
+    return cardView[k]
+end
+
+function ns.FriendsCardSet(k, v)
+    if not EllesmereUIDB then EllesmereUIDB = {} end
+    local t = EllesmereUIDB.friendsListCard
+    if not t then t = {}; EllesmereUIDB.friendsListCard = t end
+    if k == "customTiles" and v == CustomTilesDefault() then v = nil end
+    t[k] = v
+    if k == "autoAcceptFriendInvites" or k == "autoAcceptGuildInvites" then
+        EllesmereUI.FriendsKit.SyncAutoAccept(CardSettings)
+    else
+        if k == "customTiles" and cardView.customTiles then StartHost() end
+        EllesmereUI.FriendsKit.RedecorateTiles()
+        EllesmereUI.FriendsList.Refresh()
+    end
+end
+
+-- After a reset cleared the settings
+function ns.FriendsCardRefresh()
+    EllesmereUI.FriendsKit.SyncAutoAccept(CardSettings)
+    if cardView.customTiles then StartHost() end
+    EllesmereUI.FriendsKit.RedecorateTiles()
+    EllesmereUI.FriendsList.Refresh()
+end
+
+-- At PLAYER_LOGIN, before any card exists: the kit's host while the card is
+-- skinned or the custom list is on; auto-accept runs whatever the skin.
+local boot = CreateFrame("Frame")
+boot:RegisterEvent("PLAYER_LOGIN")
+boot:SetScript("OnEvent", function(self)
+    self:UnregisterEvent("PLAYER_LOGIN")
+    EllesmereUI.FriendsKit.SyncAutoAccept(CardSettings)
+    loggedIn = true
+    skinnedAtLogin = EllesmereUI.GetBlizzWindowStyle(WIN) ~= "off"
+    if skinnedAtLogin or cardView.customTiles then StartHost() end
+end)

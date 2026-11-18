@@ -15,7 +15,7 @@ local EUI  = EllesmereUI
 local PP   = EUI.PP
 
 local function IsLocked()
-    return InCombatLockdown() or (EUI.InProtectedInstance and EUI.InProtectedInstance())
+    return InCombatLockdown() or (EUI.InProtectedInstance())
 end
 
 -------------------------------------------------------------------------------
@@ -28,31 +28,32 @@ end
 -- ID from Blizzard — check Wowhead or /dump C_CurrencyInfo.GetCurrencyInfo(id)),
 -- ranks (ilvl at each of the 6 upgrade ranks, lowest to highest).
 -- Add or remove tracks from Data.trackOrder to match the season's track list.
+-- Midnight S2: wago.tools ItemBonusListGroupEntry -> ItemBonus -> ItemScalingConfig (12.1.5).
 Data.tracks = {
     Adventurer = {
         crestName = "Adventurer Mistcrest",
         hexColor = "|cff1eff00", currID = 3442, tier = 1,
-        ranks = { 220, 224, 227, 230, 233, 237 },
+        ranks = { 266, 269, 272, 276, 279, 282 },
     },
     Veteran = {
         crestName = "Veteran Mistcrest",
         hexColor = "|cff0070dd", currID = 3443, tier = 2,
-        ranks = { 233, 237, 240, 243, 246, 250 },
+        ranks = { 279, 282, 285, 289, 292, 295 },
     },
     Champion = {
         crestName = "Champion Mistcrest",
         hexColor = "|cffa335ee", currID = 3444, tier = 3,
-        ranks = { 246, 250, 253, 256, 259, 263 },
+        ranks = { 292, 295, 298, 302, 305, 308 },
     },
     Hero = {
-        crestName = "Hero Mistcrest",
+        crestName = "Hero Mistcrest", manualAdds = true, ascendantBonus = 12848,
         hexColor = "|cffff8000", currID = 3445, tier = 4,
-        ranks = { 259, 263, 266, 269, 272, 276 },
+        ranks = { 305, 308, 311, 315, 318, 321 },
     },
     Myth = {
-        crestName = "Myth Mistcrest",
+        crestName = "Myth Mistcrest", manualAdds = true, ascendantBonus = 12856,
         hexColor = "|cffffd100", currID = 3446, tier = 5,
-        ranks = { 272, 276, 279, 282, 285, 289 },
+        ranks = { 318, 321, 324, 328, 331, 334 },
     },
 }
 
@@ -71,11 +72,61 @@ Data.slotNames = {
     [17] = "Off Hand",
 }
 
--- SEASON UPDATE: if Voidcore (or its equivalent) is removed, set voidcoreBonus=0
--- and clear voidcoreEligibleSlots. If new slots become eligible, add their IDs here.
--- The bonus ilvl value (currently 9) should match the Voidcore item level increase.
-Data.voidcoreEligibleSlots = { 13, 14, 16, 17 }
-Data.voidcoreBonus         = 9
+-- SEASON UPDATE: the season's Ascendant upgrade bonus IDs and their caps.
+-- Bonus IDs: Wago 12.1.5; caps include the October 23 Myth hotfix.
+-- These are terminal upgrades, not a flat bonus applied to every rank or slot.
+Data.ascendantBonuses = {
+    [12848] = { track = "Hero", cap = 328 }, -- Ascendant Venomstone
+    [12856] = { track = "Myth", cap = 341 }, -- Ascendant Venomstone
+    [13848] = { track = "Myth", cap = 344 }, -- existing special Myth upgrade
+    [13852] = { crafted = true, Hero = 325, Myth = 337 }, -- Venomstone: Tidal Crafted
+}
+
+function Calc:GetAscendantBonus(link)
+    if not canaccessallvalues(link) or type(link) ~= "string" then return nil end
+    local payload = link:match("item:([^|]+)")
+    if not payload then return nil end
+    local index, lastBonus = 0, 13
+    for field in (payload .. ":"):gmatch("([^:]*):") do
+        index = index + 1
+        if index == 13 then
+            lastBonus = 13 + (tonumber(field) or 0)
+        elseif index > 13 then
+            if index > lastBonus then break end
+            local bonus = Data.ascendantBonuses[tonumber(field)]
+            if bonus then return bonus end
+        end
+    end
+end
+
+-- Returns min/potential-max item levels, display rank/count and applied Ascendant metadata.
+function Calc:GetItemUpgradeRange(link, track, rank, maxRank, level, cap)
+    if not canaccessallvalues(link, track, rank, maxRank, level, cap) then return end
+    local bonus = self:GetAscendantBonus(link)
+    track = track or (bonus and bonus.track)
+    local td = Data.tracks[track or ""]
+    local ranks = td and td.ranks
+    if not ranks then return end
+    if bonus then
+        if bonus.track ~= track or level ~= bonus.cap then return end
+        if cap and cap ~= 0 and cap ~= ranks[#ranks] and cap ~= bonus.cap then return end
+        return ranks[1], bonus.cap, #ranks, #ranks, bonus
+    end
+    if not rank or maxRank ~= #ranks or rank < 1 or rank > maxRank or level ~= ranks[rank] then return end
+    local maxLevel = ranks[maxRank]
+    local potential = td.ascendantBonus and Data.ascendantBonuses[td.ascendantBonus]
+    if potential then
+        local _, _, _, equipLoc, _, classID = C_Item.GetItemInfoInstant(link)
+        if canaccessallvalues(equipLoc, classID) and (classID == Enum.ItemClass.Weapon
+            or equipLoc == "INVTYPE_NECK" or equipLoc == "INVTYPE_TRINKET"
+            or equipLoc == "INVTYPE_SHIELD" or equipLoc == "INVTYPE_HOLDABLE") then
+            -- Include the one-time Ascension ceiling without marking it as applied.
+            maxLevel = potential.cap
+        end
+    end
+    if cap and cap ~= 0 and cap ~= ranks[maxRank] and cap ~= maxLevel then return end
+    return ranks[1], maxLevel, rank, maxRank
+end
 
 -- Reverse lookup: currencyID → crestName (built after track table is complete).
 local _currIDToCrestName = {}
@@ -85,19 +136,20 @@ for _, td in pairs(Data.tracks) do
     end
 end
 
--- SEASON UPDATE: update these ilvl steps to match the base-crafted tier ilvls
--- for the new season (currently T1–T5 = 246/249/252/255/259).
+-- SEASON UPDATE: update these ilvl steps to match the Spark-crafted tier ilvls
+-- for the new season (Season 2: T1-T5 = 292/296/299/302/305, warcraft.wiki.gg).
 -- Referenced in GetCraftedInfo; hoisted here so it is allocated once, not per call.
-Data.craftedTierSteps = { 246, 249, 252, 255, 259 }
+Data.craftedTierSteps = { 292, 296, 299, 302, 305 }
 
--- SEASON UPDATE: update minIlvl/maxIlvl each new season to match crafted item ilvl caps.
+-- SEASON UPDATE: update minIlvl/maxIlvl each new season to match crafted item ilvl caps
+-- (Season 2: Hero crest crafts 305-318, Myth crest crafts 318-331).
 -- minIlvl: lowest ilvl at which an item belongs to this crafted band (checked highest-first).
 -- maxIlvl: ilvl ceiling for crafted items in this band.
 -- Ordered highest-first so CraftedBandFromIlvl can short-circuit on the first match.
 Data.craftedBands = {
-    { name = "Myth", minIlvl = 272, maxIlvl = 285 },
-    { name = "Hero", minIlvl = 259, maxIlvl = 272 },
-    { name = "None", minIlvl = 0,   maxIlvl = 259 },
+    { name = "Myth", minIlvl = 318, maxIlvl = 331 },
+    { name = "Hero", minIlvl = 305, maxIlvl = 318 },
+    { name = "None", minIlvl = 0,   maxIlvl = 305 },
 }
 -- Reverse lookup: band name → band data (for O(1) access in ScanItemLink).
 Data.craftedBandByName = {}
@@ -206,7 +258,7 @@ function Calc:GetEquippedGear(unit)
     return gear
 end
 
-Calc._tipCache = {}   -- [link] = { track, rank, maxRank, isCrafted, craftBand, craftMaxIlvl, isVoidforged }
+Calc._tipCache = {}   -- [link] = { track, rank, maxRank, isCrafted, craftBand, craftMaxIlvl, isVoidforged, ascendant }
 
 -- "Made by <name>" as a Lua pattern, built from the client's own global string
 -- so it matches on every locale. Colour codes are stripped first because the
@@ -252,11 +304,19 @@ function Calc:ScanItemLink(link)
     result.rank  = foundRank
     result.maxRank = (foundTrack == apiTrack) and apiMax or nil
     result.isVoidforged = foundVoid
+    local ascendant = self:GetAscendantBonus(link)
+    result.ascendant = ascendant
+    if ascendant and ascendant.track then
+        local track = foundTrack or ascendant.track
+        local level = C_Item.GetDetailedItemLevelInfo(link)
+        local _, _, rank, maxRank = self:GetItemUpgradeRange(link, track, foundRank, apiMax, level)
+        if rank then result.track, result.rank, result.maxRank = track, rank, maxRank end
+    end
 
     -- Only scan the crafted tooltip if no upgrade track was found.
     -- Reuse the same lines -- C_TooltipInfo returns all tooltip data in one call.
-    if not foundTrack then
-        local isCrafted, sawHero, sawMyth = false, false, false
+    if not result.track then
+        local isCrafted, sawHero, sawMyth = ascendant and ascendant.crafted or false, false, false
         ForEachTooltipLine(lines, function(raw)
             local t = Plain(raw)
             if t:find(CREATED_BY_PATTERN)
@@ -273,7 +333,7 @@ function Calc:ScanItemLink(link)
             local bname = sawMyth and "Myth" or sawHero and "Hero" or "None"
             local bdata = Data.craftedBandByName[bname]
             result.craftBand    = bname
-            result.craftMaxIlvl = bdata and bdata.maxIlvl or 259
+            result.craftMaxIlvl = bdata and bdata.maxIlvl or Data.craftedBandByName.None.maxIlvl
         end
     end
 
@@ -305,19 +365,26 @@ local function CraftedBandFromIlvl(ilvl)
     end
     -- Fallback: treat as base crafted (should never be reached; ilvl < 0 is impossible).
     local base = Data.craftedBandByName["None"]
-    return "None", math.max(base and base.maxIlvl or 259, ilvl)
+    return "None", math.max(base and base.maxIlvl or 0, ilvl)
 end
 
 -- Returns: isCrafted, band, tier, maxIlvl.
 function Calc:GetCraftedInfo(link, ilvl)
     local r = self:ScanItemLink(link)
     if not r or not r.isCrafted then return false end
-    local band, maxIlvl = r.craftBand or "None", r.craftMaxIlvl or 259
+    local band, maxIlvl = r.craftBand or "None", r.craftMaxIlvl or Data.craftedBandByName.None.maxIlvl
 
     -- If tooltip gave no band keywords, fall back to ilvl thresholds via shared helper.
     -- (See CraftedBandFromIlvl above for the SEASON UPDATE note.)
     if r.craftBand == "None" then
         band, maxIlvl = CraftedBandFromIlvl(ilvl)
+    end
+
+    local ascendant = r.ascendant
+    if ascendant and canaccessallvalues(ilvl) and ilvl and ilvl > 0 then
+        if ilvl == ascendant.Hero then band = "Hero"
+        elseif ilvl == ascendant.Myth then band = "Myth" end
+        maxIlvl = ilvl
     end
 
     local tier
@@ -339,16 +406,6 @@ end
 function Calc:IsVoidforged(link)
     local r = self:ScanItemLink(link)
     return r and r.isVoidforged or false
-end
-
--- Returns the ilvl gain from the next upgrade step, or nil if already at max.
--- (Reserved for future use; not currently called by PopulateGear.)
-function Calc:GetNextUpgradeGain(item)
-    local track, rank, maxRank = self:GetItemTrackAndRank(item.link)
-    if not track or not rank then return nil end
-    local td = Data.tracks[track]
-    if not td or rank >= TrackMaxRank(td, maxRank) then return nil end
-    return (td.ranks[rank + 1] or 0) - (td.ranks[rank] or 0)
 end
 
 -- Returns a table mapping crestName -> { quantity, cap, earned } for each track.
@@ -373,6 +430,7 @@ end
 -- Non-crafted: trackName, rank, crestCost, maxIlvl
 -- Crafted:     "Crafted", nil, nil, maxIlvl, tierLabel, band
 function Calc:GetItemUpgradeCost(item)
+    if not canaccessallvalues(item.ilvl) then return nil end
     local track, rank, maxRank = self:GetItemTrackAndRank(item.link)
 
     if not track then
@@ -392,10 +450,8 @@ function Calc:GetItemUpgradeCost(item)
 
     local db = DB()
 
-    local expectedMax = td.ranks[#td.ranks]
-    for _, vs in ipairs(Data.voidcoreEligibleSlots) do
-        if vs == item.slot then expectedMax = expectedMax + Data.voidcoreBonus; break end
-    end
+    local _, expectedMax = self:GetItemUpgradeRange(item.link, track, rank, maxRank, item.ilvl)
+    expectedMax = expectedMax or math.max(td.ranks[#td.ranks], item.ilvl)
 
     -- Priority 1: exact costs from Upgrader NPC API (calibrated).
     local slotCache = db.calibrated and db.cache.slots[item.slot]
@@ -570,23 +626,15 @@ end
 
 local function SolidTex(p,l,r,g,b,a) return EUI.SolidTex(p,l,r,g,b,a) end
 
-local function GetCalcFont()
-    return (EUI.GetFontPath and EUI.GetFontPath("extras")) or "Fonts\\FRIZQT__.TTF"
-end
-local function GetCalcOutline()
-    return (EUI.GetFontOutlineFlag and EUI.GetFontOutlineFlag("extras")) or ""
-end
 local function MFont(p, s, _, r, g, b, a)
     local fs = p:CreateFontString(nil, "OVERLAY")
-    local flags = GetCalcOutline()
-    if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, flags == "") end
-    fs:SetFont(GetCalcFont(), s, flags)
+    EllesmereUI.ApplyModuleFont(fs, nil, s, "extras")
     if r then fs:SetTextColor(r, g or 1, b or 1, a or 1) end
     return fs
 end
 
 local G    = EUI.ELLESMERE_GREEN
-local ROW_H, HDR_H, FRAME_W, FRAME_H = 20, 20, 860, 730
+local ROW_H, FRAME_W, FRAME_H = 20, 860, 730
 
 -- Tile layout constants
 local TILE_W    = 183
@@ -734,20 +782,6 @@ local tabY = -36
 -- Top divider removed for cleaner look
 
 -- Row helpers
-local function MakeTableHeader(parent, cols, yOffset)
-    local hdrBg = SolidTex(parent, "BACKGROUND", 0, 0, 0, 0.35)
-    PP.Point(hdrBg, "TOPLEFT",  parent, "TOPLEFT",  0, yOffset)
-    PP.Point(hdrBg, "TOPRIGHT", parent, "TOPRIGHT", 0, yOffset)
-    PP.Height(hdrBg, HDR_H)
-    for _, col in ipairs(cols) do
-        local lbl = MFont(parent, 11, "OUTLINE", G.r, G.g, G.b, 1)
-        PP.Point(lbl, "TOPLEFT", parent, "TOPLEFT", col.x + 4, yOffset - 2)
-        PP.Width(lbl, col.w)
-        lbl:SetJustifyH(col.align)
-        lbl:SetText(EUI.L(col.label))
-    end
-end
-
 local function MakeRow(parent, cols, yOffset, isAlt)
     local row = {}
     if isAlt then
@@ -903,7 +937,7 @@ for i = 1, 18 do
                 end
             elseif (e.crestCost or 0) > 0 then
                 lines[#lines + 1] = "~" .. e.crestCost .. "x  " .. EUI.L(td and td.crestName or "Crest")
-                lines[#lines + 1] = "|cff888888" .. EUI.L("Scan at Upgrader for exact costs") .. "|r"
+                lines[#lines + 1] = EllesmereUI.COLOR_CODES.DIM .. EUI.L("Scan at Upgrader for exact costs") .. "|r"
             end
         end
         if #lines > 0 then
@@ -920,7 +954,7 @@ for i = 1, 18 do
         else
             self.bg:SetColorTexture(0.5, 0.35, 0.05, 0.2)
         end
-        if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+        EUI.HideWidgetTooltip()
     end)
 
     tileFrames[i] = btn
@@ -953,10 +987,10 @@ qSortBtn:SetWidth(qSortTxt:GetStringWidth() + 4)
 PP.Point(qSortBtn, "RIGHT", queuePane, "RIGHT", 0, 0)
 qSortBtn:SetPoint("TOP", queuePane, "TOP", 0, 0)
 qSortBtn:SetScript("OnEnter", function(self)
-    if EUI.ShowWidgetTooltip then EUI.ShowWidgetTooltip(self, EUI.L("Sort queue by crest type (cheapest first)")) end
+    EUI.ShowWidgetTooltip(self, EUI.L("Sort queue by crest type (cheapest first)"))
 end)
 qSortBtn:SetScript("OnLeave", function()
-    if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+    EUI.HideWidgetTooltip()
 end)
 qSortBtn:Hide()  -- shown only when queue has items
 
@@ -1024,7 +1058,10 @@ local queueItems   = {}   -- ordered list of tileEntry tables
 local queueSlotSet = {}   -- slotName -> position in queueItems
 local _queueLoaded = false  -- true once saved queue has been applied after session start
 
-local crestManualAdds = { ["Hero Crest"] = 0, ["Myth Crest"] = 0 }
+local crestManualAdds = {}
+for _, td in pairs(Data.tracks) do
+    if td.manualAdds then crestManualAdds[td.crestName] = 0 end
+end
 
 -- Persist the current queue (slot IDs only) to the profile DB.
 local function SaveQueue()
@@ -1036,7 +1073,7 @@ end
 -- Persist the current crest manual-add offsets to the profile DB.
 local function SaveCrestManualAdds()
     local db = DB()
-    db.crestManualAdds = db.crestManualAdds or {}
+    db.crestManualAdds = {}
     for k, v in pairs(crestManualAdds) do db.crestManualAdds[k] = v end
 end
 
@@ -1220,7 +1257,7 @@ for ri, trackName in ipairs(Data.trackOrder) do
         lbl:SetText("-")
         return lbl
     end
-    local hexColor = td and td.hexColor or "|cffffffff"
+    local hexColor = td and td.hexColor or EllesmereUI.COLOR_CODES.WHITE
     local nameLbl  = MFont(row, 11, nil, 0.85, 0.85, 0.85, 1)
     PP.Point(nameLbl, "TOPLEFT", row, "TOPLEFT", CC_NAME_X + 4, -3)
     PP.Width(nameLbl, CC_NAME_W - 8)
@@ -1231,7 +1268,7 @@ for ri, trackName in ipairs(Data.trackOrder) do
     local earnLbl = MakeCell(CC_EARN_X, CC_EARN_W, "RIGHT")
     local remLbl  = MakeCell(CC_REM_X,  CC_REM_W,  "RIGHT")
     local minusBtn, plusBtn
-    if trackName == "Hero" or trackName == "Myth" then
+    if td and td.manualAdds then
         minusBtn = MakeButton(row, "-80", CC_BTN_W, CROW_H - 4, -2, CC_MINUS_X)
         plusBtn  = MakeButton(row, "+80", CC_BTN_W, CROW_H - 4, -2, CC_PLUS_X)
         do
@@ -1450,7 +1487,7 @@ PopulateGear = function()
         if trackW <= 0 then trackW = 1 end
         tlFill:SetWidth(math.max(1, math.floor(capFrac * trackW)))
     end)
-    local acHex = string.format("|cff%02x%02x%02x", G.r * 255, G.g * 255, G.b * 255)
+    local acHex = EllesmereUI.HexColor(G.r, G.g, G.b)
     ilvlStatLbl:SetText(EUI.Lf(
         "Current iLvl: %s%.1f|r     Max Possible: %s%.1f|r",
         acHex, curAvg, acHex, maxAvg))
@@ -1465,7 +1502,7 @@ PopulateGear = function()
     if needsCount > 0 then
         sHdrNeeds:ClearAllPoints()
         PP.Point(sHdrNeeds, "TOPLEFT", cc, "TOPLEFT", 0, -10)
-        local acH = string.format("|cff%02x%02x%02x", G.r * 255, G.g * 255, G.b * 255)
+        local acH = EllesmereUI.HexColor(G.r, G.g, G.b)
         sHdrNeeds:SetText(EUI.Lf("Upgradable Items (%s%d|r)", acH, needsCount))
         sHdrNeeds:Show()
     else
@@ -1562,7 +1599,7 @@ PopulateGear = function()
     PP.Width(crestSection, TILE_ROW_W)
 
     -- Summary text: Total Missing Upgrades + Total Crests Needed
-    local acHex2 = string.format("|cff%02x%02x%02x", G.r * 255, G.g * 255, G.b * 255)
+    local acHex2 = EllesmereUI.HexColor(G.r, G.g, G.b)
     missingLbl:SetText(EUI.Lf("Total Missing Upgrades: %s%d|r", acHex2, totalMissing))
 
     local crestParts = {}
@@ -1573,7 +1610,7 @@ PopulateGear = function()
         local ckey = td and td.crestName or trackName
         local amt  = crestNeeds[ckey] or 0
         if amt > 0 then
-            local hexColor = (td and td.hexColor) or "|cffffffff"
+            local hexColor = (td and td.hexColor) or EllesmereUI.COLOR_CODES.WHITE
             local formattedPart = EUI.Lf("%d " .. trackName, amt)
             crestParts[#crestParts + 1] = hexColor .. formattedPart .. "|r"
         end
@@ -1660,15 +1697,13 @@ end
 refreshBtn:SetScript("OnClick", PopulateGear)
 Calc.PopulateGear = PopulateGear  -- exposed for options page live-refresh
 refreshBtn:HookScript("OnEnter", function(self)
-    if EUI.ShowWidgetTooltip then
-        EUI.ShowWidgetTooltip(self, EUI.L(
-            "Refresh using tooltip scan data.\n"
-            .. "For exact costs, use |cffffffff'Update at Upgrader'|r\n"
-            .. "while at an Item Upgrade NPC."))
-    end
+    EUI.ShowWidgetTooltip(self, EUI.L(
+        "Refresh using tooltip scan data.\n"
+        .. "For exact costs, use |cffffffff'Update at Upgrader'|r\n"
+        .. "while at an Item Upgrade NPC."))
 end)
 refreshBtn:HookScript("OnLeave", function()
-    if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+    EUI.HideWidgetTooltip()
 end)
 
 scanBtn:HookScript("OnEnter", function(self)
@@ -1683,7 +1718,7 @@ scanBtn:HookScript("OnEnter", function(self)
     end
 end)
 scanBtn:HookScript("OnLeave", function()
-    if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+    EUI.HideWidgetTooltip()
 end)
 
 scanBtn:SetScript("OnClick", function()
@@ -1694,8 +1729,7 @@ scanBtn:SetScript("OnClick", function()
         scanBtnTxt:SetText(EUI.L("Update at Upgrader"))
         scanBtn:SetAlpha(1)
         if ok then
-            crestManualAdds["Hero Crest"] = 0
-            crestManualAdds["Myth Crest"] = 0
+            for k in pairs(crestManualAdds) do crestManualAdds[k] = 0 end
             SaveCrestManualAdds()
             PopulateGear()
         end
@@ -1807,28 +1841,17 @@ _firstRunEvt:SetScript("OnEvent", function(self)
         })
         _euicProfileRef = profileDB.profile
         -- Per-character queue, scan cache and crest offsets are ACCOUNT data
-        -- keyed by character name: profiles get shared, so holding this in the
+        -- in the character roster: profiles get shared, so holding this in the
         -- profile put the player's character names and realms into every
         -- export string. Options stay in the profile (they are settings); the
-        -- per-character state moves top-level. The old profile copy is dropped
+        -- per-character state moves to the roster. The old profile copy is dropped
         -- rather than migrated -- on anyone who imported a profile it holds the
         -- exporter's characters, and this state rebuilds from the next scan.
-        local charKey = UnitName("player") .. " - " .. GetRealmName()
         local store = _euicProfileRef
         store.chars = nil
-        -- Throwaway fallback if the parent DB is somehow absent: the session
-        -- still works, nothing persists, and the global is never assigned
-        -- here (a pre-SavedVariables call could shadow the real table).
-        local acct = type(EllesmereUIDB) == "table" and EllesmereUIDB or {}
-        local chars = acct.qolUpgradeCalcChars
-        if type(chars) ~= "table" then
-            chars = {}
-            acct.qolUpgradeCalcChars = chars
-        end
-        chars[charKey]          = chars[charKey]        or {}
-        local charStore         = chars[charKey]
-        charStore.upgradeCalc   = charStore.upgradeCalc or {}
-        local db                = charStore.upgradeCalc
+        -- Throwaway fallback while the DB or GUID is absent: the session
+        -- still works and nothing persists.
+        local db = EllesmereUI.CharData("upgradeCalc", true) or {}
         db.cache                = db.cache              or { slots = {}, ts = 0 }
         db.calibrated           = db.calibrated         or false
         db.queue                = db.queue              or {}

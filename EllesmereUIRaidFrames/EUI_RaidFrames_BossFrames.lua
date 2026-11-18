@@ -1,0 +1,1195 @@
+if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+-------------------------------------------------------------------------------
+--  EUI_RaidFrames_BossFrames.lua
+--
+--  Friendly Boss Frames: five secure unit buttons for boss1 to boss5.
+--  Reads the earlier Raid Frames files through ns and ns._internals.
+-------------------------------------------------------------------------------
+local _, ns = ...
+local I = ns._internals
+-- EllesmereUIRaidFrames.lua or an earlier Raid Frames file failed to load.
+if not I or I.broken then return end
+I.broken = true
+
+local ipairs       = ipairs
+local wipe         = wipe
+local UnitClass             = UnitClass
+local UnitExists            = UnitExists
+local UnitIsDeadOrGhost     = UnitIsDeadOrGhost
+local UnitIsConnected       = UnitIsConnected
+local UnitIsUnit            = UnitIsUnit
+local IsInRaid              = IsInRaid
+local InCombatLockdown      = InCombatLockdown
+local GetNumGroupMembers    = GetNumGroupMembers
+local C_Timer               = C_Timer
+local issecretvalue         = issecretvalue
+local CreateFrame           = CreateFrame
+
+local GetFFD, PixelSnap = I.GetFFD, I.PixelSnap
+local ResolveHealthTexture, separatedHdrs = I.ResolveHealthTexture, I.separatedHdrs
+local GetSafeHealthPercent = I.GetSafeHealthPercent
+
+local db
+I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
+local PP
+I.PPSetters[#I.PPSetters + 1] = function(v) PP = v end
+
+-------------------------------------------------------------------------------
+--  Friendly Boss Frames (any group): five standalone secure unit buttons for
+--  boss1-boss5. A secure visibility driver on [@bossN,help] is the entire
+--  detection (encounters expose healable friendly NPCs as boss units) -- no
+--  NPC database, fully combat safe. Dungeon encounters use the same boss unit
+--  tokens as raids, so the group gate can cover party too -- behind the Show
+--  in Dungeons opt-in (fb.showInDungeons, default off); attached positions
+--  slot in beside the party container there. Buttons render ONLY health bar +
+--  name/health text, following the RAID frame settings in a party too (one
+--  styled group, and the indicator containers are built once). Excluded from preview and
+--  unlock mode (Free Move uses its own drag overlay). Display "healers"
+--  builds/activates only on a healer spec.
+-------------------------------------------------------------------------------
+-- do/end scope; closures below keep FB alive after the block closes.
+do
+local FB = { buttons = {}, trackers = {} }
+ns._FB = FB
+
+-- Settings source per button for the other groups these helpers style (the pet frames beside the
+-- party frames read the party settings). Unregistered buttons, the boss group's own among them,
+-- read the raid settings.
+FB.src = setmetatable({}, { __mode = "k" })
+FB.Source = function(b)
+    local get = FB.src[b]
+    return (get and get()) or ns._scaledProfile or db.profile
+end
+
+-- Target store: true while a button shows your target, read by the border painter. Re-read by the
+-- full paint and on target changes, so a target change repaints only the buttons that flipped.
+-- UnitIsUnit can be secret: read as not targeted. Returns true when the button's state flipped.
+FB.tgt = setmetatable({}, { __mode = "k" })
+FB.ReadTarget = function(b, unit)
+    local t = unit and UnitIsUnit(unit, "target")
+    if issecretvalue(t) then t = false end
+    t = t and true or nil
+    if FB.tgt[b] == t then return false end
+    FB.tgt[b] = t
+    return true
+end
+
+-- Hover store: true while the mouse is over a button, read by the border painter.
+FB.hov = setmetatable({}, { __mode = "k" })
+
+-- Baseline heal per healer class for NPC range checks. Boss units sit outside UnitInRange's
+-- group-member domain and never fire UNIT_IN_RANGE_UPDATE, so range is measured against a known
+-- helpful spell instead -- healer specs only; everyone else keeps full alpha (no range check).
+FB.RANGE_HEAL = {
+    PRIEST  = 2061,   -- Flash Heal
+    PALADIN = 19750,  -- Flash of Light
+    SHAMAN  = 8004,   -- Healing Surge
+    DRUID   = 8936,   -- Regrowth
+    MONK    = 116670, -- Vivify
+    EVOKER  = 361469, -- Living Flame (25yd: native Evoker range)
+}
+
+-- WoW Forever: the class's best heal the spellbook holds (EllesmereUI.FOREVER_HEAL_SPELLS, best
+-- first); nil when the class has none or has not learned one yet.
+FB.ForeverKnownHeal = function(pClass)
+    local list = EllesmereUI.FOREVER_HEAL_SPELLS[pClass]
+    if not list then return nil end
+    local bank = C_SpellBook and C_SpellBook.IsSpellInSpellBook and Enum.SpellBookSpellBank
+    for i = 1, #list do
+        local id = list[i]
+        local known
+        if bank then
+            known = C_SpellBook.IsSpellInSpellBook(id, bank.Player, true)
+        else
+            known = IsSpellKnown and IsSpellKnown(id)
+        end
+        if known then return id end
+    end
+    return nil
+end
+
+-- Secret-safe alpha application (result may be secret in instances, which SetAlphaFromBoolean
+-- accepts natively). The result can also be NIL (unit not range-checkable / spell momentarily not
+-- evaluable), which it rejects -- treat NIL as in range. issecretvalue runs FIRST so the nil check
+-- never touches a secret.
+FB.ApplyRange = function(b)
+    if not FB.rangeSpell then return end
+    local s = ns._scaledProfile or db.profile
+    local inRange = C_Spell.IsSpellInRange(FB.rangeSpell, FB.UnitOf(b))
+    if issecretvalue(inRange) or inRange ~= nil then
+        b:SetAlphaFromBoolean(inRange, 1, s.oorAlpha or 0.4)
+    else
+        b:SetAlpha(1)
+    end
+end
+
+FB.RangeTick = function()
+    for _, b in ipairs(FB.buttons) do
+        if b:IsVisible() then FB.ApplyRange(b) end
+    end
+end
+
+-- The ticker exists only while a range spell is resolved AND at least one boss button is visible -- zero idle cost.
+FB.UpdateRangeTicker = function()
+    local want = FB.rangeSpell and (FB.visCount or 0) > 0
+    if want and not FB.rangeTicker then
+        FB.rangeTicker = C_Timer.NewTicker(0.4, FB.RangeTick)
+    elseif not want and FB.rangeTicker then
+        FB.rangeTicker:Cancel()
+        FB.rangeTicker = nil
+    end
+end
+
+-- Current unit for a button. The slot controller collapses friendly bosses into the FIRST slots
+-- (slot 1 may show boss2), so the secure "unit" attribute is truth; _fbUnit is the build default.
+FB.UnitOf = function(b)
+    return b:GetAttribute("unit") or b._fbUnit
+end
+
+FB.Settings = function()
+    return db and db.profile and db.profile.friendlyBoss
+end
+
+FB.ShouldBeActive = function()
+    local fb = FB.Settings()
+    if not fb then return false end
+    -- Arena never has friendly bosses; an empty group there only takes room beside the party frames.
+    if ns._InArena() then return false end
+    if fb.display == "always" then return true end
+    if fb.display == "healers" then
+        -- WoW Forever: a class that can heal counts as its healing spec.
+        if EllesmereUI.IS_FOREVER then
+            local _, pClass = UnitClass("player")
+            return EllesmereUI.FOREVER_HEAL_SPELLS[pClass] ~= nil
+        end
+        local spec = GetSpecialization and GetSpecialization()
+        local role = spec and GetSpecializationRole and GetSpecializationRole(spec)
+        return role == "HEALER"
+    end
+    return false
+end
+
+-- Recolor the border for the current state. Mirrors the raid buttons' single recolored border:
+-- hover (raised) > target (raised) > normal, using the button's border settings (FB.Source: the raid
+-- ones for the boss group) -- nothing separate.
+FB.ApplyBorderColor = function(b)
+    if not PP or not b._borderFrame or not db then return end
+    local s = FB.Source(b)
+    local targeted = FB.tgt[b] and s.targetBorderEnabled ~= false
+    if ns.RF_PetCompactOn(b, s) then
+        ns.RF_PetCompactHighlight(b, s)
+        return
+    end
+    if b.stockEdge then
+        local hover = FB.hov[b] and s.hoverBorderEnabled ~= false
+        local lvl = b:GetFrameLevel() + (hover and ns.LVL_RAISE or 8)
+        if b._borderFrame:GetFrameLevel() ~= lvl then
+            b._borderFrame:SetFrameLevel(lvl)
+            local container = PP.GetBorders(b._borderFrame)
+            if container then container:SetFrameLevel(lvl + 1) end
+        end
+        ns.RF_StockHighlight(b, b._borderFrame, s, hover, targeted)
+        return
+    end
+    local r, g, bcol, a
+    local raised, hlSize, hlPx = false, nil, nil
+    if FB.hov[b] and s.hoverBorderEnabled ~= false then
+        local c = s.hoverBorderColor or { r = 1, g = 1, b = 1 }
+        r, g, bcol, a = c.r, c.g, c.b, s.hoverBorderAlpha or 1
+        raised, hlSize = true, s.hoverBorderSize or 1
+        hlPx = EllesmereUI.BorderPx(s.hoverBorderSizePx, hlSize, s.borderTexture or "solid")
+    elseif targeted then
+        local c = s.targetBorderColor or { r = 1, g = 1, b = 1 }
+        r, g, bcol, a = c.r, c.g, c.b, s.targetBorderAlpha or 1
+        raised, hlSize = true, s.targetBorderSize or 1
+        hlPx = EllesmereUI.BorderPx(s.targetBorderSizePx, hlSize, s.borderTexture or "solid")
+    else
+        local c = s.borderColor or { r = 0, g = 0, b = 0 }
+        r, g, bcol, a = c.r, c.g, c.b, s.borderAlpha or 1
+    end
+    -- Raise above neighbors while highlighted (as the raid buttons: overlapping frames would cover it).
+    local pl = b:GetFrameLevel()
+    local lvl = s.borderBehind and math.max(0, pl - 1) or (pl + (raised and ns.LVL_RAISE or 8))
+    -- The container too, like ApplyBorderLevel: FB.StyleBorder moves only the border
+    -- frame, so a Show Behind flip would otherwise leave the strips on the old level.
+    local container = PP.GetBorders(b._borderFrame)
+    if b._borderFrame:GetFrameLevel() ~= lvl
+       or (container and container:GetFrameLevel() ~= lvl + 1) then
+        b._borderFrame:SetFrameLevel(lvl)
+        if container then container:SetFrameLevel(lvl + 1) end
+        -- Textured styles: the backdrop child too (see ApplyBorderLevel).
+        local bd = EllesmereUI._bdBorderData and EllesmereUI._bdBorderData[b._borderFrame]
+        if bd then bd:SetFrameLevel(lvl) end
+    end
+    if (s.borderSize or 1) <= 0 then
+        ns.ApplyHighlightBorder(b._borderFrame, s, hlSize, r, g, bcol, a, hlPx)
+        return
+    end
+    if hlSize then r, g, bcol = ns.RF_VisibleHighlight(s, r, g, bcol) end
+    b._borderFrame._hlBorderSize = nil
+    EllesmereUI.SetBorderStyleColor(b._borderFrame, r, g, bcol, a)
+end
+
+-- Apply the border style (size/color/texture/offsets) to one button, from its FB.Source.
+FB.StyleBorder = function(b)
+    if not PP or not b._borderFrame then return end
+    local s = FB.Source(b)
+    local bs = s.borderSize or 1
+    local bc = s.borderColor or { r = 0, g = 0, b = 0 }
+    local pl = b:GetFrameLevel()
+    local d = I.FFD[b]
+    local compact = ns.RF_PetCompactOn(b, s)
+    if compact or (d and d._petCompactBorder) then
+        d._petCompactBorder = compact
+    end
+    if compact then
+        EllesmereUI.ApplyBorderStyle(b._borderFrame, 0, 0, 0, 0, 0, "solid")
+        FB.ApplyBorderColor(b)
+        EllesmereUI.RoundCorners(b, 0)
+        return
+    end
+    if b.stockEdge then
+        b._borderFrame:SetFrameLevel(pl + 8)
+        EllesmereUI.ApplyBorderStyle(b._borderFrame, 0, 0, 0, 0, 0, "solid")
+        b._borderFrame._hlBorderSize = nil
+        ns.RF_StockSeat(b)
+        FB.ApplyBorderColor(b)
+        EllesmereUI.RoundCorners(b, 0)
+        return
+    end
+    b._borderFrame:SetFrameLevel(s.borderBehind and math.max(0, pl - 1) or (pl + 8))
+    EllesmereUI.ApplyBorderStyle(b._borderFrame, bs, bc.r, bc.g, bc.b, s.borderAlpha or 1,
+        s.borderTexture or "solid", s.borderTextureOffset, s.borderTextureOffsetY,
+        s.borderTextureShiftX, s.borderTextureShiftY, "unitframes", bs, nil,
+        EllesmereUI.BorderPx(s.borderSizePx, bs, s.borderTexture or "solid"))
+    FB.ApplyBorderColor(b)
+    -- Rounded corners with the owner's Corner Radius, as on the raid cells
+    -- (EllesmereUI_RoundedCorners.lua; nothing at radius 0).
+    local radius = s.cornerRadius or 0
+    if radius > 0 then
+        EllesmereUI.RoundCorners(b, radius, {
+            roots = { b._health }, textures = { b._bg },
+            border = b._borderFrame, style = s.borderTexture or "solid",
+            corners = s.cornerMask,
+        })
+    else
+        EllesmereUI.RoundCorners(b, 0)
+    end
+end
+
+-- Whether the boss group draws in Dark Mode: the raid frames' Fill Color is Dark Mode and the
+-- group's own Follow Dark Mode is on (opt-in: unset, the group keeps Boss Health Color). Every
+-- owner of these buttons answers the same question as owner.Dark(s), s being the settings its
+-- buttons are styled from.
+FB.Dark = function(s)
+    if s.healthColorMode ~= "dark" then return false end
+    local fb = FB.Settings()
+    return (fb and fb.followDarkMode == true) or false
+end
+
+-- The Dark Mode background of a button: the styler writes it, and the paint again once the palette
+-- changed (a colour edit repaints without a restyle). FB.dbg: button -> the palette generation its
+-- dark background was written at (nil while it shows the frames' own background).
+FB.dbg = setmetatable({}, { __mode = "k" })
+FB.PaintDarkBg = function(b)
+    local EllesmereUI = ns.EllesmereUI
+    local gen = EllesmereUI._dmGen
+    if FB.dbg[b] == gen then return end
+    FB.dbg[b] = gen
+    b._bg:SetColorTexture(EllesmereUI.GetDarkModeBg())
+end
+
+-- The background's extent. In Dark Mode it covers only the part of the bar the fill does not paint,
+-- as on the raid frames, so a see-through Dark Mode Fill shows the world and not the background;
+-- otherwise, and under Textured Background (a texture that never moves), the whole button. Read
+-- off the bar (its fill texture, axis and direction) and anchored again only when one of them or
+-- the mode changed: the styler asks after it turned the bar, every paint asks with one compare.
+FB.AnchorBg = function(b, dark)
+    local bg, health = b._bg, b._health
+    local tex = (dark and not bg._rfTexBgPath) and health:GetStatusBarTexture() or false
+    local vert = tex and health:GetOrientation() == "VERTICAL" or false
+    local inv = tex and health:GetReverseFill() or false
+    if bg._fbTex == tex and bg._fbVert == vert and bg._fbInv == inv then return end
+    bg._fbTex, bg._fbVert, bg._fbInv = tex, vert, inv
+    bg:ClearAllPoints()
+    if not tex then
+        bg:SetAllPoints()
+    elseif vert then
+        if inv then
+            bg:SetPoint("TOPLEFT", tex, "BOTTOMLEFT", 0, 0)
+            bg:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", 0, 0)
+        else
+            bg:SetPoint("TOPLEFT", health, "TOPLEFT", 0, 0)
+            bg:SetPoint("BOTTOMRIGHT", tex, "TOPRIGHT", 0, 0)
+        end
+    elseif inv then
+        bg:SetPoint("TOPLEFT", health, "TOPLEFT", 0, 0)
+        bg:SetPoint("BOTTOMRIGHT", tex, "BOTTOMLEFT", 0, 0)
+    else
+        bg:SetPoint("TOPLEFT", tex, "TOPRIGHT", 0, 0)
+        bg:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", 0, 0)
+    end
+end
+
+-- Bar colour. An owner drawing in Dark Mode (owner.Dark(s)) takes the palette's fill at the Dark
+-- Mode Fill Opacity, on the palette's background, as the frames beside it do: the colour first and
+-- the fill's alpha last (the two are one slot, so the last write stands). Otherwise the fill is
+-- the owner's own at the frames' Fill Opacity: owner.Fill(b, s, opacity, pv) where the owner has
+-- colour modes of its own (the pet frames' Fill Color), else its colour setting (Boss Health
+-- Color, default #17AC31). The raid color modes mislead on the boss frames: gradient modes read as
+-- damage states, and many NPCs carry real class tokens (a friendly add can come out yellow).
+-- pv: a preview frame's made-up health (0 to 1), handed on to owner.Fill.
+FB.PaintBarColor = function(b, owner, s, pv)
+    local health = b._health
+    local fillTex = health:GetStatusBarTexture()
+    if owner.Dark(s) then
+        local r, g, bl, a = ns.EllesmereUI.GetDarkModeFill()
+        health:SetStatusBarColor(r, g, bl, 1)
+        if fillTex then fillTex:SetAlpha(a) end
+        FB.PaintDarkBg(b)
+        FB.AnchorBg(b, true)
+        return
+    end
+    FB.AnchorBg(b, false)
+    if fillTex then fillTex:SetAlpha(1) end
+    local opacity = (s.healthBarOpacity or 100) / 100
+    if owner.Fill then
+        owner.Fill(b, s, opacity, pv)
+        return
+    end
+    local fbc = owner.Settings()
+    fbc = fbc and fbc.healthColor
+    health:SetStatusBarColor(fbc and fbc.r or 23/255, fbc and fbc.g or 172/255,
+        fbc and fbc.b or 49/255, opacity)
+end
+
+-- Text state of a button built with its texts (FB.BuildVisuals): the FontStrings, the
+-- plan and the settings they were last painted with, kept off the (possibly header-made) button.
+FB.txs = setmetatable({}, { __mode = "k" })
+
+-- Name texts only (name events).
+FB.PaintName = function(b, unit, s)
+    local st = FB.txs[b]
+    if not st then return end
+    ns._RFTextReady(st, s)
+    ns.RF_TextNames(st, unit)
+end
+
+-- Health value and the texts. full: the full paint (every text); otherwise a health event,
+-- which repaints Health and Heal Absorb Text and every Custom text: these trackers carry health
+-- and name events only, so Custom's power, absorb, group and target tags refresh here, not on
+-- their own events. No level and no Power Text here (no power bar).
+FB.PaintHealth = function(b, unit, s, full)
+    local health = b._health
+    local pct = GetSafeHealthPercent(unit)
+    health:SetMinMaxValues(0, 100)
+    local smooth = s.smoothBars and Enum and Enum.StatusBarInterpolation
+        and Enum.StatusBarInterpolation.ExponentialEaseOut
+    -- Missing health under Inverted Fill (the _euiInv stamp FB.StyleVisuals leaves);
+    -- the texts keep the current-health pct. Dead units are not special-cased: there
+    -- is no status colour here, so a full bar is what tells a dead unit apart.
+    local barPct = pct
+    if health._euiInv then barPct = GetSafeHealthPercent(unit, true) end
+    if smooth then health:SetValue(barPct, smooth) else health:SetValue(barPct) end
+
+    local st = FB.txs[b]
+    if not st then return end
+    if full then
+        ns.RF_TextFull(st, s, unit)
+        return
+    end
+    local p = st._txP
+    if p and (p.tick or p.custom) then
+        ns.RF_TextHealth(st, unit, pct, UnitIsDeadOrGhost(unit) or not UnitIsConnected(unit), true)
+    end
+end
+
+-- Refresh one boss button: health value/color, health text, name text, target state and border.
+-- Mirrors the corresponding slices of UpdateButton/_UpdateButtonHealth; boss units are not group
+-- units, so no roster paths. Returns true when it painted (border included); without a unit only a
+-- flipped target state repaints the border.
+FB.Update = function(b, owner)
+    local unit = FB.UnitOf(b)
+    local flipped = FB.ReadTarget(b, unit)
+    if not db or not UnitExists(unit) then
+        if flipped then FB.ApplyBorderColor(b) end
+        return
+    end
+    local s = FB.Source(b)
+    FB.PaintBarColor(b, owner or FB, s)
+    FB.PaintHealth(b, unit, s, true)
+    FB.ApplyBorderColor(b)
+    return true
+end
+
+-- Background, health bar, the texts and the border frame of one button, kept on the button itself
+-- with the stock styles' edge and highlight state. Shared with the pet frames, their preview and
+-- the party target frames. texts: the texts (FB.txs); without, the one name text the
+-- party target frames draw (they style it themselves). The pet header's buttons are made by the
+-- pet header, not by us: these keys on them are the one known exception to keeping state off
+-- header buttons (the rest lives in weak tables and GetFFD).
+FB.BuildVisuals = function(b, texts)
+    local bg = b:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    if PP then PP.DisablePixelSnap(bg) end
+    b._bg = bg
+
+    local health = CreateFrame("StatusBar", nil, b)
+    health:SetFrameLevel(b:GetFrameLevel() + 2)
+    health:SetPoint("TOPLEFT", b, "TOPLEFT", 0, 0)
+    health:SetPoint("TOPRIGHT", b, "TOPRIGHT", 0, 0)
+    if PP then PP.DisablePixelSnap(health) end
+    health:SetMinMaxValues(0, 100)
+    health:SetValue(100)
+    b._health = health
+
+    local carrier = CreateFrame("Frame", nil, b)
+    carrier:SetAllPoints(health)
+    carrier:SetFrameLevel(b:GetFrameLevel() + ns.LVL_TEXT)
+    if texts then
+        FB.txs[b] = { textCarrier = carrier, _txHost = health, _txFB = true }
+    else
+        local nameFS = carrier:CreateFontString(nil, "OVERLAY")
+        nameFS:SetWordWrap(false)
+        b._nameText = nameFS
+    end
+
+    -- Border frame (same construction as the raid buttons; styled from the shared raid border settings in FB.StyleBorder)
+    local bdr = CreateFrame("Frame", nil, b)
+    bdr:SetAllPoints(b)
+    bdr:SetFrameLevel(b:GetFrameLevel() + 8)
+    b._borderFrame = bdr
+    -- Stock styles: the stock edge and highlights.
+    if ns.RF_Stock() then ns.RF_StockBuild(b, b) end
+end
+
+-- One-time construction of the container, the five buttons, click-cast registration and per-unit
+-- trackers. Buttons are created hidden; the secure visibility drivers own show/hide after that.
+FB.EnsureBuilt = function()
+    if FB.built then return end
+    FB.built = true
+
+    local container = CreateFrame("Frame", "ERFFriendlyBossContainer", UIParent)
+    container:Hide()
+    FB.container = container
+
+    for i = 1, 5 do
+        local b = CreateFrame("Button", "ERFFriendlyBoss" .. i, container, "SecureUnitButtonTemplate")
+        b._fbUnit = "boss" .. i
+        b:SetAttribute("unit", b._fbUnit)
+        ns.EllesmereUI.SetLeftClickTarget(b)
+        b:RegisterForClicks("AnyUp")
+        -- The engine gates SecureUnitButton's togglemenu; route right-click through a SecureActionButton proxy so the menu works without taint.
+        if EllesmereUI.AttachSecureUnitMenu then
+            EllesmereUI.AttachSecureUnitMenu(b)
+        else
+            b:SetAttribute("*type2", "togglemenu")
+        end
+        b:Hide()
+        FB.BuildVisuals(b, true)
+
+        -- Refresh as soon as the driver shows the button; visible-count drives the ticker lifecycle.
+        b:HookScript("OnShow", function(self)
+            FB.visCount = (FB.visCount or 0) + 1
+            -- Containers first: an error in the legacy refresh must not starve the unit assignment.
+            if ns.RFC_OnUnitAssigned then
+                local d = GetFFD(self)
+                local unit = FB.UnitOf(self)
+                if d and unit then ns.RFC_OnUnitAssigned(self, d, unit) end
+            end
+            FB.Update(self)
+            FB.ApplyRange(self)
+            FB.UpdateRangeTicker()
+        end)
+        b:HookScript("OnHide", function(self)
+            FB.visCount = math.max(0, (FB.visCount or 0) - 1)
+            FB.UpdateRangeTicker()
+        end)
+
+        -- Hover highlight (these are our own buttons; hooks are safe)
+        b:HookScript("OnEnter", function(self)
+            FB.hov[self] = true
+            FB.ApplyBorderColor(self)
+        end)
+        b:HookScript("OnLeave", function(self)
+            FB.hov[self] = nil
+            FB.ApplyBorderColor(self)
+        end)
+
+        -- Re-render when the slot controller reassigns this slot's unit mid-combat (a boss
+        -- spawning/despawning reflows the slots without an OnShow on already-visible buttons).
+        b:HookScript("OnAttributeChanged", function(self, name)
+            if name == "unit" and self:IsVisible() then
+                -- Containers first (same rationale as the OnShow hook).
+                if ns.RFC_OnUnitAssigned then
+                    local d = GetFFD(self)
+                    local unit = FB.UnitOf(self)
+                    if d and unit then ns.RFC_OnUnitAssigned(self, d, unit) end
+                end
+                FB.Update(self)
+                FB.ApplyRange(self)
+            end
+        end)
+
+        -- Full click-cast / hovercast binding suite (mouseover heals included)
+        if ns.CC_RegisterFrame then ns.CC_RegisterFrame(b) end
+
+        -- Boss units are outside the roster trackers; track here. The slot controller may have
+        -- assigned this unit to ANY slot, so route the event to whichever button shows it.
+        local unitId = "boss" .. i
+        local t = ns.TakeShell()
+        t:RegisterUnitEvent("UNIT_HEALTH", unitId)
+        t:RegisterUnitEvent("UNIT_MAXHEALTH", unitId)
+        t:RegisterUnitEvent("UNIT_NAME_UPDATE", unitId)
+        t:SetScript("OnEvent", function()
+            for _, btn in ipairs(FB.buttons) do
+                if btn:IsVisible() and btn:GetAttribute("unit") == unitId then
+                    FB.Update(btn)
+                    break
+                end
+            end
+        end)
+        FB.trackers[i] = t
+
+        FB.buttons[i] = b
+
+        if ns.RFC_SetupButton then
+            local d = GetFFD(b)
+            ns.RFC_SetupButton(b, b._health, d)
+        end
+    end
+
+    -- Slot controller: collapses friendly bosses into the FIRST slots (button positions fixed;
+    -- units assigned in bossN order, buttons shown/hidden). Runs in the restricted environment so
+    -- mid-combat spawns/despawns reflow safely (insecure code cannot Show/Hide or re-unit protected
+    -- buttons in combat). Drivers registered in FB_Apply feed state-ingroup / state-fb1..5. One
+    -- shared body per attribute; FB_Apply also force-runs it via SecureHandlerExecute because the
+    -- driver manager skips the handler when a re-registered driver's value is unchanged.
+    FB.RELAYOUT = [[
+        local ingroup = self:GetAttribute("state-ingroup")
+        local slot = 0
+        if ingroup == 1 or ingroup == "1" then
+            for i = 1, 5 do
+                local v = self:GetAttribute("state-fb" .. i)
+                if v == 1 or v == "1" then
+                    slot = slot + 1
+                    local b = self:GetFrameRef("slot" .. slot)
+                    if b then
+                        b:SetAttribute("unit", "boss" .. i)
+                        b:Show()
+                    end
+                end
+            end
+        end
+        for j = slot + 1, 5 do
+            local b = self:GetFrameRef("slot" .. j)
+            if b then b:Hide() end
+        end
+    ]]
+    local controller = CreateFrame("Frame", "ERFFriendlyBossController", nil, "SecureHandlerAttributeTemplate")
+    for i = 1, 5 do
+        controller:SetFrameRef("slot" .. i, FB.buttons[i])
+    end
+    -- The template's handler attribute is "_onattributechanged" (wildcard receiving name/value).
+    -- The relayout body lives in its own attribute so the handler and the force-run share it.
+    controller:SetAttributeNoHandler("fb_relayout", FB.RELAYOUT)
+    controller:SetAttributeNoHandler("_onattributechanged", [[
+        if name == "state-ingroup" or name == "state-fb1" or name == "state-fb2"
+           or name == "state-fb3" or name == "state-fb4" or name == "state-fb5" then
+            self:RunAttribute("fb_relayout")
+        end
+    ]])
+    FB.controller = controller
+end
+
+-- The pitch between the group's buttons. Attached beside Compact frames it takes their one
+-- pixel, so its rows stay level with theirs: the party frames' where FB.Anchor slots it in
+-- beside them (outside a raid, with Show in Dungeons on), else the raid groups'.
+FB.Pitch = function(fbset, s)
+    if fbset and fbset.position ~= "free" then
+        local party = (not IsInRaid() or ns._PartyInRaid()) and fbset.showInDungeons == true
+        if ns.RF_CompactOn(db.profile, party) then return ns.RF_OnePixel(party) end
+    end
+    -- Same grid as FB.FreePin: the boss container's own scale.
+    local c = FB.container
+    return EllesmereUI.PP.SnapForES(s.cellSpacing or -1,
+        (c or UIParent):GetEffectiveScale())
+end
+
+-- Re-apply all setting-derived properties (size, slots, texture, fonts, text anchors). OOC only;
+-- callers gate. The owner parameter lets the Extra Frames duplicates (ns._XF) share this verbatim:
+-- an owner carries buttons/container/Settings/Dark and defaults to FB itself.
+FB.ApplyStyle = function(owner)
+    owner = owner or FB
+    if not owner.built then return end
+    local s = ns._scaledProfile or db.profile
+    local fbset = owner.Settings()
+    -- Per-group size offset on the shared raid frame size (Extra Width/Height sliders; clamped so a negative offset can't invert a small frame).
+    local w = PixelSnap(math.max(10, (s.frameWidth or 125) + ((fbset and fbset.extraWidth) or 0)))
+    local h = PixelSnap(math.max(10, (s.frameHeight or 60) + ((fbset and fbset.extraHeight) or 0)))
+    local sp = FB.Pitch(fbset, s)
+    owner.pitch = sp
+    -- Free Move ignores the raid growth settings: vertical stack by default, horizontal via the
+    -- Horizontal Frames cog. Attached modes keep stacking like a real group (unitGrowth).
+    local grow
+    if fbset and fbset.position == "free" then
+        grow = fbset.freeHorizontal and "RIGHT" or "DOWN"
+    else
+        grow = s.unitGrowth or "DOWN"
+    end
+    local texPath = ResolveHealthTexture()
+    local bgc = s.customBgColor or { r = 17/255, g = 17/255, b = 17/255 }
+    local dark = owner.Dark(s)
+
+    local stepW, stepH = 0, 0
+    if grow == "DOWN" or grow == "UP" then
+        owner.container:SetSize(w, h * 5 + sp * 4)
+        stepH = h + sp
+    else
+        owner.container:SetSize(w * 5 + sp * 4, h)
+        stepW = w + sp
+    end
+
+    for i, b in ipairs(owner.buttons) do
+        b:SetSize(w, h)
+        b:ClearAllPoints()
+        local off = i - 1
+        if grow == "UP" then
+            b:SetPoint("BOTTOMLEFT", owner.container, "BOTTOMLEFT", 0, off * stepH)
+        elseif grow == "LEFT" then
+            b:SetPoint("TOPRIGHT", owner.container, "TOPRIGHT", -off * stepW, 0)
+        elseif grow == "RIGHT" then
+            b:SetPoint("TOPLEFT", owner.container, "TOPLEFT", off * stepW, 0)
+        else -- DOWN
+            b:SetPoint("TOPLEFT", owner.container, "TOPLEFT", 0, -off * stepH)
+        end
+
+        FB.StyleVisuals(b, s, w, h, texPath, bgc, dark)
+    end
+end
+
+-- The size-dependent part of FB.StyleVisuals (the health bar's height, the text widths): all a
+-- resize of an already styled button needs. s: the settings of a full restyle; a resize keeps the
+-- settings the texts were laid out with.
+FB.SizeVisuals = function(b, w, h, s)
+    -- No power bar / top name bar here: health fills the button.
+    b._health:SetHeight(h)
+    local st = FB.txs[b]
+    if st then
+        st._txW = w
+        if s or st._txL then ns.RF_TextLayout(st, s or st._txS) end
+    end
+end
+
+-- Texture, fonts, text anchors and border of one button at w x h. Shared with the pet frames.
+-- dark: the owner draws in Dark Mode (owner.Dark(s)), so the background is the palette's. The
+-- styler always writes the background: the texture swap before it leaves that to the next paint.
+FB.StyleVisuals = function(b, s, w, h, texPath, bgc, dark)
+    ns.RF_TexBgTint(b._bg, ns.RF_TexBgPath(s), ns.RF_IsVerticalFill(s))
+    FB.dbg[b] = nil
+    if dark then
+        FB.PaintDarkBg(b)
+    else
+        b._bg:SetColorTexture(bgc.r, bgc.g, bgc.b, (s.bgDarkness or 50) / 100)
+    end
+    b._health:SetStatusBarTexture(texPath)
+    local ft = b._health:GetStatusBarTexture()
+    if ft then ft:SetHorizTile(false) end
+    -- Fill axis follows the raid Health Bar setting. The background follows the bar it was just
+    -- given: the whole button, or in Dark Mode the part the fill does not paint (FB.AnchorBg).
+    ns.RF_ApplyHealthOrientation(b._health, s)
+    FB.AnchorBg(b, dark)
+    -- These carry aura containers (RFC_SetupButton below) and so can carry
+    -- Health Bar Color overlays, but they have no absorb cluster and never
+    -- build ReanchorAbsorbToFill, where every other frame picks the swap up.
+    b._health._euiFillOpacity = (s.healthBarOpacity or 100) / 100
+    ns.RF_RefreshBarTints(b._health)
+    FB.SizeVisuals(b, w, h, s)
+    FB.StyleBorder(b)
+end
+
+-- A container's one anchor point, left alone when it already sits exactly there: the roster and
+-- layout passes re-anchor with unchanged targets, and rewriting a protected frame's point re-lays
+-- it and every button under it. A secret point always rewrites.
+FB.Pin = function(c, point, rel, relPoint, x, y)
+    if c:GetNumPoints() == 1 then
+        local p, r, rp, px, py = c:GetPoint(1)
+        if not (issecretvalue(p) or issecretvalue(r) or issecretvalue(rp)
+                or issecretvalue(px) or issecretvalue(py))
+           and p == point and r == rel and rp == relPoint and px == x and py == y then
+            return
+        end
+    end
+    c:ClearAllPoints()
+    c:SetPoint(point, rel, relPoint, x, y)
+end
+
+-- Free Move pin off UIParent's centre. The saved offsets are raw mover geometry and the centre
+-- itself can sit on a half pixel (odd physical size), so snap the pinned point's absolute
+-- position at the container's own scale, or every border inside it blurs. A CENTER pin snaps
+-- with the container's size so odd-pixel dimensions still put both edges on whole pixels.
+FB.FreePin = function(c, point, x, y)
+    local P = EllesmereUI.PP
+    local ux, uy = UIParent:GetCenter()
+    if ux then
+        local es = c:GetEffectiveScale()
+        if point == "CENTER" then
+            -- A secret size falls back to the even (whole-pixel) centre.
+            local w, h = c:GetWidth(), c:GetHeight()
+            if issecretvalue(w) then w = nil end
+            if issecretvalue(h) then h = nil end
+            x = P.SnapCenterForDim(ux + x, w, es) - ux
+            y = P.SnapCenterForDim(uy + y, h, es) - uy
+        else
+            x = P.SnapForES(ux + x, es) - ux
+            y = P.SnapForES(uy + y, es) - uy
+        end
+    end
+    FB.Pin(c, point, UIParent, "CENTER", x, y)
+end
+
+-- Position the container per the position setting. The container inherits protection from its
+-- secure children, so SetPoint is OOC-only. Owner-parameterized like ApplyStyle. Every placement
+-- goes through FB.Pin (owner.FreeAnchor included).
+FB.Anchor = function(owner)
+    owner = owner or FB
+    if not owner.built then return end
+    if InCombatLockdown() then owner.anchorDirty = true; return end
+    local s = db.profile
+    local fb = owner.Settings()
+    local c = owner.container
+    -- A group's pitch follows the frames it sits beside (owner.Pitch: the boss group, the
+    -- Extra Frames): re-lay it once that moved.
+    if owner.Pitch and owner.pitch ~= owner.Pitch(fb, ns._scaledProfile or s) then
+        if owner.Layout then owner.Layout() else FB.ApplyStyle(owner) end
+    end
+
+    if fb.position ~= "free" then
+        local anchorHdr
+        -- Chain rule: when the boss group (owner == FB) and Extra Frames attach to the SAME side,
+        -- the boss group anchors to the extra container instead of the raid -- order raid -> extra
+        -- -> boss (mirrored on "left"). Extra Frames always anchor to the raid; ns.XF_Apply re-runs
+        -- this anchor when that container shows/hides/moves.
+        if owner == FB then
+            local xf = ns._XF
+            local xs = xf and xf.Settings and xf.Settings()
+            if xs and xs.position == fb.position and xf.built
+               and xf.container and xf.container:IsShown() then
+                anchorHdr = xf.container
+            end
+        end
+        -- Owners placed after other attached groups on the same side (the pet frames), which
+        -- remember the group they followed (owner.chainTgt).
+        if not anchorHdr and owner.ChainAnchor then
+            anchorHdr = owner.ChainAnchor(fb)
+            owner.chainTgt = anchorHdr or false
+            -- Beside the party frames the chain runs on the party attach axis, not the raid growth,
+            -- with the same kit side and clearance, and the corner the party stack grows from.
+            if anchorHdr and owner.attachParty then
+                local gap = s.groupSpacing or -1
+                local before = (fb.position == "left")
+                if ns.RF_PartyKit() then
+                    local extra
+                    before, extra = ns.RF_KitAttach(s, before)
+                    gap = gap + extra
+                end
+                local grow = ns._PartyGrowth(s)
+                if grow == "UP" then
+                    if before then FB.Pin(c, "BOTTOMRIGHT", anchorHdr, "BOTTOMLEFT", -gap, 0)
+                    else FB.Pin(c, "BOTTOMLEFT", anchorHdr, "BOTTOMRIGHT", gap, 0) end
+                elseif grow == "LEFT" then
+                    if before then FB.Pin(c, "BOTTOMRIGHT", anchorHdr, "TOPRIGHT", 0, gap)
+                    else FB.Pin(c, "TOPRIGHT", anchorHdr, "BOTTOMRIGHT", 0, -gap) end
+                elseif s.partyHorizontal then
+                    if before then FB.Pin(c, "BOTTOMLEFT", anchorHdr, "TOPLEFT", 0, gap)
+                    else FB.Pin(c, "TOPLEFT", anchorHdr, "BOTTOMLEFT", 0, -gap) end
+                else
+                    if before then FB.Pin(c, "TOPRIGHT", anchorHdr, "TOPLEFT", -gap, 0)
+                    else FB.Pin(c, "TOPLEFT", anchorHdr, "TOPRIGHT", gap, 0) end
+                end
+                return
+            end
+        end
+        -- Party/dungeon: every raid group header is hidden there, so the boss group slots in beside
+        -- the party container as if it were the next group -- along the axis the party frames do NOT
+        -- stack on, the way "before first / after last group" reads in a raid. Extra Frames is raid
+        -- only and keeps the raid path. Party frames off screen leaves nothing to attach to: this
+        -- branch anchors nothing and the free position below takes over.
+        if not anchorHdr and (not IsInRaid() or ns._PartyInRaid())
+           and ((owner == FB and fb.showInDungeons == true) or owner.attachParty) then
+            local pc = ns._partyContainerFrame
+            if pc and pc:IsShown() then
+                local gap = s.groupSpacing or -1
+                local before = (fb.position == "left")
+                -- Party Frames kit: clear the auras it draws outside the frames.
+                if ns.RF_PartyKit() then
+                    local extra
+                    before, extra = ns.RF_KitAttach(s, before)
+                    gap = gap + extra
+                end
+                -- The group clears the party target frames on its side, and the boss group the
+                -- Beside Owner pets there too (the pet header is down while those are up).
+                gap = gap + ns.PT_Reserve(s.partyHorizontal, before,
+                    (owner == FB) and ns.PF_OwnerReserve(s.partyHorizontal, before) or nil)
+                -- Pets line up with the first party frame: Flip Frame Growth and Centered start
+                -- the stack away from the container's top-left.
+                if owner ~= FB then
+                    local first = ns._partyFirstSlot or pc
+                    local grow = ns._PartyGrowth(s)
+                    if grow == "UP" then
+                        if before then FB.Pin(c, "BOTTOMRIGHT", first, "BOTTOMLEFT", -gap, 0)
+                        else FB.Pin(c, "BOTTOMLEFT", first, "BOTTOMRIGHT", gap, 0) end
+                        return
+                    elseif grow == "LEFT" then
+                        if before then FB.Pin(c, "BOTTOMRIGHT", first, "TOPRIGHT", 0, gap)
+                        else FB.Pin(c, "TOPRIGHT", first, "BOTTOMRIGHT", 0, -gap) end
+                        return
+                    end
+                    pc = first
+                end
+                -- Party growth axis comes from partyHorizontal alone (_LayoutPartyFrames): the flip
+                -- and "centered" variants only reverse it, and the container spans all five slots
+                -- either way, so the perpendicular attach point is the same.
+                if s.partyHorizontal then
+                    if before then FB.Pin(c, "BOTTOMLEFT", pc, "TOPLEFT", 0, gap)
+                    else FB.Pin(c, "TOPLEFT", pc, "BOTTOMLEFT", 0, -gap) end
+                else
+                    if before then FB.Pin(c, "TOPRIGHT", pc, "TOPLEFT", -gap, 0)
+                    else FB.Pin(c, "TOPLEFT", pc, "TOPRIGHT", gap, 0) end
+                end
+                return
+            end
+        elseif not anchorHdr and s.mergeGroups then
+            anchorHdr = ns._flatHeader
+        elseif not anchorHdr then
+            -- The boss group slots in before the first / after the last group that is BOTH enabled
+            -- in Show Groups AND populated. With none populated (not in a raid yet), fall back to
+            -- the Show Groups bounds alone.
+            local vg = ns._VisibleGroups() or {}
+            -- One reused set across calls (the roster edges anchor every group).
+            local occupied = FB.occ
+            if occupied then wipe(occupied) else occupied = {}; FB.occ = occupied end
+            for ri = 1, GetNumGroupMembers() or 0 do
+                local _, _, sub = GetRaidRosterInfo(ri)
+                if sub then occupied[sub] = true end
+            end
+            local first, last
+            local groupOrder = s.customGroupOrder and ns._RFValidatedGroupOrder(s.groupOrder)
+            for slot = 1, 8 do
+                local gi = groupOrder and groupOrder[slot] or slot
+                if vg[gi] ~= false and separatedHdrs[gi] and occupied[gi] then
+                    if not first then first = separatedHdrs[gi] end
+                    last = separatedHdrs[gi]
+                end
+            end
+            if not first then
+                for slot = 1, 8 do
+                    local gi = groupOrder and groupOrder[slot] or slot
+                    if vg[gi] ~= false and separatedHdrs[gi] then
+                        if not first then first = separatedHdrs[gi] end
+                        last = separatedHdrs[gi]
+                    end
+                end
+            end
+            anchorHdr = (fb.position == "left") and first or last
+        end
+        if anchorHdr then
+            -- Slot in along the group growth axis exactly like a real group.
+            local gap = s.groupSpacing or -1
+            local grow = s.groupGrowth or "RIGHT"
+            local before = (fb.position == "left")
+            if grow == "RIGHT" or grow == "DOWNRIGHT" then
+                -- The grid flow's last group also ends in the rightmost column,
+                -- so it slots in along the same edge as a plain RIGHT run.
+                if before then FB.Pin(c, "TOPRIGHT", anchorHdr, "TOPLEFT", -gap, 0)
+                else FB.Pin(c, "TOPLEFT", anchorHdr, "TOPRIGHT", gap, 0) end
+            elseif grow == "LEFT" then
+                if before then FB.Pin(c, "TOPLEFT", anchorHdr, "TOPRIGHT", gap, 0)
+                else FB.Pin(c, "TOPRIGHT", anchorHdr, "TOPLEFT", -gap, 0) end
+            elseif grow == "DOWN" then
+                if before then FB.Pin(c, "BOTTOMLEFT", anchorHdr, "TOPLEFT", 0, gap)
+                else FB.Pin(c, "TOPLEFT", anchorHdr, "BOTTOMLEFT", 0, -gap) end
+            else -- UP
+                if before then FB.Pin(c, "TOPLEFT", anchorHdr, "BOTTOMLEFT", 0, -gap)
+                else FB.Pin(c, "BOTTOMLEFT", anchorHdr, "TOPLEFT", 0, gap) end
+            end
+            return
+        end
+        -- No usable group header: fall through to the free position.
+    end
+
+    -- Owner-specific free anchoring (Extra Frames pins the grid's growth corner so the group grows away from it); CENTER pin otherwise.
+    if owner.FreeAnchor and owner.FreeAnchor(c, fb) then return end
+    local p = fb.freePos or {}
+    FB.FreePin(c, "CENTER", p.x or 100, p.y or 0)
+end
+
+-- Re-anchor only (no restyle): the party visibility pass calls this on the party container's
+-- show/hide edge, since attached positions hang off that container outside a raid. Gated on
+-- the Show in Dungeons opt-in: with it off the party attach branch is inert, so the party
+-- layout/visibility hooks skip the re-anchor entirely (zero added work for raid-only users).
+function ns.FB_ReAnchor()
+    ns.PF_PartyRelayout()
+    if not FB.built then return end
+    local fb = FB.Settings and FB.Settings()
+    if fb and fb.showInDungeons == true then FB.Anchor() end
+end
+
+-- Master apply: activates, deactivates and refreshes the whole feature. Called from OnEnable, the
+-- options dropdowns, spec changes, profile swaps (_ERF_RefreshAll) and the post-combat dirty pass.
+function ns.FB_Apply()
+    if not db or not db.profile then return end
+    local fb = FB.Settings()
+    if not fb then return end
+    if InCombatLockdown() then FB.applyDirty = true; return end
+
+    if not FB.ShouldBeActive() then
+        if FB.built then
+            if FB.controller then
+                UnregisterAttributeDriver(FB.controller, "state-ingroup")
+                for i = 1, 5 do
+                    UnregisterAttributeDriver(FB.controller, "state-fb" .. i)
+                end
+            end
+            for _, b in ipairs(FB.buttons) do
+                b:Hide()
+            end
+            FB.container:Hide()
+        end
+        if FB.mover then FB.mover:Hide() end
+        FB.rangeSpell = nil
+        FB.UpdateRangeTicker()
+        FB.SyncGroupEvents(false)
+        return
+    end
+
+    FB.EnsureBuilt()
+    FB.ApplyStyle()
+    FB.Anchor()
+    FB.container:Show()
+    FB.SyncGroupEvents(true)
+    -- Drivers feed the slot controller, which assigns bosses to the first slots in bossN order and shows/hides buttons securely.
+    -- Group gate: raid only by default; raid OR party with Show in Dungeons on (the cog on
+    -- Add Friendly Boss Group -- opt-in, so existing users keep raid-only behavior). Dungeon
+    -- encounters expose the same healable bossN tokens. The toggle's setter re-runs FB_Apply,
+    -- so re-registering here applies the flip live in either direction.
+    local groupCond = (fb.showInDungeons == true)
+        and "[@raid1,exists][@party1,exists] 1; 0"
+        or "[@raid1,exists] 1; 0"
+    RegisterAttributeDriver(FB.controller, "state-ingroup", groupCond)
+    for i = 1, 5 do
+        RegisterAttributeDriver(FB.controller, "state-fb" .. i, "[@boss" .. i .. ",help] 1; 0")
+    end
+    -- Force one relayout now: the driver manager fires attribute handlers only on VALUE CHANGES, so
+    -- a (re)apply with unchanged states would never run the initial layout. FB_Apply is OOC-only,
+    -- so the insecure Execute is always legal here.
+    if SecureHandlerExecute then
+        SecureHandlerExecute(FB.controller, FB.RELAYOUT)
+    end
+    for _, b in ipairs(FB.buttons) do
+        if b:IsVisible() then FB.Update(b) end
+    end
+
+    -- Range dimming: healer specs only (regardless of display mode).
+    local spec = GetSpecialization and GetSpecialization()
+    local role = spec and GetSpecializationRole and GetSpecializationRole(spec)
+    local _, pClass = UnitClass("player")
+    FB.rangeSpell = (role == "HEALER") and FB.RANGE_HEAL[pClass] or nil
+    -- WoW Forever: a healing class range-checks with its best known heal.
+    if EllesmereUI.IS_FOREVER then FB.rangeSpell = FB.ForeverKnownHeal(pClass) end
+    if not FB.rangeSpell then
+        for _, b in ipairs(FB.buttons) do b:SetAlpha(1) end
+    else
+        for _, b in ipairs(FB.buttons) do
+            if b:IsVisible() then FB.ApplyRange(b) end
+        end
+    end
+    FB.UpdateRangeTicker()
+end
+
+-- A new pixel grid: the anchor pass re-lays each shown attached group whose one-pixel
+-- pitch moved (the Extra Frames first: a boss group may be chained behind them).
+function ns.FB_Repitch()
+    local xf = ns._XF
+    if xf and xf.built and xf.container:IsShown() then FB.Anchor(xf) end
+    if FB.built and FB.container:IsShown() then FB.Anchor() end
+end
+
+function ns.FB_IsMoverShown()
+    return FB.mover and FB.mover:IsShown() or false
+end
+
+-- Free Move corner pin (Extra Frames, Pet Frames): the corner a grid grows from (hDir, vDir: its
+-- horizontal and vertical growth), so its first frame stays put as frames come and go, and with a
+-- saved rect r (FB.SaveMoverRect) that corner's offset from UIParent's centre.
+FB.CornerPin = function(hDir, vDir, r)
+    local corner
+    if vDir == "UP" then
+        corner = (hDir == "LEFT") and "BOTTOMRIGHT" or "BOTTOMLEFT"
+    else
+        corner = (hDir == "LEFT") and "TOPRIGHT" or "TOPLEFT"
+    end
+    if not r then return corner end
+    return corner, (hDir == "LEFT") and r.right or r.left, (vDir == "UP") and r.bottom or r.top
+end
+
+-- The shared mover's drag stop, for corner-pinned owners: the dropped rect, relative to UIParent's
+-- centre, into set.freeRect.
+FB.SaveMoverRect = function(mover, set)
+    if not set then return end
+    local ux, uy = UIParent:GetCenter()
+    local l, b, mw, mh = mover:GetRect()
+    if not (ux and l) then return end
+    set.freeRect = { left = l - ux, right = l + mw - ux, bottom = b - uy, top = b + mh - uy }
+end
+
+-- Free Move drag overlay (unlock-mode look, TOOLTIP strata so it floats above the options panel).
+-- Deliberately independent of unlock mode. Owner-parameterized: the Extra Frames and pet groups
+-- build their own movers through this exact code with their own name/label (stored at owner.mover).
+FB.SetMoverShown = function(owner, show, frameName, labelText)
+    if not show then
+        if owner.mover then owner.mover:Hide() end
+        return
+    end
+    -- Owners whose overlay can place another context's spot (the pet frames' Party and Raid tabs)
+    -- read the overlay's settings, and bring their live group up to date themselves.
+    local moverSettings = owner.MoverSettings or owner.Settings
+    local fb = moverSettings()
+    if not fb or fb.position ~= "free" then return end
+    if owner.MoverPrep then
+        owner.MoverPrep()
+    else
+        owner.EnsureBuilt()
+        -- Owners with their own geometry pass (Extra Frames) restyle through it; FB-built buttons use the FB styler.
+        if owner.Layout then owner.Layout() else FB.ApplyStyle(owner) end
+        FB.Anchor(owner)
+    end
+
+    if not owner.mover then
+        local m = CreateFrame("Frame", frameName, UIParent)
+        m:SetFrameStrata("TOOLTIP")
+        m:SetClampedToScreen(true)
+        m:SetMovable(true)
+        m:EnableMouse(true)
+        m:RegisterForDrag("LeftButton")
+        local mbg = m:CreateTexture(nil, "BACKGROUND")
+        mbg:SetAllPoints()
+        mbg:SetColorTexture(0.103, 0.095, 0.088, 0.95)
+        local ar, ag, ab = EllesmereUI.ResolveActiveAccent()
+        EllesmereUI.MakeBorder(m, ar or 1, ag or 1, ab or 1, 0.6)
+        local lbl = m:CreateFontString(nil, "OVERLAY")
+        EllesmereUI.PrimeFontShadow(lbl, true)
+        lbl:SetFont(EllesmereUI.GetFontPath("raidFrames"), 11, "")
+        lbl:SetTextColor(1, 1, 1, 0.75)
+        lbl:SetPoint("CENTER", m, "CENTER")
+        lbl:SetWordWrap(false)
+        lbl:SetText(EllesmereUI.L(labelText))
+        m:SetScript("OnDragStart", function(self) self:StartMoving() end)
+        m:SetScript("OnDragStop", function(self)
+            self:StopMovingOrSizing()
+            local cx, cy = self:GetCenter()
+            local ux, uy = UIParent:GetCenter()
+            if cx and ux then
+                local set = (owner.MoverSettings or owner.Settings)()
+                if set then
+                    set.freePos = {
+                        x = math.floor(cx - ux + 0.5),
+                        y = math.floor(cy - uy + 0.5),
+                    }
+                end
+            end
+            -- Corner-pinned owners also capture the dropped rect
+            if owner.SaveFreeRect then owner.SaveFreeRect(self) end
+            FB.Anchor(owner)
+        end)
+        owner.mover = m
+        -- Close the mover with the options panel so it can't be stranded.
+        if EllesmereUI._mainFrame then
+            EllesmereUI._mainFrame:HookScript("OnHide", function() m:Hide() end)
+        end
+    end
+
+    owner.mover:ClearAllPoints()
+    local oset = moverSettings() or {}
+    if owner.PlaceMover then
+        owner.PlaceMover(owner.mover, oset)
+    else
+        owner.mover:SetSize(owner.container:GetWidth(), owner.container:GetHeight())
+        if owner.FreeAnchor and oset.freeRect then
+            -- Corner-pinned owners: mirror the container's placement so the overlay always covers the live grid (FB.Anchor just ran).
+            owner.mover:SetPoint("CENTER", owner.container, "CENTER")
+        else
+            local p = oset.freePos or {}
+            FB.FreePin(owner.mover, "CENTER", p.x or 100, p.y or 0)
+        end
+    end
+    owner.mover:Show()
+end
+
+function ns.FB_SetMoverShown(show)
+    FB.SetMoverShown(FB, show, "ERFFriendlyBossMover", "Friendly Boss Frames")
+end
+
+-- Standing event frame: exists even while inactive so a spec change can activate display="healers" without a /reload.
+-- The engage, target and roster listeners run only while the group is up (FB.SyncGroupEvents, from FB_Apply).
+do
+    local ev = ns.TakeShell()
+    ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+    ev:RegisterEvent("PLAYER_REGEN_ENABLED")
+    ev:RegisterEvent("PLAYER_ENTERING_WORLD")
+    FB.SyncGroupEvents = function(on)
+        if FB.groupEv == on then return end
+        FB.groupEv = on
+        if on then
+            ev:RegisterEvent("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
+            ev:RegisterEvent("GROUP_ROSTER_UPDATE")
+            ev:RegisterEvent("PLAYER_TARGET_CHANGED")
+        else
+            ev:UnregisterEvent("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
+            ev:UnregisterEvent("GROUP_ROSTER_UPDATE")
+            ev:UnregisterEvent("PLAYER_TARGET_CHANGED")
+        end
+    end
+    ev:SetScript("OnEvent", function(_, event)
+        if not db then return end
+        if event == "PLAYER_SPECIALIZATION_CHANGED" then
+            ns.FB_Apply()
+        elseif event == "PLAYER_ENTERING_WORLD" then
+            -- Entering or leaving an arena flips FB.ShouldBeActive; the raid frames' zone-in pass
+            -- re-applies only while they are on screen, which they never are in arena.
+            local arena = ns._InArena()
+            if arena ~= (FB.inArena == true) then
+                FB.inArena = arena
+                ns.FB_Apply()
+            end
+        elseif event == "PLAYER_REGEN_ENABLED" then
+            if FB.applyDirty then FB.applyDirty = nil; ns.FB_Apply() end
+            if FB.anchorDirty then FB.anchorDirty = nil; FB.Anchor() end
+        elseif not FB.built or not FB.container or not FB.container:IsShown() then
+            return
+        elseif event == "INSTANCE_ENCOUNTER_ENGAGE_UNIT" then
+            for _, b in ipairs(FB.buttons) do
+                if b:IsVisible() then FB.Update(b) end
+            end
+        elseif event == "PLAYER_TARGET_CHANGED" then
+            -- Only the border state can change here, and only on the buttons that flipped
+            for _, b in ipairs(FB.buttons) do
+                if b:IsVisible() and FB.ReadTarget(b, FB.UnitOf(b)) then FB.ApplyBorderColor(b) end
+            end
+        elseif event == "GROUP_ROSTER_UPDATE" then
+            -- First/last visible group (and the size tier) can shift with
+            -- the roster; restyle + re-anchor, deferred through combat.
+            if InCombatLockdown() then
+                FB.applyDirty = true
+            else
+                FB.ApplyStyle()
+                FB.Anchor()
+            end
+        end
+    end)
+    FB.eventFrame = ev
+end
+
+end -- FB scope block
+
+I.broken = false

@@ -9,29 +9,9 @@ local ADDON_NAME, ns = ...
 local skinned = false
 local GetItemInfo = C_Item.GetItemInfo
 local GetItemInfoInstant = C_Item.GetItemInfoInstant
-local GetItemQualityColor = C_Item.GetItemQualityColor
 
 -- External weak-keyed lookup table for frame state (prevents tainting Blizzard frames)
-local FFD = setmetatable({}, { __mode = "k" })
-local function GetFFD(frame)
-    local d = FFD[frame]
-    if not d then d = {}; FFD[frame] = d end
-    return d
-end
-
-local MP_COLOR_BRACKETS = {
-    { 3850, "ff8000" }, { 3695, "f9753f" }, { 3575, "f16961" },
-    { 3455, "e75e7f" }, { 3335, "db529c" }, { 3215, "cc47b9" },
-    { 3095, "b83dd6" }, { 2965, "9c3eed" }, { 2845, "715be5" },
-    { 2725, "2c6dde" }, { 2565, "3b7fcd" }, { 2445, "5292b9" },
-    { 2325, "5ca6a4" }, { 2205, "5fba8d" }, { 2085, "5cce75" },
-    { 1965, "50e258" }, { 1845, "35f72d" }, { 1725, "3eff26" },
-    { 1600, "5eff43" }, { 1475, "74ff58" }, { 1350, "88ff6b" },
-    { 1225, "98ff7d" }, { 1100, "a8ff8d" }, { 975,  "b6ff9e" },
-    { 850,  "c3ffae" }, { 725,  "cfffbd" }, { 600,  "dbffcd" },
-    { 475,  "e7ffdd" }, { 350,  "f2ffec" }, { 225,  "fdfffc" },
-    { 200,  "ffffff" },
-}
+local FFD, GetFFD = EllesmereUI.NewFrameData()
 
 -- Equipment slot lists
 local EUI_ALL_SLOTS = {
@@ -40,6 +20,7 @@ local EUI_ALL_SLOTS = {
     "InspectHandsSlot", "InspectWaistSlot", "InspectLegsSlot", "InspectFeetSlot",
     "InspectTrinket0Slot", "InspectTrinket1Slot", "InspectFinger0Slot", "InspectFinger1Slot",
     "InspectMainHandSlot", "InspectSecondaryHandSlot",
+    "InspectRangedSlot",  -- WoW Forever only (nil on retail)
 }
 
 -- Slot grid layout mapping
@@ -62,22 +43,7 @@ local slotGridMap = {
     InspectTrinket1Slot = {col = 1, row = 7},
     InspectMainHandSlot = {slot = "MainHand"},
     InspectSecondaryHandSlot = {slot = "SecondaryHand"},
-}
-
--- Slots that can have enchants in current expansion (mirrors CharacterSheet)
-local INSPECT_ENCHANT_SLOTS = {
-    [INVSLOT_HEAD] = true,
-    [INVSLOT_SHOULDER] = true,
-    [INVSLOT_BACK] = false,
-    [INVSLOT_CHEST] = true,
-    [INVSLOT_WRIST] = false,
-    [INVSLOT_LEGS] = true,
-    [INVSLOT_FEET] = true,
-    [INVSLOT_FINGER1] = true,
-    [INVSLOT_FINGER2] = true,
-    [INVSLOT_MAINHAND] = true,
-    -- INVSLOT_OFFHAND deliberately absent: checked dynamically below (weapon vs.
-    -- shield/held item), like CharacterSheet.
+    InspectRangedSlot = {slot = "Ranged"},  -- WoW Forever only
 }
 
 -- Drop every label a previous styling pass left on this slot. The widgets
@@ -90,11 +56,196 @@ local function EUI_ClearSlotLabels(slot)
     if d.enchantText then d.enchantText:Hide(); d.cachedEnchantText = d.enchantText; d.enchantText = nil end
     if d.enchantHoverFrame then d.enchantHoverFrame:Hide(); d.cachedEnchantHover = d.enchantHoverFrame; d.enchantHoverFrame = nil end
     if d.upgradeText then d.upgradeText:Hide(); d.cachedUpgradeText = d.upgradeText; d.upgradeText = nil end
+    if d.dpsText then d.dpsText:Hide(); d.cachedDpsText = d.dpsText; d.dpsText = nil end
 end
 
+-- WoW Forever: the slot text as that client's character sheet shows it. The
+-- item level sits where this sheet's own Show Item Level says
+-- (inspectItemLevelPos: heading the first line beside the slot unless set,
+-- or inside the slot icon; inspectShowItemLevel false is Never). With Show
+-- Item Stats on (inspectShowItemStats, off unless true) that line carries
+-- the item's stats and a weapon's damage per second sits under it; the
+-- enchant name comes under those. Text runs right of the left column and of
+-- the ranged slot, left of the right column and of the main hand, and
+-- stacks above the off hand, whose sides are taken. A label exists only for
+-- what the settings show, so the lines close up. The stats line is the
+-- slot's upgradeText and the damage line its dpsText.
+local FV_EX, FV_GAP, FV_LINE = 5, 3, 13  -- text edge off the slot, item level to stats, weapon line pitch
+local FV_WY = 7                          -- the outer weapon slots' first line, above the slot's centre
+local FV_WEAPON = { InspectMainHandSlot = "L", InspectSecondaryHandSlot = "T", InspectRangedSlot = "R" }
+
+-- One line of a slot's text, reused from the slot's cache; nothing for "".
+local function ForeverLine(d, cacheKey, overlay, text, path, size, flags, shadow, c)
+    if text == "" then return nil end
+    local fs = d[cacheKey] or overlay:CreateFontString(nil, "OVERLAY")
+    EllesmereUI.PrimeFontShadow(fs, shadow)
+    fs:SetFont(path, size, flags)
+    fs:SetWordWrap(false)
+    fs:SetWidth(0)
+    fs:SetText(text)
+    fs:SetTextColor(c.r, c.g, c.b, 0.8)
+    fs:ClearAllPoints()
+    fs:Show()
+    return fs
+end
+
+-- Returns true while the item's data or its enchant line has not arrived.
+local function ForeverSlotLabels(slot, slotName, slotID, unit, itemLink, overlay, isRightColumn)
+    local d = GetFFD(slot)
+    local itemID = GetInventoryItemID(unit, slotID)
+    if not (itemID and C_Item.IsItemDataCachedByID(itemID)) then
+        if itemID then C_Item.RequestLoadItemDataByID(itemID) end
+        return true
+    end
+    local db = EllesmereUIDB or {}
+    local path = EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
+    local _, _, quality = GetItemInfo(itemLink)
+    local c = EllesmereUI.GetItemLevelColor(itemLink, quality)
+    local side = FV_WEAPON[slotName] or (isRightColumn and "L" or "R")
+    local weapon = FV_WEAPON[slotName] ~= nil
+
+    -- Item level, in the item's colour; inside an icon it is always outlined.
+    local ilvl
+    local level = db.inspectShowItemLevel ~= false and C_Item.GetDetailedItemLevelInfo(itemLink)
+    local iconPoint, iconY = ns.ForeverIlvlIcon(db.inspectItemLevelPos or "beside")
+    if level and level > 0 then
+        local layer = GetFFD(InspectFrame).ilvlOverlay or overlay
+        ilvl = d.cachedILvlText or layer:CreateFontString(nil, "OVERLAY")
+        EllesmereUI.PrimeFontShadow(ilvl, db.charSheetItemLevelShadow)
+        ilvl:SetFont(path, db.charSheetItemLevelSize or 11,
+            (iconPoint or db.charSheetItemLevelOutline) and EllesmereUI.SlugFlag("OUTLINE, SLUG") or "")
+        ilvl:SetWordWrap(false)
+        ilvl:SetText(level)
+        ilvl:SetTextColor(c.r, c.g, c.b, 0.9)
+        ilvl:ClearAllPoints()
+        if iconPoint then ilvl:SetPoint(iconPoint, slot, iconPoint, 0, iconY) end
+        ilvl:Show()
+        d.iLvlText = ilvl
+    end
+    local head = not iconPoint and ilvl or nil  -- the item level when it heads the first line
+
+    -- Stats (or armor) and a weapon's damage per second, in the item's colour
+    -- unless the upgrade track has a colour of its own.
+    local showStats = db.inspectShowItemStats == true
+    local sc = db.charSheetUpgradeTrackUseColor and db.charSheetUpgradeTrackColor or c
+    local size = db.charSheetUpgradeTrackSize or 11
+    local flags = db.charSheetUpgradeTrackOutline and EllesmereUI.SlugFlag("OUTLINE, SLUG") or ""
+    local stats = ForeverLine(d, "cachedUpgradeText", overlay, showStats and ns.ForeverStatText(itemLink) or "",
+        path, size, flags, db.charSheetUpgradeTrackShadow, sc)
+    d.upgradeText = stats
+    local dps = weapon and ForeverLine(d, "cachedDpsText", overlay, showStats and ns.ForeverDpsText(itemLink) or "",
+        path, size, flags, db.charSheetUpgradeTrackShadow, sc) or nil
+    d.dpsText = dps
+
+    -- Enchant name: plain, or outlined and tinted from the item's colour
+    -- under Colored Text; capped at 45% of the gap between the two columns.
+    local ench, pending = nil, false
+    if db.inspectShowEnchants ~= false then
+        local raw = EllesmereUI.GetEnchantText(slotID, unit) or ""
+        if raw == "" then
+            -- An enchanted item whose tooltip has not arrived: no label yet.
+            local linkEnchant = tonumber(itemLink:match("item:%d+:(%d+)"))
+            pending = linkEnchant ~= nil and linkEnchant ~= 0
+        else
+            ench = d.cachedEnchantText or overlay:CreateFontString(nil, "OVERLAY")
+            local esize = db.inspectEnchantSize or db.charSheetEnchantSize or 9
+            if db.inspectEnchantNames then
+                ench:SetFont(path, esize, EllesmereUI.SlugFlag("OUTLINE, SLUG"))
+                ench:SetTextColor(c.r + (1 - c.r) * 0.5, c.g + (1 - c.g) * 0.5, c.b + (1 - c.b) * 0.5, 0.9)
+            else
+                ench:SetFont(path, esize, "")
+                ench:SetTextColor(1, 1, 1, 0.8)
+            end
+            local lr = _G.InspectHeadSlot and _G.InspectHeadSlot:GetRight()
+            local rl = _G.InspectHandsSlot and _G.InspectHandsSlot:GetLeft()
+            local maxW = 0
+            if lr and rl and not (issecretvalue and (issecretvalue(lr) or issecretvalue(rl))) and rl > lr then
+                maxW = (rl - lr) * 0.45
+            end
+            ench:SetWordWrap(false)
+            ench:SetWidth(maxW)
+            ench:SetText(ns.ForeverEnchantName(raw))
+            ench:ClearAllPoints()
+            ench:Show()
+            d.enchantText = ench
+        end
+    end
+
+    if side == "T" then
+        -- Upward from the slot, centred: the enchant, the damage, the first line.
+        local y = 3
+        if ench then
+            ench:SetPoint("BOTTOM", slot, "TOP", 0, y)
+            ench:SetJustifyH("CENTER")
+            y = y + ench:GetStringHeight() + 1
+        end
+        if dps then
+            dps:SetPoint("BOTTOM", slot, "TOP", 0, y)
+            y = y + dps:GetStringHeight() + 1
+        end
+        if head and stats then
+            local w = head:GetStringWidth() + FV_GAP + stats:GetStringWidth()
+            head:SetPoint("BOTTOMLEFT", slot, "TOP", -w / 2, y)
+            stats:SetPoint("BOTTOMLEFT", head, "BOTTOMRIGHT", FV_GAP, 0)
+        elseif head or stats then
+            (head or stats):SetPoint("BOTTOM", slot, "TOP", 0, y)
+        end
+        return pending
+    end
+
+    local point, rel, x = "LEFT", "RIGHT", FV_EX
+    if side == "L" then point, rel, x = "RIGHT", "LEFT", -FV_EX end
+    -- The outer weapon slots' lines stop short of the window's edge.
+    if weapon then
+        local hi, lo
+        if side == "L" then
+            hi, lo = slot:GetLeft(), InspectFrame:GetLeft()
+        else
+            hi, lo = InspectFrame:GetRight(), slot:GetRight()
+        end
+        if hi and lo and not (issecretvalue and (issecretvalue(hi) or issecretvalue(lo))) then
+            local room = hi - lo - FV_EX - 6
+            if room > 0 then
+                if stats then
+                    stats:SetWidth(math.max(1, room - (head and head:GetStringWidth() + FV_GAP or 0)))
+                    stats:SetJustifyH(point)
+                end
+                if dps then dps:SetWidth(room); dps:SetJustifyH(point) end
+                if ench and ench:GetWidth() > room then ench:SetWidth(room) end
+            end
+        end
+    end
+    local y = weapon and FV_WY or 10
+    if head then
+        head:SetPoint(point, slot, rel, x, y)
+        if stats then stats:SetPoint(point, head, rel, x < 0 and -FV_GAP or FV_GAP, 0) end
+    elseif stats then
+        stats:SetPoint(point, slot, rel, x, y)
+    end
+    -- A weapon's lines stack down from the first; any other slot's enchant
+    -- keeps its spot under the first line.
+    local enchY = -5
+    if weapon then
+        if head or stats then y = y - FV_LINE end
+        if dps then
+            dps:SetPoint(point, slot, rel, x, y)
+            y = y - FV_LINE
+        end
+        enchY = math.min(y, -3) - 2
+    end
+    if ench then
+        ench:SetPoint(point, slot, rel, x, enchY)
+        ench:SetJustifyH(point)
+    end
+    return pending
+end
+
+-- Returns true when the slot's item or tooltip data has not arrived yet (its
+-- labels wait for it: RefreshSlotStyles reads the slot again as it comes).
 local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightColumn)
     local slot = _G[slotName]
     if not slot or not textOverlayFrame then return end
+    local pending = false
 
     -- Blizzard reuses the SAME global slot frames (InspectHeadSlot etc) for
     -- every target, so a label belongs to whoever was inspected last until
@@ -108,11 +259,14 @@ local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightCo
     EUI_ClearSlotLabels(slot)
 
     local skipLabels = (slotName == "InspectShirtSlot" or slotName == "InspectTabardSlot")
+    -- WoW Forever's ranged slot sits right of the off hand, so there the off
+    -- hand's labels stack above it (the ranged slot's go right, as by default).
+    local above = slotName == "InspectSecondaryHandSlot" and InspectRangedSlot ~= nil
 
     local inspectUnit = InspectFrame and InspectFrame.unit
     if not inspectUnit then return end
 
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
+    local fontPath = EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
     local itemLink = GetInventoryItemLink(inspectUnit, slotID)
     GetFFD(slot).itemLink = itemLink
 
@@ -129,9 +283,18 @@ local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightCo
     end
     GetFFD(slot).border = true
 
+    -- WoW Forever lays its slot text out as that client's character sheet does.
+    if ns.ForeverStatText then
+        if not itemLink or skipLabels then return false end
+        return ForeverSlotLabels(slot, slotName, slotID, inspectUnit, itemLink, textOverlayFrame, isRightColumn)
+    end
+
     -- Item level label (font size matches CharacterSheet)
     if itemLink and not GetFFD(slot).iLvlText and not skipLabels then
-        local ilvl = select(4, GetItemInfo(itemLink))
+        -- GetItemInfo's itemLevel is the cached base level, wrong for upgrade-track
+        -- pieces; the detailed level reads the link's bonus IDs.
+        local _, _, quality, baseIlvl = GetItemInfo(itemLink)
+        local ilvl = C_Item.GetDetailedItemLevelInfo(itemLink) or baseIlvl
         if ilvl and ilvl > 0 then
             local itemLevelSize = EllesmereUIDB and EllesmereUIDB.charSheetItemLevelSize or 11
             local ilvlText = GetFFD(slot).cachedILvlText or textOverlayFrame:CreateFontString(nil, "OVERLAY")
@@ -140,7 +303,9 @@ local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightCo
             ilvlText:SetJustifyH("CENTER")
             ilvlText:ClearAllPoints()
 
-            if slotName == "InspectMainHandSlot" then
+            if above then
+                ilvlText:SetPoint("BOTTOM", slot, "TOP", 0, 3)
+            elseif slotName == "InspectMainHandSlot" then
                 ilvlText:SetPoint("CENTER", slot, "LEFT", -15, 10)
             elseif slotName == "InspectSecondaryHandSlot" then
                 ilvlText:SetPoint("CENTER", slot, "RIGHT", 15, 10)
@@ -152,74 +317,90 @@ local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightCo
 
             ilvlText:SetText(ilvl)
 
-            local upgradeTrackText, upgradeTrackColor = EllesmereUI.GetUpgradeTrack(itemLink)
-            local displayColor
-            if EllesmereUIDB and EllesmereUIDB.charSheetItemLevelUseColor and EllesmereUIDB.charSheetItemLevelColor then
-                displayColor = EllesmereUIDB.charSheetItemLevelColor
-            elseif upgradeTrackText ~= "" and upgradeTrackColor then
-                displayColor = upgradeTrackColor
-            elseif (not EllesmereUIDB or EllesmereUIDB.charSheetColorItemLevel ~= false) then
-                local _, _, quality = GetItemInfo(itemLink)
-                if quality then
-                    local r, g, b = GetItemQualityColor(quality)
-                    displayColor = { r = r, g = g, b = b }
-                end
-            end
-            displayColor = displayColor or { r = 1, g = 1, b = 1 }
+            local displayColor = EllesmereUI.GetItemLevelColor(itemLink, quality)
             ilvlText:SetTextColor(displayColor.r, displayColor.g, displayColor.b, 0.9)
             ilvlText:Show()
 
             GetFFD(slot).iLvlText = ilvlText
+        else
+            pending = true
         end
     end
 
-    -- Enchant label (font size matches CharacterSheet)
-    if itemLink and not GetFFD(slot).enchantText and not skipLabels then
-        local enchantSize = EllesmereUIDB and EllesmereUIDB.charSheetEnchantSize or 9
-        local enchantText = EllesmereUI.GetEnchantText(slotID, inspectUnit)
-        local canHaveEnchant = INSPECT_ENCHANT_SLOTS[slotID]
-        if slotID == INVSLOT_OFFHAND then
-            local _, _, _, _, _, classID = GetItemInfoInstant(itemLink)
-            canHaveEnchant = (classID == Enum.ItemClass.Weapon)
+    -- Enchant label: its icon (the name on hover), or under Text the name
+    -- itself, outlined and tinted from the item level's color, as on the
+    -- character sheet (a missing enchant keeps its red icon). WoW Forever's
+    -- enchants carry no icon, so the name always shows there (plain unless
+    -- Colored Text), named as that client's character sheet names it.
+    local enchantText = itemLink and not GetFFD(slot).enchantText and not skipLabels
+        and EllesmereUI.GetEnchantText(slotID, inspectUnit)
+    -- An enchanted item whose tooltip has not arrived reads as no enchant:
+    -- no label until it does, never the red missing-enchant icon.
+    if enchantText == "" then
+        local linkEnchant = tonumber(itemLink:match("item:%d+:(%d+)"))
+        if linkEnchant and linkEnchant ~= 0 then
+            pending = true
+            enchantText = nil
         end
-        local inspLvl = UnitLevel(inspectUnit)
-        local atEnchantLevel = inspLvl and not (issecretvalue and issecretvalue(inspLvl)) and inspLvl >= 90 or false
-        local isMissing = atEnchantLevel and canHaveEnchant and itemLink and (enchantText == "" or not enchantText)
-        local hasEnchant = enchantText and enchantText ~= ""
-
-        local iconOnly, tooltipText
-        if isMissing then
-            iconOnly    = "|A:Professions-ChatIcon-Quality-Tier5:14:14:0:0:229:73:73|a"
-            tooltipText = "Enchant missing"
-        elseif hasEnchant then
-            local icons = {}
-            for atlas in enchantText:gmatch("|A:[^|]+|a") do
-                icons[#icons + 1] = atlas
-            end
-            iconOnly    = table.concat(icons, "")
-            tooltipText = enchantText:gsub("|A:[^|]+|a", ""):gsub("^%s+", ""):gsub("%s+$", "")
-            tooltipText = tooltipText:gsub("^.-%s*%-%s*", "")
-        end
+    end
+    if enchantText then
+        local iconOnly, tooltipText, _, hasEnchant = ns.ParseEnchantLabel(enchantText, slotID, itemLink, inspectUnit)
+        if ns.ForeverEnchantName then tooltipText = ns.ForeverEnchantName(enchantText) end
 
         local showEnchants = (not EllesmereUIDB) or (EllesmereUIDB.inspectShowEnchants ~= false)
+        local styled = EllesmereUIDB and EllesmereUIDB.inspectEnchantNames
+        local useName = (styled or EllesmereUI.IS_FOREVER) and hasEnchant and tooltipText and tooltipText ~= ""
+        local labelText = useName and tooltipText or iconOnly
 
-        if showEnchants and iconOnly and iconOnly ~= "" then
+        if showEnchants and labelText and labelText ~= "" then
+            -- The inspect sheet's own size, else the character sheet's
+            local enchantSize = (EllesmereUIDB and (EllesmereUIDB.inspectEnchantSize or EllesmereUIDB.charSheetEnchantSize)) or 9
             local enchantLabel = GetFFD(slot).cachedEnchantText or textOverlayFrame:CreateFontString(nil, "OVERLAY")
-            enchantLabel:SetFont(fontPath, enchantSize, "")
-            enchantLabel:SetTextColor(1, 1, 1, 0.8)
+            if useName and styled then
+                enchantLabel:SetFont(fontPath, enchantSize, EllesmereUI.SlugFlag("OUTLINE, SLUG"))
+                local _, _, quality = GetItemInfo(itemLink)
+                local c = EllesmereUI.GetItemLevelColor(itemLink, quality)
+                enchantLabel:SetTextColor(c.r + (1 - c.r) * 0.5, c.g + (1 - c.g) * 0.5, c.b + (1 - c.b) * 0.5, 0.9)
+            else
+                enchantLabel:SetFont(fontPath, enchantSize, "")
+                enchantLabel:SetTextColor(1, 1, 1, 0.8)
+            end
+            -- A name is capped at 45% of the gap between the two columns, so
+            -- it never runs over the model or into the other column (cut
+            -- short; the full name stays on the hover).
+            local maxW
+            if useName then
+                local lr = _G.InspectHeadSlot and _G.InspectHeadSlot:GetRight()
+                local rl = _G.InspectHandsSlot and _G.InspectHandsSlot:GetLeft()
+                if lr and rl and not (issecretvalue and (issecretvalue(lr) or issecretvalue(rl)))
+                    and rl > lr then
+                    maxW = (rl - lr) * 0.45
+                end
+            end
+            enchantLabel:SetWordWrap(false)
+            enchantLabel:SetWidth(maxW or 0)
             enchantLabel:ClearAllPoints()
 
-            if slotName == "InspectMainHandSlot" then
+            -- Justified toward its slot, so a capped name hugs it
+            if above then
+                local lvlText = GetFFD(slot).iLvlText
+                enchantLabel:SetPoint("BOTTOM", lvlText or slot, "TOP", 0, lvlText and 1 or 3)
+                enchantLabel:SetJustifyH("CENTER")
+            elseif slotName == "InspectMainHandSlot" then
                 enchantLabel:SetPoint("RIGHT", slot, "LEFT", -5, -5)
+                enchantLabel:SetJustifyH("RIGHT")
             elseif slotName == "InspectSecondaryHandSlot" then
                 enchantLabel:SetPoint("LEFT", slot, "RIGHT", 5, -5)
+                enchantLabel:SetJustifyH("LEFT")
             elseif isRightColumn then
                 enchantLabel:SetPoint("RIGHT", slot, "LEFT", -5, -5)
+                enchantLabel:SetJustifyH("RIGHT")
             else
                 enchantLabel:SetPoint("LEFT", slot, "RIGHT", 5, -5)
+                enchantLabel:SetJustifyH("LEFT")
             end
 
-            enchantLabel:SetText(iconOnly)
+            enchantLabel:SetText(labelText)
             enchantLabel:Show()
             GetFFD(slot).enchantText = enchantLabel
 
@@ -227,7 +408,9 @@ local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightCo
             hoverFrame:SetSize(20, 20)
             hoverFrame:SetFrameLevel(textOverlayFrame:GetFrameLevel() + 20)
             hoverFrame:ClearAllPoints()
-            if slotName == "InspectMainHandSlot" then
+            if above then
+                hoverFrame:SetPoint("CENTER", enchantLabel, "CENTER", 0, 0)
+            elseif slotName == "InspectMainHandSlot" then
                 hoverFrame:SetPoint("RIGHT", slot, "LEFT", -5, -5)
             elseif slotName == "InspectSecondaryHandSlot" then
                 hoverFrame:SetPoint("LEFT", slot, "RIGHT", 5, -5)
@@ -244,7 +427,7 @@ local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightCo
                 end
             end)
             hoverFrame:SetScript("OnLeave", function()
-                if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+                EllesmereUI.HideWidgetTooltip()
             end)
             hoverFrame:Show()
 
@@ -263,7 +446,9 @@ local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightCo
             upgradeLabel:SetJustifyH("CENTER")
             upgradeLabel:ClearAllPoints()
 
-            if slotName == "InspectMainHandSlot" then
+            if above then
+                upgradeLabel:SetPoint("LEFT", GetFFD(slot).iLvlText, "RIGHT", 3, 0)
+            elseif slotName == "InspectMainHandSlot" then
                 upgradeLabel:SetPoint("RIGHT", GetFFD(slot).iLvlText, "LEFT", -3, 0)
             elseif slotName == "InspectSecondaryHandSlot" then
                 upgradeLabel:SetPoint("LEFT", GetFFD(slot).iLvlText, "RIGHT", 3, 0)
@@ -278,6 +463,7 @@ local function EUI_UpdateSlotStyle(slotName, slotID, textOverlayFrame, isRightCo
             GetFFD(slot).upgradeText = upgradeLabel
         end
     end
+    return pending
 end
 
 -- Apply tab visibility: show labels only on Tab 1
@@ -289,7 +475,10 @@ local function ApplyTabVisibility(showLabels)
 
     -- Show/hide individual labels based on settings
     local showItemLevel = (not EllesmereUIDB) or (EllesmereUIDB.inspectShowItemLevel ~= false)
-    local showUpgradeTrack = (not EllesmereUIDB) or (EllesmereUIDB.inspectShowUpgradeTrack ~= false)
+    -- WoW Forever: the stats and damage lines exist only while Show Item
+    -- Stats is on (the track's key is retail's alone)
+    local showUpgradeTrack = ns.ForeverStatText ~= nil
+        or (not EllesmereUIDB) or (EllesmereUIDB.inspectShowUpgradeTrack ~= false)
     local showEnchants = (not EllesmereUIDB) or (EllesmereUIDB.inspectShowEnchants ~= false)
 
     for slotName, _ in pairs(slotGridMap) do
@@ -302,8 +491,16 @@ local function ApplyTabVisibility(showLabels)
             if GetFFD(slot).upgradeText then
                 GetFFD(slot).upgradeText:SetShown(showLabels and showUpgradeTrack)
             end
+            -- WoW Forever: a weapon's damage line goes with its stats
+            if GetFFD(slot).dpsText then
+                GetFFD(slot).dpsText:SetShown(showLabels and showUpgradeTrack)
+            end
             if GetFFD(slot).enchantText then
                 GetFFD(slot).enchantText:SetShown(showLabels and showEnchants)
+            end
+            -- Its hover spot too, or the other tabs keep an invisible tooltip
+            if GetFFD(slot).enchantHoverFrame then
+                GetFFD(slot).enchantHoverFrame:SetShown(showLabels and showEnchants)
             end
         end
     end
@@ -349,40 +546,9 @@ local function SkinInspectSheet()
     if GetFFD(frame).bg then
         GetFFD(frame).bg:Show()
     else
-        local BG_ASPECT = 561 / 433
-        local bg = frame:CreateTexture(nil, "BACKGROUND", nil, -8)
-        bg:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\modern_blizz.png")
-        bg:SetAllPoints(frame)
-        bg:SetAlpha(1)
+        local bg, bgOverlay = ns.SheetBackdrop(frame)
         GetFFD(frame).bg = bg
-        GetFFD(frame).bgOverlay = frame:CreateTexture(nil, "BACKGROUND", nil, -7)
-        GetFFD(frame).bgOverlay:SetColorTexture(0, 0, 0, 0.62)
-        GetFFD(frame).bgOverlay:SetAllPoints(frame)
-        -- Aspect-ratio-preserving cover mode (matches character sheet)
-        local BASE_L, BASE_R, BASE_T, BASE_B = 0.25, 1, 0, 0.75
-        local BASE_U = BASE_R - BASE_L
-        local BASE_V = BASE_B - BASE_T
-        local function UpdateBgTexCoords()
-            local fw, fh = frame:GetSize()
-            -- Secrecy test BEFORE the zero check: that check is itself a
-            -- comparison and throws on a secret size. Matches the engine.
-            if issecretvalue and (issecretvalue(fw) or issecretvalue(fh)) then return end
-            if fw == 0 or fh == 0 then return end
-            local frameAspect = fw / fh
-            if frameAspect > BG_ASPECT then
-                local visV = BASE_V * (BG_ASPECT / frameAspect)
-                local trimV = (BASE_V - visV) / 2
-                bg:SetTexCoord(BASE_L, BASE_R, BASE_T + trimV, BASE_B - trimV)
-            else
-                local visU = BASE_U * (frameAspect / BG_ASPECT)
-                local trimU = (BASE_U - visU) / 2
-                bg:SetTexCoord(BASE_L + trimU, BASE_R - trimU, BASE_T, BASE_B)
-            end
-        end
-        -- One script hook instead of three setter hooks; also fires for
-        -- anchor-driven resizes (same shape as WSkin.Shell).
-        frame:HookScript("OnSizeChanged", UpdateBgTexCoords)
-        UpdateBgTexCoords()
+        GetFFD(frame).bgOverlay = bgOverlay
         -- Follows the Character Sheet window's style pick (the two share one
         -- enable + style setting).
         if ns.WSkin and ns.WSkin.AdoptShell then
@@ -542,13 +708,15 @@ local function SkinInspectSheet()
     end
 
     -- Hide PVP Frame background elements. Frames other addons parent in here
-    -- are theirs to draw (see WSkin.IsForeignFrame).
+    -- are theirs to draw (see WSkin.IsForeignFrame), and the WoW Forever PvP
+    -- frame keeps all of its content in one unnamed child, MainInfoFrame.
     local IsForeign = ns.WSkin and ns.WSkin.IsForeignFrame
     if InspectPVPFrame then
-        local numChildren = InspectPVPFrame:GetNumChildren()
-        for i = 1, numChildren do
-            local child = select(i, InspectPVPFrame:GetChildren())
-            if child and not child:GetName()
+        local content = InspectPVPFrame.MainInfoFrame
+        local children = { InspectPVPFrame:GetChildren() }
+        for i = 1, #children do
+            local child = children[i]
+            if child and child ~= content and not child:GetName()
                and not (IsForeign and IsForeign(child, InspectPVPFrame)) then
                 child:Hide()
             end
@@ -557,9 +725,9 @@ local function SkinInspectSheet()
 
     -- Hide Guild Frame background elements
     if InspectGuildFrame then
-        local numChildren = InspectGuildFrame:GetNumChildren()
-        for i = 1, numChildren do
-            local child = select(i, InspectGuildFrame:GetChildren())
+        local children = { InspectGuildFrame:GetChildren() }
+        for i = 1, #children do
+            local child = children[i]
             if child and not child:GetName()
                and not (IsForeign and IsForeign(child, InspectGuildFrame)) then
                 child:Hide()
@@ -568,9 +736,9 @@ local function SkinInspectSheet()
     end
 
     -- Hide unnamed decoration frames in main InspectFrame
-    local numChildren = frame:GetNumChildren()
-    for i = 1, numChildren do
-        local child = select(i, frame:GetChildren())
+    local children = { frame:GetChildren() }
+    for i = 1, #children do
+        local child = children[i]
         if child and not child:GetName() and child:GetObjectType() == "Frame"
            and not (IsForeign and IsForeign(child, frame)) then
             -- Only hide if it's not one of our known frames and not the TitleFrame or title parent
@@ -590,42 +758,15 @@ local function SkinInspectSheet()
 
     -- Style close button
     local closeBtn = frame.CloseButton or _G.InspectFrameCloseButton
-    if closeBtn then
-        if closeBtn.SetNormalTexture then closeBtn:SetNormalTexture("") end
-        if closeBtn.SetPushedTexture then closeBtn:SetPushedTexture("") end
-        if closeBtn.SetHighlightTexture then closeBtn:SetHighlightTexture("") end
-        if closeBtn.SetDisabledTexture then closeBtn:SetDisabledTexture("") end
-
-        for i = 1, select("#", closeBtn:GetRegions()) do
-            local region = select(i, closeBtn:GetRegions())
-            if region and region:IsObjectType("Texture") and region ~= GetFFD(closeBtn).x then
-                region:SetAlpha(0)
-            end
-        end
-
-        if not GetFFD(closeBtn).x then
-            local closeX = closeBtn:CreateTexture(nil, "OVERLAY")
-            closeX:SetAtlas("uitools-icon-close")
-            closeX:SetSize(14, 14)
-            closeX:SetPoint("CENTER", -2, 0)
-            closeX:SetVertexColor(1, 1, 1, 0.75)
-            GetFFD(closeBtn).x = closeX
-
-            closeBtn:HookScript("OnEnter", function()
-                if GetFFD(closeBtn).x then GetFFD(closeBtn).x:SetVertexColor(1, 1, 1, 1) end
-            end)
-            closeBtn:HookScript("OnLeave", function()
-                if GetFFD(closeBtn).x then GetFFD(closeBtn).x:SetVertexColor(1, 1, 1, 0.75) end
-            end)
-        end
-    end
+    if closeBtn and ns.WSkin and ns.WSkin.CloseButton then ns.WSkin.CloseButton(closeBtn) end
 
     -- Restyle Blizzard's Talents + View (dressing room) buttons in place.
     -- User clicks the actual Blizzard button so the secure handler fires
     -- natively with no addon taint in the call stack.
     do
-        local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
-        local BTN_W, BTN_H = 90, 21
+        local fontPath = EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
+        -- Narrower beside Forever's three-slot weapon row.
+        local BTN_W, BTN_H = InspectRangedSlot and 76 or 90, 21
         local BTN_Y = 8
 
         local function RestyleButton(btn, labelText, anchor, anchorPoint, xOff)
@@ -655,6 +796,14 @@ local function SkinInspectSheet()
             label:SetPoint("CENTER", btn, "CENTER", 0, 0)
             label:SetJustifyH("CENTER")
             label:SetText(labelText)
+            -- A translated label wider than the button shrinks to fit (never under 8), then is cut.
+            local room = BTN_W - 6
+            local textW = label:GetStringWidth()
+            if textW and textW > room then
+                label:SetFont(fontPath, math.max(8, math.floor(10 * room / textW)), "")
+            end
+            label:SetWidth(room)
+            label:SetWordWrap(false)
             label:SetTextColor(1, 1, 1, 1)
             ffd.label = label
 
@@ -668,9 +817,11 @@ local function SkinInspectSheet()
         local paperDollItemsFrame = InspectPaperDollItemsFrame
         if paperDollItemsFrame then
             local IsForeignBtn = ns.WSkin and ns.WSkin.IsForeignFrame
+            -- Retail only: WoW Forever's inspect window has no Talents button.
             local talentsBtn = paperDollItemsFrame.InspectTalents
-            for i = 1, paperDollItemsFrame:GetNumChildren() do
-                local child = select(i, paperDollItemsFrame:GetChildren())
+            local children2 = { paperDollItemsFrame:GetChildren() }
+            for i = 1, #children2 do
+                local child = children2[i]
                 if child and child:GetObjectType() == "Button" and not child:GetName()
                    and child ~= talentsBtn
                    and not (IsForeignBtn and IsForeignBtn(child, paperDollItemsFrame)) then
@@ -678,11 +829,15 @@ local function SkinInspectSheet()
                     child:EnableMouse(false)
                 end
             end
-            RestyleButton(talentsBtn, "Talents", "BOTTOMRIGHT", "BOTTOMRIGHT", -7)
+            RestyleButton(talentsBtn, EllesmereUI.L("Talents"), "BOTTOMRIGHT", "BOTTOMRIGHT", -7)
         end
 
-        local blizViewBtn = InspectPaperDollFrame and InspectPaperDollFrame.ViewButton
-        RestyleButton(blizViewBtn, "Transmog", "BOTTOMLEFT", "BOTTOMLEFT", 10)
+        -- WoW Forever: Blizzard keeps the View button hidden there, and it
+        -- stays hidden (the room left of the main hand is its text's).
+        if not EllesmereUI.IS_FOREVER then
+            local blizViewBtn = InspectPaperDollFrame and InspectPaperDollFrame.ViewButton
+            RestyleButton(blizViewBtn, EllesmereUI.L("Transmog"), "BOTTOMLEFT", "BOTTOMLEFT", 10)
+        end
     end
 
     -- Hide slot wrapper frames
@@ -696,13 +851,21 @@ local function SkinInspectSheet()
     -- Show actual slot buttons and style them
     for _, slotName in ipairs(EUI_ALL_SLOTS) do
         local slot = _G[slotName]
-        if slot then
+        -- WoW Forever: the slot dress of that client's character sheet (the
+        -- bronze frame off, a grey square and a 2px border coloured by the
+        -- item in EUI_UpdateSlotStyle).
+        if slot and ns.ForeverSkinSlot then
+            slot:Show()
+            ns.ForeverSkinSlot(slot, slotName)
+            local parent = slot:GetParent()
+            if parent then parent:Show() end
+        elseif slot then
             slot:Show()
 
             -- Hide ALL unnamed Texturen in den Slots (die Dekoration)
-            local numRegions = slot:GetNumRegions()
-            for i = 1, numRegions do
-                local region = select(i, slot:GetRegions())
+            local regions = { slot:GetRegions() }
+            for i = 1, #regions do
+                local region = regions[i]
                 if region and region:IsObjectType("Texture") then
                     local regionName = region:GetName()
                     -- Hide nur unnamed Texturen (nicht die Icon)
@@ -776,6 +939,20 @@ local function SkinInspectSheet()
     textOverlayFrame:SetAlpha(GetFFD(frame).textHidden and 0 or 1)
     textOverlayFrame:Show()
 
+    -- WoW Forever: the item levels' own layer, above the slot buttons (the
+    -- overlay above sits under them), so a level can sit inside its icon. A
+    -- child of the slots' frame: it goes with them on the other tabs.
+    if ns.ForeverStatText and InspectPaperDollItemsFrame then
+        local layer = GetFFD(frame).ilvlOverlay
+        if not layer then
+            layer = CreateFrame("Frame", nil, InspectPaperDollItemsFrame)
+            layer:SetAllPoints(InspectPaperDollItemsFrame)
+            GetFFD(frame).ilvlOverlay = layer
+        end
+        layer:SetFrameLevel((_G.InspectHeadSlot and _G.InspectHeadSlot:GetFrameLevel() or 100) + 5)
+        layer:SetAlpha(GetFFD(frame).textHidden and 0 or 1)
+    end
+
     -- Top-left eyeball toggle: temporarily hides all item slot text (item level,
     -- upgrade track, enchants) by alpha-ing the shared overlay. Session-only,
     -- matches the CharacterSheet eyeball. State lives in FFD so it survives the
@@ -798,16 +975,17 @@ local function SkinInspectSheet()
             if GetFFD(frame).textOverlayFrame then
                 GetFFD(frame).textOverlayFrame:SetAlpha(hidden and 0 or 1)
             end
+            if GetFFD(frame).ilvlOverlay then
+                GetFFD(frame).ilvlOverlay:SetAlpha(hidden and 0 or 1)
+            end
         end)
         eyeBtn:SetScript("OnEnter", function(self)
             self:SetAlpha(0.8)
-            if EllesmereUI.ShowWidgetTooltip then
-                EllesmereUI.ShowWidgetTooltip(self, GetFFD(frame).textHidden and "Show Item Text" or "Hide Item Text", { width = 135 })
-            end
+            EllesmereUI.ShowWidgetTooltip(self, GetFFD(frame).textHidden and "Show Item Text" or "Hide Item Text", { width = 135 })
         end)
         eyeBtn:SetScript("OnLeave", function(self)
             self:SetAlpha(0.4)
-            if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+            EllesmereUI.HideWidgetTooltip()
         end)
         GetFFD(frame).textEyeBtn = eyeBtn
     end
@@ -840,15 +1018,20 @@ local function SkinInspectSheet()
     -- hardcoded offset, no GetWidth which can return a secret value).
     if InspectMainHandSlot and InspectSecondaryHandSlot then
         InspectMainHandSlot:ClearAllPoints()
-        InspectMainHandSlot:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 128, 10)
+        InspectMainHandSlot:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", InspectRangedSlot and 104 or 128, 10)
         InspectSecondaryHandSlot:ClearAllPoints()
         InspectSecondaryHandSlot:SetPoint("TOPLEFT", InspectMainHandSlot, "TOPRIGHT", 12, 0)
+        -- Forever only: a third weapon slot, the row recentred for it.
+        if InspectRangedSlot then
+            InspectRangedSlot:ClearAllPoints()
+            InspectRangedSlot:SetPoint("TOPLEFT", InspectSecondaryHandSlot, "TOPRIGHT", 12, 0)
+        end
     end
 
     -- Average item level + M+ score, centered below the title/level text.
     -- Anchored to frame TOP so they sit below the character info header.
     do
-        local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
+        local fontPath = EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
 
         -- Text overlay frame above model bg and fade
         if not GetFFD(frame).textOverlay then
@@ -866,7 +1049,14 @@ local function SkinInspectSheet()
             ilvlFS:SetFont(fontPath, 16, "")
             ilvlFS:SetTextColor(0.6, 0.2, 1, 1)
             ilvlFS:SetJustifyH("CENTER")
-            ilvlFS:SetPoint("TOP", frame, "TOP", 0, -43)
+            -- Under Blizzard's level line wherever the client draws it (WoW
+            -- Forever puts it lower and larger than retail).
+            local levelText = _G.InspectLevelText
+            if levelText then
+                ilvlFS:SetPoint("TOP", levelText, "BOTTOM", 0, -3)
+            else
+                ilvlFS:SetPoint("TOP", frame, "TOP", 0, -43)
+            end
             GetFFD(frame).avgIlvlText = ilvlFS
         end
 
@@ -896,12 +1086,7 @@ local function SkinInspectSheet()
             end
         end
         if mpScore > 0 then
-            local hex = "ffffff"
-            for i = 1, #MP_COLOR_BRACKETS do
-                if mpScore >= MP_COLOR_BRACKETS[i][1] then
-                    hex = MP_COLOR_BRACKETS[i][2]; break
-                end
-            end
+            local hex = ns.GetMPScoreHex(mpScore)
             GetFFD(frame).mPlusScoreText:SetFormattedText("M+ Score: |cff%s%d|r", hex, math.floor(mpScore))
             GetFFD(frame).mPlusScoreText:Show()
         else
@@ -910,7 +1095,7 @@ local function SkinInspectSheet()
     end
 
     -- Style Tabs (InspectFrameTab1, 2, 3)
-    local fontPath = EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
+    local fontPath = EllesmereUI.GetFontPath("blizzardSkin") or STANDARD_TEXT_FONT
     local EG = EllesmereUI.ELLESMERE_GREEN or { r = 0.51, g = 0.784, b = 1 }
     local FRAME_BG_R, FRAME_BG_G, FRAME_BG_B = 0.03, 0.045, 0.05
 
@@ -920,8 +1105,9 @@ local function SkinInspectSheet()
         if tab then
             inspTabs[#inspTabs + 1] = tab
             -- Remove Blizzard textures
-            for j = 1, select("#", tab:GetRegions()) do
-                local region = select(j, tab:GetRegions())
+            local regions = { tab:GetRegions() }
+            for j = 1, #regions do
+                local region = regions[j]
                 if region and region:IsObjectType("Texture") then
                     region:SetTexture("")
                     if region.SetAtlas then region:SetAtlas("") end
@@ -997,9 +1183,7 @@ local function SkinInspectSheet()
                 underline:SetPoint("BOTTOMLEFT", tab, "BOTTOMLEFT", 0, 0)
                 underline:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
                 underline:SetColorTexture(EG.r or 0.51, EG.g or 0.784, EG.b or 1, 1)
-                if EllesmereUI and EllesmereUI.RegAccent then
-                    EllesmereUI.RegAccent({ type = "solid", obj = underline, a = 1 })
-                end
+                EllesmereUI.RegAccent({ type = "solid", obj = underline, a = 1 })
                 underline:Hide()
                 GetFFD(tab).underline = underline
             else
@@ -1030,6 +1214,10 @@ local function SkinInspectSheet()
         if GetFFD(frame).transmogBtn then
             GetFFD(frame).transmogBtn:SetShown(isTab1)
         end
+        -- The item text eyeball only has slots to act on on Tab 1
+        if GetFFD(frame).textEyeBtn then
+            GetFFD(frame).textEyeBtn:SetShown(isTab1)
+        end
 
         -- Update label visibility with ApplyTabVisibility - only show on Tab 1
         ApplyTabVisibility(isTab1)
@@ -1055,22 +1243,18 @@ local function SkinInspectSheet()
         end
     end
 
-    -- Hook to update tabs when they change (once only)
+    -- Hook to update tabs when they change (once only). Every switch goes
+    -- through InspectSwitchTabs: the bottom tabs on retail, the side tabs on
+    -- WoW Forever and Blizzard's own resets to the character tab.
     if frame.HookScript and not GetFFD(frame)._tabHooked then
         GetFFD(frame)._tabHooked = true
         frame:HookScript("OnShow", function()
             UpdateTabVisuals()
         end)
-
-        for i = 1, 3 do
-            local tab = _G["InspectFrameTab" .. i]
-            if tab then
-                tab:HookScript("OnClick", function()
-                    UpdateTabVisuals()
-                    local isTab1 = (frame.selectedTab or 1) == 1
-                    ApplyTabVisibility(isTab1)
-                end)
-            end
+        if _G.InspectSwitchTabs then
+            hooksecurefunc("InspectSwitchTabs", function()
+                UpdateTabVisuals()
+            end)
         end
     end
 
@@ -1091,8 +1275,9 @@ local function SkinInspectSheet()
         frame.TitleContainer:SetWidth(406)
         frame.TitleContainer:SetPoint("TOP", frame, "TOP", 0, 0)
 
-        for i = 1, frame.TitleContainer:GetNumChildren() do
-            local child = select(i, frame.TitleContainer:GetChildren())
+        local children2 = { frame.TitleContainer:GetChildren() }
+        for i = 1, #children2 do
+            local child = children2[i]
             if child and child:GetObjectType() == "FontString" then
                 child:SetJustifyH("CENTER")
             end
@@ -1116,7 +1301,7 @@ local DOCK_MARGIN = 4
 -- since secure repositioning of a protected frame is blocked in combat.
 local securePositioner = CreateFrame("Frame", nil, UIParent, "SecureHandlerBaseTemplate")
 local function SecureSetPoint(frame, point, relPoint, x, y)
-    if InCombatLockdown() or not EllesmereUI.SecureSnippetsOK() then return false end
+    if InCombatLockdown() then return false end
     securePositioner:SetFrameRef("f", frame)
     securePositioner:SetAttribute("p", point)
     securePositioner:SetAttribute("rp", relPoint)
@@ -1353,13 +1538,43 @@ if EllesmereUI then
         end
     end)
 
+    -- Slots whose item or tooltip data had not arrived are read again as it
+    -- does: item and tooltip data events, registered only while a slot waits,
+    -- for at most WAIT_SECS from this inspect's first incomplete read (a new
+    -- INSPECT_READY starts a new wait), one pass per burst.
+    local WAIT_SECS = 5
+    local waitStart, retryTimer
+    local RefreshSlotStyles  -- forward
+    local dataWatch = CreateFrame("Frame")
+    local function StopWait()
+        dataWatch:UnregisterAllEvents()
+    end
+    local function EquippedByInspected(itemID)
+        local unit = InspectFrame and InspectFrame.unit
+        if not unit or not itemID then return false end
+        for slotName in pairs(slotGridMap) do
+            local slot = _G[slotName]
+            if slot and GetInventoryItemID(unit, slot:GetID()) == itemID then return true end
+        end
+        return false
+    end
+    dataWatch:SetScript("OnEvent", function(_, event, arg1)
+        if retryTimer then return end
+        if event == "GET_ITEM_INFO_RECEIVED" and not EquippedByInspected(arg1) then return end
+        retryTimer = C_Timer.NewTimer(0.12, function()
+            retryTimer = nil
+            if InspectFrame and InspectFrame:IsShown() then RefreshSlotStyles() else StopWait() end
+        end)
+    end)
+
     -- Function to refresh all slot styles when inspect data changes
-    local function RefreshSlotStyles()
+    RefreshSlotStyles = function()
         if not InspectPaperDollItemsFrame then return end
         if not InspectFrame then return end
         local textOverlayFrame = GetFFD(InspectFrame).textOverlayFrame
         if not textOverlayFrame then return end
 
+        local pending = false
         for slotName, gridPos in pairs(slotGridMap) do
             local slot = _G[slotName]
             if slot then
@@ -1368,8 +1583,18 @@ if EllesmereUI then
                 GetFFD(slot).border = false
                 -- Re-style (right column = col 1)
                 local isRightColumn = gridPos.col == 1
-                EUI_UpdateSlotStyle(slotName, slot:GetID(), textOverlayFrame, isRightColumn)
+                if EUI_UpdateSlotStyle(slotName, slot:GetID(), textOverlayFrame, isRightColumn) then
+                    pending = true
+                end
             end
+        end
+        local now = GetTime()
+        if pending and now - (waitStart or now) < WAIT_SECS then
+            waitStart = waitStart or now
+            dataWatch:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+            dataWatch:RegisterEvent("TOOLTIP_DATA_UPDATE")
+        else
+            StopWait()
         end
         -- Update label visibility after all slots have been styled
         local frame = InspectFrame
@@ -1378,11 +1603,20 @@ if EllesmereUI then
         end
     end
 
+    -- Options refresher for the enchant display: restyles every slot of a
+    -- shown sheet; a hidden one restyles on its next show.
+    function EllesmereUI._refreshInspectSlotLabels()
+        if not (InspectFrame and InspectFrame:IsShown()) then return end
+        if EllesmereUIDB and (EllesmereUIDB.themedInspectSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
+        RefreshSlotStyles()
+    end
+
     -- Also hook to INSPECT_READY to reskin when new inspection data arrives
     local inspectHook = CreateFrame("Frame")
     inspectHook:RegisterEvent("INSPECT_READY")
     inspectHook:SetScript("OnEvent", function(self, event, guid)
         if not InspectFrame or not InspectFrame:IsShown() then return end
+        waitStart = nil  -- new inspect data: a fresh wait for what it still lacks
         skinned = false
         ApplyThemedInspectSheet()
         EnsureInspectNineSliceHidden()
@@ -1453,7 +1687,8 @@ end
 function EllesmereUI._refreshInspectUpgradeTrackVisibility()
     if not InspectFrame or not InspectPaperDollItemsFrame then return end
 
-    local showUpgradeTrack = (not EllesmereUIDB) or (EllesmereUIDB.inspectShowUpgradeTrack ~= false)
+    local showUpgradeTrack = ns.ForeverStatText ~= nil
+        or (not EllesmereUIDB) or (EllesmereUIDB.inspectShowUpgradeTrack ~= false)
     local isTab1 = InspectPaperDollItemsFrame and InspectPaperDollItemsFrame:IsShown()
 
     for slotName, _ in pairs(slotGridMap) do
@@ -1461,6 +1696,9 @@ function EllesmereUI._refreshInspectUpgradeTrackVisibility()
         if slot and GetFFD(slot).upgradeText then
             -- Only show if Tab 1 AND setting is enabled
             GetFFD(slot).upgradeText:SetShown(isTab1 and showUpgradeTrack)
+        end
+        if slot and GetFFD(slot).dpsText then
+            GetFFD(slot).dpsText:SetShown(isTab1 and showUpgradeTrack)
         end
     end
 end
@@ -1475,9 +1713,11 @@ function EllesmereUI._refreshInspectEnchantsVisibility()
     for slotName, _ in pairs(slotGridMap) do
         local slot = _G[slotName]
         if slot and GetFFD(slot).enchantText then
-            -- Only show if Tab 1 AND setting is enabled
+            -- Only show if Tab 1 AND setting is enabled (its hover spot too)
             GetFFD(slot).enchantText:SetShown(isTab1 and showEnchants)
+            if GetFFD(slot).enchantHoverFrame then
+                GetFFD(slot).enchantHoverFrame:SetShown(isTab1 and showEnchants)
+            end
         end
     end
 end
-

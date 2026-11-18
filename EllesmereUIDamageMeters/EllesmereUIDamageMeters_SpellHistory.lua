@@ -96,21 +96,7 @@ local function DB()
     return sh
 end
 
-local function GetDMFont()
-    if EUI and EUI.GetFontPath then return EUI.GetFontPath("damageMeters") end
-    return "Fonts\\FRIZQT__.TTF"
-end
-
-local function GetDMOutline()
-    return (EUI and EUI.GetFontOutlineFlag and EUI.GetFontOutlineFlag("damageMeters")) or ""
-end
-
-local function SetFont(fs, size)
-    if not (fs and fs.SetFont) then return end
-    local font, flags = GetDMFont(), GetDMOutline()
-    if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, flags == "") end
-    fs:SetFont(font, size, flags)
-end
+local function SetFont(fs, size) EllesmereUI.ApplyModuleFont(fs, nil, size, "damageMeters") end
 
 -- Icon size is a coordinate value like the window width and icon spacing, so it
 -- keeps its proportion at any UI scale; only snapped onto the pixel grid.
@@ -233,6 +219,63 @@ local _pendingTargets = {}  -- castGUID -> target name (from UNIT_SPELLCAST_SENT
 local _activeChannelSpell = nil  -- spellID of currently channeling spell (suppress tick SUCCEEDEDs)
 local _knownOverrides = {}  -- spellID -> true for override spells that pass IsSpellKnownOrOverridesKnown
 
+-- Healthstones and potions cast spells outside the spellbook, so the known-spell
+-- filter lets exactly their cast ids through: the ids the shared consumables
+-- catalogue lists (EllesmereUI.CONSUMABLES) plus each of its items' use spell.
+-- Each id maps to the item whose icon its entry shows (a use spell's own icon
+-- is often a generic one). An item the client has not cached yet adds its
+-- spell once its data arrives, through a listener held only while one is
+-- pending. Built when tracking first turns on.
+local _consumableSpells = {}
+local BuildConsumableSpells
+do
+    local built, pending, loader = false, {}, nil
+    local function AddUseSpell(itemID)
+        local _, sid = C_Item.GetItemSpell(itemID)
+        if sid and not _consumableSpells[sid] then _consumableSpells[sid] = itemID end
+    end
+    local function AddItem(itemID)
+        if C_Item.IsItemDataCachedByID(itemID) then AddUseSpell(itemID) else pending[itemID] = true end
+    end
+    BuildConsumableSpells = function()
+        if built then return end
+        built = true
+        -- WoW Forever offers only the Healthstone family, with that client's stones.
+        local fv = EUI.IS_FOREVER == true
+        for key, fam in pairs(EUI.CONSUMABLES) do
+            if not fv or key == "healthstone" then
+                local ids = fam.spellIDs
+                if ids then for i = 1, #ids do _consumableSpells[ids[i]] = fam.itemID end end
+                AddItem(fam.itemID)
+                local alts = fv and EUI.FOREVER_HEALTHSTONES or fam.altItemIDs
+                if alts then for i = 1, #alts do AddItem(alts[i]) end end
+            end
+        end
+        if not next(pending) then return end
+        loader = CreateFrame("Frame")
+        loader:SetScript("OnEvent", function(self, _, itemID, success)
+            if not pending[itemID] then return end
+            pending[itemID] = nil
+            if success then AddUseSpell(itemID) end
+            if not next(pending) then self:UnregisterAllEvents() end
+        end)
+        loader:RegisterEvent("ITEM_DATA_LOAD_RESULT")
+        for itemID in pairs(pending) do C_Item.RequestLoadItemDataByID(itemID) end
+    end
+end
+
+-- An entry's icon: a consumable's item icon, else the spell's.
+local function EntryIcon(spellID, info)
+    local itemID = spellID and _consumableSpells[spellID]
+    return itemID and C_Item.GetItemIconByID(itemID) or (info and info.iconID)
+end
+
+-- The castGUID of the consumable use the player last sent (UNIT_SPELLCAST_SENT).
+-- One use can report a second cast, an effect it triggers, which is never
+-- sent: a consumable cast not sent right after a consumable entry is that
+-- same use, so it adds no entry.
+local _sentConsumable = nil
+
 local function FinishPending(castGUID, status)
     _pendingTargets[castGUID] = nil
     local entry = _pendingCasts[castGUID]
@@ -270,9 +313,12 @@ local function OnSpellEvent(_, event, unit, ...)
 
     -- UNIT_SPELLCAST_SENT has unique args: unit, target, castGUID, spellID
     if event == "UNIT_SPELLCAST_SENT" then
-        local target, castGUID2 = ...
+        local target, castGUID2, sentSpellID = ...
         if castGUID2 and target then
             _pendingTargets[castGUID2] = target
+        end
+        if castGUID2 and sentSpellID and _consumableSpells[sentSpellID] then
+            _sentConsumable = castGUID2
         end
         return
     end
@@ -288,7 +334,7 @@ local function OnSpellEvent(_, event, unit, ...)
         local entry = {
             spellID      = spellID,
             spellName    = name,
-            icon         = info and info.iconID,
+            icon         = EntryIcon(spellID, info),
             target       = castGUID and _pendingTargets[castGUID],
             startTime    = (startMS or 0) / 1000,
             endTime      = (endMS or 0) / 1000,
@@ -296,6 +342,7 @@ local function OnSpellEvent(_, event, unit, ...)
             status       = "casting",
             isInstant    = false,
             isChannel    = false,
+            consumable   = _consumableSpells[spellID] and true or nil,
             timestamp    = GetTime(),
         }
         if castGUID then _pendingCasts[castGUID] = entry end
@@ -311,7 +358,7 @@ local function OnSpellEvent(_, event, unit, ...)
         local entry = {
             spellID      = sid,
             spellName    = name,
-            icon         = info and info.iconID,
+            icon         = EntryIcon(sid, info),
             target       = castGUID and _pendingTargets[castGUID],
             startTime    = (startMS or 0) / 1000,
             endTime      = (endMS or 0) / 1000,
@@ -319,6 +366,7 @@ local function OnSpellEvent(_, event, unit, ...)
             status       = "channeling",
             isInstant    = false,
             isChannel    = true,
+            consumable   = sid and _consumableSpells[sid] and true or nil,
             timestamp    = GetTime(),
         }
         _activeChannelSpell = sid
@@ -336,13 +384,22 @@ local function OnSpellEvent(_, event, unit, ...)
             -- IsPlayerSpell catches most, but override/transform spells (e.g.
             -- Lightsmith armaments) fail it. Fall back to IsSpellKnownOrOverridesKnown
             -- and cache the result (that API is flaky on repeated calls).
+            -- Healthstones and potions pass through the consumables set.
+            local consumable = _consumableSpells[spellID] and true or nil
             if not IsPlayerSpell(spellID) then
                 if not _knownOverrides[spellID] then
                     if IsSpellKnownOrOverridesKnown and IsSpellKnownOrOverridesKnown(spellID) then
                         _knownOverrides[spellID] = true
-                    else
+                    elseif not consumable then
                         return
                     end
+                end
+            end
+            if consumable then
+                if castGUID and castGUID == _sentConsumable then
+                    _sentConsumable = nil
+                elseif _history[1] and _history[1].consumable then
+                    return
                 end
             end
             spellID = ResolveOverride(spellID)
@@ -379,7 +436,7 @@ local function OnSpellEvent(_, event, unit, ...)
                 PushEntry({
                     spellID      = spellID,
                     spellName    = info.name or "?",
-                    icon         = info.iconID,
+                    icon         = EntryIcon(spellID, info),
                     target       = castGUID and _pendingTargets[castGUID],
                     startTime    = GetTime(),
                     endTime      = GetTime(),
@@ -387,6 +444,7 @@ local function OnSpellEvent(_, event, unit, ...)
                     status       = "success",
                     isInstant    = true,
                     isChannel    = false,
+                    consumable   = consumable,
                     timestamp    = GetTime(),
                 })
             end
@@ -427,6 +485,7 @@ end
 
 local function RegisterEvents()
     if _eventsActive then return end
+    BuildConsumableSpells()
     eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player")  -- player only (was global, fired for all units)
     eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
     eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
@@ -454,12 +513,12 @@ local function ShouldHide(hideInDungeon, hideInRaid, hideInDelve, hideInPvP, hid
     -- Always visible while configuring or positioning the element.
     if ns._optionsOpen or EUI._unlockActive then return false end
     -- Show/hide all windows hotkey. Both displays rebuild themselves on every cast, so
-    -- the check belongs here rather than in a one-off hide from the main file.
+    -- the check belongs here rather than in a one-off hide from ns.ApplyDMToggleState.
     if ns._toggleHidden and ns.EDM.DB().toggleIncludeSpellHistory then return true end
     local _, iType = IsInInstance()
     if hideInDungeon and iType == "party" then return true end
     if hideInRaid and iType == "raid" then return true end
-    if hideInDelve and C_PartyInfo and C_PartyInfo.IsDelveInProgress and C_PartyInfo.IsDelveInProgress() then return true end
+    if hideInDelve and EUI.IsInDelve() then return true end
     if hideInPvP and (iType == "pvp" or iType == "arena") then return true end
     if hideOutOfInstance and (iType == "none" or iType == nil) then return true end
     return false
@@ -787,20 +846,30 @@ BuildIconStrip = function()
         _iconStrip:EnableMouse(false)
         _iconStrip:SetScript("OnMouseDown", function(_, btn) StartIconDrag(btn) end)
         _iconStrip:SetScript("OnMouseUp", StopIconDrag)
-        -- Click-through unless shift is held (strip + all icon children)
+        -- Click-through unless shift is held (strip + all icon children).
+        -- The Shift watch is registered only while the strip is visible; each
+        -- show re-reads Shift so a press or release made while hidden is not missed.
         local modFrame = CreateFrame("Frame")
-        modFrame:RegisterEvent("MODIFIER_STATE_CHANGED")
-        modFrame:SetScript("OnEvent", function(_, _, key, down)
-            if key == "LSHIFT" or key == "RSHIFT" then
-                local on = (down == 1)
-                -- Don't disable mouse mid-drag; let OnMouseUp end it naturally
-                if not on and _iconContainer._dragging then return end
-                _iconStrip:EnableMouse(on)
-                for _, ic in ipairs(_iconPool) do
-                    ic.frame:EnableMouse(on)
-                end
+        local function SetShiftMouse(on)
+            -- Don't disable mouse mid-drag; let OnMouseUp end it naturally
+            if not on and _iconContainer._dragging then return end
+            _iconStrip:EnableMouse(on)
+            for _, ic in ipairs(_iconPool) do
+                ic.frame:EnableMouse(on)
             end
+        end
+        modFrame:SetScript("OnEvent", function(_, _, key, down)
+            if key == "LSHIFT" or key == "RSHIFT" then SetShiftMouse(down == 1) end
         end)
+        _iconContainer:SetScript("OnShow", function()
+            modFrame:RegisterEvent("MODIFIER_STATE_CHANGED")
+            SetShiftMouse(IsShiftKeyDown() and true or false)
+        end)
+        _iconContainer:SetScript("OnHide", function()
+            modFrame:UnregisterEvent("MODIFIER_STATE_CHANGED")
+        end)
+        -- Starts hidden so the first Show below runs the OnShow registration.
+        _iconContainer:Hide()
         -- Per-icon backgrounds (created in MakeIcon) travel with each icon
         -- during animation. No strip-level background needed.
     end
@@ -1111,14 +1180,22 @@ local function BuildBarWindow()
         frame._locked = sh.barLocked or false
         frame._isHovered = false
         _barWin = frame
+        -- A cast already underway animates the moment the window shows
+        -- (instance rules, hotkey, options, Alt-Z). Starts hidden so the
+        -- first Show below runs it too.
+        frame:SetScript("OnShow", function()
+            if next(_pendingCasts) then StartCastAnim(true) end
+        end)
+        frame:Hide()
 
         frame._bg = frame:CreateTexture(nil, "BACKGROUND")
         frame._bg:SetAllPoints()
 
         -- Header (inside the classic box's line; flush on every other look)
         local ci = ns.DMClassicInset()
+        -- (Its fixed 22, plus the Forever header band's rail under the variant.)
         local hdr = CreateFrame("Frame", nil, frame)
-        hdr:SetHeight(22)
+        hdr:SetHeight(22 + ns.DMFvRail(22))
         hdr:SetPoint("TOPLEFT", frame, "TOPLEFT", ci, -ci); hdr:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -ci, -ci)
         hdr:SetFrameLevel(frame:GetFrameLevel() + 5)
         hdr:EnableMouse(true)
@@ -1129,7 +1206,7 @@ local function BuildBarWindow()
         frame._hdrBg = hdrBg
 
         local title = hdr:CreateFontString(nil, "OVERLAY")
-        title:SetPoint("LEFT", hdr, "LEFT", 6, 0)
+        title:SetPoint("LEFT", hdr, "LEFT", 6, ns.DMHdrLift(22))
         SetFont(title, 11)
         title:SetText("Spell History")
         frame._title = title
@@ -1147,7 +1224,7 @@ local function BuildBarWindow()
         local function MakeHdrBtn(texFile, xOff, tooltip, onClick, artKey)
             local btn = CreateFrame("Button", nil, hdr)
             btn:SetSize(btnSize, btnSize)
-            btn:SetPoint("RIGHT", hdr, "RIGHT", xOff, 0)
+            btn:SetPoint("RIGHT", hdr, "RIGHT", xOff, ns.DMHdrLift(22))
             btn:SetFrameLevel(hdr:GetFrameLevel() + 2)
             local icon = btn:CreateTexture(nil, "ARTWORK")
             icon:SetAllPoints()
@@ -1159,14 +1236,14 @@ local function BuildBarWindow()
             end
             btn:SetScript("OnEnter", function()
                 if not ns.DMHdrHover(icon, true) then icon:SetVertexColor(1, 1, 1, ICON_HA) end
-                if EUI.ShowWidgetTooltip then EUI.ShowWidgetTooltip(btn, tooltip) end
+                EUI.ShowWidgetTooltip(btn, tooltip)
             end)
             btn:SetScript("OnLeave", function()
                 if not ns.DMHdrHover(icon, false) then icon:SetVertexColor(1, 1, 1, ICON_A) end
-                if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+                EUI.HideWidgetTooltip()
             end)
             btn:SetScript("OnClick", function()
-                if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+                EUI.HideWidgetTooltip()
                 onClick(btn)
             end)
             btn._icon = icon
@@ -1175,14 +1252,15 @@ local function BuildBarWindow()
 
         -- Btn 1 (rightmost): Settings
         MakeHdrBtn(MEDIA .. "dm_settings.png", -(btnPad + 2), "Settings", function()
-            if ns._optionsOpen then
-                if EUI.Hide then EUI:Hide() end
+            -- Folded to the mini window: fall through to ShowModule, which unfolds it.
+            if ns._optionsOpen and not EUI._panelCollapsed then
+                EUI:Hide()
                 return
             end
             if EUI.ShowModule then
                 EUI:ShowModule("EllesmereUIDamageMeters")
                 C_Timer.After(0, function()
-                    if EUI.SelectPage then EUI:SelectPage("Spell History") end
+                    EUI:SelectPage("Spell History")
                 end)
             end
         end, "settings")
@@ -1204,13 +1282,11 @@ local function BuildBarWindow()
         frame._lockBtn = lockBtnHdr
         lockBtnHdr:SetScript("OnEnter", function()
             if not ns.DMHdrHover(lockBtnHdr._icon, true) then lockBtnHdr._icon:SetVertexColor(1, 1, 1, ICON_HA) end
-            if EUI.ShowWidgetTooltip then
-                EUI.ShowWidgetTooltip(lockBtnHdr, frame._locked and "Locked" or "Unlocked")
-            end
+            EUI.ShowWidgetTooltip(lockBtnHdr, frame._locked and "Locked" or "Unlocked")
         end)
 
         -- Btn 3: Resize (width drag)
-        local resizeBtnHdr = MakeHdrBtn(MEDIA .. "dm_width_resize.png", -(btnSize * 2 + btnPad * 3 + 2), "Resize Width", function() end)
+        local resizeBtnHdr = MakeHdrBtn(MEDIA .. "dm_width_resize.png", -(btnSize * 2 + btnPad * 3 + 2), "Resize Width", function() end, "resize")
         -- Override: drag to resize width
         local resizeStartX, resizeStartW
         local resizeFrame = CreateFrame("Frame")
@@ -1260,8 +1336,11 @@ local function BuildBarWindow()
 
         content:EnableMouseWheel(true)
         content:SetScript("OnMouseWheel", function(_, delta)
-            local maxS = max(0, #_history - (frame._visSlots or 1))
-            _barScroll = max(0, min(_barScroll - delta, maxS))
+            -- Rows stop at Max Bars, so the scroll range does too.
+            local maxS = max(0, min(#_history, DB().maxBars or 5) - (frame._visSlots or 1))
+            local new = max(0, min(_barScroll - delta, maxS))
+            if new == _barScroll then return end -- a notch that moves nothing redraws nothing
+            _barScroll = new
             RefreshBarWindow()
         end)
 
@@ -1276,7 +1355,7 @@ local function BuildBarWindow()
     ns.DMPaintHeaderBg(_barWin._hdrBg, hR, hG, hB, dmCfg.hdrBgAlpha or 1, sh.bgR or 0, sh.bgG or 0, sh.bgB or 0)
 
     local tR, tG, tB
-    if dmCfg.hdrTextUseAccent ~= false then tR, tG, tB = GetAccentRGB()
+    if dmCfg.hdrTextUseAccent ~= false then tR, tG, tB = ns.DMTitleRGB()
     else local tc = dmCfg.hdrTextColor; tR = tc and tc.r or 1; tG = tc and tc.g or 1; tB = tc and tc.b or 1 end
     _barWin._title:SetTextColor(tR, tG, tB, 1)
 
@@ -1294,7 +1373,7 @@ local function BuildBarWindow()
 
     -- Size: width from DB, height auto-calculated from maxBars (plus the
     -- classic box's inset above and below)
-    local hdrH = hideTop and 0 or 22
+    local hdrH = hideTop and 0 or (22 + ns.DMFvRail(22))
     local maxBars = sh.maxBars or 5
     local _, _, stride = ns._RowMetrics(sh.shBarHeight or 18, dmCfg.barSpacing or 2, _barWin:GetEffectiveScale())
     local autoH = hdrH + maxBars * stride + ci * 2
@@ -1337,7 +1416,7 @@ RefreshBarWindow = function()
     else local tc = sh.textColor; txR = tc and tc.r or 1; txG = tc and tc.g or 1; txB = tc and tc.b or 1 end
 
     -- Re-apply fonts to ALL pool bars when settings change (not just visible ones)
-    local fontKey = fontSize .. "|" .. GetDMFont() .. "|" .. GetDMOutline()
+    local fontKey = fontSize .. "|" .. EUI.GetFontPath("damageMeters") .. "|" .. EUI.GetFontOutlineFlag("damageMeters")
     local fontChanged = (fontKey ~= _barFontCache)
     if fontChanged then
         _barFontCache = fontKey
@@ -1353,6 +1432,9 @@ RefreshBarWindow = function()
     local stR, stG, stB = CLR_STOPPED[1], CLR_STOPPED[2], CLR_STOPPED[3]
 
     local total = min(#_history, sh.maxBars or 5)
+    -- The draw loop owns the scroll range: an offset left from an older window
+    -- height (Spacing changed with the options open) comes back into it here.
+    if _barScroll > max(0, total - visSlots) then _barScroll = max(0, total - visSlots) end
     local loopEnd = max(visSlots, _lastBarVisible)
     local barIconZoom = sh.iconZoom or 0.08
 
@@ -1453,8 +1535,9 @@ end
 
 -------------------------------------------------------------------------------
 --  Active-cast fill animation
---  Only runs while there are pending (in-progress) casts to animate.
---  Stops itself when all casts resolve.  Zero cost when idle.
+--  Only runs while there are pending (in-progress) casts to animate and the
+--  bar window is visible.  Stops itself when all casts resolve or the window
+--  hides; the window's OnShow restarts it.  Zero cost when idle or hidden.
 -------------------------------------------------------------------------------
 -- Lightweight per-frame updater: only touches fill values + right text on
 -- bars with active casts.  Full RefreshBarWindow runs on PushEntry/Finish.
@@ -1462,7 +1545,7 @@ local _castAnimFrame = CreateFrame("Frame")
 _castAnimFrame:Hide()
 _castAnimFrame:SetScript("OnUpdate", function(self)
     if not next(_pendingCasts) then self:Hide(); return end
-    if not _barWin or not _barWin:IsShown() then return end
+    if not _barWin or not _barWin:IsVisible() then self:Hide(); return end
     local now = GetTime()
     local visSlots = _barWin._visSlots or 5
     local scroll = _barScroll or 0
@@ -1487,7 +1570,10 @@ _castAnimFrame:SetScript("OnUpdate", function(self)
     end
 end)
 
-StartCastAnim = function() _castAnimFrame:Show() end
+-- onShow: called from the bar window's OnShow, which already means it is visible.
+StartCastAnim = function(onShow)
+    if onShow or (_barWin and _barWin:IsVisible()) then _castAnimFrame:Show() end
+end
 local function StopCastAnim()  _castAnimFrame:Hide() end
 
 -------------------------------------------------------------------------------
@@ -1522,14 +1608,6 @@ end
 function ns.RefreshSpellHistoryProfile()
     _shDB = nil
     _iconLayoutKey = ""
-    ns.ApplySpellHistory()
-end
-
-function ns.ClearSpellHistory()
-    wipe(_history)
-    wipe(_pendingCasts)
-    wipe(_pendingTargets)
-    _activeChannelSpell = nil
     ns.ApplySpellHistory()
 end
 

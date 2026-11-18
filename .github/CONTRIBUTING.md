@@ -1,8 +1,16 @@
 # Contributing to EllesmereUI
 
-**FEATURE REQUESTS ARE TEMPORARILY HALTED.**
-**ONLY BUG FIXES WILL BE ACCEPTED UNTIL**
-**A FEW WEEKS AFTER 12.1 LAUNCH**
+Bug reports and feature requests now live on the website, and contributors
+pick them up there: the [Bug Tracker](https://ellesmereui.com/bugs) and
+[Feature Requests](https://ellesmereui.com/features). Claim what you work on
+so nobody doubles up, link your pull request, and the site follows it to the
+release with your name on it. A feature request gets a review before you
+build, because not every feature fits EllesmereUI. The
+[Contributor Guide](https://ellesmereui.com/spotlight-contributing) shows how
+it all works, step by step.
+
+To become a contributor, sign in on the website with Discord, then DM me on
+Discord (`@ellesmere`) to request contributor access.
 
 Thanks for wanting to contribute! Pull requests are welcome. This document
 explains how PRs are reviewed and the hard rules the codebase lives by, so
@@ -24,8 +32,12 @@ will make changes to it myself.
 
 1. **Zero cost unless enabled.** If your change adds a setting, users who
    never turn it on must pay nothing: no event registrations, no hooks doing
-   work, no frames created, no OnUpdate. Build lazily on first enable and
-   register events only while the feature is active.
+   work, no OnUpdate, no tickers. An event frame or a combat queue
+   (`EllesmereUI.NewCombatQueue`) may be created inert at load, in your
+   file's main chunk so the profiler bills it to your addon: no events
+   registered on it and no work done while the feature is off. Build
+   everything else lazily on first enable, and register events only while
+   the feature is active.
 
 2. **Zero behavior change without opt-in.** New settings default **OFF**. A
    feature that appears for everyone after an update is a violation, even if
@@ -63,8 +75,8 @@ will make changes to it myself.
   `EllesmereUI:ShowConfirmPopup`, never `StaticPopup_Show`.
 - Options pages use two-slot rows (`W:DualRow`). Fill slots left to right
   with no gaps; never pass `nil` as the right slot (use
-  `{ type = "label", text = "" }`); only the last row of a section may have
-  an empty slot.
+  `EllesmereUI.BlankRowCfg()`, a fresh blank label on every call); only the
+  last row of a section may have an empty slot.
 
 ## PR etiquette
 
@@ -72,6 +84,30 @@ will make changes to it myself.
 - Screenshots (before/after) for anything visual.
 - Fill in the PR template checklist honestly - "not applicable" is a fine
   answer, silence is not.
+- Leave test files and tooling scripts out of your PR. Of `.tools` only what
+  CI runs is tracked (`guardrails.py` with its own test, and
+  `extract-locale-keys.sh`): everything else there is the maintainer's local
+  tooling. Say how you tested in the PR description instead.
+
+## AI coding rules
+
+Using an AI coding assistant is fine, but these rules apply to you, to your
+AI tools, and to every line of code they write for you:
+
+- **Never study or look at another addon's code unless it has an open source
+  license or its author has given permission**. That includes letting an AI tool
+  read, search, summarize, or learn from it.
+- **Research the game through Blizzard's own UI source**
+  ([wow-ui-source](https://github.com/Gethe/wow-ui-source)) **and look up game
+  data on [wago.tools](https://wago.tools).**
+- **Only submit original code.** Nothing in a PR may be copied from another
+  addon or project, including code an AI tool reproduces from somewhere
+  else. Check what your assistant generates before you submit it.
+- **Keep comments brief.** Only what is needed to understand the code: no
+  restating what a line does, no change history.
+- **Reuse what already exists.** Build on the existing logic and the shared,
+  centralized helpers instead of writing your own copies, and follow the
+  patterns already in the file.
 
 ## Contribution license
 

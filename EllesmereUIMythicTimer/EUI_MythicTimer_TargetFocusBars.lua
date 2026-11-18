@@ -29,17 +29,11 @@ end
 
 --------------------------------------------------------------------------------
 --  Fonts (module surface "mythicTimer": family/outline/shadow are global,
---  only sizes are per-bar settings).
+--  only sizes are per-bar settings). A bar's target text names a player, so
+--  the bar texts take a font family (Cyrillic, Korean and Chinese names
+--  draw); no plain SetFont may reach them after it.
 --------------------------------------------------------------------------------
-local FONT_FALLBACK = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
-local function SetFSFont(fs, size)
-    if not (fs and fs.SetFont) then return end
-    local path = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("mythicTimer")) or FONT_FALLBACK
-    local outline = (EllesmereUI.GetFontOutlineFlag and EllesmereUI.GetFontOutlineFlag("mythicTimer")) or ""
-    local useShadow = EllesmereUI.GetFontUseShadow and EllesmereUI.GetFontUseShadow("mythicTimer")
-    if EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, useShadow) end
-    fs:SetFont(path, size, outline)
-end
+local function SetFSFont(fs, size) EllesmereUI.ApplyModuleFontFamily(fs, nil, size, "mythicTimer") end
 
 --------------------------------------------------------------------------------
 --  State: two bar objects, built lazily. `bars.target` / `bars.focus`.
@@ -79,10 +73,14 @@ end
 --  Bar construction (lazy, once per unit). Structure mirrors the nameplate
 --  cast bar: fill + uninterruptible overlay + shield + spark + kick clip
 --  (positioner/marker/tick/ready-fill) + three text zones + icon.
+--
+--  The chrome (everything StyleBar and the static sample paint touch) is its
+--  own builder so the options header sample can be built on its column host
+--  without the kick machinery, the timer ticker or a slot in `bars`.
 --------------------------------------------------------------------------------
-local function BuildBar(which)
+local function BuildBarChrome(which, parent)
     local unit = which -- "target" / "focus" ARE the unit tokens
-    local holder = CreateFrame("Frame", nil, UIParent)
+    local holder = CreateFrame("Frame", nil, parent)
     holder:Hide()
 
     local bar = { which = which, unit = unit, frame = holder }
@@ -136,6 +134,34 @@ local function BuildBar(which)
     bar.shield:SetAllPoints()
     bar.shield:SetAtlas("nameplates-InterruptShield")
 
+    bar.textFrame = CreateFrame("Frame", nil, bar.sb)
+    bar.textFrame:SetAllPoints(bar.sb)
+    bar.textFrame:SetFrameLevel(bar.sb:GetFrameLevel() + 6)
+    -- Fonts applied at BUILD as well as in StyleBar: a bar can be built on a
+    -- disabled path (unlock getFrame, enable round-trip) and its teardown
+    -- SetText("") errors on a fontless FontString.
+    bar.name = bar.textFrame:CreateFontString(nil, "OVERLAY")
+    bar.name:SetJustifyH("LEFT")
+    bar.name:SetWordWrap(false)
+    bar.name:SetMaxLines(1)
+    SetFSFont(bar.name, 11)
+    bar.target = bar.textFrame:CreateFontString(nil, "OVERLAY")
+    bar.target:SetJustifyH("RIGHT")
+    bar.target:SetWordWrap(false)
+    bar.target:SetMaxLines(1)
+    SetFSFont(bar.target, 10)
+    bar.timer = bar.textFrame:CreateFontString(nil, "OVERLAY")
+    bar.timer:SetJustifyH("RIGHT")
+    bar.timer:SetWordWrap(false)
+    bar.timer:SetMaxLines(1)
+    SetFSFont(bar.timer, 11)
+
+    return bar
+end
+
+local function BuildBar(which)
+    local bar = BuildBarChrome(which, UIParent)
+
     -- Kick tick machinery, clipped so the tick never renders outside the bar
     -- when the kick CD exceeds the remaining cast.
     bar.kickClip = CreateFrame("Frame", nil, bar.sb)
@@ -177,28 +203,6 @@ local function BuildBar(which)
     bar.kickReadyFill:SetAlpha(0)
     bar.kickReadyFill:Hide()
 
-    bar.textFrame = CreateFrame("Frame", nil, bar.sb)
-    bar.textFrame:SetAllPoints(bar.sb)
-    bar.textFrame:SetFrameLevel(bar.sb:GetFrameLevel() + 6)
-    -- Fonts applied at BUILD as well as in StyleBar: a bar can be built on a
-    -- disabled path (unlock getFrame, enable round-trip) and its teardown
-    -- SetText("") errors on a fontless FontString.
-    bar.name = bar.textFrame:CreateFontString(nil, "OVERLAY")
-    bar.name:SetJustifyH("LEFT")
-    bar.name:SetWordWrap(false)
-    bar.name:SetMaxLines(1)
-    SetFSFont(bar.name, 11)
-    bar.target = bar.textFrame:CreateFontString(nil, "OVERLAY")
-    bar.target:SetJustifyH("RIGHT")
-    bar.target:SetWordWrap(false)
-    bar.target:SetMaxLines(1)
-    SetFSFont(bar.target, 10)
-    bar.timer = bar.textFrame:CreateFontString(nil, "OVERLAY")
-    bar.timer:SetJustifyH("RIGHT")
-    bar.timer:SetWordWrap(false)
-    bar.timer:SetMaxLines(1)
-    SetFSFont(bar.timer, 11)
-
     -- 10Hz cast timer text (engine-slept between fires; self-stops when the
     -- cast ends). Remaining time from the duration object only. bar.durKind
     -- (set by ArmFill, which already knows which getter applies) picks the
@@ -232,7 +236,7 @@ local function BuildBar(which)
         return true
     end
     if EllesmereUI.Tick and EllesmereUI.Tick.NewAnimTicker then
-        bar._timerTicker = EllesmereUI.Tick.NewAnimTicker(holder, bar._timerTick, 0.1)
+        bar._timerTicker = EllesmereUI.Tick.NewAnimTicker(bar.frame, bar._timerTick, 0.1)
     end
 
     bars[which] = bar
@@ -255,8 +259,7 @@ local function StyleBar(bar)
     bar.iconFrame:SetWidth(showIcon and h or 0.001)
     bar.iconFrame:SetShown(showIcon)
 
-    local texPath = EllesmereUI.ResolveTexturePath
-        and EllesmereUI.ResolveTexturePath(ns.barTextures, cfg.texture or "none", "Interface\\Buttons\\WHITE8x8")
+    local texPath = EllesmereUI.ResolveTexturePath(ns.barTextures, cfg.texture or "none", "Interface\\Buttons\\WHITE8x8")
         or "Interface\\Buttons\\WHITE8x8"
     bar.sb:SetStatusBarTexture(texPath)
     local pp = EllesmereUI.PP
@@ -577,10 +580,18 @@ local function SizeNameForTarget(bar, hasTarget)
     bar.name:SetWidth(hasTarget and shared or math.max(shared, (w - h) - 8 - reserve))
 end
 
+-- Per-bar toggle; a bar that never set it inherits the former shared one.
+local function ShowsTarget(tf, which)
+    local cfg = BarCfg(which)
+    local v = cfg and cfg.showTarget
+    if v == nil then v = tf.showTarget end
+    return v ~= false
+end
+
 local function PaintTarget(bar)
     local tf = TF()
     local fs = bar.target
-    if not tf or tf.showTarget == false then
+    if not tf or not ShowsTarget(tf, bar.which) then
         fs:SetText("")
         fs:Hide()
         SizeNameForTarget(bar, false)
@@ -783,7 +794,7 @@ local function ShowInterruptedFlash(bar, interrupterGUID)
     if not ((issecretvalue and issecretvalue(protected)) or not protected) then return end
     bar._interrupted = true
     bar.flash:Show()
-    bar.name:SetText(EllesmereUI.L and EllesmereUI.L("Interrupted") or "Interrupted")
+    bar.name:SetText(EllesmereUI.L("Interrupted") or "Interrupted")
     bar.target:SetText("")
     bar.target:Hide()
     bar.timer:SetText("")
@@ -848,13 +859,28 @@ evt:SetScript("OnEvent", function(_, event, unit, ...)
         bar._kickGeoDirty = true
         UpdateCast(bar)
     elseif event == "UNIT_SPELLCAST_STOP"
-        or event == "UNIT_SPELLCAST_FAILED"
-        or event == "UNIT_SPELLCAST_EMPOWER_STOP" then
+        or event == "UNIT_SPELLCAST_FAILED" then
         UpdateCast(bar)
+    elseif event == "UNIT_SPELLCAST_EMPOWER_STOP" then
+        -- An interrupted empower carries the interrupter GUID as the 4th arg
+        -- after unit (castGUID, spellID, complete, interrupterGUID).
+        local _, _, _, interrupterGUID = ...
+        if type(interrupterGUID) ~= "nil" then
+            TeardownCast(bar)
+            if not bar._interrupted then ShowInterruptedFlash(bar, interrupterGUID) end
+        else
+            UpdateCast(bar)
+        end
     elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
         -- Direct teardown: in restricted execution UnitCastingInfo can return
         -- secret values (not nil) for a stale channel (nameplate lesson).
+        -- An interrupted channel carries the interrupter GUID as the 3rd arg
+        -- after unit (castGUID, spellID, interrupterGUID); nil on a natural end.
         TeardownCast(bar)
+        local _, _, interrupterGUID = ...
+        if type(interrupterGUID) ~= "nil" and not bar._interrupted then
+            ShowInterruptedFlash(bar, interrupterGUID)
+        end
     elseif event == "UNIT_SPELLCAST_INTERRUPTED" then
         local _, _, interrupterGUID = ...
         ShowInterruptedFlash(bar, interrupterGUID)
@@ -894,23 +920,25 @@ local function Deactivate()
 end
 
 --------------------------------------------------------------------------------
---  Preview: static sample cast (options eyeball / unlock placement). Plain
---  SetValue on a bar with no armed timer -- nothing reads units.
+--  Preview: static sample cast (unlock placement and the options header
+--  sample). Plain SetValue on a bar with no armed timer -- nothing reads
+--  units.
 --------------------------------------------------------------------------------
-local function ShowPreview(which)
-    local bar = bars[which] or BuildBar(which)
-    StyleBar(bar)
-    local tf = TF()
+-- The static content alone: icon, texts, colour, fill. Shared by the on-screen
+-- preview (the live bar) and the options header sample (a chrome-only bar).
+local function PaintSampleCast(bar, which, tf)
     bar.icon:SetTexture(134400)
     bar.name:SetText(which == "target" and "Crushing Blow" or "Dark Mending")
     local tc = tf and tf.targetColor
     if tf and tf.targetClassColor ~= false and C_ClassColor and UnitClassBase then
-        local col = C_ClassColor.GetClassColor(UnitClassBase("player"))
+        -- Class token only: UnitClassBase also returns the class ID, which would
+        -- land in GetClassColor's optional tint color argument and be rejected.
+        local col = C_ClassColor.GetClassColor((UnitClassBase("player")))
         if col then bar.target:SetTextColor(col:GetRGB()) end
     elseif tc then
         bar.target:SetTextColor(tc.r, tc.g, tc.b, 1)
     end
-    if tf and tf.showTarget ~= false then
+    if tf and ShowsTarget(tf, which) then
         bar.target:SetText(UnitName("player") or "Target")
         bar.target:Show()
     else
@@ -923,8 +951,42 @@ local function ShowPreview(which)
     bar.overlay:SetAlpha(0)
     bar.flash:Hide()
     bar.sb:SetValue(0.62)
+end
+
+local function ShowPreview(which)
+    local bar = bars[which] or BuildBar(which)
+    StyleBar(bar)
+    PaintSampleCast(bar, which, TF())
     ApplyBarPosition(bar)
     bar.frame:Show()
+end
+
+--------------------------------------------------------------------------------
+--  Options header sample: one chrome-only bar per unit, built ONCE on the
+--  header's column host and painted static on every call (no kick machinery,
+--  no ticker, no events; a plain SetValue fill). Never a slot in `bars`, so
+--  the cast lifecycle and the refresh pass never see it.
+--------------------------------------------------------------------------------
+local sampleBars = {}
+
+-- Hangs the sample at the host's TOPLEFT and returns its size (width, height
+-- in the host's units); nil before the settings exist.
+function ns.TFB_PaintSample(host, which)
+    local cfg = BarCfg(which)
+    local tf = TF()
+    if not (cfg and tf) then return nil end
+    local bar = sampleBars[which]
+    if not bar then
+        bar = BuildBarChrome(which, host)
+        sampleBars[which] = bar
+    end
+    bar.frame:SetParent(host)
+    bar.frame:ClearAllPoints()
+    bar.frame:SetPoint("TOPLEFT", host, "TOPLEFT", 0, 0)
+    StyleBar(bar)
+    PaintSampleCast(bar, which, tf)
+    bar.frame:Show()
+    return cfg.width or 260, cfg.height or 22
 end
 
 function ns.TFB_SetPreview(which, on)
@@ -1024,17 +1086,13 @@ local function MakeBarUnlockElement(which, label, order)
             cfg.height = math.floor(h + 0.5)
             ns.TFB_Refresh()
         end,
-        savePos = function()
+        savePos = function(_, _, _, x, y)
+            -- Unlock mode hands over CENTER/CENTER coords; on Cancel the frame
+            -- still sits at the dragged spot, so never read the live position.
             local cfg = BarCfg(which)
-            local bar = bars[which]
-            if not (cfg and bar and bar.frame:GetCenter()) then return end
-            local cx, cy = bar.frame:GetCenter()
-            local upX, upY = UIParent:GetCenter()
-            local fes = bar.frame:GetEffectiveScale() or 1
-            local ues = UIParent:GetEffectiveScale() or 1
-            local ratio = fes / ues
-            cfg.pos = { centerX = cx * ratio - upX, centerY = cy * ratio - upY }
-            if not EllesmereUI._unlockActive then ApplyBarPosition(bar) end
+            if not (cfg and x and y) then return end
+            cfg.pos = { centerX = x, centerY = y }
+            if not EllesmereUI._unlockActive then ApplyBarPosition(bars[which]) end
         end,
         loadPos = function()
             local cfg = BarCfg(which)

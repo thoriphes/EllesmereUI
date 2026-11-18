@@ -7,6 +7,11 @@ if EllesmereUI and EllesmereUI.IS_FOREVER then return end -- no item upgrade sys
 
 if not EllesmereUI._ModuleNS["EllesmereUIQoL"] then return end  -- module disabled: no options page
 
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local function GetAddonDB()
     -- Always delegate to the main module so we read from the same profile
     -- slice that persists via EllesmereUIDB (not the wiped EllesmereUIQoLDB).
@@ -76,7 +81,7 @@ local function BuildUpgradeCalcPage(pageName, parent, yOffset)
 
     -- Reposition hint
     do
-        local fontPath = (EllesmereUI.GetFontPath and EllesmereUI.GetFontPath()) or "Fonts\\FRIZQT__.TTF"
+        local fontPath = (EllesmereUI.GetFontPath()) or "Fonts\\FRIZQT__.TTF"
         local infoFrame = CreateFrame("Frame", nil, parent)
         infoFrame:SetSize(parent:GetWidth(), 20)
         infoFrame:SetPoint("TOP", parent, "TOP", 0, y - 10)
@@ -208,8 +213,8 @@ local function BuildUpgradeCalcPage(pageName, parent, yOffset)
     ); y = y - h
 
     -- Row 5: Show Calc Button on Character Sheet | Open with Crest Upgrader.
-    -- The button is a tab on the EllesmereUI character sheet: gated while a
-    -- stock character sheet style (Style page) keeps Blizzard's tab row.
+    -- The button is a tab on the EllesmereUI character sheet: gated while the
+    -- sheet's Blizz Default (Window Skins card) keeps Blizzard's tab row.
     local calcBtnCfg = { type = "toggle", text = "Show Calc Button on Character Sheet",
           tooltip = "Adds a Calc toggle button to the character sheet that opens and closes the Upgrade Calculator.",
           getValue = function() return GetAddonDB().showCalcButton or false end,
@@ -219,13 +224,30 @@ local function BuildUpgradeCalcPage(pageName, parent, yOffset)
                   EllesmereUI.ApplyCharSheetCalcTab()
               end
           end }
-    if EllesmereUI.BlizzStyle then EllesmereUI.BlizzStyle.Gate("charsheet", calcBtnCfg) end
+    local skinNS = EllesmereUI._ModuleNS and EllesmereUI._ModuleNS.EllesmereUIBlizzardSkin
+    if skinNS and skinNS.CharSheetStock() then
+        calcBtnCfg.disabled        = function() return true end
+        calcBtnCfg.disabledTooltip = "Character Sheet: Blizz Default"
+        calcBtnCfg.requireState    = "disabled"
+    end
     _, h = W:DualRow(parent, y,
         calcBtnCfg,
         { type = "toggle", text = "Open with Crest Upgrader",
           tooltip = "Automatically opens the Upgrade Calculator when the Crest Upgrade NPC window is opened.",
           getValue = function() return GetAddonDB().openWithUpgrader or false end,
           setValue = function(v) GetAddonDB().openWithUpgrader = v end }
+    ); y = y - h
+
+    _, h = W:SectionHeader(parent, "TOOLTIPS", y); y = y - h
+    _, h = W:DualRow(parent, y,
+        { type = "toggle", text = "Enhanced Upgrade Tooltips",
+          tooltip = "Replaces the Upgrade Level line with a colored rank, track and potential item-level range, including Ascension for eligible weapons, trinkets and necklaces. Shows the upgrade currency beside it while upgrades remain. Unmatched tracks keep Blizzard's text.",
+          getValue = function() return EllesmereUI.QoLExtrasGet("upgradeTooltips") == true end,
+          setValue = function(v)
+              EllesmereUI.QoLExtrasSet("upgradeTooltips", v)
+              EllesmereUI._applyUpgradeTooltips()
+          end },
+        EllesmereUI.BlankRowCfg()
     ); y = y - h
 
     _, h = W:Spacer(parent, y, 20); y = y - h
@@ -243,6 +265,8 @@ _G._EUI_BuildUpgradeCalcPage = BuildUpgradeCalcPage
 
 -- Expose reset helper for QoL onReset
 _G._EUI_ResetUpgradeCalc = function()
+    EllesmereUI.QoLExtrasSet("upgradeTooltips", false)
+    EllesmereUI._applyUpgradeTooltips()
     if EUIUpgCalc and EUIUpgCalc.GetOptsDB then
         local opts = EUIUpgCalc.GetOptsDB()
         for k in pairs(opts) do opts[k] = nil end

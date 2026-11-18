@@ -3,7 +3,7 @@ if EllesmereUI and EllesmereUI.IS_FOREVER then return end -- no keystones on WoW
 -------------------------------------------------------------------------------
 --  EllesmereUIQoL_Keys.lua
 --  /keys slash command: displays party keystone levels in a styled popup.
---  Uses LibKeystone (BigWigs/DBM) for keystone data exchange.
+--  Uses LibKeystone for keystone data exchange.
 -------------------------------------------------------------------------------
 local LibKeystone = LibStub and LibStub("LibKeystone", true)
 
@@ -168,7 +168,8 @@ end
 
 local function QueryPartyKeys()
     if not LibKeystone then return end
-    if IsInGroup() then LibKeystone.Request("PARTY") end
+    -- A party of your own: PARTY from a Dungeon Finder group alone only brings back "You aren't in a party."
+    if IsInGroup(LE_PARTY_CATEGORY_HOME) then LibKeystone.Request("PARTY") end
     LibKeystone.Request("GUILD")
 end
 
@@ -191,18 +192,24 @@ local popup, rowFrames
 local ShowKeystonePopup  -- forward declaration
 
 local function ResolveFont()
-    return (EUI and EUI.GetFontPath and EUI.GetFontPath("extras")) or "Fonts\\FRIZQT__.TTF"
+    return (EUI.GetFontPath("extras")) or "Fonts\\FRIZQT__.TTF"
 end
 
 local function ResolveOutline()
-    return (EUI and EUI.GetFontOutlineFlag and EUI.GetFontOutlineFlag("extras")) or ""
+    return (EUI.GetFontOutlineFlag("extras")) or ""
 end
 
-local function MakeLabel(parent, size, _, r, g, b, a)
+-- family: a text that shows a player's name takes the font as a font family,
+-- which draws the scripts the font lacks
+local function MakeLabel(parent, size, _, r, g, b, a, family)
     local fs = parent:CreateFontString(nil, "OVERLAY")
     local flags = ResolveOutline()
-    if EllesmereUI and EllesmereUI.PrimeFontShadow then EllesmereUI.PrimeFontShadow(fs, flags == "") end
-    fs:SetFont(ResolveFont(), size, flags)
+    if family then
+        EllesmereUI.SetFontFamily(fs, ResolveFont(), size, flags, flags == "")
+    else
+        EllesmereUI.PrimeFontShadow(fs, flags == "")
+        fs:SetFont(ResolveFont(), size, flags)
+    end
     if r then fs:SetTextColor(r, g or 1, b or 1, a or 1) end
     return fs
 end
@@ -267,11 +274,11 @@ local function BuildPopup()
     refTex:SetAlpha(ICON_ALPHA)
     refBtn:SetScript("OnEnter", function()
         refTex:SetAlpha(1)
-        if EUI and EUI.ShowWidgetTooltip then EUI.ShowWidgetTooltip(refBtn, "Refresh Data") end
+        EUI.ShowWidgetTooltip(refBtn, "Refresh Data")
     end)
     refBtn:SetScript("OnLeave", function()
         refTex:SetAlpha(ICON_ALPHA)
-        if EUI and EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+        EUI.HideWidgetTooltip()
     end)
     local refLocked = false
     refBtn:SetScript("OnClick", function()
@@ -328,7 +335,7 @@ local function AcquireRow(i)
         alt:SetAllPoints()
     end
 
-    r._nameFS = MakeLabel(r, 11, nil, 1, 1, 1, 0.85)
+    r._nameFS = MakeLabel(r, 11, nil, 1, 1, 1, 0.85, true)
     r._nameFS:SetPoint("LEFT", 2, 0); r._nameFS:SetWidth(80); r._nameFS:SetJustifyH("LEFT")
     r._nameFS:SetWordWrap(false)
 
@@ -356,15 +363,13 @@ local function AcquireRow(i)
             if EG then r._dungeonFS:SetTextColor(EG.r, EG.g, EG.b, 1) end
             local cdInfo = C_Spell.GetSpellCooldown(sid)
             if cdInfo and cdInfo.duration and cdInfo.duration > 0 then
-                if EllesmereUI.ShowWidgetTooltip then
-                    EllesmereUI.ShowWidgetTooltip(tpBtn, "Portal on Cooldown")
-                end
+                EllesmereUI.ShowWidgetTooltip(tpBtn, "Portal on Cooldown")
             end
         end
     end)
     tpBtn:SetScript("OnLeave", function()
         r._dungeonFS:SetTextColor(0.7, 0.7, 0.7, 1)
-        if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        EllesmereUI.HideWidgetTooltip()
     end)
     tpBtn:Hide()
     r._tpBtn = tpBtn
@@ -406,7 +411,7 @@ local function ApplyRowFontSize(r)
     local sz = GetTextSize()
     local font = ResolveFont()
     local flags = ResolveOutline()
-    r._nameFS:SetFont(font, sz, flags)
+    EllesmereUI.SetFontFamily(r._nameFS, font, sz, flags, flags == "")
     r._ratingFS:SetFont(font, sz - 1, flags)
     r._dungeonFS:SetFont(font, sz, flags)
     r._levelFS:SetFont(font, sz, flags)
@@ -532,6 +537,7 @@ ShowKeystonePopup = function()
         r._nameFS:SetText("No keystones found"); r._nameFS:SetWidth(contentW)
         r._nameFS:SetTextColor(0.5, 0.5, 0.5, 0.7)
         r._ratingFS:SetText(""); r._dungeonFS:SetText(""); r._levelFS:SetText("")
+        if r._tpBtn then r._tpBtn:Hide() end
         r:ClearAllPoints()
         r:SetPoint("TOPLEFT", body, "TOPLEFT", 0, curY)
         r:SetPoint("TOPRIGHT", body, "TOPRIGHT", 0, curY)
@@ -568,6 +574,7 @@ ShowKeystonePopup = function()
         r._nameFS:SetText("Waiting for data..."); r._nameFS:SetWidth(contentW)
         r._nameFS:SetTextColor(0.5, 0.5, 0.5, 0.5)
         r._ratingFS:SetText(""); r._dungeonFS:SetText(""); r._levelFS:SetText("")
+        if r._tpBtn then r._tpBtn:Hide() end
         r:ClearAllPoints()
         r:SetPoint("TOPLEFT", body, "TOPLEFT", 0, curY)
         r:SetPoint("TOPRIGHT", body, "TOPRIGHT", 0, curY)
@@ -615,8 +622,8 @@ _G._EUI_RefreshKeystonePopup = RefreshPopupIfOpen
 
 -------------------------------------------------------------------------------
 --  LibKeystone callback
---  Receives keystone data from any player running BigWigs/DBM (or any addon
---  that embeds LibKeystone). No manual comm handling needed.
+--  Receives keystone data from any player running an addon that embeds
+--  LibKeystone. No manual comm handling needed.
 -------------------------------------------------------------------------------
 -- Registered only when the popup feature is enabled: the toggle is
 -- reload-gated (see options), so the load-time flag is authoritative and a

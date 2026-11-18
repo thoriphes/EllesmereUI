@@ -23,21 +23,25 @@ local _, ns = ...
 
 local PP = EllesmereUI.PP
 
-local PORTRAIT_MEDIA = "Interface\\AddOns\\EllesmereUI\\media\\portraits\\"
-local MASKS, BORDERS = {}, {}
-do
-    local shapes = { "portrait", "circle", "square", "csquare", "diamond", "hexagon", "shield" }
-    for i = 1, #shapes do
-        local k = shapes[i]
-        MASKS[k] = PORTRAIT_MEDIA .. k .. "_mask.tga"
-        BORDERS[k] = PORTRAIT_MEDIA .. k .. "_border.tga"
-    end
-end
--- Pixels from a 128px mask's edge to its visible opening.
-local MASK_INSETS = { circle = 17, csquare = 17, diamond = 14, hexagon = 17, portrait = 17, shield = 13, square = 17 }
+local MASKS, BORDERS = EllesmereUI.SHAPE_MASKS, EllesmereUI.SHAPE_BORDERS
+local MASK_INSETS = EllesmereUI.SHAPE_INSETS
 local CLASS_ART = "Interface\\AddOns\\EllesmereUI\\media\\icons\\class-full\\"
 local CLASS_SHEET = "Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES"
 local QMARK_MODEL = "Interface\\Buttons\\TalkToMeQuestionMark.m2"
+
+-- 3D Zoom (100..ZOOM3D_MAX, also the options slider's max) -> portrait
+-- zoom, camera distance. Up to 300 it is the distance alone (1..3); above,
+-- the camera blends to the full body (portrait zoom 1 -> 0, distance 3 -> 1).
+local ZOOM3D_STOCK, ZOOM3D_MAX = 300, 500
+ns.RF_PT_ZOOM3D_MAX = ZOOM3D_MAX
+local function Zoom3DOf(z)
+    z = z or 100
+    if z <= ZOOM3D_STOCK then return 1, z / 100 end
+    if z > ZOOM3D_MAX then z = ZOOM3D_MAX end
+    local t = (z - ZOOM3D_STOCK) / (ZOOM3D_MAX - ZOOM3D_STOCK)
+    local d = ZOOM3D_STOCK / 100
+    return 1 - t, d - (d - 1) * t
+end
 
 local function Point(r, p, rel, rp, x, y)
     if PP and PP.Point then PP.Point(r, p, rel, rp, x, y) else r:SetPoint(p, rel, rp, x, y) end
@@ -109,6 +113,45 @@ local function Ensure3D(bd)
     bd._3d = m
     ns._ptModelOn = true
     return m
+end
+
+-- Character Size: a scaled model renders on a canvas the box's size times
+-- k, bottom-centred on the Inside box, which clips it; the box never
+-- changes. At k = 1 the model fills the box.
+local function ModelCanvas(bd, k, w, h)
+    local m = bd._3d
+    if k == 1 or not (w and h and w > 0 and h > 0) then
+        -- Back from a canvas: drop its BOTTOM anchor first.
+        if bd._charCanvas then m:ClearAllPoints(); bd._charCanvas = nil end
+        m:SetAllPoints(bd)
+        return
+    end
+    m:ClearAllPoints()
+    m:SetSize(w * k, h * k)
+    m:SetPoint("BOTTOM", bd, "BOTTOM", 0, 0)
+    bd._charCanvas = true
+end
+-- Installed only while scaled: the canvas follows the box's real size (the
+-- Inside box's height comes from its anchors).
+local function BoxSizeChanged(self, w, h)
+    ModelCanvas(self, self._charK or 1, w, h)
+end
+-- Scaled only for a 3D model of an available unit (the question mark keeps
+-- the box's size); a change of _charK, _3dOn or _state re-seats. Unscaled
+-- (the default) is the stock re-anchor alone: no script, no size reads.
+local function SeatModel(bd)
+    if not bd._3d then return end
+    local k = bd._charK or 1
+    local scaled = k ~= 1 and bd._3dOn and bd._state ~= false or false
+    if scaled ~= (bd._charHook or false) then
+        bd:SetScript("OnSizeChanged", scaled and BoxSizeChanged or nil)
+        bd._charHook = scaled
+    end
+    if scaled then
+        ModelCanvas(bd, k, bd:GetWidth(), bd:GetHeight())
+    else
+        ModelCanvas(bd, 1)
+    end
 end
 
 -- First enable: the backdrop and the bars' area. Health, power, the Top
@@ -311,8 +354,8 @@ local function Shape(bd, s, shaped, w, h)
     end
     SeatArt2D(bd)
     SeatClassArt(bd, h)
-    -- A model is never masked or enlarged: it stays on the backdrop.
-    if bd._3d then bd._3d:SetAllPoints(bd) end
+    -- A model is never masked: it seats on the backdrop.
+    SeatModel(bd)
     return true
 end
 
@@ -320,7 +363,7 @@ end
 -- colour otherwise, the player's own class in dark mode or with no unit.
 local function PlayerClassColor()
     local _, ct = UnitClass("player")
-    local c = ct and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
+    local c = ct and EllesmereUI.GetClassColor(ct)
     if c then return c.r, c.g, c.b end
     return 1, 1, 1
 end
@@ -330,7 +373,7 @@ local function TintBorder(bd, unit, ctOverride)
     local r, g, b
     local s = ns._scaledPartyProxy
     if ctOverride then
-        local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ctOverride]
+        local c = EllesmereUI.GetClassColor(ctOverride)
         if c then r, g, b = c.r, c.g, c.b end
     elseif s and s.healthColorMode == "dark" then
         r, g, b = PlayerClassColor()
@@ -338,7 +381,7 @@ local function TintBorder(bd, unit, ctOverride)
         local _, ct = UnitClass(unit)
         local isPl = UnitIsPlayer(unit)
         if not issecretvalue(ct) and not issecretvalue(isPl) and isPl and ct then
-            local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
+            local c = EllesmereUI.GetClassColor(ct)
             if c then r, g, b = c.r, c.g, c.b end
         else
             local re = UnitReaction(unit, "player")
@@ -410,7 +453,8 @@ function ns.RF_PtPaint(st, unit, event)
             if avail then
                 m:ClearModel()
                 m:SetUnit(unit)
-                m:SetPortraitZoom(1)
+                bd._camP = bd._pz3d or 1
+                m:SetPortraitZoom(bd._camP)
                 m:SetPosition(0, 0, 0)
                 bd._camZ = bd._zoom3d or 1
                 m:SetCamDistanceScale(bd._camZ)
@@ -423,7 +467,11 @@ function ns.RF_PtPaint(st, unit, event)
                 bd._camZ = nil
             end
             bd._guid = (avail and not issecretvalue(guid)) and guid or nil
+            -- The question mark takes the box's size: a scaled model re-seats
+            -- when availability flips.
+            local reseat = (bd._charK or 1) ~= 1 and (bd._state == false) ~= (avail == false)
             bd._state = avail
+            if reseat then SeatModel(bd) end
             repainted = true
         end
     else
@@ -456,6 +504,35 @@ function ns.RF_PtOffline(st, unit, connected)
     bd._class:SetDesaturated(off)
     if bd._mode == "3d" and unit then ns.RF_PtPaint(st, unit, "Conn") end
 end
+
+-- Clickable Portrait (party, default off): a detached portrait covered by a
+-- second unit button for the same occupant (EllesmereUI.SyncPortraitClick,
+-- EllesmereUI_SharedHelpers.lua). The unit resolves through the header
+-- button, which the header re-assigns in combat; hover replays the button's
+-- own tooltip and hover border.
+local PORTRAIT_CLICK = {
+    wanted = function(owner)
+        local d = ns.GetFFD(owner)
+        local bd = d.pt
+        local s = ns._scaledPartyProxy
+        return bd and bd._on and not d.kitPortrait and s.partyPortraitClickable
+            and (s.partyPortraitStyle or "none") == "detached" or false
+    end,
+    backdrop = function(owner) return ns.GetFFD(owner).pt end,
+    -- EUI_RaidFrames_Style.lua loads first.
+    onEnter = ns.RF_ButtonOnEnter,
+    onLeave = ns.RF_ButtonOnLeave,
+    -- Same registration as the party button itself (_StyleButtonSecure).
+    register = function(btn)
+        if ns.CC_RegisterFrame then
+            ns.CC_RegisterFrame(btn)
+        else
+            if type(ClickCastFrames) ~= "table" then ClickCastFrames = {} end
+            ClickCastFrames[btn] = true
+        end
+    end,
+    parentUnit = true,
+}
 
 -- The whole pass for one party button or preview frame: build on first
 -- enable, seat (deferred to the regen party pass only while a frame it
@@ -496,7 +573,10 @@ function ns.RF_PtApply(owner, st, s, bw, bh, unit)
             bd._on = nil
             bd:Hide()
             SetMode(bd, nil)
+            -- Off drops the Character Size script with the model.
+            if (bd._charK or 1) ~= 1 then bd._charK = 1; SeatModel(bd) end
         end
+        if not bd._preview then EllesmereUI.SyncPortraitClick(owner, PORTRAIT_CLICK) end
         return
     end
     -- Levels re-asserted every pass (a strata change rebuilds child levels).
@@ -507,18 +587,36 @@ function ns.RF_PtApply(owner, st, s, bw, bh, unit)
     -- (a button with no unit repaints on its next occupant).
     local cs = s.partyPortraitClassStyle or "modern"
     if bd._style ~= cs then bd._style = cs; bd._ct = nil end
-    bd._zoom3d = (s.partyPortrait3dZoom or 100) / 100
+    bd._pz3d, bd._zoom3d = Zoom3DOf(s.partyPortrait3dZoom)
+    -- Character Size: Inside positions only (the box that clips it).
+    local charK = inside and ((s.partyPortraitCharScale or 100) / 100) or 1
+    local charKChanged = (bd._charK or 1) ~= charK
+    bd._charK = charK
     -- Background under square and shaped art; none under a bare model.
     local shaped = style == "detached" and (s.partyPortraitShape or "portrait") ~= "none"
     bd._bg:SetShown(not inside and (style == "attached" or shaped))
+    -- Detached: the Background Color (unset = the stock grey).
+    local bgc = style == "detached" and s.partyPortraitBgColor
+    if bgc then
+        bd._bg:SetColorTexture(bgc.r, bgc.g, bgc.b, bgc.a or 1)
+    else
+        bd._bg:SetColorTexture(0.1, 0.1, 0.1, 1)
+    end
     local reshaped = Shape(bd, s, shaped, bd._w, bd._h)
     local wasOn = bd._on
     bd._on = true
     local swapped = SetMode(bd, mode)
+    -- A new scale re-seats the model (a re-shape already did); so does a
+    -- swap into or out of 3D while scaled (Shape seated before the swap).
+    if (charKChanged and not reshaped) or (swapped and charK ~= 1) then SeatModel(bd) end
     if not wasOn then bd:Show() end
     -- A 3D Zoom change on a loaded model: the camera alone.
     local m = bd._3dOn and bd._3d
-    if m and bd._state and bd._camZ and bd._camZ ~= bd._zoom3d then
+    if m and bd._state and bd._camZ and (bd._camZ ~= bd._zoom3d or bd._camP ~= bd._pz3d) then
+        if bd._camP ~= bd._pz3d then
+            bd._camP = bd._pz3d
+            m:SetPortraitZoom(bd._pz3d)
+        end
         bd._camZ = bd._zoom3d
         m:SetCamDistanceScale(bd._zoom3d)
     end
@@ -535,6 +633,7 @@ function ns.RF_PtApply(owner, st, s, bw, bh, unit)
         local u = owner:GetAttribute("unit")
         TintBorder(bd, (u and UnitExists(u)) and u or nil)
     end
+    if not bd._preview then EllesmereUI.SyncPortraitClick(owner, PORTRAIT_CLICK) end
 end
 
 -- Portrait events the current settings need (RF_KitPortraitEvents): "2d",
@@ -582,6 +681,8 @@ function ns.RF_PtRefreshAll()
             if u and not UnitExists(u) then u = nil end
             if d.kitPortrait then
                 if u then ns.RF_KitPortrait(d, u) end
+                -- A click button from before the kit stands down.
+                if d.pt then EllesmereUI.SyncPortraitClick(b, PORTRAIT_CLICK) end
             else
                 ns.RF_PtApply(b, d, s, bw, bh, u)
             end
@@ -601,7 +702,12 @@ function ns.RF_PtModelAlphaApply(bd)
     local m = bd._3dOn and bd._3d
     if not m then return end
     local pc = ns._partyContainerFrame
-    local c = pc and pc:GetAlpha() or 1
+    -- A UIParent fade (models ignore it) scales the mirror too.
+    local c = EllesmereUI.UIScaledAlpha(pc and pc:GetAlpha() or 1)
+    if not ns._ptUIAlphaHooked then
+        ns._ptUIAlphaHooked = true
+        EllesmereUI.OnUIAlphaChanged(ns.RF_PtContainerAlpha)
+    end
     if bd._rSecret then
         m:SetAlphaFromBoolean(bd._rIn, c * bd._rA1, c * bd._rA2)
     else

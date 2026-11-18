@@ -27,9 +27,10 @@ local min, max = math.min, math.max
 local sin, cos = _G.sin or math.sin, _G.cos or math.cos  -- WoW globals are degree-based
 local GetTime = GetTime
 local GetCursorPosition = GetCursorPosition
-local GetSpellCooldown = C_Spell and C_Spell.GetSpellCooldown or GetSpellCooldown
-local UnitCastingInfo = UnitCastingInfo or CastingInfo
-local UnitChannelInfo = UnitChannelInfo or ChannelInfo
+local GetSpellCooldown = C_Spell.GetSpellCooldown
+local GCD_SPELL = EllesmereUI.GCD_SPELL
+local UnitCastingInfo = UnitCastingInfo
+local UnitChannelInfo = UnitChannelInfo
 
 local f, t, reticle
 local lastX, lastY
@@ -68,7 +69,8 @@ local function ResolveColor(cfg)
     end
     if cfg.useClassColor then
         local _, engClass = UnitClass("player")
-        local cc = engClass and RAID_CLASS_COLORS and RAID_CLASS_COLORS[engClass]
+        local cc = engClass and (EllesmereUI.GetRawClassColor(engClass)
+            or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[engClass]))
         if cc then return cc.r, cc.g, cc.b end
     end
     return ParseHex(cfg.hex or DEF_HEX)
@@ -285,14 +287,13 @@ local function ApplyTrail()
     end
 end
 
-local _unlockHidGCD, _unlockHidCast
--- Cursor glue + state watch, riding the suite's shared cursor service
+-- Cursor glue, riding the suite's shared cursor service
 -- (EllesmereUI.Mouse) instead of a per-frame OnUpdate on the cursor frame:
 -- the glue is a Tier A motionOnly subscriber (per render frame while the cursor MOVES,
 -- parked while it rests -- a resting cursor ring needs no repositioning, and mouselook
 -- freezes GetCursorPosition so steering parks it too, which Only-Show-When-Hidden wants
--- anyway); the unlock-mode circle sync is pure state and rides the 0.15s Tier B watch.
--- Both are subscribed ONLY while the frame is visible (UpdateVisibility owns the
+-- anyway). Unlock mode hides the attached circles through the listener in OnEnable.
+-- It is subscribed ONLY while the frame is visible (UpdateVisibility owns the
 -- edges), preserving the old hidden-frame-stops-OnUpdate behavior.
 local function CursorGlueBody(rawX, rawY)
     local s = UIParent:GetEffectiveScale()
@@ -300,20 +301,6 @@ local function CursorGlueBody(rawX, rawY)
     if x ~= lastX or y ~= lastY then
         lastX, lastY = x, y
         f:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
-    end
-end
-local function CursorWatchBody()
-    -- Hide attached GCD/Cast circles during unlock mode
-    if EllesmereUI._unlockActive then
-        if gcdAttached and gcdRoot and gcdRoot:IsShown() then
-            gcdRoot:Hide(); _unlockHidGCD = true
-        end
-        if castAttached and castRoot and castRoot:IsShown() then
-            castRoot:Hide(); _unlockHidCast = true
-        end
-    else
-        if _unlockHidGCD and gcdRoot then gcdRoot:Show(); _unlockHidGCD = nil end
-        if _unlockHidCast and castRoot then castRoot:Show(); _unlockHidCast = nil end
     end
 end
 local function SetCursorGlue(on)
@@ -325,10 +312,8 @@ local function SetCursorGlue(on)
         -- CENTER default on login) until the first pixel of motion.
         CursorGlueBody(M.Get())
         M.SubscribeFrame("qolCursor", CursorGlueBody, true)
-        M.SubscribeTick("qolCursorWatch", 0.15, CursorWatchBody)
     else
         M.UnsubscribeFrame("qolCursor")
-        M.UnsubscribeTick("qolCursorWatch")
     end
 end
 
@@ -407,6 +392,17 @@ local function CreateRing(parent, radius, ringTex, r, g, b, a)
         self:Show()
     end
 
+    -- Secret-value path: the engine draws the real cooldown from the duration
+    -- object; ceiling only bounds how long the ring frame stays shown
+    function ring:StartRingFromDuration(durObj, ceiling)
+        self.dur = 0
+        self.maxDur = ceiling
+        self._fg:Hide()
+        self._cd:SetCooldownFromDurationObject(durObj)
+        self._cd:Show()
+        self:Show()
+    end
+
     function ring:StopRing()
         self._cd:Hide()
         self._fg:Hide()
@@ -436,6 +432,25 @@ local gcdAttached = true  -- follows cursor by default
 local function GCD_DB()
     local p = ECL.db and ECL.db.profile
     return p and p.gcd or {}
+end
+
+-- Start the ring from the live GCD (does nothing when no GCD is running).
+-- Called from the cast events and from the combat-start visibility pass.
+local function ArmGCDRing()
+    if not gcdRing then return end
+    local cdData = GetSpellCooldown(GCD_SPELL)
+    if not cdData then return end
+    local d, s = cdData.duration, cdData.startTime
+    if issecretvalue(d) or issecretvalue(s) then
+        -- Restricted combat hides the numbers: hand the GCD's duration object to
+        -- the swipe (the Resource Bars GCD bar's native path). isActive is never
+        -- secret and skips a GCD that already ended (the SUCCEEDED of a hard cast).
+        if not cdData.isActive then return end
+        local durObj = C_Spell.GetSpellCooldownDuration(GCD_SPELL)
+        if durObj then gcdRing:StartRingFromDuration(durObj, 1.6) end
+    elseif d and d > 0 and d <= 1.6 and s and s > 0 then
+        gcdRing:StartRing(GetTime() - s, d)
+    end
 end
 
 local function CreateGCDCircle()
@@ -468,26 +483,24 @@ local function CreateGCDCircle()
         if g2.combatOnly and not InCombatLockdown() then return end
         -- On cancelled/failed/interrupted casts the GCD resets stop the ring
         if event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" or event == "UNIT_SPELLCAST_STOP" then
-            local cdData = GetSpellCooldown(61304)
-            if not cdData or not cdData.duration or cdData.duration <= 0 or not cdData.startTime or cdData.startTime <= 0 then
+            local cdData = GetSpellCooldown(GCD_SPELL)
+            local stillActive = false
+            if cdData then
+                -- A secret read (restricted combat) keeps the ring: the GCD may still
+                -- be running (same rule as the Resource Bars GCD bar stop handler).
+                local d, s = cdData.duration, cdData.startTime
+                if issecretvalue(d) or issecretvalue(s) then
+                    stillActive = true
+                else
+                    stillActive = (d and d > 0 and s and s > 0) and true or false
+                end
+            end
+            if not stillActive then
                 gcdRing:StopRing()
             end
             return
         end
-        -- Query GCD via the reference spell; duration may be a secret number
-        -- so wrap the comparison in pcall to avoid taint errors
-        local cdData = GetSpellCooldown(61304)
-        if not cdData or not cdData.startTime then return end
-        local ok, elapsed, dur = pcall(function()
-            local d = cdData.duration
-            local s = cdData.startTime
-            if d and d > 0 and d <= 1.6 and s and s > 0 then
-                return GetTime() - s, d
-            end
-        end)
-        if ok and elapsed then
-            gcdRing:StartRing(elapsed, dur)
-        end
+        ArmGCDRing()
     end)
 
     gcdRoot:Hide()
@@ -593,7 +606,7 @@ UpdateVisibility = function()
         shouldShow = InCombatLockdown() and true or false
     end
     -- Standard visibility options (returns true if should HIDE)
-    if shouldShow and EllesmereUI.CheckVisibilityOptions and EllesmereUI.CheckVisibilityOptions(p) then
+    if shouldShow and EllesmereUI.CheckVisibilityOptions(p) then
         shouldShow = false
     end
     -- Standard visibility mode (mouseover treated as always for cursor)
@@ -653,6 +666,11 @@ UpdateVisibility = function()
                 gcdRoot:SetScript("OnUpdate", nil)
             else
                 gcdRoot:Show()
+                -- Combat Only: the pull cast lands before combat starts, so the
+                -- OnEvent gate dropped its GCD; pick up whatever of it remains
+                if g.combatOnly and gcdRing and gcdRing.maxDur <= 0 then
+                    ArmGCDRing()
+                end
                 -- Re-apply cursor tracking since cursor visibility may have changed.
                 -- Skip while unlocked: the mover owns position, and re-arming this
                 -- would fight it (see the same gate in ApplyGCDCircle).
@@ -1179,6 +1197,8 @@ _G._ECL_ApplyGCDPosition = function()
     local anchored = EllesmereUI and EllesmereUI.IsUnlockAnchored and EllesmereUI.IsUnlockAnchored("ECL_GCD")
     if anchored and gcdRoot:GetLeft() then return end
     local g = GCD_DB()
+    -- Attached: the cursor owns it (same as the cast circle below).
+    if g.attached ~= false then return end
     local pos = g.pos
     if pos and pos.point then
         local px, py = pos.x or 0, pos.y or 0
@@ -1210,6 +1230,9 @@ _G._ECL_ApplyCastPosition = function()
     local anchored = EllesmereUI and EllesmereUI.IsUnlockAnchored and EllesmereUI.IsUnlockAnchored("ECL_Cast")
     if anchored and castRoot:GetLeft() then return end
     local c = Cast_DB()
+    -- Attached: the cursor owns it. Unlock Mode's saved-positions pass calls this
+    -- for every registered element, mover or not.
+    if c.attached ~= false then return end
     local pos = c.pos
     if pos and pos.point then
         local px, py = pos.x or 0, pos.y or 0
@@ -1344,9 +1367,7 @@ function ECL:OnInitialize()
     _G._ECL_Apply = Apply
     _G._ECL_UpdateVisibility = UpdateVisibility
     _G._ECL_ApplyCombatOnlyEvents = ApplyCombatOnlyEvents
-    if EllesmereUI and EllesmereUI.RegisterVisibilityUpdater then
-        EllesmereUI.RegisterVisibilityUpdater(UpdateVisibility)
-    end
+    EllesmereUI.RegisterVisibilityUpdater(UpdateVisibility)
     _G._ECL_ApplyGCDCircle = ApplyGCDCircle
     _G._ECL_ApplyCastCircle = ApplyCastCircle
     _G._ECL_RegisterUnlock = RegisterUnlockElements
@@ -1396,15 +1417,13 @@ function ECL:OnEnable()
     -- before the core resolves the profile accent, so Apply() above painted
     -- the parse-time fallback and is never called again. Also covers a
     -- mid-session accent change, which nothing pushed to us before.
-    if EllesmereUI.RegAccent then
-        EllesmereUI.RegAccent({ type = "callback", fn = function()
-            local p = ECL.db and ECL.db.profile
-            if not p then return end
-            if p.useAccentColor then Apply() end
-            if p.gcd and p.gcd.useAccentColor then ApplyGCDCircle() end
-            if p.castCircle and p.castCircle.useAccentColor then ApplyCastCircle() end
-        end })
-    end
+    EllesmereUI.RegAccent({ type = "callback", fn = function()
+        local p = ECL.db and ECL.db.profile
+        if not p then return end
+        if p.useAccentColor then Apply() end
+        if p.gcd and p.gcd.useAccentColor then ApplyGCDCircle() end
+        if p.castCircle and p.castCircle.useAccentColor then ApplyCastCircle() end
+    end })
 
     -- Apply GCD / Cast circles (creates on demand only when enabled)
     C_Timer.After(0.5, function()
@@ -1420,15 +1439,7 @@ function ECL:OnEnable()
 
         -- Every _unlockActive check in this file only stops a FUTURE re-arm
         -- of the attached cursor-tracking OnUpdate -- none of them tear down
-        -- one that's already running. CursorWatchBody (the 0.15s tick above)
-        -- is meant to hide an attached circle once unlock mode starts, but
-        -- it only ticks while the base cursor frame (f) is itself
-        -- subscribed/visible, so a user running GCD/Cast circles without the
-        -- base cursor dot gets no safety net at all: toggle Attach to Cursor
-        -- off then on (arms the OnUpdate while _unlockActive is still false,
-        -- correctly), then open unlock mode, and the circle just keeps
-        -- chasing the mouse forever with nothing to ever stop it. Hook the
-        -- real open/close event directly instead of depending on that tick.
+        -- one that's already running, so hook the real unlock open/close here.
         if EllesmereUI and EllesmereUI.RegisterUnlockModeListener then
             EllesmereUI:RegisterUnlockModeListener("EllesmereUIQoL_Cursor", function(active)
                 if active then

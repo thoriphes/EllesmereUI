@@ -3,21 +3,33 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  EllesmereUI_Conditions.lua
 --  Conditional Overrides engine: condition definitions, the active-group
 --  resolver, event wiring, and the keybind toggle. The value/unlock override
---  integration lives in EllesmereUI_SpecOverrides.lua (it shares that file's
---  fkey helpers); this file only decides WHICH conditional group is active
+--  integration lives in EUI_SpecOverrides_Conditional.lua (it shares
+--  EllesmereUI_SpecOverrides.lua's fkey helpers); this file only decides WHICH conditional group is active
 --  and notifies the override system when that changes.
 --
 --  Resolution ladder (user-approved):
 --    1. keybind  -- any group whose keybind toggle is ON (creation order
 --                   breaks ties). Explicit user action outranks ambient state.
---    2. darkmode -- the MAIN Dark Mode master reads on (UF+RF; the Class
---                   Resource Bar master is a separate toggle and excluded).
+--    2. gamepad  -- WoW Forever's Gamepad interface style is on. An explicit
+--                   input-mode switch, so it outranks every ambient tier
+--                   below; the keybind toggle still wins. Never on retail.
+--    3. darkmode -- every per-module Dark Mode is on except the Class
+--                   Resource Bar's (it is excluded).
 --                   Location-independent, so it applies inside AND outside
---                   instances; below keybind (explicit action still wins).
---    3. instance -- dungeon / raid / arena / battleground. Naturally mutually
+--                   instances; below keybind and gamepad (explicit actions
+--                   still win).
+--    3b. secondaryspec -- WoW Forever only: the secondary spec group is the
+--                   active one (C_SpecializationInfo.GetActiveSpecGroup
+--                   reads 2). The primary spec has no condition: it is the
+--                   base. Location-independent, so below Dark Mode and above
+--                   instance. Never on retail.
+--    4. instance -- dungeon / raid / arena / battleground. Naturally mutually
 --                   exclusive (the client reports one instance type). First
 --                   group in creation order that checks the current type.
---    4. solo     -- not in any group. Lowest priority.
+--    5. party    -- in a group that is not a raid, inside an instance or out.
+--                   Below instance, so a group for the current instance type
+--                   outranks it there. Only groups that check it can match.
+--    6. solo     -- not in any group. Lowest priority.
 --  Exactly one conditional group is active at a time, or none.
 --
 --  Condition flips NEVER happen in combat: flips are recomputed fresh at
@@ -25,39 +37,64 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  twice during a fight).
 -------------------------------------------------------------------------------
 
-local L = function(s) return EllesmereUI.L and EllesmereUI.L(s) or s end
+local L = function(s) return EllesmereUI.L(s) or s end
 
 -------------------------------------------------------------------------------
---  Condition definitions (ordered display list for the picker UI).
+--  Condition definitions (ordered display list for the picker UI; the
+--  resolver's ladder below keeps its own order).
 --  comingSoon entries render disabled in the picker and never match.
 -------------------------------------------------------------------------------
--- The Dark Mode condition tracks the MAIN "Dark Mode" master checkbox in
--- Fonts & Colors (Unit Frames + Raid Frames), NOT the separate "Dark Mode
--- (Class Resource Bar)" master: users commonly dark one without the other,
--- and the checkbox users read as "Dark Mode" is the main one. This filter
--- mirrors that checkbox's own read (_dmNotRB in EUI__General_Options.lua).
+-- The Dark Mode condition holds while every per-module Dark Mode is on
+-- except the class resource bar's (the Dark Mode checkbox dropdown on
+-- Global Settings > Colors; users commonly dark one without the other).
+-- That is exactly what the old main "Dark Mode" toggle read.
 local function _dmMainFilter(p) return p.id ~= "resourceBars" end
 local function DarkModeMasterOn()
-    return (EllesmereUI.IsDarkModeAllOn and EllesmereUI.IsDarkModeAllOn(_dmMainFilter)) or false
+    return (EllesmereUI.IsDarkModeAllOn(_dmMainFilter)) or false
+end
+
+-- WoW Forever spec group: 1 primary, 2 secondary; nil elsewhere.
+local function ActiveSpecGroup()
+    if EllesmereUI.IS_FOREVER ~= true then return nil end
+    local f = C_SpecializationInfo and C_SpecializationInfo.GetActiveSpecGroup
+    return f and f() or nil
+end
+
+-- Dual spec learned (GetNumSpecGroups returns 2).
+local function HasDualSpec()
+    return (GetNumSpecGroups and GetNumSpecGroups() == 2) or false
 end
 
 EllesmereUI.CONDITIONS = {
     { id = "keybind",      label = "Keybind (out of combat)" },
-    -- requires: pickable in the condition picker only while it returns true
-    -- (newly checking is refused and the row renders dimmed with the hint;
-    -- UNchecking is always allowed so an existing group can never be
-    -- trapped). Same predicate the resolver reads, so the picker never
-    -- offers a condition that cannot currently hold.
-    { id = "darkmode",     label = "Dark Mode",
-      requires = DarkModeMasterOn,
-      requiresHint = "Enable Dark Mode (Global Settings, Fonts & Colors) to use this condition" },
+    { id = "party",        label = "Party (in a group, not a raid)" },
     { id = "dungeon",      label = "Dungeon" },
     { id = "raid",         label = "Raid" },
     { id = "arena",        label = "Arena" },
     { id = "battleground", label = "Battleground" },
     { id = "solo",         label = "Solo (not in a group)" },
-    { id = "druid_form",   label = "Druid Form (out of combat)", comingSoon = true },
+    -- requires: pickable in the condition picker only while it returns true
+    -- (newly checking is refused and the row renders dimmed with the hint;
+    -- UNchecking is always allowed so an existing group can never be
+    -- trapped). Same predicate the resolver reads, so the picker never
+    -- offers a condition that cannot currently hold.
+    -- tooltip: shown on hover whenever the requirement hint is not.
+    { id = "darkmode",     label = "Dark Mode",
+      requires = DarkModeMasterOn,
+      tooltip = "Active while Dark Mode is on.",
+      requiresHint = "Check every Dark Mode in Global Settings > Colors, except Class Resource Bar, to use this condition." },
 }
+-- WoW Forever only: its Gamepad interface style has no retail counterpart
+-- (PadGamepadUI reads false there), so retail lists no row or icon for it; a
+-- group imported there with it checked simply never matches on it.
+if EllesmereUI.IS_FOREVER == true then
+    EllesmereUI.CONDITIONS[#EllesmereUI.CONDITIONS + 1] = { id = "gamepad", label = "Gamepad Mode",
+        tooltip = "Active while WoW's gamepad interface is on." }
+    EllesmereUI.CONDITIONS[#EllesmereUI.CONDITIONS + 1] = { id = "secondaryspec", label = "Secondary Spec",
+        requires = HasDualSpec,
+        tooltip = "Active while your secondary spec is active.",
+        requiresHint = "Learn Dual Specialization to use this condition." }
+end
 
 local INSTANCE_COND = {
     party = "dungeon",
@@ -121,6 +158,18 @@ end
 --  Resolver
 -------------------------------------------------------------------------------
 
+-- Tier 5: the first group (creation order) that checks Party, while the player
+-- is in a party (a group that is not a raid, as the visibility rules' In Party).
+-- nil for every profile with no such group, so the other tiers resolve as if
+-- this one were not there.
+local function PartyGroup(groups)
+    if not IsInGroup() or IsInRaid() then return nil end
+    for _, g in ipairs(groups) do
+        if g.conds and g.conds.party then return g end
+    end
+    return nil
+end
+
 --- The currently-ACTIVE conditional group per the ladder, or nil.
 function EllesmereUI.Conditions_ActiveGroup()
     local groups = EllesmereUI.Conditions_GetGroups()
@@ -129,35 +178,47 @@ function EllesmereUI.Conditions_ActiveGroup()
     for _, g in ipairs(groups) do
         if g.conds and g.conds.keybind and g.keyOn then return g end
     end
-    -- Tier 2: the MAIN Dark Mode master (UF+RF; the Class Resource Bar
-    -- master is deliberately excluded -- see DarkModeMasterOn above).
+    -- Tier 2: WoW Forever's Gamepad interface style (an explicit input-mode
+    -- switch, so it outranks the ambient tiers; always false on retail).
+    if EllesmereUI.PadGamepadUI() then
+        for _, g in ipairs(groups) do
+            if g.conds and g.conds.gamepad then return g end
+        end
+    end
+    -- Tier 3: every per-module Dark Mode but the Class Resource Bar's (it is
+    -- deliberately excluded -- see DarkModeMasterOn above).
     -- Location-independent, so it is checked BEFORE the instance early-outs.
     if DarkModeMasterOn() then
         for _, g in ipairs(groups) do
             if g.conds and g.conds.darkmode then return g end
         end
     end
-    -- Tier 3: instance type (client reports exactly one).
+    -- Tier 3b: WoW Forever's secondary spec group (never on retail).
+    if ActiveSpecGroup() == 2 then
+        for _, g in ipairs(groups) do
+            if g.conds and g.conds.secondaryspec then return g end
+        end
+    end
+    -- Tier 4: instance type (client reports exactly one).
     local _, instanceType = IsInInstance()
     local cond = instanceType and INSTANCE_COND[instanceType]
     if cond then
         for _, g in ipairs(groups) do
             if g.conds and g.conds[cond] then return g end
         end
-        return nil  -- in an instance: solo never applies
+        -- In an instance: party can still apply, solo never does.
+        return PartyGroup(groups)
     end
-    -- Tier 4: solo.
+    -- Tier 5: party.
+    local pg = PartyGroup(groups)
+    if pg then return pg end
+    -- Tier 6: solo.
     if not IsInGroup() then
         for _, g in ipairs(groups) do
             if g.conds and g.conds.solo then return g end
         end
     end
     return nil
-end
-
-function EllesmereUI.Conditions_ActiveGid()
-    local g = EllesmereUI.Conditions_ActiveGroup()
-    return g and g.id or nil
 end
 
 -------------------------------------------------------------------------------
@@ -178,7 +239,7 @@ local _establish = false       -- post profile-apply: apply-only, no harvests
 -- the overlay into the conditional DEFAULT maps -- permanent baseline loss on every
 -- /reload or login with a conditional active.
 local function PersistAppliedGid(gid)
-    local prof = EllesmereUI.GetActiveProfileData and EllesmereUI.GetActiveProfileData()
+    local prof = EllesmereUI.GetActiveProfileData()
     if prof then prof.condAppliedGid = gid end
 end
 
@@ -187,9 +248,9 @@ function EllesmereUI.Conditions_AppliedGid()
     -- Stale windows (fresh login, profile-apply MarkStale before the establish Recheck
     -- lands): fall back to the persisted pointer, validated against the active
     -- profile's groups (a hand-edited or imported store may point at a deleted group).
-    local prof = EllesmereUI.GetActiveProfileData and EllesmereUI.GetActiveProfileData()
+    local prof = EllesmereUI.GetActiveProfileData()
     local gid = prof and prof.condAppliedGid
-    if gid and EllesmereUI.Conditions_GroupById and EllesmereUI.Conditions_GroupById(gid) then
+    if gid and EllesmereUI.Conditions_GroupById(gid) then
         return gid
     end
     return nil
@@ -240,7 +301,7 @@ function EllesmereUI.Conditions_Recheck()
     end
     -- An open unlock session never survives a layout-owner change (same rule
     -- as spec changes): discard-close first, then transition.
-    if EllesmereUI._unlockModeActive and EllesmereUI.ForceCloseUnlockDiscard then
+    if EllesmereUI._unlockModeSessionActive and EllesmereUI.ForceCloseUnlockDiscard then
         EllesmereUI.ForceCloseUnlockDiscard()
     end
     local handler = EllesmereUI.SpecOverrides_CondTransition
@@ -273,13 +334,12 @@ function EllesmereUI.Conditions_Recheck()
         applied = EllesmereUI.Conditions_AppliedGid()
         if gid == applied then
             _appliedGid = applied
-            if EllesmereUI.SpecOverrides_ResumeDefaultView then
-                EllesmereUI.SpecOverrides_ResumeDefaultView()
-            end
+            EllesmereUI.SpecOverrides_ResumeDefaultView()
             return
         end
     end
-    if handler(applied, gid, est) then
+    local ok, failed = handler(applied, gid, est)
+    if ok then
         _appliedGid = gid
         PersistAppliedGid(gid)
     else
@@ -289,8 +349,10 @@ function EllesmereUI.Conditions_Recheck()
         _flipPending = true
     end
     -- Strictly AFTER the pointer advances: re-entering the view harvests
-    -- through HarvestCurrent, which banks against the APPLIED gid.
-    if resumeView and EllesmereUI.SpecOverrides_ResumeDefaultView then
+    -- through HarvestCurrent, which banks against the APPLIED gid. Not after a
+    -- handler error: live may hold half-applied incoming values, and the harvest
+    -- would bank them into the outgoing group's maps.
+    if resumeView and not failed and EllesmereUI.SpecOverrides_ResumeDefaultView then
         EllesmereUI.SpecOverrides_ResumeDefaultView()
     end
 end
@@ -302,7 +364,6 @@ end
 --  "out of combat" by definition).
 -------------------------------------------------------------------------------
 local _keyBtnPool = {}
-local _bindCombatFrame
 
 function EllesmereUI.Conditions_ToggleKey(gid)
     if InCombatLockdown() then return end
@@ -314,14 +375,7 @@ end
 
 function EllesmereUI.Conditions_RebuildKeyBindings()
     if InCombatLockdown() then
-        if not _bindCombatFrame then
-            _bindCombatFrame = CreateFrame("Frame")
-            _bindCombatFrame:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                EllesmereUI.Conditions_RebuildKeyBindings()
-            end)
-        end
-        _bindCombatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        EllesmereUI.CombatQueue.Defer("ConditionsKeyBindings", EllesmereUI.Conditions_RebuildKeyBindings)
         return
     end
     for _, btn in ipairs(_keyBtnPool) do
@@ -347,8 +401,10 @@ function EllesmereUI.Conditions_RebuildKeyBindings()
 end
 
 -------------------------------------------------------------------------------
---  Events. GROUP_ROSTER_UPDATE drives solo; PEW/zone drive instance flips;
---  regen drains combat-deferred rechecks. Registration order matters for the
+--  Events. GROUP_ROSTER_UPDATE drives party and solo; PEW/zone drive instance flips;
+--  the interface-style transition (WoW Forever) drives Gamepad Mode flips;
+--  ACTIVE_TALENT_GROUP_CHANGED (WoW Forever) drives spec group flips; regen
+--  drains combat-deferred rechecks. Registration order matters for the
 --  regen drain: this file loads after EllesmereUI_Profiles.lua, so the spec
 --  pipeline's regen branch runs first and our recompute sees settled state.
 -------------------------------------------------------------------------------
@@ -357,12 +413,32 @@ evFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 evFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 evFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 evFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+-- The interface-style switch is WoW Forever's. Registering an event name the
+-- client does not know errors at load, so the name is checked first (as the
+-- Action Bars and Quest Tracker registrations do).
+if EllesmereUI.IS_FOREVER == true
+   and not (C_EventUtils and C_EventUtils.IsEventValid
+            and not C_EventUtils.IsEventValid("INPUT_DEVICE_INTERFACE_TRANSITION")) then
+    evFrame:RegisterEvent("INPUT_DEVICE_INTERFACE_TRANSITION")
+end
+-- Spec group swap (WoW Forever) drives the Secondary Spec flips.
+if EllesmereUI.IS_FOREVER == true
+   and not (C_EventUtils and C_EventUtils.IsEventValid
+            and not C_EventUtils.IsEventValid("ACTIVE_TALENT_GROUP_CHANGED")) then
+    evFrame:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
+end
 evFrame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_REGEN_ENABLED" then
         if _flipPending then
             _flipPending = false
             EllesmereUI.Conditions_Recheck()
         end
+        return
+    end
+    if event == "INPUT_DEVICE_INTERFACE_TRANSITION" then
+        -- The style is read one frame after the transition event. A recheck
+        -- in combat flags itself and the regen drain above re-resolves.
+        C_Timer.After(0, EllesmereUI.Conditions_Recheck)
         return
     end
     if event == "PLAYER_ENTERING_WORLD" then

@@ -9,6 +9,11 @@ local ADDON_NAME = "EllesmereUIQoL"
 local ns = EllesmereUI._ModuleNS[ADDON_NAME]  -- module namespace (published by the module at its load)
 if not ns then return end  -- module disabled: no options page
 
+-- Page reuse: frames this file builds go through the options frame pool
+-- (EllesmereUI_FramePool.lua), which hands a kept page its previous build's
+-- frames back reset to new; on any other parent it is the plain CreateFrame.
+local CreateFrame = EllesmereUI._Pool.CreateFrame
+
 local PAGE_CURSOR     = "Cursor"
 local PAGE_UNLOCK     = "Unlock Mode"
 
@@ -93,25 +98,6 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
-    --  MakeCogBtn helper
-    ---------------------------------------------------------------------------
-    local function MakeCogBtn(rgn, showFn, anchorTo, iconPath)
-        local cogBtn = CreateFrame("Button", nil, rgn)
-        cogBtn:SetSize(26, 26)
-        cogBtn:SetPoint("RIGHT", anchorTo or rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = cogBtn
-        cogBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-        cogBtn:SetAlpha(0.4)
-        local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
-        cogTex:SetAllPoints()
-        cogTex:SetTexture(iconPath or EllesmereUI.COGS_ICON)
-        cogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.7) end)
-        cogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
-        cogBtn:SetScript("OnClick", function(self) showFn(self) end)
-        return cogBtn
-    end
-
-    ---------------------------------------------------------------------------
     --  Ring texture dropdown values (shared by GCD + Cast)
     ---------------------------------------------------------------------------
     local ringTexValues = { normal = "Ring Normal", light = "Ring Light", thin = "Ring Thin", heavy = "Ring Heavy", thick = "Ring Thick" }
@@ -123,7 +109,7 @@ initFrame:SetScript("OnEvent", function(self)
     local function BuildCursorPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
-        local _, h, row
+        local _, h, row, hdr
 
         EllesmereUI:ClearContentHeader()
 
@@ -325,7 +311,13 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  GLOBAL COOLDOWN
         -----------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, SECTION_GCD, y);  y = y - h
+        hdr, h = W:SectionHeader(parent, SECTION_GCD, y);  y = y - h
+        -- The circle has a mover only while enabled and detached from the
+        -- cursor, so the button names whichever of the two it still needs.
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "ECL_GCD",
+            disabled = function() local g = GCD_DB(); return not (g.enabled and g.attached == false) end,
+            disabledTooltip = function() return GCD_DB().enabled and "Attach to Cursor" or "GCD Circle" end,
+            requireState = function() return GCD_DB().enabled and "disabled" or "enabled" end })
 
         -- Enable GCD Circle ---- Color (multiSwatch: custom left, class colored right)
         row, h = W:DualRow(parent, y,
@@ -483,7 +475,12 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  CAST BAR
         -----------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, SECTION_CAST, y);  y = y - h
+        hdr, h = W:SectionHeader(parent, SECTION_CAST, y);  y = y - h
+        -- As the GCD circle: a mover only while enabled and detached.
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = "ECL_Cast",
+            disabled = function() local c = Cast_DB(); return not (c.enabled and c.attached == false) end,
+            disabledTooltip = function() return Cast_DB().enabled and "Attach to Cursor" or "Cast Bar Circle" end,
+            requireState = function() return Cast_DB().enabled and "disabled" or "enabled" end })
 
         -- Enable Cast Bar Circle ---- Color (multiSwatch: custom left, class colored right)
         row, h = W:DualRow(parent, y,
@@ -589,37 +586,22 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Inline cog on Enable Cast Bar Circle for "Show Spark"
-        if not EllesmereUI._prebuilding then
-            local leftRgn = row._leftRegion
-            local _, cogShowFn = EllesmereUI.BuildCogPopup({
-                title = "Cast Bar Settings",
-                rows = {
-                    { type="toggle", label="Show Spark",
-                      get=function()
-                        local c = Cast_DB()
-                        return c.sparkEnabled ~= false
-                      end,
-                      set=function(v)
-                        Cast_DB().sparkEnabled = v
-                        RefreshCast()
-                      end },
-                },
-            })
-            local cogBtn = MakeCogBtn(leftRgn, cogShowFn)
-            local function UpdateCastCog()
-                if not Cast_DB().enabled then
-                    cogBtn:SetAlpha(0.15)
-                    cogBtn:EnableMouse(false)
-                    cogBtn._disabledTooltip = "Cast Bar Circle"
-                else
-                    cogBtn:SetAlpha(0.4)
-                    cogBtn:EnableMouse(true)
-                    cogBtn._disabledTooltip = nil
-                end
-            end
-            UpdateCastCog()
-            EllesmereUI.RegisterWidgetRefresh(UpdateCastCog)
-        end
+        EllesmereUI.BuildInlineCog(row._leftRegion, {
+            title = "Cast Bar Settings",
+            disabled = function() return not Cast_DB().enabled end,
+            disabledTooltip = "Cast Bar Circle",
+            rows = {
+                { type="toggle", label="Show Spark",
+                  get=function()
+                    local c = Cast_DB()
+                    return c.sparkEnabled ~= false
+                  end,
+                  set=function(v)
+                    Cast_DB().sparkEnabled = v
+                    RefreshCast()
+                  end },
+            },
+        })
 
         -- Rows below are HIDDEN entirely while the Cast Bar Circle is off
         -- (the toggle's DependentSetValue forces the rebuild on flips).

@@ -60,6 +60,9 @@ local RG = {
     evt = nil,         -- invalidation event frame (created on first activation)
     probeCutoff = nil, -- cutoff the cached probe list below was built for
     probes = {},       -- crosshair probe spells, longest range first
+    -- { sid, range, min }: harmful spells with a minimum range, kept off the ladder. WoW Forever
+    -- only (empty elsewhere); sorted by range, then minimum range.
+    minRangeSpells = {},
 }
 
 -- Some harmful spells answer nil on IsSpellInRange (ground-target only,
@@ -67,6 +70,7 @@ local RG = {
 -- answerable instead of deduping to a single spell per range.
 local MAX_SPELLS_PER_RUNG = 3
 local MAX_PROBE_SPELLS = 4
+local MAX_MIN_RANGE_SPELLS = 8
 
 -- Micro result cache: one slot per query shape. The TTL sits under every
 -- consumer tick interval (0.15s / 0.2s), so concurrent features share one
@@ -83,18 +87,52 @@ end
 
 local DRUID_MELEE_FORMS = { [1] = true, [2] = true } -- Bear, Cat
 
+local EnsureLadder -- defined below; the WoW Forever caster cutoff reads the ladder
+
 -- Spec-derived attack cutoff, form check NOT included (that is the one live
 -- input; everything here only moves on spec/talent changes and is cached by
 -- Range_GetAttackCutoff below).
 local function SpecAttackCutoff(holyPaladinMelee)
     local _, classFile = UnitClass("player")
-    local specIndex = GetSpecialization()
-    local specID = specIndex and GetSpecializationInfo(specIndex)
+    local specIndex = C_SpecializationInfo.GetSpecialization()
+    local specID = specIndex and C_SpecializationInfo.GetSpecializationInfo(specIndex)
+    -- WoW Forever reports one class spec (1482-1491) whatever the player
+    -- plays, so the spec cannot tell caster from melee there. Casters (Druid,
+    -- Priest, Mage, Warlock, Shaman) take the longest harmful spellbook rung
+    -- (<= 40 yd), so the cutoff lands on a real spell (Wrath, Shadow Bolt,
+    -- Lightning Bolt) that Range_BeyondCutoff can probe directly, and follows
+    -- talent range extensions. Druid Cat and Bear Form get 5 from the live form
+    -- check in Range_GetAttackCutoff before this cached value is read.
+    -- Hunter shots have a minimum range, so they sit on RG.minRangeSpells
+    -- rather than the ladder; the cutoff is the longest of them (Auto Shot from
+    -- level 1, and a talent's extra range once the spellbook reports it).
+    -- Paladin, Warrior and Rogue stay at 5.
+    if EllesmereUI.IS_FOREVER == true then
+        if classFile == "DRUID" or classFile == "PRIEST" or classFile == "MAGE" or classFile == "WARLOCK"
+            or classFile == "SHAMAN" then
+            EnsureLadder()
+            local best
+            for i = 1, #RG.ladder do
+                local r = RG.ladder[i].range
+                if r > 5 and r <= 40 then best = r end
+            end
+            if best then return best end
+        elseif classFile == "HUNTER" then
+            EnsureLadder()
+            local best
+            for i = 1, #RG.minRangeSpells do
+                local r = RG.minRangeSpells[i].range
+                if r > 5 and r <= 45 and (not best or r > best) then best = r end
+            end
+            if best then return best end
+        end
+        return 5
+    end
     if not specID then return 5 end
 
     if classFile == "DRUID" then
         if specID == 102 or specID == 105 then
-            return IsPlayerSpell(197488) and 45 or 40 -- Astral Influence
+            return C_SpellBook.IsSpellKnown(197488) and 45 or 40 -- Astral Influence
         end
         return 5
     elseif classFile == "DEMONHUNTER" then
@@ -128,7 +166,16 @@ function EllesmereUI.Range_GetAttackCutoff(customCutoff, holyPaladinMelee)
     end
 
     local _, classFile = UnitClass("player")
-    if classFile == "DRUID" and DRUID_MELEE_FORMS[GetShapeshiftForm()] then return 5 end
+    if classFile == "DRUID" then
+        -- WoW Forever orders the stance bar the vanilla way (Aquatic Form can sit
+        -- between Bear and Cat), so it checks the form ID: Cat 1, Bear 5, Dire Bear 8.
+        if EllesmereUI.IS_FOREVER == true then
+            local fid = GetShapeshiftFormID()
+            if fid == 1 or fid == 5 or fid == 8 then return 5 end
+        elseif DRUID_MELEE_FORMS[GetShapeshiftForm()] then
+            return 5
+        end
+    end
 
     if holyPaladinMelee then
         local v = RG.cutoffHolyMelee
@@ -151,12 +198,14 @@ local function BuildLadder()
     RG.dirty = false
     ResetCaches()
     wipe(RG.ladder)
+    wipe(RG.minRangeSpells)
     if not (C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines
         and C_Spell and C_Spell.GetSpellInfo and Enum and Enum.SpellBookItemType) then
         return
     end
     local bank = Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player
     local byRange = {}
+    local forever = EllesmereUI.IS_FOREVER == true
     for li = 1, C_SpellBook.GetNumSpellBookSkillLines() do
         local line = C_SpellBook.GetSpellBookSkillLineInfo(li)
         -- offSpecID is 0 (not nil) on active-spec lines.
@@ -171,6 +220,8 @@ local function BuildLadder()
                     and (not C_Spell.IsSpellHarmful or C_Spell.IsSpellHarmful(sid)) then
                     local sinfo = C_Spell.GetSpellInfo(sid)
                     local maxR = sinfo and sinfo.maxRange
+                    -- Ranges can read as float noise (23.999998 for a 24 yd spell): whole yards.
+                    if type(maxR) == "number" then maxR = math.floor(maxR + 0.5) end
                     -- A charge/leap-style spell with a nonzero minRange answers
                     -- IsSpellInRange false both beyond maxRange AND inside its
                     -- own dead zone (e.g. a gap-closer unusable under ~8yd) --
@@ -179,6 +230,13 @@ local function BuildLadder()
                     -- standing well inside melee range. Exclude it; other
                     -- spells sharing its maxRange rung are unaffected.
                     if sinfo and sinfo.minRange and sinfo.minRange > 0 then
+                        -- WoW Forever keeps it aside: its in-range answer is still exact
+                        -- (MinRangeBeyond). Nothing is collected on any other client.
+                        if forever and maxR and maxR > 0 and maxR <= 100
+                            and #RG.minRangeSpells < MAX_MIN_RANGE_SPELLS then
+                            RG.minRangeSpells[#RG.minRangeSpells + 1] =
+                                { sid = sid, range = maxR, min = math.floor(sinfo.minRange + 0.5) }
+                        end
                         maxR = nil
                     end
                     if maxR and maxR > 0 and maxR <= 100 then
@@ -197,9 +255,17 @@ local function BuildLadder()
         end
     end
     table.sort(RG.ladder, function(a, b) return a.range < b.range end)
+    -- Shots of one range and one minimum range answer alike: kept side by side, so a query
+    -- asks the next of them only while the one before it gave no answer (MinRangeBeyond).
+    if #RG.minRangeSpells > 1 then
+        table.sort(RG.minRangeSpells, function(a, b)
+            if a.range ~= b.range then return a.range < b.range end
+            return a.min < b.min
+        end)
+    end
 end
 
-local function EnsureLadder()
+EnsureLadder = function()
     if RG.dirty or not RG.ladderBuilt then BuildLadder() end
 end
 
@@ -248,7 +314,7 @@ end
 -- a restricted query degrades to nil (no display) instead of a blocked action.
 local function ItemChecksAllowed(unit)
     if not (InCombatLockdown()
-        or (EllesmereUI.InProtectedInstance and EllesmereUI.InProtectedInstance())) then
+        or (EllesmereUI.InProtectedInstance())) then
         return true
     end
     local can = UnitCanAttack("player", unit)
@@ -340,6 +406,40 @@ function EllesmereUI.Range_ItemBracket(unit, stopRange)
     return minY, maxY
 end
 
+-- Last resort for Range_BeyondCutoff on WoW Forever: a min-range spell at the cutoff
+-- (Hunter shots, 8-35 yd). Its "in range" is exact; its "out of range" may also mean
+-- too close, so the item ladder up to the minimum range decides. nil = unknown.
+-- One answer per minimum range is enough (the list keeps equal ones side by side):
+-- doneMin is the minimum range that already answered.
+local function MinRangeBeyond(unit, cutoff)
+    local list = RG.minRangeSpells
+    if #list == 0 then return nil end
+    local FindOvr = C_SpellBook and C_SpellBook.FindSpellOverrideByID
+    local minR, doneMin
+    for i = 1, #list do
+        local e = list[i]
+        if e.range == cutoff and e.min ~= doneMin then
+            local live = (FindOvr and FindOvr(e.sid)) or e.sid
+            local res = C_Spell.IsSpellInRange(live, unit)
+            if not (issecretvalue and issecretvalue(res)) and res ~= nil then
+                if res then return false end
+                doneMin = e.min
+                if not minR or e.min > minR then minR = e.min end
+            end
+        end
+    end
+    if not minR then return nil end
+    if not (C_Item and C_Item.IsItemInRange and ItemChecksAllowed(unit)) then return nil end
+    local minY, maxY = ItemWalk(unit, minR)
+    if minY == nil then return nil end
+    if maxY then
+        if maxY < cutoff then return false end
+        return nil
+    end
+    if minY >= minR then return true end
+    return nil
+end
+
 -- Crosshair support: is the unit beyond `cutoff` yards? Probes the player's
 -- own harmful spells with ranges in [cutoff, cutoff+10] (the window keeps
 -- outlier long-range utility spells from widening the answer), CLOSEST to
@@ -379,6 +479,8 @@ function EllesmereUI.Range_BeyondCutoff(unit, cutoff)
             return res == false
         end
     end
+    -- WoW Forever: a spell with a minimum range may still tell.
+    if EllesmereUI.IS_FOREVER == true then return MinRangeBeyond(unit, cutoff) end
     return nil
 end
 

@@ -1,0 +1,208 @@
+if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
+-------------------------------------------------------------------------------
+--  EllesmereUIForeverEssentials.lua  (WoW Forever only)
+--  Essential tools for WoW Forever. Each feature lives in its own file, listed
+--  after this one in the TOC; this file publishes the module.
+-------------------------------------------------------------------------------
+local ADDON_NAME, ns = ...
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI._Pool and EllesmereUI.RegisterNumberFormatCallback and EllesmereUI.ApplyModuleFontFamily and EllesmereUI.ForeverTalentTrees and EllesmereUI.TalentTreeGrid and EllesmereUI.CharData and EllesmereUI.LoadGameNames and EllesmereUI.GameName and EllesmereUI.ShowIconPicker) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the threat meter redraws through the parent's RegisterNumberFormatCallback and takes its font families through ApplyModuleFontFamily; Classic Talents reads its trees through ForeverTalentTrees and TalentTreeGrid; its per-character data is in the parent's roster: CharData; Gathering Skill reads the client's node names through LoadGameNames and GameName; the Macro Manager opens the parent's icon picker: ShowIconPicker)
+EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
+
+-- Lifecycle object (OnInitialize / OnEnable) for features that need one. No
+-- per-profile DB: every feature so far keeps account-wide settings.
+ns.addon = EllesmereUI.Lite.NewAddon(ADDON_NAME)
+
+-------------------------------------------------------------------------------
+--  Feature kit: settings and the login boot for every feature, plus placement
+--  and the unlock element for the ones drawn on one frame of ours that unlock
+--  mode places (Travel, Loot, Junk Items).
+--  Settings are account-wide in EllesmereUIDB[dbKey]: Read() never creates the
+--  table, so a feature nobody touches saves nothing; Cfg() is the write
+--  accessor and Get() falls back to defaults. pos (point, relPoint, x, y) is
+--  where unlock mode put the frame; defaultPos stands in until then.
+-------------------------------------------------------------------------------
+function ns.Feature(dbKey, defaults, defaultPos)
+    local F, none = {}, {}
+    local function Read()
+        return EllesmereUIDB and EllesmereUIDB[dbKey] or none
+    end
+    local function Cfg()
+        if not EllesmereUIDB then return {} end
+        local c = EllesmereUIDB[dbKey]
+        if not c then
+            c = {}
+            EllesmereUIDB[dbKey] = c
+        end
+        return c
+    end
+    local function Get(key)
+        local v = Read()[key]
+        if v == nil then return defaults[key] end
+        return v
+    end
+    local function Enabled()
+        return Get("enabled") == true
+    end
+    local function SavedPos()
+        local pos = Read().pos
+        return pos and pos.point and pos or defaultPos
+    end
+    -- A frame not built yet (nil) has nothing to place. snap: a CENTER point
+    -- lands on the pixel grid for the frame's size, as unlock mode places it.
+    local function Place(frame, snap)
+        if not frame then return end
+        local pos = SavedPos()
+        local x, y = pos.x or 0, pos.y or 0
+        if snap and pos.point == "CENTER" then
+            local PP = EllesmereUI.PP
+            x = PP.SnapCenterForDim(x, frame:GetWidth())
+            y = PP.SnapCenterForDim(y, frame:GetHeight())
+        end
+        frame:ClearAllPoints()
+        frame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, x, y)
+    end
+    F.Read, F.Cfg, F.Get, F.Enabled, F.Place = Read, Cfg, Get, Enabled, Place
+
+    -- At login: apply(), then the unlock element when the feature has a frame
+    -- (no u: nothing on screen).
+    --   u.key, u.label, u.order
+    --   u.frame(build)   the frame (nil until built); build builds it first
+    -- By default the frame's width is its "width" setting, which unlock mode
+    -- resizes, and its height follows its other settings:
+    --   u.height()       the frame's height
+    --   u.minWidth       the narrowest width unlock mode sets
+    --   u.applyStyle()   lays the frame out again after a width change
+    -- A frame whose settings fix its whole size gives u.size() instead; unlock
+    -- mode then moves it but never resizes it:
+    --   u.size()         the frame's width and height
+    --   u.snap           every placement snaps its centre (see Place)
+    --   u.noAnchorTarget, u.noSizeMatchTarget  as MakeUnlockElement takes them
+    --   u.shown()        whether the frame is in use (default: the "enabled" setting)
+    -- Nothing is built while the feature is off (the unlock core calls getFrame
+    -- and applyPos for every element at each login).
+    function F.Start(apply, u)
+        local boot = CreateFrame("Frame")
+        boot:RegisterEvent("PLAYER_LOGIN")
+        boot:SetScript("OnEvent", function(self)
+            self:UnregisterAllEvents()
+            apply()
+            if not u then return end
+            local Shown = u.shown or Enabled
+            local e = {
+                key      = u.key,
+                label    = u.label,
+                group    = "Forever Essentials",
+                order    = u.order,
+                noAnchorTarget    = u.noAnchorTarget,
+                noSizeMatchTarget = u.noSizeMatchTarget,
+                isHidden = function() return not Shown() end,
+                getFrame = function()
+                    return Shown() and u.frame(true) or nil
+                end,
+                savePos = function(_, point, relPoint, x, y)
+                    if not point then return end
+                    Cfg().pos = { point = point, relPoint = relPoint, x = x, y = y }
+                    if not EllesmereUI._unlockActive then Place(u.frame(), u.snap) end
+                end,
+                loadPos = SavedPos,
+                clearPos = function()
+                    Cfg().pos = nil
+                    Place(u.frame(), u.snap)
+                end,
+                applyPos = function()
+                    if Shown() then Place(u.frame(true), u.snap) end
+                end,
+            }
+            if u.size then
+                e.noResize = true
+                e.getSize = u.size
+            else
+                e.getSize = function() return Get("width"), u.height() end
+                e.setWidth = function(_, w)
+                    Cfg().width = math.max(u.minWidth, EllesmereUI.PP.Snap(w))
+                    u.applyStyle()
+                    if EllesmereUI._unlockActive and EllesmereUI.RepositionBarToMover then
+                        EllesmereUI.RepositionBarToMover(u.key)
+                    end
+                end
+            end
+            EllesmereUI:RegisterUnlockElements({ EllesmereUI.MakeUnlockElement(e) }, "EllesmereUIForeverEssentials")
+        end)
+    end
+    return F
+end
+
+-------------------------------------------------------------------------------
+--  Micro menu click layer (Classic Spellbook, Classic Talents)
+-------------------------------------------------------------------------------
+-- A plain button of ours over one of the game's micro buttons, for a window of
+-- ours that stands in for the one the button opens. The game runs no secure
+-- snippet wrapped on these buttons (they are not explicitly protected), so the
+-- layer takes their left and right clicks instead. It is a child of the micro
+-- button, so it shows, hides and fades with it; hover passes through to the
+-- button (its tooltip and highlight), and so do the middle and side mouse
+-- buttons, which Quick Keybind mode binds there. A click does nothing while
+-- the game has the button disabled. Built out of combat, since its mouse
+-- routing is blocked in combat on every frame; nil without the button.
+function ns.MicroClickLayer(microName, onClick)
+    local micro = _G[microName]
+    if not micro or InCombatLockdown() then return nil end
+    local layer = CreateFrame("Button", nil, micro)
+    layer:SetAllPoints(micro)
+    layer:SetFrameLevel(micro:GetFrameLevel() + 5)
+    layer:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    layer:SetPropagateMouseMotion(true)
+    layer:SetPassThroughButtons("MiddleButton", "Button4", "Button5")
+    layer:SetScript("OnClick", function()
+        if micro:IsEnabled() then onClick() end
+    end)
+    return layer
+end
+
+-------------------------------------------------------------------------------
+--  Auction prices (Loot Feed, Junk Items)
+-------------------------------------------------------------------------------
+-- Auctionator's API, while that addon is loaded.
+function ns.AuctionAPI()
+    local api = Auctionator and Auctionator.API and Auctionator.API.v1
+    return api and api.GetAuctionPriceByItemLink and api or nil
+end
+
+-- BootyBayBroker, while that addon is loaded.
+function ns.Broker()
+    local ace = LibStub and LibStub("AceAddon-3.0", true)
+    local bbb = ace and ace:GetAddon("BootyBayBroker", true)
+    return bbb and type(bbb.ItemUnitValue) == "function" and bbb or nil
+end
+
+ns.PRICE_SOURCES = { AUCTIONATOR = "Auctionator", BBB = "BootyBayBroker" }
+ns.PRICE_SOURCE_ORDER = { "AUCTIONATOR", "BBB" }
+
+function ns.PriceSourceLoaded(source)
+    if source == "BBB" then return ns.Broker() ~= nil end
+    return ns.AuctionAPI() ~= nil
+end
+
+-- The price addon in use: the chosen one while it is loaded, else whichever
+-- is loaded (Auctionator first).
+function ns.PriceSource(choice)
+    if (choice == "BBB" or not ns.AuctionAPI()) and ns.Broker() then return "BBB" end
+    return "AUCTIONATOR"
+end
+
+-- What the price addon values one of the item at, when it has a price:
+-- Auctionator's last seen listing, or BootyBayBroker's unit value. The same
+-- choice as ns.PriceSource, with each addon looked up once.
+function ns.AuctionPrice(link, choice)
+    local api = ns.AuctionAPI()
+    local bbb = (choice == "BBB" or not api) and ns.Broker() or nil
+    local ok, price
+    if bbb then
+        local itemID = C_Item.GetItemInfoInstant(link)
+        if not itemID then return end
+        ok, price = pcall(bbb.ItemUnitValue, bbb, itemID)
+    elseif api then
+        ok, price = pcall(api.GetAuctionPriceByItemLink, "EllesmereUI", link)
+    end
+    if ok and type(price) == "number" and price > 0 then return price end
+end
