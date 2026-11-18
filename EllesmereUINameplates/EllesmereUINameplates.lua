@@ -325,6 +325,7 @@ local defaults = {
     friendlyLevelDiffColor = false,
     friendlyGroupBrackets = false,
     showEnemyPets = false,
+    forceTargetPlate = false,  -- Force Nameplate on Current Target (EUI_Nameplates_TargetForce.lua)
     -- Blizzard's nameplateSize CVar (1 Small .. 5 Huge), applied on load; 3 = Large, the old forced value.
     nameplateSize = 3,
     font = "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF",
