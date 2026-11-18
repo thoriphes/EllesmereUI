@@ -202,9 +202,6 @@ local FOLDER_BLACKLIST = {
     EllesmereUIForeverEssentials = true,
     -- Each action menu picks its own specs (Assign to Spec) instead.
     EllesmereUIQuickdraw         = true,
-    -- A per-character store outside the profiles; each assignment picks its
-    -- own spec (Assign For) instead.
-    EllesmereUILoadoutManager    = true,
     -- Its settings are look and search filters, not spec choices.
     EllesmereUIGroupFinder       = true,
     -- Its settings live in a store of its own outside the profiles.
@@ -499,6 +496,9 @@ end
 -- reload). CDM excludes spell-coupled subtrees (per-spell tiers, active states)
 -- and stores owned by the unlock LAYER system (positions, grow).
 local SETTING_BLACKLIST = {
+    EllesmereUIUnitFrames = {
+        restedIndicator = true, -- the Rested Indicator's per-profile settings: one look for every spec
+    },
     EllesmereUIChat = {
         showFriends = true, showDurability = true, showCopy = true,
         showPortals = true, showVoice = true, showSettings = true,

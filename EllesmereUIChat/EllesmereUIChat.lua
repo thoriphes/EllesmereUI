@@ -973,6 +973,20 @@ function ECHAT._PositionChatPanelNow(cf)
         -- the user dropped it. Costs nothing when healthy -- this branch is
         -- the existing nil-rect early-out.
         if cf ~= _G.ChatFrame1 and not cf.isDocked and cf:IsShown()
+            and cf:GetNumPoints() == 0 and not d._cfWasDocked and d._cfL
+            and _G.MOVING_CHATFRAME ~= cf then
+            -- Resize grip drag (never sets MOVING_CHATFRAME) strips points every frame:
+            -- pin the last top-left so the window grows instead of jumping.
+            local l0, t0 = d._cfL, d._cfT
+            pcall(cf.SetPoint, cf, "TOPLEFT", UIParent, "BOTTOMLEFT", l0, t0)
+            -- The grip strips that pin again next frame; size stays readable,
+            -- so place the panel from the pinned corner plus the live size.
+            local w, h = cf:GetWidth(), cf:GetHeight()
+            local issec = _G.issecretvalue
+            if w and h and not (issec and (issec(w) or issec(h))) then
+                l, t, r, cb = l0, t0, l0 + w, t0 - h
+            end
+        elseif cf ~= _G.ChatFrame1 and not cf.isDocked and cf:IsShown()
             and cf:GetNumPoints() == 0 then
             local cx, cy = GetCursorPosition()
             local es = cf:GetEffectiveScale()
@@ -988,7 +1002,7 @@ function ECHAT._PositionChatPanelNow(cf)
                 end)
             end
         end
-        return
+        if not (l and t and r and cb) then return end
     end
     -- Secret-gated like every other per-tick rect read (grip doctrine): a
     -- mid-drag or restricted-content rect must never reach the arithmetic
@@ -1474,12 +1488,13 @@ do
         -- context menu. The linger covers quick menu clicks; the menu check
         -- covers long browses -- tab menu actions (close, rename, new window)
         -- land while the mouse has been in the menu far past the linger, and
-        -- the shown/selection watches above must see their results. Rename
-        -- goes one step further, into a popup typed long after the linger,
-        -- so the watcher stays armed while that popup is up.
+        -- the shown/selection watches above must see their results.
         local menuOpen = Menu and Menu.GetManager and Menu.GetManager():IsAnyMenuOpen()
-        local renameOpen = StaticPopup_Visible and StaticPopup_Visible("NAME_CHAT")
-        if hoverCount == 0 and not editMode and not unlockHold and not menuOpen and not renameOpen and GetTime() >= lingerUntil then
+        -- New Window and Rename open a name popup that acts on Accept, long
+        -- after the menu closed: stay armed while it is up.
+        local namePopup = StaticPopup_Visible and StaticPopup_Visible("NAME_CHAT")
+        if hoverCount == 0 and not editMode and not unlockHold and not menuOpen and not namePopup
+            and GetTime() >= lingerUntil then
             ECHAT.PositionChatPanelsNow()
             follower:Hide()
         end
@@ -1490,6 +1505,11 @@ do
     -- leak across dock rebuilds.
     function ECHAT.FollowArm()
         hoverCount = hoverCount + 1
+        follower:Show()
+    end
+    -- One-shot wake with the standard linger; an open menu then holds it.
+    function ECHAT.FollowKick()
+        lingerUntil = max(lingerUntil, GetTime() + 4)
         follower:Show()
     end
     function ECHAT.FollowRelease()
