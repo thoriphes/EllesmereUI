@@ -250,7 +250,8 @@ local frameCache = CreateFramePool("Frame", UIParent, nil, nil, false, function(
     PP.Size(plate.classFrame, _reIconSz, _reIconSz)
     PP.Point(plate.classFrame, "LEFT", plate.health, "LEFT", 2, 0)
     -- INDICATOR TIER (see raidFrame). MEDIUM strata + low level (health+3=13) so the
-    -- classification/elite/rare/quest indicator sits below auras/text but above the flattened bar.
+    -- Elite/Rare Indicator sits below auras/text but above the flattened bar. The Quest
+    -- Indicator's frame (plate.questFrame) is built on first use by UpdateClassification.
     plate.classFrame:SetFrameStrata("MEDIUM")
     plate.classFrame:SetFrameLevel(plate.health:GetFrameLevel() + 3)
     plate.classFrame:Hide()
@@ -749,16 +750,17 @@ function ns.RefreshCastBorderColor()
     if ns.GetWrapBorderCastbar() then ns.ApplyBorderWrapToAll() end
 end
 
+-- Height of the rectangle an enemy plate is stacked by: the name, the health bar and the cast
+-- bar, times Stacked Nameplate Spacing.
+function ns.NP_StackHeight()
+    return (4 + GetEnemyNameTextSize() + GetHealthBarHeight() + GetCastBarHeight()) * GetStackSpacingScale() / 100
+end
+
 function ns.RefreshStackingBounds()
-    local scale = GetStackSpacingScale() / 100
-    local barH = GetHealthBarHeight()
-    local castH2 = GetCastBarHeight()
-    local nameGap = 4 + GetEnemyNameTextSize()
-    local totalH = nameGap + barH + castH2
-    local w = GetHealthBarWidth()
+    local w, h = GetHealthBarWidth(), ns.NP_StackHeight()
     for _, plate in pairs(ns.plates) do
         if plate._stackBounds then
-            plate._stackBounds:SetSize(w, totalH * scale)
+            plate._stackBounds:SetSize(w, h)
         end
     end
 end
@@ -786,24 +788,34 @@ function ns.NP_HitboxHeight(db)
 end
 
 function ns.RefreshHitboxSize()
-    if InCombatLockdown() then return end
+    -- Protected in combat: redone as combat ends.
+    if InCombatLockdown() then ns.CombatQueue.Defer("NPHitboxSize", ns.RefreshHitboxSize); return end
     if not C_NamePlate or not C_NamePlate.SetNamePlateSize then return end
     local db = p or defaults
     local sx = (db.hitboxScaleX or 100) / 100
     C_NamePlate.SetNamePlateSize(GetHealthBarWidth() * sx, ns.NP_HitboxHeight(db))
     -- The frame grows from its CENTER, so a taller size enlarges the hitbox evenly above and
-    -- below the unit. -10000 insets let the hit rect fill the full (centered) frame.
+    -- below the unit. -10000 insets let the hit rect fill the full (centered) frame. The frame
+    -- is the click area, everywhere: an inset is applied to the hit rect Blizzard's own unit
+    -- frame sets inside the frame, which moves with Blizzard's nameplate size and style, so
+    -- only an inset that reaches the frame's edges gives a click area of a known size.
     if C_NamePlateManager and C_NamePlateManager.SetNamePlateHitTestInsets
        and Enum and Enum.NamePlateType then
         C_NamePlateManager.SetNamePlateHitTestInsets(Enum.NamePlateType.Enemy, -10000, -10000, -10000, -10000)
         C_NamePlateManager.SetNamePlateHitTestInsets(Enum.NamePlateType.Friendly, -10000, -10000, -10000, -10000)
+        -- Friendly Click Through owns the friendly insets while it is on.
+        if ns.UpdateFriendlyClickThrough then ns.UpdateFriendlyClickThrough() end
     end
-    -- Anchor content at the frame center (GetHitboxYShift is 0): the frame grows
-    -- centered, so the bar stays put and the hitbox stays centered on it.
+    -- Content hangs from the frame's centre (GetHitboxYShift is 0): the frame grows centred,
+    -- so the bar stays put and the hitbox stays centred on it. A plate takes the shift as it
+    -- is spawned, so the live ones are re-anchored only when the shift changed.
     local yShift = GetHitboxYShift()
-    for _, plate in pairs(ns.plates) do
-        plate:ClearAllPoints()
-        plate:SetPoint("CENTER", plate.nameplate, "CENTER", 0, yShift)
+    if yShift ~= ns._hitboxYShift then
+        ns._hitboxYShift = yShift
+        for _, plate in pairs(ns.plates) do
+            plate:ClearAllPoints()
+            plate:SetPoint("CENTER", plate.nameplate, "CENTER", 0, yShift)
+        end
     end
 end
 
@@ -904,6 +916,7 @@ function ns.RefreshAllSettings()
     -- Friendly bar and name colours: a profile or override flip of the class colour
     -- toggles reaches the live full plates.
     if ns.RefreshFriendlyColors then ns.RefreshFriendlyColors() end
+    if ns.NP_SyncFriendlyHealthTextSide then ns.NP_SyncFriendlyHealthTextSide() end
     -- A profile or override flip of the friendly Name Format, the Subtitle Text
     -- mode or its guild brackets reaches the live friendly names (one compare
     -- while they are unchanged).

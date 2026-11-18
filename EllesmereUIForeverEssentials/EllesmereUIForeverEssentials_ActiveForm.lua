@@ -15,6 +15,7 @@ local DEFAULTS = {
     enabled  = false,
     iconSize = 40,
     zoom     = 8,   -- percent of the icon cropped from each edge
+    opacity  = 100,
     -- Border keys as the other bordered surfaces store them: borderSize is
     -- the legacy step, borderSizePx the exact size beside it (EllesmereUI.BorderPx).
     borderSize = 1, borderTexture = "solid",
@@ -62,8 +63,15 @@ local eventFrame = CreateFrame("Frame")
 local active = false         -- shown, with its events registered
 local visRegistered = false  -- on the shared visibility dispatcher
 
-local function IsSecret(v)
-    return issecretvalue and issecretvalue(v)
+local IsSecret = EllesmereUI.IsSecret
+
+local function BuildBuffIDs()
+    if buffIDs then return end
+    buffIDs = {}
+    for i = 1, #buffSpells do
+        local ids = buffSpells[i]
+        for j = 1, #ids do buffIDs[ids[j]] = true end
+    end
 end
 
 -- Only the player's own buffs count, so another hunter's Aspect of the Pack or
@@ -73,13 +81,7 @@ end
 local function BuffIcon()
     if not buffDirty then return buffIcon end
     if EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted() then return buffIcon end
-    if not buffIDs then
-        buffIDs = {}
-        for i = 1, #buffSpells do
-            local ids = buffSpells[i]
-            for j = 1, #ids do buffIDs[ids[j]] = true end
-        end
-    end
+    BuildBuffIDs()
     buffDirty = false
     buffIcon, buffInstance = nil, nil
     for i = 1, 40 do
@@ -167,8 +169,15 @@ end
 -- Stance and form changes only repaint (the buff answer is kept); aura
 -- changes rescan only when they can matter; combat end and a loading screen
 -- rescan, since a restricted stretch may have hidden a change.
-local function OnEvent(_, event, _, info)
-    if event == "UNIT_AURA" then
+local function OnEvent(_, event, _, info, spellID)
+    if event == "UNIT_SPELLCAST_SUCCEEDED" then
+        -- Only while the buff scan cannot run (combat): own casts stay readable, a tracked
+        -- cast is the new aspect or aura, and the scan reruns once it can.
+        if not (EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted()) then return end
+        BuildBuffIDs()
+        if IsSecret(spellID) or not (spellID and buffIDs[spellID]) then return end
+        buffIcon, buffInstance, buffDirty = (C_Spell.GetSpellTexture(spellID)), nil, true
+    elseif event == "UNIT_AURA" then
         if not AuraChangeMatters(info) then return end
         buffDirty = true
     elseif event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_ENTERING_WORLD" then
@@ -183,6 +192,7 @@ end
 
 local function Style()
     frame:SetSize(SnappedSize(), SnappedSize())
+    frame:SetAlpha(Get("opacity") / 100)
     local z = Get("zoom") / 100
     tex:SetTexCoord(z, 1 - z, z, 1 - z)
     local step, texture = Get("borderSize"), Get("borderTexture")
@@ -218,6 +228,7 @@ local function SetActive(on)
         eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
         if buffSpells then
             eventFrame:RegisterUnitEvent("UNIT_AURA", "player")
+            eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
             eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
             buffDirty = true  -- nothing was watched while inactive
         end

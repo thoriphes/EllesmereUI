@@ -410,10 +410,12 @@ end
 
 -- While the cast icon shows on the portrait (backdrop +2), the backdrop's shape
 -- border, inner shadow and Outer Ring move onto an overlay at backdrop +3, so
--- the icon sits under them; when it hides they go back under a 3D model. The
--- overlay is a child of the backdrop, so the backdrop's shape mask still clips
--- them. Built through the options page pool (the preview shares this), which
--- also hands a pooled texture back to its own frame on reset.
+-- the icon sits under them; when it hides they go back to the backdrop, the
+-- shape border to its rest over a 3D model (bd._ringHome, from
+-- ns.UF_PortraitShapeModel). The overlay is a child of the backdrop, so the
+-- backdrop's shape mask still clips them. Built through the options page pool
+-- (the preview shares this), which also hands a pooled texture back to its
+-- own frame on reset.
 local function MoveDecoration(tex, parent)
     if tex and tex:GetParent() ~= parent then tex:SetParent(parent) end
 end
@@ -431,7 +433,7 @@ local function CastIconPortraitOverlay(bd, on)
         return
     end
     local parent = on and overlay or bd
-    MoveDecoration(bd._shapeBorderTex, parent)
+    MoveDecoration(bd._shapeBorderTex, on and overlay or bd._ringHome or bd)
     MoveDecoration(bd._innerShadow, parent)
     MoveDecoration(bd._outerRing, parent)
 end
@@ -584,6 +586,7 @@ local function CastbarUnlockKey(unit)
     if unit == "player" then return "playerCastbar"
     elseif unit == "target" then return "targetCastbar"
     elseif unit == "focus" then return "focusCastbar"
+    elseif unit == "pet" then return "petCastbar"
     end
 end
 
@@ -667,8 +670,10 @@ local function ApplyUnitFrameCastColor(castbar)
         -- shield wash below would cover the texture. The fold is secret-safe.
         local ev = C_CurveUtil.EvaluateColorValueFromBoolean
         local uninterruptible = GetCastbarUninterruptible(castbar)
+        -- Vertex alpha is the texture's alpha: keep Fill Opacity (and idle 0), not 1.
         castbar.castTintLayer:SetVertexColor(ev(uninterruptible, uc.r, r),
-            ev(uninterruptible, uc.g, g), ev(uninterruptible, uc.b, b), 1)
+            ev(uninterruptible, uc.g, g), ev(uninterruptible, uc.b, b),
+            castbar._castTintOn and (castbar._fillOp or 1) or 0)
         -- Same alpha as the ReloadFrames SetStatusBarColor sites.
         local baseA = ((settings and settings.castFillOpacity or 100) < 100) and 0
             or (db and db.profile.castbarOpacity or 1)
@@ -1113,7 +1118,8 @@ local function CreateCastBar(frame, unit, settings)
             cb.Time:ClearAllPoints()
             cb.Time:SetWidth(math.max(timerW * 2.5, barW * 0.5))
             cb.Time:SetJustifyH(jh)
-            cb.Time:SetPoint(pt, cb, pt, xb + (cb._durOX or 0), (cb._durOY or 0))
+            local _, _, _, _, timerY = ns.UF_CastChromeGeom()
+            cb.Time:SetPoint(pt, cb, pt, xb + (cb._durOX or 0), (cb._durOY or 0) + timerY)
         end
         -- Re-flow so a live JustifyH change takes effect on already-rendered text.
         ns.ReflowFontString(cb.Text)
@@ -1670,8 +1676,9 @@ local function ApplyBlizzCastbarState()
 end
 
 -- Hide While Using Gamepad (Global Settings > Gamepad): Blizzard's gamepad UI
--- draws its own player cast bar, so ours stands down while a controller is
--- connected. It rides the same element switch "Show Player Cast Bar" off uses,
+-- draws its own player cast bar, so ours stands down while EllesmereUI.PadModeOn
+-- says gamepad mode is on (WoW Forever's Gamepad interface style, elsewhere a
+-- connected controller). It rides the same element switch "Show Player Cast Bar" off uses,
 -- keyed on a runtime flag the reload and visibility passes also read
 -- (ns._ufCastPadHidden); the saved toggle is never written. Blizzard's bar
 -- stays suppressed, except under WoW Forever's Gamepad interface style: from
@@ -1696,7 +1703,7 @@ function ns.UF_ApplyGamepadCastbar(padOn)
     end
     local hide = false
     if want then
-        if padOn == nil then padOn = EllesmereUI.PadConnected() end
+        if padOn == nil then padOn = EllesmereUI.PadModeOn() end
         hide = padOn and true or false
     end
     if hide == (ns._ufCastPadHidden == true) then return end

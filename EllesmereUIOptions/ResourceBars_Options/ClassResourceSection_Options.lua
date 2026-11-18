@@ -89,7 +89,9 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
 
     local _, h
     local function cfg() return ctx.cfg() end
-    local function classOff() local c = cfg(); return not (c and c.enabled) end
+    -- Forever druid without Cat Form: no combo points yet, so the section reads off.
+    local CatLocked = EllesmereUI.ForeverDruidLacksCat
+    local function classOff() local c = cfg(); return CatLocked() or not (c and c.enabled) end
 
     local hdr
     hdr, h = W:SectionHeader(parent, "CLASS RESOURCE BAR", y);  y = y - h
@@ -203,7 +205,9 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
     local classEnableRow
     classEnableRow, h = W:DualRow(parent, y,
         { type = "toggle", text = "Show Class Resource",
-          getValue = function() local c = cfg(); return c and c.enabled end,
+          disabled = CatLocked,
+          disabledTooltip = "Learn Cat Form to use combo points.", rawTooltip = true,
+          getValue = function() local c = cfg(); return not CatLocked() and c and c.enabled end,
           -- Rows below Row 1 are hidden while off, so the flip must force the full rebuild
           setValue = EllesmereUI.DependentSetValue(
               function() local c = cfg(); return c and c.enabled end,
@@ -232,7 +236,7 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
     -- Class Resource cog: Simple only (Hide Power Bar if Resource is a row of
     -- the Bar Display page's BAR SHIFTING section)
     if not ctx.advanced then
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = classEnableRow._leftRegion
             EllesmereUI.BuildInlineCog(rgn, {
                 disabled = classOff,
@@ -397,27 +401,12 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
             end
         end
         if not ctx.advanced and ctx.syncRows then ctx.syncRows.classBorder = classBsRow._rightRegion end
-        if not EllesmereUI._prebuilding and not ns.ERB_ClassicBorderRow() then
+        if not ns.ERB_ClassicBorderRow() then
             local rgn = classBsRow._rightRegion
             local ctrl = rgn._control
-            local borderSwatch, updateBorderSwatch = EllesmereUI.BuildColorSwatch(
-                rgn, classBsRow:GetFrameLevel() + 3,
-                function()
-                    local c = cfg()
-                    return (c and c.borderR or 0), (c and c.borderG or 0),
-                           (c and c.borderB or 0), (c and c.borderA or 1)
-                end,
-                function(r, g, b, a)
-                    local c = cfg(); if not c then return end
-                    c.borderR, c.borderG, c.borderB, c.borderA = r, g, b, a
-                    SmoothRefresh(); EllesmereUI:RefreshPage()
-                end,
-                true, 20)
-            PP.Point(borderSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-            rgn._lastInline = borderSwatch  -- the Corner Radius cog chains left of the swatch
             -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog on the
             -- border size control. The stock styles keep the bars square.
-            if not EllesmereUI._prebuilding then
+            do
                 EllesmereUI.BuildInlineCog(classBsRow._rightRegion, {
                     title = "Corner Radius", tip = "Corner Radius",
                     disabled = function()
@@ -438,12 +427,29 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
                        function(v) local c = cfg(); if not c then return end; c.cornerMask = v; RebuildClass() end),
                 })
             end
+            if not EllesmereUI._prebuilding then
+            local borderSwatch, updateBorderSwatch = EllesmereUI.BuildColorSwatch(
+                rgn, classBsRow:GetFrameLevel() + 3,
+                function()
+                    local c = cfg()
+                    return (c and c.borderR or 0), (c and c.borderG or 0),
+                           (c and c.borderB or 0), (c and c.borderA or 1)
+                end,
+                function(r, g, b, a)
+                    local c = cfg(); if not c then return end
+                    c.borderR, c.borderG, c.borderB, c.borderA = r, g, b, a
+                    SmoothRefresh(); EllesmereUI:RefreshPage()
+                end,
+                true, 20)
+            PP.Point(borderSwatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
+            rgn._lastInline = borderSwatch  -- left of the Corner Radius cog
             EllesmereUI.RegisterWidgetRefresh(function() updateBorderSwatch() end)
+            end
         end
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = classBsRow._leftRegion
             local sepValues, sepOrder = ns.ERB_SeparatorArtValues(true)
-            local cogBtn = EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+            local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
                 title = "Border Options",
                 rows = {
                     { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -560,13 +566,15 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
                       end },
                 },
             })
-            local function UpdateCogVis()
-                local c = cfg()
-                local tex = c and c.borderTexture or "solid"
-                if tex == "solid" or ns.ERB_ClassicBorderRow() then cogBtn:Hide() else cogBtn:Show() end
+            if not EllesmereUI._prebuilding then
+                local function UpdateCogVis()
+                    local c = cfg()
+                    local tex = c and c.borderTexture or "solid"
+                    if tex == "solid" or ns.ERB_ClassicBorderRow() then cogBtn:Hide() else cogBtn:Show() end
+                end
+                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                UpdateCogVis()
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-            UpdateCogVis()
         end
         -- Cross-bar sync icons: Simple page only
         if not ctx.advanced and ctx.syncRows and not EllesmereUI._prebuilding and ns.ERB_ClassicBorderRow() then
@@ -634,10 +642,10 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
 
         -- Pip Border cog on Border Style (left region): per-pip borders
         -- instead of one border around the whole bar.
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = classBsRow._leftRegion
             local lastInline = rgn._lastInline or rgn._control
-            local cogBtn = EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.COGS_ICON,
+            local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
                 title = "Pip Border",
                 rows = {
                     { type = "toggle", label = "Border on individual pips",
@@ -669,21 +677,23 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
                 },
             })
 
-            cogBtn:Show()
+            if not EllesmereUI._prebuilding then
+                cogBtn:Show()
 
-            -- Position only: the texture-style dropdown adds/removes its own
-            -- inline elements, so the cog re-seats beside whichever is last.
-            local function UpdateCogPos()
-                local c = cfg()
-                local tex = c and c.borderTexture or "solid"
-                if tex == "solid" then
-                    PP.Point(cogBtn, "RIGHT", rgn._control, "LEFT", -8, 0)
-                else
-                    PP.Point(cogBtn, "RIGHT", lastInline, "LEFT", -8, 0)
+                -- Position only: the texture-style dropdown adds/removes its own
+                -- inline elements, so the cog re-seats beside whichever is last.
+                local function UpdateCogPos()
+                    local c = cfg()
+                    local tex = c and c.borderTexture or "solid"
+                    if tex == "solid" then
+                        PP.Point(cogBtn, "RIGHT", rgn._control, "LEFT", -8, 0)
+                    else
+                        PP.Point(cogBtn, "RIGHT", lastInline, "LEFT", -8, 0)
+                    end
                 end
+                EllesmereUI.RegisterWidgetRefresh(UpdateCogPos)
+                UpdateCogPos()
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogPos)
-            UpdateCogPos()
         end
     end
 
@@ -803,6 +813,41 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
               c.fillOpacity = v; RebuildClass(); SmoothRefresh()
           end }
     );  y = y - h
+    -- Fill Color inline cog: Charged Combo Point color
+    do
+        local rgn = classBorderRow._rightRegion
+        EllesmereUI.BuildInlineCog(rgn, {
+            disabled = classOff,
+            disabledTooltip = "Class Resource",
+            title = "Fill Settings",
+            rows = {
+                { type = "toggle", label = "Darken Partially Filled Resources",
+                  tooltip = "Makes partially filled Soul Shards and Essence darker than completed ones.",
+                  get = function()
+                      local c = cfg()
+                      return c and c.darkenPartialPips ~= false
+                  end,
+                  set = function(v)
+                      local c = cfg(); if not c then return end
+                      c.darkenPartialPips = v; RefreshClass()
+                  end },
+                { type = "colorpicker", label = "Charged Color", hasAlpha = false,
+                  get = function()
+                      local c = cfg()
+                      if not c then return 0.44, 0.77, 1.00, 1 end
+                      return c.chargedR or 0.44, c.chargedG or 0.77,
+                             c.chargedB or 1.00, c.chargedA or 1
+                  end,
+                  set = function(cr, cg, cb, ca)
+                      local c = cfg(); if not c then return end
+                      c.chargedR, c.chargedG = cr, cg
+                      c.chargedB, c.chargedA = cb, ca
+                      RebuildClass(); SmoothRefresh()
+                  end },
+            },
+            footer = false,
+        })
+    end
     -- Fill Color inline swatches: custom / class / resource
     if not EllesmereUI._prebuilding then
     EllesmereUI.BuildInlineSwatches(classBorderRow._rightRegion, {
@@ -891,41 +936,6 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
              if c and c.darkTheme then return "This option requires Class Resource Bar Dark Mode to be off. Dark Mode colors can be adjusted in Global Settings -> Colors." end
              return "Class Resource"
          end })
-    -- Fill Color inline cog: Charged Combo Point color
-    end
-    if not EllesmereUI._prebuilding then
-        local rgn = classBorderRow._rightRegion
-        EllesmereUI.BuildInlineCog(rgn, {
-            disabled = classOff,
-            disabledTooltip = "Class Resource",
-            title = "Fill Settings",
-            rows = {
-                { type = "toggle", label = "Darken Partially Filled Resources",
-                  tooltip = "Makes partially filled Soul Shards and Essence darker than completed ones.",
-                  get = function()
-                      local c = cfg()
-                      return c and c.darkenPartialPips ~= false
-                  end,
-                  set = function(v)
-                      local c = cfg(); if not c then return end
-                      c.darkenPartialPips = v; RefreshClass()
-                  end },
-                { type = "colorpicker", label = "Charged Color", hasAlpha = false,
-                  get = function()
-                      local c = cfg()
-                      if not c then return 0.44, 0.77, 1.00, 1 end
-                      return c.chargedR or 0.44, c.chargedG or 0.77,
-                             c.chargedB or 1.00, c.chargedA or 1
-                  end,
-                  set = function(cr, cg, cb, ca)
-                      local c = cfg(); if not c then return end
-                      c.chargedR, c.chargedG = cr, cg
-                      c.chargedB, c.chargedA = cb, ca
-                      RebuildClass(); SmoothRefresh()
-                  end },
-            },
-            footer = false,
-        })
     end
     if not ctx.advanced and ctx.syncRows then
         ctx.syncRows.classOpacity = classBorderRow._leftRegion
@@ -951,7 +961,7 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
     end
 
     -- Out of Combat Opacity cog: dims the Class Resource bar to this alpha out of combat (100 = no fade); applied by ns.ResolveBarAlpha in UpdateVisibility, which reacts to combat.
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = classBorderRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
             disabled = function() local c = cfg(); return c and not c.enabled end,
@@ -999,42 +1009,8 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
           end },
         { type = "label", text = "Threshold & Hash Lines" }
     );  y = y - h
-    -- Resource Text inline color swatch
-    if not EllesmereUI._prebuilding then
-        local rgn = classColorRow._leftRegion
-        local ctrl = rgn._control
-        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
-            rgn, classColorRow:GetFrameLevel() + 3,
-            function()
-                local p = DB()
-                if not p then return 1, 1, 1, 1 end
-                return p.secondary.textR or 1, p.secondary.textG or 1, p.secondary.textB or 1, 1
-            end,
-            function(r, g, b)
-                local p = DB(); if not p then return end
-                p.secondary.textR, p.secondary.textG, p.secondary.textB = r, g, b
-                RefreshClass()
-            end,
-            false, 20)
-        PP.Point(swatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        local swatchDis = CreateFrame("Frame", nil, swatch)
-        swatchDis:SetAllPoints(); swatchDis:SetFrameLevel(swatch:GetFrameLevel() + 10); swatchDis:EnableMouse(true)
-        swatchDis:SetScript("OnEnter", function()
-            EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Resource Text"))
-        end)
-        swatchDis:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        local function UpdateSwatchDis()
-            updateSwatch()
-            local p = DB()
-            local off = not p or not p.secondary.enabled or not p.secondary.showText
-            if off then swatch:SetAlpha(0.3); swatchDis:Show() else swatch:SetAlpha(1); swatchDis:Hide() end
-        end
-        EllesmereUI.RegisterWidgetRefresh(UpdateSwatchDis)
-        UpdateSwatchDis()
-    end
     -- Resource Text inline cog: size + position
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = classColorRow._leftRegion
         local resTextRows = {
             { type = "toggle", label = "Show %",
@@ -1106,7 +1082,7 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
                     end })
             end
         end
-        local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
+        EllesmereUI.BuildInlineCog(rgn, {
             disabled = function()
                 local p = DB(); return not p or not p.secondary.enabled or not p.secondary.showText
             end,
@@ -1115,7 +1091,42 @@ function ns.ERB_BuildClassResourceSection(parent, y, ctx)
             rows = resTextRows,
             footer = false,
         })
-        AddFormTextBtn(rgn, cogBtn, function() return DB() and DB().secondary end, RefreshClass)
+    end
+    -- Resource Text inline color swatch, left of the cog; the druid per-form
+    -- button left of it
+    if not EllesmereUI._prebuilding then
+        local rgn = classColorRow._leftRegion
+        local ctrl = rgn._control
+        local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
+            rgn, classColorRow:GetFrameLevel() + 3,
+            function()
+                local p = DB()
+                if not p then return 1, 1, 1, 1 end
+                return p.secondary.textR or 1, p.secondary.textG or 1, p.secondary.textB or 1, 1
+            end,
+            function(r, g, b)
+                local p = DB(); if not p then return end
+                p.secondary.textR, p.secondary.textG, p.secondary.textB = r, g, b
+                RefreshClass()
+            end,
+            false, 20)
+        PP.Point(swatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        local swatchDis = CreateFrame("Frame", nil, swatch)
+        swatchDis:SetAllPoints(); swatchDis:SetFrameLevel(swatch:GetFrameLevel() + 10); swatchDis:EnableMouse(true)
+        swatchDis:SetScript("OnEnter", function()
+            EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Resource Text"))
+        end)
+        swatchDis:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        local function UpdateSwatchDis()
+            updateSwatch()
+            local p = DB()
+            local off = not p or not p.secondary.enabled or not p.secondary.showText
+            if off then swatch:SetAlpha(0.3); swatchDis:Show() else swatch:SetAlpha(1); swatchDis:Hide() end
+        end
+        EllesmereUI.RegisterWidgetRefresh(UpdateSwatchDis)
+        UpdateSwatchDis()
+        AddFormTextBtn(rgn, swatch, function() return DB() and DB().secondary end, RefreshClass)
     end
 
 		-- class settings [start]

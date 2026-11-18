@@ -72,12 +72,38 @@ initFrame:SetScript("OnEvent", function(self)
             apply = apply,
         }
     end
+    -- A Border Style dropdown whose first entry, Default, leaves <prefix>BorderTexture unset
+    -- (the surface's own border): its values and order, and the write for a pick.
+    local function DefaultableBorderValues()
+        local values, order = EllesmereUI.GetBorderTextureDropdown()
+        values.default = "Default"
+        table.insert(order, 1, "default")
+        return values, order
+    end
+    local function SetDefaultableBorderStyle(prefix, v)
+        local db = EllesmereUIDB
+        if v == "default" then
+            db[prefix.."BorderTexture"] = nil
+        else
+            local c, b = EllesmereUI.GetBorderStyleSelectDefaults(v)
+            db[prefix.."BorderTexture"] = v
+            db[prefix.."BorderBehind"] = b
+            db[prefix.."BorderColor"] = c
+            -- Full opacity and the style's own size: the 18% default leaves textured art faded
+            db[prefix.."BorderOpacity"] = 1
+            local size = EllesmereUI.GetBorderDefaultSize(nil, v)
+            if size then db[prefix.."BorderThickness"] = EllesmereUI.BORDER_LABEL_OF_STEP[size] end
+        end
+        db[prefix.."BorderOffsetX"] = nil
+        db[prefix.."BorderOffsetY"] = nil
+        if db[prefix.."BorderThicknessPx"] then db[prefix.."BorderThicknessPx"] = false end
+    end
     -- A border row's inline controls: the Accent | Class | Custom color mode swatches left of
-    -- its Border Size, and the Show Behind cog (allowBehind) left of its style. opts: apply =
-    -- run after a pick (the Loot Window card's live refresh); quality = { key, tip } adds a
-    -- Quality swatch whose own color is saved at key.
+    -- its Border Size, and the Show Behind cog (allowBehind) left of its style. A cog built on
+    -- the Border Size half before this call keeps its place beside the control: the swatches
+    -- chain left of it. opts: apply = run after a pick (the Loot Window card's live refresh);
+    -- quality = { key, tip } adds a Quality swatch whose own color is saved at key.
     local function AttachBorderControls(row, prefix, disabledFn, allowBehind, opts)
-        if EllesmereUI._prebuilding then return end
         local PP = EllesmereUI.PanelPP
         local apply = opts and opts.apply
         local left, right = row._leftRegion, row._rightRegion
@@ -87,15 +113,16 @@ initFrame:SetScript("OnEvent", function(self)
             local popupRows = {
                 { type="toggle", label="Show Behind",
                   get=function() return EllesmereUIDB[prefix.."BorderBehind"] or false end,
-                  set=function(v) EllesmereUIDB[prefix.."BorderBehind"]=v end },
+                  set=function(v) EllesmereUIDB[prefix.."BorderBehind"]=v; if apply then apply() end end },
             }
             EllesmereUI.BuildInlineCog(left, {
                 title = "Border Options", rows = popupRows,
-                icon = EllesmereUI.DIRECTIONS_ICON, anchorTo = left._control,
+                anchorTo = left._control,
                 disabled = disabledFn,
                 disabledTooltip = prefix == "tooltip" and "Reskin Tooltip" or "Reskin Popups and Menus",
             })
         end
+        if EllesmereUI._prebuilding then return end
 
         -- A pickable swatch (Custom, Quality) opens its color picker on a click while its mode
         -- is the active one; colorKey is where it saves (default the Custom color).
@@ -130,7 +157,7 @@ initFrame:SetScript("OnEvent", function(self)
             UpdSwatchState()
             return sw
         end
-        local accent=AddModeSwatch(right._control,"accent","Accent Color",function() local c=EllesmereUI.ELLESMERE_GREEN; return c.r,c.g,c.b,1 end,false)
+        local accent=AddModeSwatch(right._lastInline or right._control,"accent","Accent Color",function() local c=EllesmereUI.ELLESMERE_GREEN; return c.r,c.g,c.b,1 end,false)
         local class=AddModeSwatch(accent,"class","Class Color",function() local _,k=UnitClass("player"); local c=RAID_CLASS_COLORS[k]; return c.r,c.g,c.b,1 end,false)
         local last=AddModeSwatch(class,"custom","Custom Color",function() local c=EllesmereUIDB[prefix.."BorderColor"] or {r=1,g=1,b=1}; return c.r,c.g,c.b,EllesmereUIDB[prefix.."BorderOpacity"] or EllesmereUI.RESKIN.BRD_ALPHA end,true)
         local q = opts and opts.quality
@@ -138,6 +165,101 @@ initFrame:SetScript("OnEvent", function(self)
             last=AddModeSwatch(last,"quality",q.tip,function() local c=EllesmereUIDB[q.key] or {r=1,g=1,b=1}; return c.r,c.g,c.b,EllesmereUIDB[prefix.."BorderOpacity"] or EllesmereUI.RESKIN.BRD_ALPHA end,true,q.key)
         end
         right._lastInline=last
+    end
+
+    -- Header builder for runtime-painted samples at their on-screen size: the panel's scale
+    -- compensated, each shrunk only when wider than its column. cols = { { show, title } };
+    -- show(header, place) builds or re-hangs a sample, place(root) runs before its paint and
+    -- place(root, w, h) after it. Titled columns sit side by side, tops on one line under a
+    -- small title (the Mythic+ Tools header previews' look); one untitled column centres.
+    local PV_TITLE_H = 15
+    local function SampleHeaderBuilder(cols)
+        return function(header, hdrW)
+            local building, H = true, 0
+            local n = #cols
+            local titled = cols[1].title ~= nil
+            local titleH = titled and PV_TITLE_H or 0
+            local st = {}
+            local lblHost
+            if titled then
+                lblHost = CreateFrame("Frame", nil, header)
+                lblHost:SetAllPoints(header)
+                lblHost:SetFrameLevel(header:GetFrameLevel() + 3)
+            end
+            local function Layout()
+                local s = UIParent:GetEffectiveScale() / header:GetEffectiveScale()
+                local colW = ((building and hdrW or header:GetWidth()) - 2 * EllesmereUI.CONTENT_PAD) / n
+                local maxH = 0
+                for i = 1, n do
+                    local c = st[i]
+                    if c and c.w then
+                        local fit = (c.w > 0) and math.min(1, colW / (c.w * s)) or 1
+                        c.root:SetScale(s * fit)
+                        maxH = math.max(maxH, c.h * s * fit)
+                    end
+                end
+                local blockH = maxH + titleH
+                for i = 1, n do
+                    local c = st[i]
+                    if c and c.w then
+                        local root = c.root
+                        root:ClearAllPoints()
+                        if titled then
+                            -- Offsets in the sample's own units, snapped to its physical pixels.
+                            local hs = root:GetScale()
+                            local onePx = EllesmereUI.PP.perfect / root:GetEffectiveScale()
+                            local function Snap(v) return math.floor(v / onePx + 0.5) * onePx end
+                            local cx = (-(n - 1) / 2 + (i - 1)) * colW
+                            root:SetPoint("TOP", header, "CENTER", Snap(cx / hs), Snap((blockH / 2 - titleH) / hs))
+                            c.fs:ClearAllPoints()
+                            c.fs:SetPoint("BOTTOMLEFT", root, "TOPLEFT", 0, 3)
+                            c.fs:Show()
+                        else
+                            root:SetPoint("CENTER", header, "CENTER", 0, 0)
+                        end
+                    end
+                end
+                H = math.max(80, math.ceil(blockH + 40))
+                if not building and header:IsVisible() and math.abs(header:GetHeight() - H) > 1 then
+                    EllesmereUI:SetContentHeaderHeightSilent(H)
+                end
+            end
+            for i = 1, n do
+                local c = { }
+                st[i] = c
+                if titled then
+                    c.fs = EllesmereUI.MakeFont(lblHost, 11, nil, 1, 1, 1)
+                    c.fs:SetAlpha(0.6)
+                    c.fs:SetText(cols[i].title)
+                    c.fs:Hide()
+                end
+                cols[i].show(header, function(root, w, h)
+                    if not w then
+                        root:SetScale(UIParent:GetEffectiveScale() / header:GetEffectiveScale())
+                        return
+                    end
+                    c.root, c.w, c.h = root, w, h
+                    Layout()
+                end)
+            end
+            building = false
+            return H
+        end
+    end
+    -- Popups first, as the page's sections run.
+    local TooltipHeaderBuilder = SampleHeaderBuilder({
+        { title = EllesmereUI.L("Popups"), show = function(header, place)
+            if EllesmereUI.ShowPopupPreview then EllesmereUI.ShowPopupPreview(header, place) end
+        end },
+        { title = EllesmereUI.L("Tooltip"), show = function(header, place)
+            if EllesmereUI.ShowTooltipPreview then EllesmereUI.ShowTooltipPreview(header, place) end
+        end },
+    })
+    local function TooltipPreviewRepaint()
+        if EllesmereUI._repaintTooltipPreview then EllesmereUI._repaintTooltipPreview() end
+    end
+    local function PopupPreviewRepaint()
+        if EllesmereUI._repaintPopupPreview then EllesmereUI._repaintPopupPreview() end
     end
 
     local function BuildTooltipsPage(pageName, parent, yOffset)
@@ -149,12 +271,17 @@ initFrame:SetScript("OnEvent", function(self)
         -- above this page, shared with the Loot Window card.
         -- Width Offset | Height Offset right below a Border Style row, only while its style is
         -- textured (a solid border has no offsets). Built in every pass so the y advance never differs.
-        local function BorderOffsetRow(prefix, disabledFn)
-            local ocfgL, ocfgR = BorderOffsetCfgs(prefix, disabledFn)
+        local function BorderOffsetRow(prefix, disabledFn, apply)
+            local ocfgL, ocfgR = BorderOffsetCfgs(prefix, disabledFn, apply)
             if ocfgL then _, h = W:DualRow(parent, y, ocfgL, ocfgR); y = y - h end
         end
 
-        if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
+        -- The sample tooltip and popup head the page.
+        if not EllesmereUI._prebuilding then
+            EllesmereUI:SetContentHeader(TooltipHeaderBuilder)
+        elseif EllesmereUI.ClearContentHeader then
+            EllesmereUI:ClearContentHeader()
+        end
         parent._showRowDivider = true
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
@@ -202,27 +329,27 @@ initFrame:SetScript("OnEvent", function(self)
             local outer
             outer,h=W:DualRow(parent,y,
                 {type="dropdown",text="Border Style",disabled=popupOff,values=texValues,order=texOrder,getValue=function() return EllesmereUIDB.popupMenuBorderTexture or "solid" end,setValue=function(v) local c,b=EllesmereUI.GetBorderStyleSelectDefaults(v); EllesmereUIDB.popupMenuBorderTexture=v; EllesmereUIDB.popupMenuBorderOffsetX=nil; EllesmereUIDB.popupMenuBorderOffsetY=nil; EllesmereUIDB.popupMenuBorderBehind=b; EllesmereUIDB.popupMenuBorderColor=c; if EllesmereUIDB.popupMenuBorderThicknessPx then EllesmereUIDB.popupMenuBorderThicknessPx=false end; EllesmereUI:RefreshPage(true) end},
-                BorderSizeSlider("popupMenu","Border Size",popupOff)); y=y-h
-            AttachBorderControls(outer,"popupMenu",popupOff,true)
-            BorderOffsetRow("popupMenu",popupOff)
+                BorderSizeSlider("popupMenu","Border Size",popupOff,PopupPreviewRepaint)); y=y-h
+            AttachBorderControls(outer,"popupMenu",popupOff,true,{ apply = PopupPreviewRepaint })
+            BorderOffsetRow("popupMenu",popupOff,PopupPreviewRepaint)
             local buttons
             buttons,h=W:DualRow(parent,y,
                 {type="dropdown",text="Button Border Style",disabled=popupOff,values=texValues,order=texOrder,getValue=function() return EllesmereUIDB.popupMenuButtonBorderTexture or "solid" end,setValue=function(v) EllesmereUIDB.popupMenuButtonBorderTexture=v; local sc=EllesmereUI.GetBorderSelectColor(v); if sc then EllesmereUIDB.popupMenuButtonBorderColor=sc end; EllesmereUIDB.popupMenuButtonBorderOffsetX=nil; EllesmereUIDB.popupMenuButtonBorderOffsetY=nil; if EllesmereUIDB.popupMenuButtonBorderThicknessPx then EllesmereUIDB.popupMenuButtonBorderThicknessPx=false end; EllesmereUI:RefreshPage(true) end},
-                BorderSizeSlider("popupMenuButton","Button Border Size",popupOff)); y=y-h
-            AttachBorderControls(buttons,"popupMenuButton",popupOff)
-            BorderOffsetRow("popupMenuButton",popupOff)
+                BorderSizeSlider("popupMenuButton","Button Border Size",popupOff,PopupPreviewRepaint)); y=y-h
+            AttachBorderControls(buttons,"popupMenuButton",popupOff,nil,{ apply = PopupPreviewRepaint })
+            BorderOffsetRow("popupMenuButton",popupOff,PopupPreviewRepaint)
         end
 
         _,h=W:DualRow(parent,y,
-            {type="colorpicker",text="Button Background",hasAlpha=true,disabled=popupOff,getValue=function() local c=EllesmereUIDB.popupMenuButtonBackgroundColor or {r=.1,g=.1,b=.1,a=.8}; return c.r,c.g,c.b,c.a end,setValue=function(r,g,b,a) EllesmereUIDB.popupMenuButtonBackgroundColor={r=r,g=g,b=b,a=a} end},
+            {type="colorpicker",text="Button Background",hasAlpha=true,disabled=popupOff,getValue=function() local c=EllesmereUIDB.popupMenuButtonBackgroundColor or {r=.1,g=.1,b=.1,a=.8}; return c.r,c.g,c.b,c.a end,setValue=function(r,g,b,a) EllesmereUIDB.popupMenuButtonBackgroundColor={r=r,g=g,b=b,a=a}; PopupPreviewRepaint() end},
             {type="multiSwatch",text="Element & Text Color",disabled=popupOff,swatches={
                 -- Effective mode comes from the skin file's resolver: unset =
                 -- native unless the legacy Accent Colored Elements opt-in is present.
                 -- All four highlights read it so the default state is shown truthfully.
-                {tooltip="Native Colors",hasAlpha=false,getValue=function() return 1,1,1 end,setValue=function() end,onClick=function() EllesmereUIDB.popupMenuButtonTextColorMode="native"; EllesmereUI:RefreshPage() end,refreshAlpha=function() local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; return m=="native" and 1 or .3 end},
-                {tooltip="Accent Color",hasAlpha=false,getValue=function() local c=EllesmereUI.ELLESMERE_GREEN; return c.r,c.g,c.b end,setValue=function() end,onClick=function() EllesmereUIDB.popupMenuButtonTextColorMode="accent"; EllesmereUI:RefreshPage() end,refreshAlpha=function() local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; return m=="accent" and 1 or .3 end},
-                {tooltip="Custom Color",hasAlpha=false,getValue=function() local c=EllesmereUIDB.popupMenuButtonTextColor or {r=1,g=1,b=1}; return c.r,c.g,c.b end,setValue=function(r,g,b) EllesmereUIDB.popupMenuButtonTextColorMode="custom"; EllesmereUIDB.popupMenuButtonTextColor={r=r,g=g,b=b} end,onClick=function(self) local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; if m~="custom" then EllesmereUIDB.popupMenuButtonTextColorMode="custom"; EllesmereUI:RefreshPage(); return end self._eabOrigClick(self) end,refreshAlpha=function() local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; return m=="custom" and 1 or .3 end},
-                {tooltip="Class Color",hasAlpha=false,getValue=function() local _,k=UnitClass("player"); local c=RAID_CLASS_COLORS[k]; return c.r,c.g,c.b end,setValue=function() end,onClick=function() EllesmereUIDB.popupMenuButtonTextColorMode="class"; EllesmereUI:RefreshPage() end,refreshAlpha=function() local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; return m=="class" and 1 or .3 end},
+                {tooltip="Native Colors",hasAlpha=false,getValue=function() return 1,1,1 end,setValue=function() end,onClick=function() EllesmereUIDB.popupMenuButtonTextColorMode="native"; PopupPreviewRepaint(); EllesmereUI:RefreshPage() end,refreshAlpha=function() local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; return m=="native" and 1 or .3 end},
+                {tooltip="Accent Color",hasAlpha=false,getValue=function() local c=EllesmereUI.ELLESMERE_GREEN; return c.r,c.g,c.b end,setValue=function() end,onClick=function() EllesmereUIDB.popupMenuButtonTextColorMode="accent"; PopupPreviewRepaint(); EllesmereUI:RefreshPage() end,refreshAlpha=function() local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; return m=="accent" and 1 or .3 end},
+                {tooltip="Custom Color",hasAlpha=false,getValue=function() local c=EllesmereUIDB.popupMenuButtonTextColor or {r=1,g=1,b=1}; return c.r,c.g,c.b end,setValue=function(r,g,b) EllesmereUIDB.popupMenuButtonTextColorMode="custom"; EllesmereUIDB.popupMenuButtonTextColor={r=r,g=g,b=b}; PopupPreviewRepaint() end,onClick=function(self) local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; if m~="custom" then EllesmereUIDB.popupMenuButtonTextColorMode="custom"; PopupPreviewRepaint(); EllesmereUI:RefreshPage(); return end self._eabOrigClick(self) end,refreshAlpha=function() local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; return m=="custom" and 1 or .3 end},
+                {tooltip="Class Color",hasAlpha=false,getValue=function() local _,k=UnitClass("player"); local c=RAID_CLASS_COLORS[k]; return c.r,c.g,c.b end,setValue=function() end,onClick=function() EllesmereUIDB.popupMenuButtonTextColorMode="class"; PopupPreviewRepaint(); EllesmereUI:RefreshPage() end,refreshAlpha=function() local m=EllesmereUI._getPopupMenuElementMode and EllesmereUI._getPopupMenuElementMode() or "native"; return m=="class" and 1 or .3 end},
             }}); y=y-h
 
         _, h = W:DualRow(parent, y,
@@ -236,6 +363,7 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v)
                   if not EllesmereUIDB then EllesmereUIDB = {} end
                   EllesmereUIDB.tooltipFontScale = v
+                  TooltipPreviewRepaint()
               end },
             { type="toggle", text="Enable Blizzard Pause Menu",
               tooltip="Reskins the Escape / Game Menu.",
@@ -322,11 +450,40 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
+        -- Rounded Corners cog on Reskin Tooltip (left region): the game tooltip
+        -- with a solid border only (tooltipRoundedCorners, on unless false); a
+        -- textured style keeps its art, so the cog locks with one.
+        do
+            EllesmereUI.BuildInlineCog(ttShowRow._leftRegion, {
+                gap = 9,
+                disabled = function()
+                    return ttReskinOff() or (EllesmereUIDB.tooltipBorderTexture or "solid") ~= "solid"
+                end,
+                disabledTooltip = function()
+                    return ttReskinOff() and "Reskin Tooltip" or "This option only applies to the Solid border style"
+                end,
+                title = "Reskin Tooltip",
+                rows = {
+                    { type="toggle", label="Rounded Corners",
+                      get=function() return EllesmereUIDB.tooltipRoundedCorners ~= false end,
+                      set=function(v)
+                          -- Stored only when off (on is the unset default).
+                          if v then
+                              EllesmereUIDB.tooltipRoundedCorners = nil
+                          else
+                              EllesmereUIDB.tooltipRoundedCorners = false
+                          end
+                          TooltipPreviewRepaint()
+                      end },
+                },
+            })
+        end
+
         -- "Use Modifier" cog on Show Tooltips (right region): while the chosen
         -- modifier is held, suppression is lifted so a hidden tooltip can be
         -- read on hover (e.g. peeking a spell in combat). Disabled (blocked +
         -- dimmed) when the reskin is off or the mode is "Always" (nothing hides).
-        if not EllesmereUI._prebuilding then
+        do
             local rightRgn = ttShowRow._rightRegion
             local function showModOff()
                 if ttReskinOff() then return true end
@@ -394,15 +551,19 @@ initFrame:SetScript("OnEvent", function(self)
         );  y = y - h
 
         -- Position control on Anchor to Cursor (left region): position + X/Y offset
-        if not EllesmereUI._prebuilding then
+        do
             local leftRgn = ttAnchorRow._leftRegion
             local function ttCursorOff()
                 return not (EllesmereUIDB and EllesmereUIDB.tooltipAnchorCursor)
             end
             EllesmereUI.BuildInlineCog(leftRgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON, gap = 9,
-                disabled = ttCursorOff,
-                disabledTooltip = "Anchor to Cursor",
+                gap = 9,
+                -- Reskin Tooltip first: the cursor anchor stands down without it.
+                disabled = function() return ttReskinOff() or ttCursorOff() end,
+                disabledTooltip = function()
+                    if ttReskinOff() then return "Reskin Tooltip" end
+                    return "Anchor to Cursor"
+                end,
                 title = "Cursor Tooltip Position",
                 rows = {
                     { type="dropdown", label="Position",
@@ -438,6 +599,64 @@ initFrame:SetScript("OnEvent", function(self)
         -- each entry on the key it has always used. It stays active with the
         -- reskin off because Detailed Tooltips (the UberTooltips CVar) works with
         -- the default Blizzard tooltip too; the reskin-driven entries lock instead.
+        -- The Bags module's item counts (Bags is not loaded: nil).
+        local function BagOffline()
+            local bags = EllesmereUI._ModuleNS["EllesmereUIBags"]
+            return bags and bags.Offline
+        end
+        local lockTip = EllesmereUI.DisabledTooltip("Reskin Tooltip")
+        local ttExtraItems = {
+            { key="tooltipPlayerTitles", label="Player Titles", lockedFn=ttReskinOff, lockedTooltip=lockTip },
+            { key="tooltipItemLevel", label="Item Level", lockedFn=ttReskinOff, lockedTooltip=lockTip },
+            { key="tooltipMythicScore", label="M+ Score", lockedFn=ttReskinOff, lockedTooltip=lockTip },
+            { key="tooltipShowMount", label="Mount", lockedFn=ttReskinOff, lockedTooltip=lockTip,
+              tooltip="Adds the mount a player is riding to their tooltip, with a green check if you own it or a red X if you don't." },
+            { key="tooltipShowGuildRank", label="Guild Rank", lockedFn=ttReskinOff, lockedTooltip=lockTip },
+            { key="tooltipShowTarget", label="Unit Target", lockedFn=ttReskinOff, lockedTooltip=lockTip,
+              tooltip="Adds a Targeting line showing who the hovered player or NPC is targeting, in green when it's you." },
+            { key="tooltipLevelColor", label="Level Difficulty Color", lockedFn=ttReskinOff, lockedTooltip=lockTip,
+              tooltip="Colors the level number from gray (trivial) to red (much higher than you)." },
+            { key="tooltipClassLineColor", label="Class Colored Spec", lockedFn=ttReskinOff, lockedTooltip=lockTip,
+              tooltip="Colors a player's spec and class line in their class color." },
+            { key="tooltipFactionColor", label="Faction Color", lockedFn=ttReskinOff, lockedTooltip=lockTip,
+              tooltip="Colors the Alliance and Horde line in blue and red." },
+            { key="tooltipGuildmateColor", label="Highlight Guildmates", lockedFn=ttReskinOff, lockedTooltip=lockTip,
+              tooltip="Colors the guild name (and rank, if shown) of members of your own guild in your guild chat color." },
+            { key="tooltipCompactLevel", label="Compact Level Line", lockedFn=ttReskinOff, lockedTooltip=lockTip,
+              tooltip="Shortens the level line to the level and race, or level, rank and type for NPCs (\"90 Tauren\", \"90 Elite Humanoid\")." },
+            { key="tooltipAFKTag", label="Away Tag", lockedFn=ttReskinOff, lockedTooltip=lockTip,
+              tooltip="Adds <Away> or <Busy> after the name of players who are away or busy." },
+            -- Item Counts: how many of the item each character holds, read from
+            -- the inventories the Bags module saves. The switch is that module's
+            -- account-wide one (EllesmereUIDB.bagTooltipCounts, set through its
+            -- own setter, which arms the saving and the tooltip lines), so it is
+            -- locked while Bags is not loaded; it works with the reskin off.
+            { key="bagTooltipCounts", label="Item Counts", lockedFn=function() return BagOffline() == nil end,
+              lockedTooltip=EllesmereUI.DisabledTooltip("Bags"),
+              tooltip=EllesmereUI.IS_FOREVER
+                  and "Item tooltips list how many of that item each of your characters has in their bags and bank. Applies to all characters."
+                  or "Item tooltips list how many of that item each of your characters has in their bags and bank, plus the warband bank. Applies to all characters." },
+            { key="uber", label="Detailed Tooltips" },
+        }
+        -- Global search sees row labels and tooltips only, so this row's entry,
+        -- registered before the row (the index keeps the first one), carries the
+        -- checklist's names as search text, with the name Item Counts had on the
+        -- Bags page; it is never shown.
+        if EllesmereUI._RegisterSearchEntry then
+            local words = {}
+            local function Word(s)
+                words[#words + 1] = s
+                local loc = EllesmereUI.L(s)
+                if loc ~= s then words[#words + 1] = loc end
+            end
+            for i = 1, #ttExtraItems do Word(ttExtraItems[i].label) end
+            Word("Tooltip Item Counts")
+            local label = "Tooltip Extras"
+            local labelLoc = EllesmereUI.L(label)
+            EllesmereUI._RegisterSearchEntry(label, labelLoc ~= label and labelLoc or nil,
+                table.concat(words, " "), EllesmereUI._buildingModule, EllesmereUI._buildingPage,
+                parent._currentSection and parent._currentSection._sectionName)
+        end
         local ttExtrasRow
         ttExtrasRow, h = W:DualRow(parent, y,
             { type="dropdown", text="Tooltip Extras",
@@ -469,34 +688,14 @@ initFrame:SetScript("OnEvent", function(self)
                 tooltipLevelColor = false, tooltipClassLineColor = false, tooltipFactionColor = false,
                 tooltipGuildmateColor = false, tooltipCompactLevel = false, tooltipAFKTag = false,
             }
-            local lockTip = EllesmereUI.DisabledTooltip("Reskin Tooltip")
             local extrasDD, extrasRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-                lrgn, 170, lrgn:GetFrameLevel() + 2,
-                {
-                    { key="tooltipPlayerTitles", label="Player Titles", lockedFn=ttReskinOff, lockedTooltip=lockTip },
-                    { key="tooltipItemLevel", label="Item Level", lockedFn=ttReskinOff, lockedTooltip=lockTip },
-                    { key="tooltipMythicScore", label="M+ Score", lockedFn=ttReskinOff, lockedTooltip=lockTip },
-                    { key="tooltipShowMount", label="Mount", lockedFn=ttReskinOff, lockedTooltip=lockTip,
-                      tooltip="Adds the mount a player is riding to their tooltip, with a green check if you own it or a red X if you don't." },
-                    { key="tooltipShowGuildRank", label="Guild Rank", lockedFn=ttReskinOff, lockedTooltip=lockTip },
-                    { key="tooltipShowTarget", label="Unit Target", lockedFn=ttReskinOff, lockedTooltip=lockTip,
-                      tooltip="Adds a Targeting line showing who the hovered player or NPC is targeting, in green when it's you." },
-                    { key="tooltipLevelColor", label="Level Difficulty Color", lockedFn=ttReskinOff, lockedTooltip=lockTip,
-                      tooltip="Colors the level number from gray (trivial) to red (much higher than you)." },
-                    { key="tooltipClassLineColor", label="Class Colored Spec", lockedFn=ttReskinOff, lockedTooltip=lockTip,
-                      tooltip="Colors a player's spec and class line in their class color." },
-                    { key="tooltipFactionColor", label="Faction Color", lockedFn=ttReskinOff, lockedTooltip=lockTip,
-                      tooltip="Colors the Alliance and Horde line in blue and red." },
-                    { key="tooltipGuildmateColor", label="Highlight Guildmates", lockedFn=ttReskinOff, lockedTooltip=lockTip,
-                      tooltip="Colors the guild name (and rank, if shown) of members of your own guild in your guild chat color." },
-                    { key="tooltipCompactLevel", label="Compact Level Line", lockedFn=ttReskinOff, lockedTooltip=lockTip,
-                      tooltip="Shortens the level line to the level and race, or level, rank and type for NPCs (\"90 Tauren\", \"90 Elite Humanoid\")." },
-                    { key="tooltipAFKTag", label="Away Tag", lockedFn=ttReskinOff, lockedTooltip=lockTip,
-                      tooltip="Adds <Away> or <Busy> after the name of players who are away or busy." },
-                    { key="uber", label="Detailed Tooltips" },
-                },
+                lrgn, 170, lrgn:GetFrameLevel() + 2, ttExtraItems,
                 function(k)
                     if k == "uber" then return GetCVar("UberTooltips") == "1" end
+                    if k == "bagTooltipCounts" then
+                        local offline = BagOffline()
+                        return offline and offline.CountsEnabled() or false
+                    end
                     local v = EllesmereUIDB and EllesmereUIDB[k]
                     if v == nil then return EXTRA_DEFAULTS[k] end
                     return v and true or false
@@ -508,8 +707,12 @@ initFrame:SetScript("OnEvent", function(self)
                         EllesmereUIDB.uberTooltipsManual = true
                         EllesmereUIDB.uberTooltips = v
                         EllesmereUI.SetCVar("UberTooltips", v and "1" or "0", "EllesmereUIBlizzardSkin")
+                    elseif k == "bagTooltipCounts" then
+                        local offline = BagOffline()
+                        if offline then offline.Set(k, v) end
                     else
                         EllesmereUIDB[k] = v
+                        TooltipPreviewRepaint()
                     end
                 end)
             PP.Point(extrasDD, "RIGHT", lrgn, "RIGHT", -20, 0)
@@ -521,7 +724,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- "Use Modifier" cog on Spell ID on Tooltip (right region): the spell/item
         -- ID lines only show while the chosen modifier is held. Disabled (blocked +
         -- dimmed) when Spell ID on Tooltip is off, mirroring the cursor-position cog.
-        if not EllesmereUI._prebuilding then
+        do
             local rightRgn = ttExtrasRow._rightRegion
             local function sidOff()
                 return not EllesmereUI.SpellIDOn()
@@ -539,8 +742,8 @@ initFrame:SetScript("OnEvent", function(self)
                       set=function(v)
                           if not EllesmereUIDB then EllesmereUIDB = {} end
                           EllesmereUIDB.spellIDModifier = v
-                          -- Modifier choice gates the engine-side combat
-                          -- aura-ID CVar (12.1; no-op on retail).
+                          -- The engine's aura ID line follows the held key: re-sync the
+                          -- CVar and the key watcher.
                           if EllesmereUI.SyncAuraSpellIDCVar then EllesmereUI.SyncAuraSpellIDCVar() end
                       end },
                     { type="toggle", label="Show Icon ID",
@@ -590,7 +793,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- "Use Modifier" cog on Show Max Stack for Items (left region): the Max
         -- Stack line only shows while the chosen modifier is held. Disabled
         -- (blocked + dimmed) when the toggle is off, mirroring the Spell ID cog.
-        if not EllesmereUI._prebuilding then
+        do
             local leftRgn = ttStackRow._leftRegion
             local function iStacksOff()
                 return not (EllesmereUIDB and EllesmereUIDB.showItemMaxStacks)
@@ -614,7 +817,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Tooltip Buffs cog on Show Player Buffs (right region)
-        if not EllesmereUI._prebuilding then
+        do
             local function ttBuffsOff()
                 return ttReskinOff() or not (EllesmereUIDB and EllesmereUIDB.tooltipShowBuffs)
             end
@@ -624,7 +827,7 @@ initFrame:SetScript("OnEvent", function(self)
                 if EllesmereUI._applyTooltipBuffs then EllesmereUI._applyTooltipBuffs() end
             end
             EllesmereUI.BuildInlineCog(ttStackRow._rightRegion, {
-                icon = EllesmereUI.DIRECTIONS_ICON, gap = 9,
+                gap = 9,
                 disabled = ttBuffsOff,
                 disabledTooltip = function()
                     return ttReskinOff() and "Reskin Tooltip" or "Show Player Buffs"
@@ -685,7 +888,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
-        if not EllesmereUI._prebuilding then
+        do
             local leftRgn = ttStripRow._leftRegion
             -- Health strip texture dropdown: the shared bar catalogue behind a
             -- "Blizzard" entry (the unset default). The triple lives on ns so the
@@ -743,7 +946,8 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                 },
             })
-
+        end
+        if not EllesmereUI._prebuilding then
             EllesmereUI.BuildInlineSwatches(ttStripRow._rightRegion, {
                 { tooltip = "Background Color",
                   getValue = function()
@@ -767,8 +971,12 @@ initFrame:SetScript("OnEvent", function(self)
             tooltipBorder,h=W:DualRow(parent,y,
                 {type="dropdown",text="Border Style",disabled=ttReskinOff,values=texValues,order=texOrder,getValue=function() return EllesmereUIDB.tooltipBorderTexture or "solid" end,setValue=function(v) local c,b=EllesmereUI.GetBorderStyleSelectDefaults(v); EllesmereUIDB.tooltipBorderTexture=v; EllesmereUIDB.tooltipBorderOffsetX=nil; EllesmereUIDB.tooltipBorderOffsetY=nil; EllesmereUIDB.tooltipBorderBehind=b; EllesmereUIDB.tooltipBorderColor=c; if EllesmereUIDB.tooltipBorderThicknessPx then EllesmereUIDB.tooltipBorderThicknessPx=false end; if EllesmereUI.SyncAuraTooltipSkin then EllesmereUI.SyncAuraTooltipSkin() end; EllesmereUI:RefreshPage(true) end},
                 BorderSizeSlider("tooltip","Border Size",ttReskinOff,function() if EllesmereUI.SyncAuraTooltipSkin then EllesmereUI.SyncAuraTooltipSkin() end end)); y=y-h
-            AttachBorderControls(tooltipBorder,"tooltip",ttReskinOff,true)
-            BorderOffsetRow("tooltip",ttReskinOff)
+            -- The engine aura tooltip follows the border only when synced (the sync repaints the preview too)
+            local function TooltipBorderApply()
+                if EllesmereUI.SyncAuraTooltipSkin then EllesmereUI.SyncAuraTooltipSkin() else TooltipPreviewRepaint() end
+            end
+            AttachBorderControls(tooltipBorder,"tooltip",ttReskinOff,true,{ apply = TooltipBorderApply })
+            BorderOffsetRow("tooltip",ttReskinOff,TooltipBorderApply)
         end
 
         -----------------------------------------------------------------------
@@ -846,18 +1054,43 @@ initFrame:SetScript("OnEvent", function(self)
                   EllesmereUI:RefreshPage()  -- update the style cog + swatch disabled states
               end }
 
+        local timerBarsCfg =
+            { type="toggle", text="Reskin Timer Bars",
+              tooltip="Restyles Blizzard's breath, fatigue and feign death bars",
+              getValue=function()
+                  -- DEFAULT OFF: opt-in, so nil reads as unchecked.
+                  return EllesmereUIDB and EllesmereUIDB.reskinTimerBars == true
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.reskinTimerBars = v and true or false
+                  if v and EllesmereUI._TimerBarsInstall then EllesmereUI._TimerBarsInstall() end
+                  -- Shows or hides the TIMER BARS section below.
+                  EllesmereUI:RefreshPage(true)
+                  if not v then
+                      EllesmereUI:ShowConfirmPopup({
+                          title       = "Reload Required",
+                          message     = "Disabling the timer bar reskin requires a UI reload to restore Blizzard's default style.",
+                          confirmText = "Reload Now",
+                          cancelText  = "Later",
+                          reload      = true,
+                      })
+                  end
+              end }
+
         -- The regions the inline controls below sit on, whichever slot their
         -- toggle took.
         local hudRow, queueRow, widgetRgn, queueRgn, timerRgn
         if extraCfg then
             hudRow, h = W:DualRow(parent, y, widgetCfg, extraCfg);  y = y - h
             queueRow, h = W:DualRow(parent, y, queueCfg, timerCfg);  y = y - h
+            _, h = W:DualRow(parent, y, timerBarsCfg, EllesmereUI.BlankRowCfg());  y = y - h
             widgetRgn = hudRow and hudRow._leftRegion
             queueRgn = queueRow and queueRow._leftRegion
             timerRgn = queueRow and queueRow._rightRegion
         else
             hudRow, h = W:DualRow(parent, y, widgetCfg, queueCfg);  y = y - h
-            queueRow, h = W:DualRow(parent, y, timerCfg, EllesmereUI.BlankRowCfg());  y = y - h
+            queueRow, h = W:DualRow(parent, y, timerCfg, timerBarsCfg);  y = y - h
             widgetRgn = hudRow and hudRow._leftRegion
             queueRgn = hudRow and hudRow._rightRegion
             timerRgn = queueRow and queueRow._leftRegion
@@ -866,14 +1099,14 @@ initFrame:SetScript("OnEvent", function(self)
         -- Minimum widget bar size (plate-hosted covers), a cog on "Reskin Widget
         -- Bars": the floor below which a shrunken nameplate's bar scales itself
         -- up. 0 = off (default, mirror Blizzard's rect exactly).
-        if widgetRgn and not EllesmereUI._prebuilding then
+        if widgetRgn then
             local lrgn  = widgetRgn
             local function CogOff()
                 -- Same default-on test the toggle itself uses: nil means on.
                 return not (not EllesmereUIDB or EllesmereUIDB.reskinWidgetBars ~= false)
             end
             EllesmereUI.BuildInlineCog(lrgn, {
-                icon = EllesmereUI.RESIZE_ICON, anchorTo = lrgn._control,
+                anchorTo = lrgn._control,
                 disabled = CogOff, disabledTooltip = "Reskin Widget Bars",
                 tip = "Smallest on-screen size a reskinned bar is drawn at.\n\n" ..
                     "Widget bars on a nameplate inherit that nameplate's scale, so " ..
@@ -925,8 +1158,8 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end
 
-        -- Countdown text color swatch + style cog (left of it) on the Show Queue Timer toggle.
-        if timerRgn and not EllesmereUI._prebuilding then
+        -- Style cog + countdown text color swatch (left of it) on the Show Queue Timer toggle.
+        if timerRgn then
             local PP = EllesmereUI.PanelPP
             local QT = EllesmereUI.QUEUE_TIMER
             local function timerOff()
@@ -940,21 +1173,6 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB[key] = v
                 if EllesmereUI.RefreshQueueTimerStyle then EllesmereUI.RefreshQueueTimerStyle() end
             end
-
-            local qtSwatch, qtSwatchRefresh = EllesmereUI.BuildColorSwatch(timerRgn,
-                timerRgn:GetFrameLevel() + 5,
-                function()
-                    local c = EllesmereUIDB and EllesmereUIDB.queueTimerTextColor
-                    return (c and c.r) or QT.TEXT_R, (c and c.g) or QT.TEXT_G, (c and c.b) or QT.TEXT_B
-                end,
-                function(r, g, b) Set("queueTimerTextColor", { r = r, g = g, b = b }) end,
-                false, 20)
-            PP.Point(qtSwatch, "RIGHT", timerRgn._lastInline or timerRgn._control, "LEFT", -9, 0)
-            timerRgn._lastInline = qtSwatch
-            qtSwatch:HookScript("OnEnter", function(self)
-                EllesmereUI.ShowWidgetTooltip(self, "Countdown Text Color")
-            end)
-            qtSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
 
             EllesmereUI.BuildInlineCog(timerRgn, {
                 disabled = timerOff,
@@ -974,16 +1192,245 @@ initFrame:SetScript("OnEvent", function(self)
                 },
             })
 
-            -- Called at build time too: the refresh list only runs on page show.
-            local function UpdQueueTimerState()
-                local off = timerOff()
-                qtSwatch:SetAlpha(off and 0.15 or 1); qtSwatch:EnableMouse(not off)
-                qtSwatchRefresh()
+            if not EllesmereUI._prebuilding then
+                local qtSwatch, qtSwatchRefresh = EllesmereUI.BuildColorSwatch(timerRgn,
+                    timerRgn:GetFrameLevel() + 5,
+                    function()
+                        local c = EllesmereUIDB and EllesmereUIDB.queueTimerTextColor
+                        return (c and c.r) or QT.TEXT_R, (c and c.g) or QT.TEXT_G, (c and c.b) or QT.TEXT_B
+                    end,
+                    function(r, g, b) Set("queueTimerTextColor", { r = r, g = g, b = b }) end,
+                    false, 20)
+                PP.Point(qtSwatch, "RIGHT", timerRgn._lastInline or timerRgn._control, "LEFT", -8, 0)
+                timerRgn._lastInline = qtSwatch
+                qtSwatch:HookScript("OnEnter", function(self)
+                    EllesmereUI.ShowWidgetTooltip(self, "Countdown Text Color")
+                end)
+                qtSwatch:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                -- Called at build time too: the refresh list only runs on page show.
+                local function UpdQueueTimerState()
+                    local off = timerOff()
+                    qtSwatch:SetAlpha(off and 0.15 or 1); qtSwatch:EnableMouse(not off)
+                    qtSwatchRefresh()
+                end
+                EllesmereUI.RegisterWidgetRefresh(UpdQueueTimerState)
+                UpdQueueTimerState()
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdQueueTimerState)
-            UpdQueueTimerState()
         end
 
+        -----------------------------------------------------------------------
+        --  Timer Bars: Blizzard's breath, fatigue and feign death bars
+        --  (EUI_BlizzardSkin_HUD.lua). Shown only while "Reskin Timer Bars"
+        --  (above) is on. Look settings apply live through
+        --  EllesmereUI._TimerBarsRefresh; only turning it off needs a reload.
+        -----------------------------------------------------------------------
+        local TB = EllesmereUI.TIMER_BARS
+        if TB and EllesmereUIDB.reskinTimerBars == true then
+            local prefix = "timerBars"
+            local function Get(key, default)
+                local v = EllesmereUIDB[key]
+                if v == nil then return default end
+                return v
+            end
+            local function apply()
+                if EllesmereUI._TimerBarsRefresh then EllesmereUI._TimerBarsRefresh() end
+            end
+            local function Set(key, v)
+                EllesmereUIDB[key] = v
+                apply()
+            end
+            local function GetColor(key, default)
+                local c = EllesmereUIDB[key] or default
+                return c.r, c.g, c.b, 1
+            end
+            local function SetColor(key)
+                return function(r, g, b) Set(key, { r = r, g = g, b = b }) end
+            end
+            -- The Accent fill as the bar draws it (Window Skins' bar fill)
+            local function AccentFill()
+                local r, g, b = TB.AccentFill()
+                return r, g, b, 1
+            end
+            local function typeColorsOn() return Get("timerBarsTypeColors", false) == true end
+            local function textOff() return Get("timerBarsShowText", true) == false end
+            local function borderOff() return not EllesmereUIDB[prefix.."BorderTexture"] end
+
+            _, h = W:SectionHeader(parent, "TIMER BARS", y);  y = y - h
+
+            -- Bar Texture: the shared bar catalogue. The triple lives on ns so the SharedMedia
+            -- appender, which registers by table identity, gets the same tables on every
+            -- build; the dropdown's own lists are made per build, so a texture another addon
+            -- registers later is listed.
+            if not ns.timerBarTex then
+                local tex, names, order = EllesmereUI.BuildBarTextureTables()
+                ns.timerBarTex = { tex = tex, names = names, order = order }
+            end
+            local barTex = ns.timerBarTex
+            EllesmereUI.AppendSharedMediaTextures(barTex.names, barTex.order, nil, barTex.tex)
+            local timerBarTexValues, timerBarTexOrder = {}, {}
+            for _, key in ipairs(barTex.order) do
+                if key ~= "---" then timerBarTexValues[key] = barTex.names[key] or key end
+                timerBarTexOrder[#timerBarTexOrder + 1] = key
+            end
+            timerBarTexValues._menuOpts = {
+                itemHeight = 28,
+                background = function(key) return EllesmereUI.ResolveTexturePath(barTex.tex, key, nil) end,
+            }
+
+            -- Fill Color (opacity + Custom | Class | Accent) | Background (opacity + color)
+            local colorRow
+            colorRow, h = W:DualRow(parent, y,
+                { type="slider", text="Fill Color", min=0, max=100, step=1, trackWidth=120,
+                  tooltip="Opacity of the bar fill.",
+                  getValue=function() return Get("timerBarsFillOpacity", TB.FILL_OPACITY) end,
+                  setValue=function(v) Set("timerBarsFillOpacity", v) end },
+                { type="slider", text="Background", min=0, max=100, step=1, trackWidth=120,
+                  tooltip="Opacity of the bar background.",
+                  getValue=function() return Get("timerBarsBgOpacity", 100) end,
+                  setValue=function(v) Set("timerBarsBgOpacity", v) end }
+            ); y = y - h
+            if not EllesmereUI._prebuilding then
+                local function FillMode() return Get("timerBarsFillMode", "accent") end
+                local function ModeSwatch(mode, tip, getValue, setValue)
+                    return { tooltip = tip,
+                      disabled = typeColorsOn, disabledTooltip = "Color by Timer Type", requireState = "disabled",
+                      getValue = getValue, setValue = setValue or function() end,
+                      onClick = function(self)
+                          if FillMode() ~= mode or not setValue then
+                              Set("timerBarsFillMode", mode); EllesmereUI:RefreshPage()
+                              return
+                          end
+                          if self._eabOrigClick then self._eabOrigClick(self) end
+                      end,
+                      refreshAlpha = function() return FillMode() == mode and 1 or 0.3 end }
+                end
+                EllesmereUI.BuildInlineSwatches(colorRow._leftRegion, {
+                    ModeSwatch("custom", "Custom Color",
+                        function() if EllesmereUIDB.timerBarsFillColor then return GetColor("timerBarsFillColor") end return AccentFill() end,
+                        function(r, g, b)
+                            EllesmereUIDB.timerBarsFillMode = "custom"
+                            Set("timerBarsFillColor", { r = r, g = g, b = b })
+                        end),
+                    ModeSwatch("class", "Class Color", function()
+                        local _, classFile = UnitClass("player")
+                        local cc = classFile and EllesmereUI.GetClassColor(classFile)
+                        if cc then return cc.r, cc.g, cc.b, 1 end
+                        return 1, 1, 1, 1
+                    end),
+                    ModeSwatch("accent", "Accent Color", AccentFill),
+                })
+                EllesmereUI.BuildInlineSwatches(colorRow._rightRegion, {
+                    { tooltip = "Background Color",
+                      getValue = function() return GetColor("timerBarsBgColor", TB.BG) end,
+                      setValue = SetColor("timerBarsBgColor") },
+                })
+            end
+
+            -- Color by Timer Type (Breath | Fatigue | Feign Death) | Bar Texture
+            local typeRow
+            typeRow, h = W:DualRow(parent, y,
+                { type="toggle", text="Color by Timer Type",
+                  tooltip="Gives each timer its own fill color in place of the fill color above.",
+                  getValue=typeColorsOn,
+                  setValue=function(v) Set("timerBarsTypeColors", v and true or false); EllesmereUI:RefreshPage() end },
+                { type="dropdown", text="Bar Texture",
+                  values=timerBarTexValues, order=timerBarTexOrder,
+                  getValue=function() return Get("timerBarsTexture", "none") end,
+                  setValue=function(v) Set("timerBarsTexture", v) end }
+            ); y = y - h
+            if not EllesmereUI._prebuilding then
+                local function TypeSwatch(tk, tip)
+                    return { tooltip = tip,
+                      disabled = function() return not typeColorsOn() end, disabledTooltip = "Color by Timer Type",
+                      getValue = function() return GetColor("timerBars"..tk.."Color", TB.TYPE[tk]) end,
+                      setValue = SetColor("timerBars"..tk.."Color") }
+                end
+                EllesmereUI.BuildInlineSwatches(typeRow._leftRegion, {
+                    TypeSwatch("Breath", "Breath"),
+                    TypeSwatch("Fatigue", "Fatigue"),
+                    TypeSwatch("Feign", "Feign Death"),
+                })
+            end
+
+            -- Width | Height, capped at Blizzard's timer frame (its size belongs to Edit Mode).
+            _, h = W:DualRow(parent, y,
+                { type="slider", text="Width", min=TB.MIN_W, max=TB.MAX_W, step=1,
+                  getValue=function() return Get("timerBarsWidth", TB.WIDTH) end,
+                  setValue=function(v) Set("timerBarsWidth", v) end },
+                { type="slider", text="Height", min=TB.MIN_H, max=TB.MAX_H, step=1,
+                  getValue=function() return Get("timerBarsHeight", TB.HEIGHT) end,
+                  setValue=function(v) Set("timerBarsHeight", v) end }
+            ); y = y - h
+
+            -- Border Style | Border Size, as on the Loot Window card: Default keeps the 1px black edge.
+            local bValues, bOrder = DefaultableBorderValues()
+            local borderRow
+            borderRow, h = W:DualRow(parent, y,
+                { type="dropdown", text="Border Style",
+                  values=bValues, order=bOrder,
+                  getValue=function() return EllesmereUIDB[prefix.."BorderTexture"] or "default" end,
+                  setValue=function(v)
+                      SetDefaultableBorderStyle(prefix, v)
+                      apply()
+                      EllesmereUI:RefreshPage(true)
+                  end },
+                BorderSizeSlider(prefix, "Border Size", borderOff, apply, "Border Style")
+            ); y = y - h
+            -- Corner Radius (EllesmereUI_RoundedCorners.lua): the cog beside Border Size, the
+            -- color swatches left of it. Only a picked Solid, Glow or Shadow style rounds.
+            do
+                EllesmereUI.BuildInlineCog(borderRow._rightRegion, {
+                    title = "Corner Radius", tip = "Corner Radius",
+                    disabled = function()
+                        return borderOff() or not EllesmereUI.RoundedStyleOK(EllesmereUIDB[prefix.."BorderTexture"])
+                    end,
+                    disabledTooltip = "This option requires the Solid, Glow or Shadow border style.",
+                    rows = EllesmereUI.RoundedCornerRows({
+                        { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+                          get = function() return Get("timerBarsCornerRadius", 0) end,
+                          set = function(v) Set("timerBarsCornerRadius", v) end },
+                    }, function() return EllesmereUIDB.timerBarsCornerMask end,
+                       function(v) Set("timerBarsCornerMask", v) end),
+                })
+            end
+            AttachBorderControls(borderRow, prefix, borderOff, false, { apply = apply })
+            local ocfgL, ocfgR = BorderOffsetCfgs(prefix, borderOff, apply, "Border Style")
+            if ocfgL then _, h = W:DualRow(parent, y, ocfgL, ocfgR); y = y - h end
+
+            -- Show Name (cog + color) | blank
+            local nameRow
+            nameRow, h = W:DualRow(parent, y,
+                { type="toggle", text="Show Name",
+                  getValue=function() return Get("timerBarsShowText", true) ~= false end,
+                  setValue=function(v) Set("timerBarsShowText", v and true or false); EllesmereUI:RefreshPage() end },
+                EllesmereUI.BlankRowCfg()
+            ); y = y - h
+            do
+                EllesmereUI.BuildInlineCog(nameRow._leftRegion, {
+                    title = "Name Text",
+                    disabled = textOff, disabledTooltip = "Show Name",
+                    rows = {
+                        { type="slider", label="Text Size", min=6, max=24, step=1,
+                          get=function() return Get("timerBarsTextSize", TB.TEXT_SIZE) end,
+                          set=function(v) Set("timerBarsTextSize", v) end },
+                        { type="slider", label="Text Offset X", min=-100, max=100, step=1,
+                          get=function() return Get("timerBarsTextX", 0) end,
+                          set=function(v) Set("timerBarsTextX", v) end },
+                        { type="slider", label="Text Offset Y", min=-20, max=20, step=1,
+                          get=function() return Get("timerBarsTextY", 0) end,
+                          set=function(v) Set("timerBarsTextY", v) end },
+                    },
+                })
+            end
+            if not EllesmereUI._prebuilding then
+                EllesmereUI.BuildInlineSwatches(nameRow._leftRegion, {
+                    { tooltip = "Text Color",
+                      getValue = function() return GetColor("timerBarsTextColor", { r = 1, g = 1, b = 1 }) end,
+                      setValue = SetColor("timerBarsTextColor") },
+                }, { disabled = textOff, disabledTooltip = "Show Name" })
+            end
+        end
         return math.abs(y)
     end
 
@@ -1026,6 +1473,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         local function AttachDisabledOverlay(target)
+            if EllesmereUI._prebuilding then return end
             local block = CreateFrame("Frame", nil, target)
             block:SetAllPoints(target)
             block:SetFrameLevel(target:GetFrameLevel() + 10)
@@ -1073,6 +1521,39 @@ initFrame:SetScript("OnEvent", function(self)
                   EllesmereUIDB.charSheetIconZoom = v
                   if EllesmereUI._refreshCharSheetIconZoom then EllesmereUI._refreshCharSheetIconZoom() end
               end })
+
+        -- WoW Forever's Show Item Level, on the character sheet and the
+        -- inspect sheet: one dropdown over the sheet's shown key (on unless
+        -- false; Never writes it false and keeps the position) and its
+        -- position key (beside the slot unless set, or inside its icon).
+        local function ItemLevelDropdown(showKey, posKey, refresh, disabled, disabledTooltip)
+            return { type="dropdown", text="Show Item Level",
+              tooltip="Where each item's level shows on its slot, in the item's quality colour.",
+              values={ never="Never", beside="Beside Slot", icontop="Icon Top", iconcenter="Icon Center", iconbottom="Icon Bottom" },
+              order={ "never", "beside", "icontop", "iconcenter", "iconbottom" },
+              disabled=disabled, disabledTooltip=disabledTooltip,
+              getValue=function()
+                  if EllesmereUIDB and EllesmereUIDB[showKey] == false then return "never" end
+                  return EllesmereUIDB and EllesmereUIDB[posKey] or "beside"
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB[showKey] = v ~= "never"
+                  if v ~= "never" then EllesmereUIDB[posKey] = v end
+                  local fn = EllesmereUI[refresh]
+                  if fn then fn() end
+              end }
+        end
+        -- Ticking Show Item Stats there moves an item level that sits beside
+        -- the slot into the icon's bottom, out of the stats line (Never and a
+        -- position inside the icon stay). Only on that click: unticking moves
+        -- nothing back, and nothing else ever moves the position.
+        local function LevelIntoIcon(showKey, posKey)
+            local db = EllesmereUIDB
+            if db[showKey] ~= false and (db[posKey] or "beside") == "beside" then
+                db[posKey] = "iconbottom"
+            end
+        end
 
         if not EllesmereUI.IS_FOREVER then
             -- Mythic+ Rating | Item Details: a checkbox dropdown, a view over
@@ -1153,7 +1634,7 @@ initFrame:SetScript("OnEvent", function(self)
 
             -- Inline cog on Socket Panel: stat letters on the gem icons (off
             -- unless turned on).
-            if not EllesmereUI._prebuilding then
+            do
                 EllesmereUI.BuildInlineCog(socketRow._leftRegion, {
                     disabled = function() return EllesmereUIDB and EllesmereUIDB.charSheetSocketPanel == false end,
                     disabledTooltip = "Socket Panel",
@@ -1171,21 +1652,25 @@ initFrame:SetScript("OnEvent", function(self)
                 })
             end
         else
-            -- WoW Forever has no Mythic+, item level text, upgrade tracks or
-            -- sockets: the track key shows each item's main and secondary stat
-            -- (or its armor when it has none) and each weapon's damage per
-            -- second there. Icon Zoom greys out under Blizz Default.
+            -- WoW Forever has no Mythic+, upgrade tracks or sockets. Show
+            -- Item Stats (a key of this client's own, off unless turned on)
+            -- shows each item's main and secondary stat (or its armor when
+            -- it has none) and each weapon's damage per second. Icon Zoom
+            -- greys out under Blizz Default.
             local statsRow
             statsRow, h = W:DualRow(parent, y,
+                ItemLevelDropdown("showItemLevel", "charSheetItemLevelPos", "_refreshItemLevelVisibility"),
                 { type="toggle", text="Show Item Stats",
                   tooltip="Show each item's main and secondary stat (or its armor) and each weapon's damage per second beside its slot.",
-                  getValue=function() return EllesmereUIDB and EllesmereUIDB.showUpgradeTrack ~= false end,
+                  getValue=function() return EllesmereUIDB and EllesmereUIDB.charSheetShowItemStats == true or false end,
                   setValue=function(v)
                       if not EllesmereUIDB then EllesmereUIDB = {} end
-                      EllesmereUIDB.showUpgradeTrack = v
+                      EllesmereUIDB.charSheetShowItemStats = v
+                      if v then LevelIntoIcon("showItemLevel", "charSheetItemLevelPos") end
                       if EllesmereUI._refreshUpgradeTrackVisibility then EllesmereUI._refreshUpgradeTrackVisibility() end
-                  end },
-                iconZoomCfg);  y = y - h
+                      -- The Show Item Level dropdown beside it shows the move
+                      EllesmereUI:RefreshPage()
+                  end });  y = y - h
             AttachDisabledOverlay(statsRow)
         end
 
@@ -1228,7 +1713,8 @@ initFrame:SetScript("OnEvent", function(self)
                   -- Shows or hides the Text Size cog
                   EllesmereUI:RefreshPage()
               end },
-            { type="toggle", text="Show PvP Item Level",
+            -- WoW Forever has no PvP item level: Icon Zoom takes its place.
+            EllesmereUI.IS_FOREVER and iconZoomCfg or { type="toggle", text="Show PvP Item Level",
               tooltip="Display your PvP item level above the Mythic+ rating on the character sheet.",
               getValue=function() return EllesmereUIDB and EllesmereUIDB.showPvpItemLevel or false end,
               setValue=function(v)
@@ -1239,9 +1725,8 @@ initFrame:SetScript("OnEvent", function(self)
         );  y = y - h
         AttachDisabledOverlay(enchGemRow)
 
-        if not EllesmereUI._prebuilding then
+        do
             local cogBtn = EllesmereUI.BuildInlineCog(enchGemRow._leftRegion, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Enchant Text",
                 rows = {
                     { type="slider", label="Text Size", min=6, max=20, step=1,
@@ -1253,11 +1738,13 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                 },
             })
-            local function UpdateCogVis()
-                cogBtn:SetShown(EnchantTextShown("showEnchants", "charSheetEnchantNames"))
+            if not EllesmereUI._prebuilding then
+                local function UpdateCogVis()
+                    cogBtn:SetShown(EnchantTextShown("showEnchants", "charSheetEnchantNames"))
+                end
+                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                UpdateCogVis()
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-            UpdateCogVis()
         end
 
         -- Durability | Season Panel. The panel greys out with the sheet off;
@@ -1275,6 +1762,16 @@ initFrame:SetScript("OnEvent", function(self)
                   EllesmereUI:RefreshPage()
               end }
         end
+        -- Gear flyout item levels: its own section on retail, beside
+        -- Durability on WoW Forever (the section's only option there).
+        local flyoutLevelsCfg = { type="toggle",
+              text=EllesmereUI.IS_FOREVER and "Flyout Item Levels" or "Show Item Levels",
+              tooltip="Shows the item level on each item in the character sheet gear flyout (the popup of same-slot bag items that appears when hovering an equipped slot), coloured by quality.",
+              getValue=function() return EllesmereUIDB and EllesmereUIDB.flyoutItemLevels or false end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.flyoutItemLevels = v
+              end }
         local durSeasonRow
         durSeasonRow, h = W:DualRow(parent, y,
             { type="toggle", text="Show Item Durability",
@@ -1295,15 +1792,11 @@ initFrame:SetScript("OnEvent", function(self)
                   if EllesmereUI._updateScrollHeaderOffset then EllesmereUI._updateScrollHeaderOffset() end
                   EllesmereUI:RefreshPage()
               end },
-            seasonCfg or EllesmereUI.BlankRowCfg()
+            seasonCfg or (EllesmereUI.IS_FOREVER and flyoutLevelsCfg) or EllesmereUI.BlankRowCfg()
         );  y = y - h
 
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(durSeasonRow._leftRegion, {
-                disabled = function() return not (EllesmereUIDB and EllesmereUIDB.showCharSheetDurability) end,
-                disabledTooltip = "Show Item Durability",
-                title = "Durability Settings",
-                rows = {
+        do
+            local durRows = {
                     { type="dropdown", label="Location",
                       values={ model="Above Model", header="Stats Header", footer="Frame Footer" },
                       order={ "model", "header", "footer" },
@@ -1324,7 +1817,14 @@ initFrame:SetScript("OnEvent", function(self)
                           EllesmereUIDB.charSheetDurabilityShowLabel = v
                           if EllesmereUI._updateCharSheetDurability then EllesmereUI._updateCharSheetDurability() end
                       end },
-                },
+            }
+            -- WoW Forever: always above the model, so no Location.
+            if EllesmereUI.IS_FOREVER then table.remove(durRows, 1) end
+            EllesmereUI.BuildInlineCog(durSeasonRow._leftRegion, {
+                disabled = function() return not (EllesmereUIDB and EllesmereUIDB.showCharSheetDurability) end,
+                disabledTooltip = "Show Item Durability",
+                title = "Durability Settings",
+                rows = durRows,
             })
 
             -- Inline cog on Season Panel: the Great Vault shortcut is its own opt-in.
@@ -1357,31 +1857,20 @@ initFrame:SetScript("OnEvent", function(self)
         -- sheet off; the slot arrows belong to the sheet and grey out with it.
         -- The sheet's own slot letters live under Item Details (Stat Letters,
         -- Tertiary Stats). All off unless turned on.
-        _, h = WSCardSection(parent, "GEAR FLYOUT", y);  y = y - h
-
-        local flyoutStatsCfg
+        -- WoW Forever: its one option sits beside Durability instead.
         if not EllesmereUI.IS_FOREVER then
-            flyoutStatsCfg = { type="toggle", text="Show Item Stats",
-              tooltip="Shows each item's secondary stats as letters in the gear flyout, largest first (C Crit, H Haste, M Mastery, V Versatility), so items with the same icon are told apart.",
-              getValue=function() return EllesmereUIDB and EllesmereUIDB.flyoutItemStats or false end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.flyoutItemStats = v
-                  EllesmereUI:RefreshPage()
-              end }
-        end
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Item Levels",
-              tooltip="Shows the item level on each item in the character sheet gear flyout (the popup of same-slot bag items that appears when hovering an equipped slot), coloured by quality.",
-              getValue=function() return EllesmereUIDB and EllesmereUIDB.flyoutItemLevels or false end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.flyoutItemLevels = v
-              end },
-            flyoutStatsCfg or EllesmereUI.BlankRowCfg()
-        );  y = y - h
+            _, h = WSCardSection(parent, "GEAR FLYOUT", y);  y = y - h
 
-        if not EllesmereUI.IS_FOREVER then
+            local flyoutStatsCfg = { type="toggle", text="Show Item Stats",
+                  tooltip="Shows each item's secondary stats as letters in the gear flyout, largest first (C Crit, H Haste, M Mastery, V Versatility), so items with the same icon are told apart.",
+                  getValue=function() return EllesmereUIDB and EllesmereUIDB.flyoutItemStats or false end,
+                  setValue=function(v)
+                      if not EllesmereUIDB then EllesmereUIDB = {} end
+                      EllesmereUIDB.flyoutItemStats = v
+                      EllesmereUI:RefreshPage()
+                  end }
+            _, h = W:DualRow(parent, y, flyoutLevelsCfg, flyoutStatsCfg);  y = y - h
+
             _, h = W:DualRow(parent, y,
                 { type="toggle", text="Tertiary Stat Letters",
                   tooltip="Adds Leech, Avoidance and Speed (L, A, S) in smaller letters behind the secondary stats in the gear flyout.",
@@ -1402,13 +1891,15 @@ initFrame:SetScript("OnEvent", function(self)
                       if EllesmereUI._refreshCharSheetSlotFlyoutArrows then EllesmereUI._refreshCharSheetSlotFlyoutArrows() end
                   end }
             );  y = y - h
-        end
 
-        _, h = W:Spacer(parent, y, 10);  y = y - h
+            _, h = W:Spacer(parent, y, 10);  y = y - h
+        end
 
         ---------------------------------------------------------------------------
         --  STAT DISPLAY
         ---------------------------------------------------------------------------
+        -- WoW Forever keeps Blizzard's own stat list: none of these apply.
+        if not EllesmereUI.IS_FOREVER then
         _, h = WSCardSection(parent, "STAT DISPLAY", y);  y = y - h
 
         -- Every control here is a view over the keys the sheet already reads
@@ -1445,8 +1936,8 @@ initFrame:SetScript("OnEvent", function(self)
                   EllesmereUIDB.showAdjustedStats = v
               end }
         );  y = y - h
+        local leftRgn = sectionsRow._leftRegion
         if not EllesmereUI._prebuilding then
-            local leftRgn = sectionsRow._leftRegion
             -- Each section's colour swatch sits on its row of the dropdown; dimmed while
             -- Blizzard UI Color applies or the section is unchecked.
             local items = {}
@@ -1495,8 +1986,10 @@ initFrame:SetScript("OnEvent", function(self)
             leftRgn._control = cbDD
             leftRgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-
-            -- Cog: the per-section extras the old per-section rows held
+        end
+        do
+            -- Cog: the per-section extras the old per-section rows held (outside the
+            -- prebuild guard so the index pass sees its rows)
             local rows = {
                 { type="toggle", label="Show Mana",
                   tooltip="Adds Mana to the Attributes section.",
@@ -1583,6 +2076,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
         AttachDisabledOverlay(stRow)
+        end -- not IS_FOREVER
 
         ---------------------------------------------------------------------------
         --  INSPECT SHEET
@@ -1624,9 +2118,8 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Text Size (unset follows the character sheet's), shown only while
         -- the enchants show as text.
-        if not EllesmereUI._prebuilding then
+        do
             local cogBtn = EllesmereUI.BuildInlineCog(themedInspectSheetRow._rightRegion, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Enchant Text",
                 disabled = function() return EllesmereUIDB and EllesmereUIDB.themedInspectSheet == false end,
                 disabledTooltip = "Inspect Sheet",
@@ -1642,67 +2135,57 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                 },
             })
-            local function UpdateCogVis()
-                cogBtn:SetShown(EnchantTextShown("inspectShowEnchants", "inspectEnchantNames"))
+            if not EllesmereUI._prebuilding then
+                local function UpdateCogVis()
+                    cogBtn:SetShown(EnchantTextShown("inspectShowEnchants", "inspectEnchantNames"))
+                end
+                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                UpdateCogVis()
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-            UpdateCogVis()
         end
 
-        local itemLevelInspectRow
-        itemLevelInspectRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Item Level",
-              tooltip="Toggle visibility of item level text on the inspect sheet.",
+        -- Item Level | Upgrade Track, both off with the sheet (on unless the
+        -- sheet's key is false, as its Enable toggle reads it). WoW Forever
+        -- shows the character sheet's pair instead: Show Item Level (the
+        -- same dropdown over this sheet's own keys) | Show Item Stats (off
+        -- unless turned on); its slot text re-stacks around what shows, so a
+        -- change restyles the slots.
+        local function inspectOff()
+            return EllesmereUIDB and EllesmereUIDB.themedInspectSheet == false
+        end
+        local function InspectLabelToggle(text, tooltip, key, refresh, optIn, onTick)
+            return { type="toggle", text=text, tooltip=tooltip,
+              disabled=inspectOff, disabledTooltip="Inspect Sheet",
               getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.inspectShowItemLevel ~= false
+                  if optIn then return EllesmereUIDB and EllesmereUIDB[key] == true or false end
+                  return not (EllesmereUIDB and EllesmereUIDB[key] == false)
               end,
               setValue=function(v)
                   if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.inspectShowItemLevel = v
-                  if EllesmereUI._refreshInspectItemLevelVisibility then
-                      EllesmereUI._refreshInspectItemLevelVisibility()
-                  end
-              end },
-            { type="toggle", text="Upgrade Track",
-              tooltip="Toggle visibility of upgrade track text on the inspect sheet.",
-              getValue=function()
-                  return EllesmereUIDB and EllesmereUIDB.inspectShowUpgradeTrack ~= false
-              end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.inspectShowUpgradeTrack = v
-                  if EllesmereUI._refreshInspectUpgradeTrackVisibility then
-                      EllesmereUI._refreshInspectUpgradeTrackVisibility()
-                  end
+                  EllesmereUIDB[key] = v
+                  if v and onTick then onTick() end
+                  local fn = EllesmereUI[refresh]
+                  if fn then fn() end
+                  -- The dropdown beside it shows what a tick moved
+                  if onTick then EllesmereUI:RefreshPage() end
               end }
-        );  y = y - h
-
-        if not EllesmereUI._prebuilding then
-            local function themedOff()
-                return not (EllesmereUIDB and EllesmereUIDB.themedInspectSheet)
-            end
-
-            local itemLevelInspectBlock = CreateFrame("Frame", nil, itemLevelInspectRow)
-            itemLevelInspectBlock:SetAllPoints(itemLevelInspectRow)
-            itemLevelInspectBlock:SetFrameLevel(itemLevelInspectRow:GetFrameLevel() + 10)
-            itemLevelInspectBlock:EnableMouse(true)
-            local itemLevelInspectBg = EllesmereUI.SolidTex(itemLevelInspectBlock, "BACKGROUND", 0, 0, 0, 0)
-            itemLevelInspectBg:SetAllPoints()
-            itemLevelInspectBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(itemLevelInspectBlock, EllesmereUI.DisabledTooltip("Inspect Sheet"))
-            end)
-            itemLevelInspectBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            EllesmereUI.RegisterWidgetRefresh(function()
-                if themedOff() then
-                    itemLevelInspectBlock:Show()
-                    itemLevelInspectRow:SetAlpha(0.3)
-                else
-                    itemLevelInspectBlock:Hide()
-                    itemLevelInspectRow:SetAlpha(1)
-                end
-            end)
-            if themedOff() then itemLevelInspectBlock:Show() itemLevelInspectRow:SetAlpha(0.3) else itemLevelInspectBlock:Hide() itemLevelInspectRow:SetAlpha(1) end
+        end
+        if EllesmereUI.IS_FOREVER then
+            _, h = W:DualRow(parent, y,
+                ItemLevelDropdown("inspectShowItemLevel", "inspectItemLevelPos", "_refreshInspectSlotLabels",
+                    inspectOff, "Inspect Sheet"),
+                InspectLabelToggle("Show Item Stats",
+                    "Show each item's main and secondary stat (or its armor) and each weapon's damage per second beside its slot.",
+                    "inspectShowItemStats", "_refreshInspectSlotLabels", true,
+                    function() LevelIntoIcon("inspectShowItemLevel", "inspectItemLevelPos") end)
+            );  y = y - h
+        else
+            _, h = W:DualRow(parent, y,
+                InspectLabelToggle("Item Level", "Toggle visibility of item level text on the inspect sheet.",
+                    "inspectShowItemLevel", "_refreshInspectItemLevelVisibility"),
+                InspectLabelToggle("Upgrade Track", "Toggle visibility of upgrade track text on the inspect sheet.",
+                    "inspectShowUpgradeTrack", "_refreshInspectUpgradeTrackVisibility")
+            );  y = y - h
         end
 
         return y
@@ -1737,51 +2220,86 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  Friends List card content (WoW Forever only, where the Friends List
     --  module never loads): what that module offers retail's friends list,
-    --  from the shared friends kit, on the card's own settings
-    --  (EllesmereUIDB.friendsListCard through ns.FriendsCardGet / Set, in
-    --  EllesmereUIBlizzardSkin_FriendsForever.lua). The tiles stand down
-    --  under Blizz Default; auto-accept runs whatever the skin.
+    --  from the shared friends kit, and the custom friends list (its switch,
+    --  Custom Friends List Tiles, and its Tile Height), on the card's own
+    --  settings (EllesmereUIDB.friendsListCard through ns.FriendsCardGet / Set,
+    --  in EllesmereUIBlizzardSkin_FriendsForever.lua). The switch follows the
+    --  card's look until picked (on while the card is skinned, off under
+    --  Blizz Default); the tile settings grey out while neither the tiles on
+    --  Blizzard's cards nor the custom list draws; auto-accept runs whatever
+    --  the skin.
     ---------------------------------------------------------------------------
     local function BuildFriendsCardContent(parent, y)
         local W = EllesmereUI.Widgets
         local _, row, h
         local Kit = EllesmereUI.FriendsKit
 
+        local CUSTOM = "Custom Friends List Tiles"
+        local function customOff()
+            return ns.FriendsCardGet("customTiles") ~= true
+        end
+        -- Blizz Default keeps Blizzard's cards, so only the custom list draws tiles there
         local function tilesOff()
-            return EllesmereUI.GetBlizzWindowStyle("socialui") == "off"
+            return EllesmereUI.GetBlizzWindowStyle("socialui") == "off" and customOff()
         end
-        local function tileGate(cfg)
-            cfg.disabled = tilesOff
-            cfg.disabledTooltip = "Friends List: Blizz Default"
-            cfg.requireState = "disabled"
+        local function tileGate(cfg, off)
+            cfg.disabled = off or tilesOff
+            cfg.disabledTooltip = CUSTOM
             return cfg
-        end
-        local function toggle(text, key, tooltip)
-            return tileGate({ type="toggle", text=text, tooltip=tooltip,
-                getValue=function() return ns.FriendsCardGet(key) == true end,
-                setValue=function(v) ns.FriendsCardSet(key, v) end })
         end
 
         _, h = WSCardSection(parent, "DISPLAY", y);  y = y - h
 
-        -- Class Icon Theme | Class Color Names
-        _, h = W:DualRow(parent, y,
+        -- Custom Friends List Tiles | Tile Height: the custom friends list
+        -- (EllesmereUI_FriendsList.lua) and its own height
+        local tileMin, tileMax = EllesmereUI.FriendsList.TileRange()
+        row, h = W:DualRow(parent, y,
+            { type="toggle", text=CUSTOM,
+              tooltip="EllesmereUI's own friends list, with a tile height you choose and friend groups. Right click a friend to set its group.",
+              getValue=function() return not customOff() end,
+              setValue=function(v)
+                  ns.FriendsCardSet("customTiles", v and true or false)
+                  EllesmereUI:RefreshPage()  -- the tile settings' disabled state
+              end },
+            tileGate({ type="slider", text="Tile Height", min=tileMin, max=tileMax, step=1,
+              tooltip="The height of each friend in the custom friends list. Shorter tiles show fewer lines.",
+              getValue=function() return ns.FriendsCardGet("tileHeight") end,
+              setValue=function(v) ns.FriendsCardSet("tileHeight", v) end }, customOff)
+        );  y = y - h
+
+        -- Tile Features | Class Icon Theme
+        row, h = W:DualRow(parent, y,
+            tileGate({ type="dropdown", text="Tile Features",
+              values={ __placeholder="..." }, order={ "__placeholder" },
+              getValue=function() return "__placeholder" end, setValue=function() end }),
             tileGate({ type="dropdown", text="Class Icon Theme",
               values = Kit.ICON_STYLE_VALUES,
               order  = Kit.ICON_STYLE_ORDER,
               getValue=function() return ns.FriendsCardGet("iconStyle") end,
-              setValue=function(v) ns.FriendsCardSet("iconStyle", v) end }),
-            toggle("Class Color Names", "classColorNames")
+              setValue=function(v) ns.FriendsCardSet("iconStyle", v) end })
         );  y = y - h
 
-        -- Enable Faction Banners | Show Region Icons
-        _, h = W:DualRow(parent, y,
-            toggle("Enable Faction Banners", "factionBanners"),
-            toggle("Show Region Icons", "showRegionIcons",
-                "Shows a map icon of the friend's region if they are not playing within your region")
-        );  y = y - h
-
-        _, h = WSCardSection(parent, "QUALITY OF LIFE", y);  y = y - h
+        -- Tile Features: one checkbox dropdown over the three tile switches,
+        -- each still its own key, in place of the row's placeholder.
+        if not EllesmereUI._prebuilding then
+            local rgn = row._leftRegion
+            if rgn._control then rgn._control:Hide() end
+            local dd, refresh = EllesmereUI.BuildVisOptsCBDropdown(rgn, 220, rgn:GetFrameLevel() + 2,
+                {
+                    { key="factionBanners", label="Faction Banners" },
+                    { key="showRegionIcons", label="Region Icons",
+                      tooltip="Shows a map icon of the friend's region if they are not playing within your region" },
+                    { key="classColorNames", label="Class Colored Names" },
+                },
+                function(key) return ns.FriendsCardGet(key) == true end,
+                function(key, v) ns.FriendsCardSet(key, v and true or false) end,
+                nil, nil, nil, nil, nil,
+                { disabled = tilesOff, disabledTooltip = CUSTOM })
+            EllesmereUI.PanelPP.Point(dd, "RIGHT", rgn, "RIGHT", -20, 0)
+            rgn._control = dd
+            rgn._lastInline = nil
+            EllesmereUI.RegisterWidgetRefresh(refresh)
+        end
 
         -- Auto-Accept Friend Invites
         row, h = W:DualRow(parent, y,
@@ -1797,7 +2315,7 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Guildmates in a cog on Auto-Accept Friend Invites: it only extends
         -- that feature, so the cog blocks while the toggle is off.
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(row._leftRegion, {
                 title = "Auto Accept Settings",
                 rows = {
@@ -1822,6 +2340,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         local function AttachDisabledOverlay(target)
+            if EllesmereUI._prebuilding then return end
             local block = CreateFrame("Frame", nil, target)
             block:SetAllPoints(target)
             block:SetFrameLevel(target:GetFrameLevel() + 10)
@@ -1913,7 +2432,6 @@ initFrame:SetScript("OnEvent", function(self)
             return EllesmereUIDB and EllesmereUIDB.merchantShowAsList == true
         end
         local function BuildExpandCog(rgn)
-            if EllesmereUI._prebuilding then return end
             local function setSize(key, v)
                 if not EllesmereUIDB then EllesmereUIDB = {} end
                 EllesmereUIDB[key] = v
@@ -1953,7 +2471,16 @@ initFrame:SetScript("OnEvent", function(self)
                   if EllesmereUI._Merchant_RefreshExpand then EllesmereUI._Merchant_RefreshExpand() end
                   EllesmereUI:RefreshPage()
               end },
-            EllesmereUI.BlankRowCfg()
+            { type="toggle", text="Flag/Hide Owned Items",
+              tooltip="Tints red the vendor items you already have (known recipes, mounts, pets, toys...) and, with Expand Vendor UI, adds a button that hides them.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.merchantMarkOwned == true
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.merchantMarkOwned = v
+                  if EllesmereUI._Merchant_RefreshOwned then EllesmereUI._Merchant_RefreshOwned() end
+              end }
         ); y = y - h
         BuildExpandCog(row._leftRegion)
         AttachDisabledOverlay(row)
@@ -1987,9 +2514,7 @@ initFrame:SetScript("OnEvent", function(self)
 
         _, h = WSCardSection(parent, "BORDER", y);  y = y - h
 
-        local texValues, texOrder = EllesmereUI.GetBorderTextureDropdown()
-        texValues.default = "Default"
-        table.insert(texOrder, 1, "default")
+        local texValues, texOrder = DefaultableBorderValues()
 
         local row
         row, h = W:DualRow(parent, y,
@@ -2002,22 +2527,7 @@ initFrame:SetScript("OnEvent", function(self)
               end,
               setValue=function(v)
                   if not EllesmereUIDB then EllesmereUIDB = {} end
-                  local db = EllesmereUIDB
-                  if v == "default" then
-                      db[prefix.."BorderTexture"] = nil
-                  else
-                      local c, b = EllesmereUI.GetBorderStyleSelectDefaults(v)
-                      db[prefix.."BorderTexture"] = v
-                      db[prefix.."BorderBehind"] = b
-                      db[prefix.."BorderColor"] = c
-                      -- Full opacity and the style's own size: the 18% default leaves textured art faded
-                      db[prefix.."BorderOpacity"] = 1
-                      local size = EllesmereUI.GetBorderDefaultSize(nil, v)
-                      if size then db[prefix.."BorderThickness"] = EllesmereUI.BORDER_LABEL_OF_STEP[size] end
-                  end
-                  db[prefix.."BorderOffsetX"] = nil
-                  db[prefix.."BorderOffsetY"] = nil
-                  if db[prefix.."BorderThicknessPx"] then db[prefix.."BorderThicknessPx"] = false end
+                  SetDefaultableBorderStyle(prefix, v)
                   refresh()
                   EllesmereUI:RefreshPage(true)
               end },
@@ -2125,7 +2635,7 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
-    --  Mail card, ALT LIST section (retail): the Alt List beside Send Mail
+    --  Mail card, ALT LIST section: the Alt List beside Send Mail
     --  (EllesmereUIBlizzardSkin_MailAlts.lua, ns.MailAlts), whatever the card's
     --  style. Sort, cap and minimum level ride the toggle's cog; Shown
     --  Characters lists every recorded character under its realm.
@@ -2170,7 +2680,8 @@ initFrame:SetScript("OnEvent", function(self)
 
         row, h = W:DualRow(parent, y,
             { type="toggle", text="Show Alt List",
-              tooltip="Lists your alts beside Send Mail.",
+              tooltip=EllesmereUI.IS_FOREVER and "Lists your alts beside Send Mail; its tabs also list your guild and your friends."
+                  or "Lists your alts beside Send Mail.",
               getValue=On,
               setValue=function(v)
                   Set("mailAltList", v)
@@ -2183,7 +2694,7 @@ initFrame:SetScript("OnEvent", function(self)
               getValue=function() return "__placeholder" end, setValue=function() end }
         ); y = y - h
 
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(row._leftRegion, {
                 title = "Alt List",
                 disabled = Off,
@@ -2202,6 +2713,8 @@ initFrame:SetScript("OnEvent", function(self)
                       set=function(v) Set("mailAltListMinLevel", v) end },
                 },
             })
+        end
+        if not EllesmereUI._prebuilding then
             -- Shown Characters: the checkbox dropdown in place of the row's
             -- placeholder; a long roster gets the search box.
             local rgn = row._rightRegion
@@ -2214,34 +2727,6 @@ initFrame:SetScript("OnEvent", function(self)
             rgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(refresh)
         end
-
-        return y
-    end
-
-    ---------------------------------------------------------------------------
-    --  Mail card content: the Alt List (retail), then GENERAL (both clients).
-    --  Close Bags on Mail Close (EllesmereUIDB.mailCloseBags, on unless set
-    --  false) is read by Bags, which closes its window as the mailbox closes.
-    ---------------------------------------------------------------------------
-    local function BuildMailContent(parent, y)
-        y = BuildMailAltList(parent, y)
-        local W = EllesmereUI.Widgets
-        local _, h
-
-        _, h = WSCardSection(parent, "GENERAL", y);  y = y - h
-
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Close Bags on Mail Close",
-              tooltip="Closes your bags when you close the mailbox.",
-              disabled=function() return not EllesmereUI._ModuleNS["EllesmereUIBags"] end,
-              disabledTooltip="Bags",
-              getValue=function() return not (EllesmereUIDB and EllesmereUIDB.mailCloseBags == false) end,
-              setValue=function(v)
-                  if not EllesmereUIDB then EllesmereUIDB = {} end
-                  EllesmereUIDB.mailCloseBags = v
-              end },
-            EllesmereUI.BlankRowCfg()
-        ); y = y - h
 
         return y
     end
@@ -2564,9 +3049,8 @@ initFrame:SetScript("OnEvent", function(self)
                 if not EllesmereUIDB then EllesmereUIDB = {} end
                 EllesmereUIDB.reskinMail = v
             end,
-            buildContent = BuildMailContent,
-            searchText = not EllesmereUI.IS_FOREVER and { "Show Alt List", "Shown Characters", "Close Bags on Mail Close" }
-                or { "Close Bags on Mail Close" },
+            buildContent = BuildMailAltList,
+            searchText = { "Show Alt List", "Shown Characters" },
         },
         {
             key   = "catalyst",
@@ -2792,6 +3276,26 @@ initFrame:SetScript("OnEvent", function(self)
             end,
         },
         {
+            key   = "stable",
+            title = "Pet Stable",
+            desc  = "The hunter pet stable: pet model, XP bar, pet slots and the slot purchase row.",
+            reloadMsg = "Changing the Pet Stable reskin requires a UI reload to fully swap between Blizzard and Ellesmere styles.",
+            setEnabled = function(v)
+                if not EllesmereUIDB then EllesmereUIDB = {} end
+                EllesmereUIDB.reskinStable = v
+            end,
+        },
+        {
+            key   = "keyring",
+            title = "Keyring",
+            desc  = "The keyring window: its frame, title and key slots. Skinned while EllesmereUI Bags handles your bags.",
+            reloadMsg = "Changing the Keyring reskin requires a UI reload to fully swap between Blizzard and Ellesmere styles.",
+            setEnabled = function(v)
+                if not EllesmereUIDB then EllesmereUIDB = {} end
+                EllesmereUIDB.reskinKeyring = v
+            end,
+        },
+        {
             key   = "gossip",
             title = "Gossip",
             desc  = "The NPC dialog window: greeting text, gossip and quest options, and goodbye button.",
@@ -2848,6 +3352,7 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.reskinSocialUI = v
             end,
             buildContent = EllesmereUI.IS_FOREVER and BuildFriendsCardContent or nil,
+            searchText = EllesmereUI.IS_FOREVER and { "Custom Friends List Tiles", "Tile Height", "Tile Features" } or nil,
         },
         {
             key   = "queuestatus",
@@ -2910,15 +3415,22 @@ initFrame:SetScript("OnEvent", function(self)
             greatvault = true,
             delvepicker = true, housing = true,
         }
+        -- The Keyring skin applies only while EllesmereUI Bags keeps Blizzard's
+        -- other bag frames parked, so without that module there is no card.
+        if not (EllesmereUI._ModuleNS and EllesmereUI._ModuleNS.EllesmereUIBags) then
+            foreverDropped.keyring = true
+        end
         for i = #WINDOWS, 1, -1 do
             if foreverDropped[WINDOWS[i].key] then table.remove(WINDOWS, i) end
         end
     else
-        -- The Bag Bar and Progress Legacy skins exist only on Forever; drop
-        -- their cards on retail.
+        -- The Bag Bar, Progress Legacy, Pet Stable and Keyring skins exist
+        -- only on Forever; drop their cards on retail.
         for i = #WINDOWS, 1, -1 do
             local key = WINDOWS[i].key
-            if key == "bagbar" or key == "legacysystem" then table.remove(WINDOWS, i) end
+            if key == "bagbar" or key == "legacysystem" or key == "stable" or key == "keyring" then
+                table.remove(WINDOWS, i)
+            end
         end
     end
 
@@ -3050,9 +3562,21 @@ initFrame:SetScript("OnEvent", function(self)
                 searchName, nil, nil, true)
         end
 
+        -- The index pass needs only the entry above and the card's rows, which
+        -- build as their own job (one card per job, not the whole page at once).
+        if EllesmereUI._prebuilding then
+            if hasSettings and EllesmereUI._QueueIndexBuild then
+                win._searchIndexed = true
+                EllesmereUI._searchContext = win.title
+                EllesmereUI._QueueIndexBuild(win.buildContent, y - WS_HEADER_H - 8)
+                EllesmereUI._searchContext = nil
+            end
+            return y - WS_HEADER_H - WS_CARD_GAP
+        end
+
         -- Hover wash (transparent when idle; the card bg below provides the fill)
-        local hbg = EllesmereUI.SolidTex(hdr, "BACKGROUND", 0, 0, 0, 0)
-        hbg:SetAllPoints()
+        -- The header hover fill sits on the card (built below), inside its corners.
+        local hbg
 
         -- Procedural mini-window glyph: a tiny framed "window" with a title
         -- bar. The bar lights up in accent while the reskin is enabled, but
@@ -3171,8 +3695,19 @@ initFrame:SetScript("OnEvent", function(self)
             PP.DisablePixelSnap(div)
 
             y = y - 8
+            EllesmereUI._searchContext = win.title
             y = win.buildContent(parent, y)
+            EllesmereUI._searchContext = nil
             y = y - 8
+        elseif hasSettings then
+            -- A closed card's settings stay searchable: queued once a session
+            -- from a live build (the pass skips a page already built).
+            if EllesmereUI._QueueIndexBuild and not win._searchIndexed then
+                win._searchIndexed = true
+                EllesmereUI._searchContext = win.title
+                EllesmereUI._QueueIndexBuild(win.buildContent, y)
+                EllesmereUI._searchContext = nil
+            end
         end
 
         -- Card background + border spanning the header and any expanded content. Child
@@ -3184,13 +3719,16 @@ initFrame:SetScript("OnEvent", function(self)
         bg:SetFrameLevel(parent:GetFrameLevel())
         PP.Size(bg, cardW, cardTop - y)
         PP.Point(bg, "TOPLEFT", hdr, "TOPLEFT", 0, 0)
-        local fill = EllesmereUI.SolidTex(bg, "BACKGROUND", 0.077, 0.068, 0.058, 0.5)
-        fill:SetAllPoints()
-        brd = EllesmereUI.MakeBorder(bg, 1, 1, 1, expanded and 0.16 or 0.12, PP)
+        brd = EllesmereUI.MakeRoundedCard(bg, expanded and 0.16 or 0.12)
+        hbg = bg:CreateTexture(nil, "BACKGROUND", nil, 1)
+        hbg:SetAllPoints(hdr)
+        hbg:SetColorTexture(0, 0, 0, 0)
+        brd:Clip(hbg)
 
         -- Header-height only: the strip marks the header, never the expanded
         -- settings block below it.
         strip = bg:CreateTexture(nil, "ARTWORK")
+        brd:Clip(strip)
         strip:SetWidth(2)
         PP.Point(strip, "TOPLEFT", hdr, "TOPLEFT", 1, -1)
         PP.Point(strip, "BOTTOMLEFT", hdr, "BOTTOMLEFT", 1, 1)
@@ -3634,9 +4172,15 @@ initFrame:SetScript("OnEvent", function(self)
         return HeightFor(bubble:GetHeight())
     end
 
+    -- Sample Skyriding HUD in the content header, painted by the HUD's own
+    -- passes (ns.EDR_ShowSample).
+    local SkyridingHeaderBuilder = SampleHeaderBuilder({ { show = function(header, place)
+        if ns.EDR_ShowSample then ns.EDR_ShowSample(header, place) end
+    end } })
+
     local function BuildChatBubblesPage(pageName, parent, yOffset)
         local W  = EllesmereUI.Widgets
-        local PP = EllesmereUI.PP
+        local PP = EllesmereUI.PanelPP
         local y  = yOffset
         local _, h
 
@@ -3753,7 +4297,7 @@ initFrame:SetScript("OnEvent", function(self)
                 function(k) return CBVal(k) == true end,
                 function(k, v) CBSet(k, v) end,
                 nil, nil, nil, nil, nil, { disabled = Off, disabledTooltip = GATE_REQ })
-            PP.Point(chDD, "RIGHT", rgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(chDD, "RIGHT", rgn, "RIGHT", -20, 0)
             rgn._control = chDD
             rgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(chDDRefresh)
@@ -3795,24 +4339,9 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v) CBSetStyle("borderSize", v) end,
               disabled = Off, disabledTooltip = GATE_REQ });  y = y - h
 
-        -- BuildInlineSwatches, not a hand-rolled BuildColorSwatch: it is the house form for
-        -- a swatch riding on a control half. It anchors through PP.Point, registers the
-        -- swatch's refresh so a profile switch repaints it, and builds the greyed-out block
-        -- plus tooltip from opts.disabled.
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineSwatches(fontBorderRow._leftRegion, {
-                { getValue = function() local r, g, b = CBColor("textColor"); return r, g, b, 1 end,
-                  setValue = function(r, g, b) CBSetStyle("textColor", { r=r, g=g, b=b }) end,
-                  -- Two reasons this swatch can be dead, so the tip is resolved per reason.
-                  disabled = function() return Off() or CBVal("followBlizzardColor") == true end,
-                  disabledTooltip = function()
-                      return Off() and GATE_REQ or "Follow Blizzard Default Color"
-                  end,
-                  requireState = function() return Off() and "enabled" or "disabled" end },
-            }, { disabled = Off, disabledTooltip = GATE_REQ })
-
-            -- Built AFTER the swatch on purpose: BuildInlineSwatches chains _lastInline, so a
-            -- cog made afterwards lands to its left rather than on top of it.
+        do
+            -- Built BEFORE the swatch on purpose: the cog sits beside the control, and
+            -- BuildInlineSwatches chains _lastInline, so the swatch lands to its left.
             EllesmereUI.BuildInlineCog(fontBorderRow._leftRegion, {
                 disabled = Off,
                 disabledTooltip = GATE_REQ,
@@ -3835,6 +4364,22 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                 },
             })
+        end
+        if not EllesmereUI._prebuilding then
+            -- BuildInlineSwatches, not a hand-rolled BuildColorSwatch: it is the house form for
+            -- a swatch riding on a control half. It anchors through PP.Point, registers the
+            -- swatch's refresh so a profile switch repaints it, and builds the greyed-out block
+            -- plus tooltip from opts.disabled.
+            EllesmereUI.BuildInlineSwatches(fontBorderRow._leftRegion, {
+                { getValue = function() local r, g, b = CBColor("textColor"); return r, g, b, 1 end,
+                  setValue = function(r, g, b) CBSetStyle("textColor", { r=r, g=g, b=b }) end,
+                  -- Two reasons this swatch can be dead, so the tip is resolved per reason.
+                  disabled = function() return Off() or CBVal("followBlizzardColor") == true end,
+                  disabledTooltip = function()
+                      return Off() and GATE_REQ or "Follow Blizzard Default Color"
+                  end,
+                  requireState = function() return Off() and "enabled" or "disabled" end },
+            }, { disabled = Off, disabledTooltip = GATE_REQ })
 
             EllesmereUI.BuildInlineSwatches(fontBorderRow._rightRegion, {
                 { getValue = function() return CBColor("borderColor") end,
@@ -3857,35 +4402,37 @@ initFrame:SetScript("OnEvent", function(self)
               disabled = Off, disabledTooltip = GATE_REQ });  y = y - h
 
         -- Same build as the Channels dropdown above.
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = nameRow._leftRegion
-            if rgn._control then rgn._control:Hide() end
-            local nameItems = {
-                { key="say",   label="Say" },
-                { key="yell",  label="Yell" },
-                { key="party", label="Party" },
-                { key="raid",  label="Raid" },
-                { key="npc",   label="NPCs" },
-                { key="emote", label="Emotes" },
-            }
-            local nmDD, nmDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-                rgn, 240, rgn:GetFrameLevel() + 2,
-                nameItems,
-                function(k)
-                    local t = CBVal("showName")
-                    return type(t) == "table" and t[k] == true
-                end,
-                function(k, v)
-                    local db = BBDB(); if not db then return end
-                    if type(db.showName) ~= "table" then db.showName = {} end
-                    db.showName[k] = v or nil
-                    CBM.RefreshStyle()
-                end,
-                nil, nil, nil, nil, nil, { disabled = Off, disabledTooltip = GATE_REQ })
-            PP.Point(nmDD, "RIGHT", rgn, "RIGHT", -20, 0)
-            rgn._control = nmDD
-            rgn._lastInline = nil
-            EllesmereUI.RegisterWidgetRefresh(nmDDRefresh)
+            if not EllesmereUI._prebuilding then
+                if rgn._control then rgn._control:Hide() end
+                local nameItems = {
+                    { key="say",   label="Say" },
+                    { key="yell",  label="Yell" },
+                    { key="party", label="Party" },
+                    { key="raid",  label="Raid" },
+                    { key="npc",   label="NPCs" },
+                    { key="emote", label="Emotes" },
+                }
+                local nmDD, nmDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    rgn, 240, rgn:GetFrameLevel() + 2,
+                    nameItems,
+                    function(k)
+                        local t = CBVal("showName")
+                        return type(t) == "table" and t[k] == true
+                    end,
+                    function(k, v)
+                        local db = BBDB(); if not db then return end
+                        if type(db.showName) ~= "table" then db.showName = {} end
+                        db.showName[k] = v or nil
+                        CBM.RefreshStyle()
+                    end,
+                    nil, nil, nil, nil, nil, { disabled = Off, disabledTooltip = GATE_REQ })
+                EllesmereUI.PanelPP.Point(nmDD, "RIGHT", rgn, "RIGHT", -20, 0)
+                rgn._control = nmDD
+                rgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(nmDDRefresh)
+            end
 
             EllesmereUI.BuildInlineCog(rgn, {
                 disabled = Off,
@@ -3948,7 +4495,6 @@ initFrame:SetScript("OnEvent", function(self)
         local y = yOffset
         local _, h
 
-        if EllesmereUI.ClearContentHeader then EllesmereUI:ClearContentHeader() end
         parent._showRowDivider = true
 
         -- Append SharedMedia textures (safe to call multiple times)
@@ -3979,6 +4525,14 @@ initFrame:SetScript("OnEvent", function(self)
         -- the rows below are laid out for the look the HUD renders.
         local BS = EllesmereUI.BlizzStyle
         local edrStyle = BS.Active("dragonriding")
+
+        -- The sample HUD heads the page while the bar is on; off, the page
+        -- hides everything below its first row and shows no header either.
+        if not EllesmereUI._prebuilding and EDR_Cfg("enabled") == true then
+            EllesmereUI:SetContentHeader(SkyridingHeaderBuilder)
+        elseif EllesmereUI.ClearContentHeader then
+            EllesmereUI:ClearContentHeader()
+        end
 
         -- The Move in Unlock Mode button on the bar's first section, built
         -- whatever Enable Skyriding Bar says: its disabled state explains itself.
@@ -4040,9 +4594,8 @@ initFrame:SetScript("OnEvent", function(self)
         ); y = y - h
         -- Icon size: automatic (as tall as the bars) while Auto Size is on;
         -- turning it off hands the slider the current automatic size.
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(wsRow._leftRegion, {
-                icon = EllesmereUI.RESIZE_ICON,
                 title = "Whirling Surge Icon",
                 disabled = EDR_WSOff, disabledTooltip = "Show Whirling Surge",
                 rows = {
@@ -4084,7 +4637,7 @@ initFrame:SetScript("OnEvent", function(self)
               getValue = function() return EDR_Cfg("stackSpacing") end,
               setValue = function(v) EDR_Set("stackSpacing", v); EDR_Rebuild() end }
         ); y = y - h
-        if not EllesmereUI._prebuilding then
+        do
             local vigorRows = {
                 { type = "toggle", label = "Play Sound on Full Charge",
                   tooltip = "Plays Blizzard's vigor chime each time a skyriding charge fills.",
@@ -4259,9 +4812,8 @@ initFrame:SetScript("OnEvent", function(self)
               getValue = function() return (EDR_Cfg("speedText") or {}).justify or "CENTER" end,
               setValue = function(v) EDR_SetField("speedText", "justify", v); EDR_Redraw() end }
         )
-        if not EllesmereUI._prebuilding then
+        do
         EllesmereUI.BuildInlineCog(speedTextRow._rightRegion, {
-            icon = EllesmereUI.RESIZE_ICON,
             title = "Speed Text Position",
             rows = {
                 { type = "slider", label = "Size",     min = 6,    max = 32,  step = 1,
@@ -4293,6 +4845,18 @@ initFrame:SetScript("OnEvent", function(self)
     local pages = EllesmereUI.IS_FOREVER and { PAGE_WINDOWSKINS, PAGE_TOOLTIPS, PAGE_CHATBUBBLES }
         or { PAGE_WINDOWSKINS, PAGE_TOOLTIPS, PAGE_CHATBUBBLES, PAGE_DRAGONRIDING }
     if EllesmereUI._ModuleNS["EllesmereUIQoL"] then table.insert(pages, 2, PAGE_WINDOWMOVER) end
+    -- Panel shown, or unfolded from its mini window (no page callback runs then): a shown
+    -- sample catches up on writes it skipped while hidden (Unlock Mode, other pages). Each
+    -- repaint checks that its own sample is the one on screen.
+    local function CatchUpPreviews()
+        TooltipPreviewRepaint()
+        PopupPreviewRepaint()
+        if ns.EDR_RepaintSample then ns.EDR_RepaintSample() end
+    end
+    EllesmereUI:RegisterOnShow(CatchUpPreviews)
+    EllesmereUI:RegisterOnCollapse(function(on)
+        if not on then CatchUpPreviews() end
+    end)
     EllesmereUI:RegisterModule("EllesmereUIBlizzardSkin", {
         title       = "Blizzard Skins+",
         description = EllesmereUI.IS_FOREVER and "Themed Blizzard frames: window skins, tooltips, menus, popups, chat bubbles."
@@ -4314,10 +4878,20 @@ initFrame:SetScript("OnEvent", function(self)
                 return BuildDragonRidingPage(pageName, parent, yOffset)
             end
         end,
-        -- Chat Bubbles preview lives in the content header; a cached page whose header was
-        -- dropped rebuilds with it.
+        -- The Tooltips, Chat Bubbles and Skyriding previews live in the content header; a
+        -- cached page whose header was dropped rebuilds with it.
         getHeaderBuilder = function(pageName)
+            if pageName == PAGE_TOOLTIPS then return TooltipHeaderBuilder end
             if pageName == PAGE_CHATBUBBLES then return ChatBubblesHeaderBuilder end
+            if pageName == PAGE_DRAGONRIDING and EDR_Cfg("enabled") == true then
+                return SkyridingHeaderBuilder
+            end
+        end,
+        -- A kept page shown again: its preview paints again (the Fonts and Textures pages,
+        -- Unlock Mode and a profile switch write its keys from elsewhere).
+        onPageCacheRestore = function(pageName)
+            if pageName == PAGE_TOOLTIPS then TooltipPreviewRepaint(); PopupPreviewRepaint() end
+            if pageName == PAGE_DRAGONRIDING and ns.EDR_RepaintSample then ns.EDR_RepaintSample() end
         end,
         resetScope = "account",
         onReset = function()
@@ -4346,6 +4920,7 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.accentReskinElements = nil
                 EllesmereUIDB.tooltipPlayerTitles = nil
                 EllesmereUIDB.tooltipFontScale = nil
+                EllesmereUIDB.tooltipRoundedCorners = nil
                 EllesmereUIDB.tooltipMythicScore = nil
                 EllesmereUIDB.tooltipAnchorCursor = nil
                 EllesmereUIDB.tooltipCursorPosition = nil
@@ -4374,6 +4949,11 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.tooltipGuildmateColor = nil
                 EllesmereUIDB.tooltipCompactLevel = nil
                 EllesmereUIDB.tooltipAFKTag = nil
+                -- Tooltip Extras' Item Counts: the Bags module's account-wide switch.
+                -- Cleared here with its row, but never exported with the tooltip
+                -- settings: turning it on makes Bags save inventories, which a
+                -- shared profile must not switch on for another account.
+                EllesmereUIDB.bagTooltipCounts = nil
                 EllesmereUIDB.tooltipShowBuffs = nil
                 EllesmereUIDB.tooltipBuffPosition = nil
                 EllesmereUIDB.tooltipBuffSize = nil
@@ -4390,7 +4970,7 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.popupMenuButtonBackgroundColor=nil
                 EllesmereUIDB.popupMenuButtonTextColorMode=nil
                 EllesmereUIDB.popupMenuButtonTextColor=nil
-                for _,prefix in ipairs({"popupMenu","popupMenuButton","tooltip","lootWindow","lootIcon"}) do
+                for _,prefix in ipairs({"popupMenu","popupMenuButton","tooltip","lootWindow","lootIcon","timerBars"}) do
                     for _,suffix in ipairs({"BorderTexture","BorderThickness","BorderThicknessPx","BorderColor","BorderColorMode","BorderOpacity","BorderOffsetX","BorderOffsetY","BorderShiftX","BorderShiftY","BorderBehind"}) do
                         EllesmereUIDB[prefix..suffix]=nil
                     end
@@ -4450,6 +5030,8 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.reskinAddonList = nil
                 EllesmereUIDB.reskinCraftOrders = nil
                 EllesmereUIDB.reskinTrainer = nil
+                EllesmereUIDB.reskinStable = nil
+                EllesmereUIDB.reskinKeyring = nil
                 EllesmereUIDB.reskinGossip = nil
                 EllesmereUIDB.reskinQuest = nil
                 EllesmereUIDB.reskinInspectRecipe = nil
@@ -4465,6 +5047,26 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.reskinWidgetBars = nil
                 EllesmereUIDB.widgetBarMinSize = nil
                 EllesmereUIDB.reskinExtraActionButton = nil
+                EllesmereUIDB.reskinTimerBars = nil
+                EllesmereUIDB.timerBarsTexture = nil
+                EllesmereUIDB.timerBarsFillMode = nil
+                EllesmereUIDB.timerBarsFillColor = nil
+                EllesmereUIDB.timerBarsFillOpacity = nil
+                EllesmereUIDB.timerBarsBgColor = nil
+                EllesmereUIDB.timerBarsBgOpacity = nil
+                EllesmereUIDB.timerBarsTypeColors = nil
+                EllesmereUIDB.timerBarsBreathColor = nil
+                EllesmereUIDB.timerBarsFatigueColor = nil
+                EllesmereUIDB.timerBarsFeignColor = nil
+                EllesmereUIDB.timerBarsShowText = nil
+                EllesmereUIDB.timerBarsTextSize = nil
+                EllesmereUIDB.timerBarsTextColor = nil
+                EllesmereUIDB.timerBarsTextX = nil
+                EllesmereUIDB.timerBarsTextY = nil
+                EllesmereUIDB.timerBarsWidth = nil
+                EllesmereUIDB.timerBarsHeight = nil
+                EllesmereUIDB.timerBarsCornerRadius = nil
+                EllesmereUIDB.timerBarsCornerMask = nil
                 EllesmereUIDB.lfgRememberRoles = nil
                 EllesmereUIDB.lfgSavedRoles = nil
                 EllesmereUIDB.showMythicRating = nil
@@ -4495,6 +5097,10 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.charSheetBlizzColors = nil
                 EllesmereUIDB.inspectEnchantNames = nil
                 EllesmereUIDB.inspectEnchantSize = nil
+                EllesmereUIDB.charSheetItemLevelPos = nil
+                EllesmereUIDB.inspectItemLevelPos = nil
+                EllesmereUIDB.charSheetShowItemStats = nil
+                EllesmereUIDB.inspectShowItemStats = nil
                 -- The rest of what the export bundle carries for these two tabs
                 -- (BLIZZ_SKIN_GLOBAL_KEYS): card and tooltip settings, defaults too.
                 for _, k in ipairs({
@@ -4504,15 +5110,16 @@ initFrame:SetScript("OnEvent", function(self)
                     "charSheetEnchantSize", "inspectShowEnchants", "inspectShowItemLevel",
                     "inspectShowUpgradeTrack", "merchantShowAsList", "merchantListRowHeight",
                     "merchantShowItemLevel", "merchantBulkBuy", "merchantExpand", "merchantCols", "merchantRows",
+                    "merchantMarkOwned", "merchantHideKnown",
                     "tooltipItemLevel", "tooltipShowMode",
                     "tooltipShowModifier", "tooltipGrowthDirection", "tooltipBgColor",
                     "tooltipBgOpacity", "showSpellID", "spellIDModifier", "showIconID",
                     "showItemID", "friendsListCard",
                     "mailAltList", "mailAltListMax", "mailAltListMinLevel", "mailAltListSort",
-                    "mailCloseBags",
-                    -- Shown Characters (the roster itself is recorded data, not a setting)
-                    "mailAltHidden",
+                    "mailAltListTab",
                 }) do EllesmereUIDB[k] = nil end
+                -- Shown Characters (the roster itself is recorded data, not a setting)
+                EllesmereUI.ClearCharField("mailAltHidden")
                 EllesmereUIDB.characterFramePos = nil
                 EllesmereUIDB.friendsFramePos = nil
             end

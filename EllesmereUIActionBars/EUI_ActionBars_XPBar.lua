@@ -823,7 +823,7 @@ ns.AbbreviateLargeNumbers = (EllesmereUI.IS_FOREVER and EllesmereUI.ForeverAbbre
 --                      next load
 --    the minute clock  a ticker while the bar shows, for the time items
 --  The session clock, the rate and the saved level time live per character in
---  EllesmereUIDB.xpBarChars[guid] (built the first time an item needs it;
+--  the character roster, EllesmereUI.CharData("xpBar") (built the first time an item needs it;
 --  never exported). A text is set only when its string changed.
 -------------------------------------------------------------------------------
 -- The positions: the first text's point placed on the bar's point (inside:
@@ -935,7 +935,6 @@ ns.XPTextRested = XPTextRested
 -- Parse scratch for the layout pass.
 local xpScratch = {}
 
-local xpPlayerGUID   -- the store key, read once
 local xpLoginAt      -- GetTime() at this session's login (nil after a /reload)
 -- Time this level, once known: the level and the seconds played at it as of
 -- xpLvlStamp (a GetTime()). Kept for the rest of the UI session (GetTime()
@@ -965,40 +964,15 @@ local function FmtPct(v)
 end
 
 -- A duration: 3d 4h, 1h 24m, 22m.
-local function FmtDur(sec)
-    local m = floor((sec > 0 and sec or 0) / 60)
-    local h = floor(m / 60)
-    if h >= 24 then
-        local d = floor(h / 24)
-        return format(EllesmereUI.L("%dd %dh"), d, h - d * 24)
-    elseif h > 0 then
-        return format(EllesmereUI.L("%dh %dm"), h, m - h * 60)
-    end
-    return format(EllesmereUI.L("%dm"), m)
-end
+local FmtDur = EllesmereUI.FormatDuration
 
--- This character's entry in EllesmereUIDB.xpBarChars (create: build it, and
--- the store, when missing). nil while the player's GUID cannot be read.
+-- This character's XP bar entry in the roster (create: build it when
+-- missing). nil while the player's GUID cannot be read.
 local function XPCharEntry(create)
-    local db = EllesmereUIDB
-    if type(db) ~= "table" then return nil end
-    if not xpPlayerGUID then
-        local g = UnitGUID("player")
-        if not g or (issecretvalue and issecretvalue(g)) then return nil end
-        xpPlayerGUID = g
-    end
-    local all = db.xpBarChars
-    if type(all) ~= "table" then
-        if not create then return nil end
-        all = {}
-        db.xpBarChars = all
-    end
-    local e = all[xpPlayerGUID]
-    if type(e) ~= "table" then
-        if not create then return nil end
-        e = { sStart = xpLoginAt or GetTime() }
-        all[xpPlayerGUID] = e
-    end
+    local e = EllesmereUI.CharData("xpBar")
+    if e or not create then return e end
+    e = EllesmereUI.CharData("xpBar", true)
+    if e then e.sStart = xpLoginAt or GetTime() end
     return e
 end
 
@@ -1178,8 +1152,12 @@ end
 -- The XP of every quest in the log that is ready to hand in (the quest
 -- texts), then the Quest XP Overlay's completed and incomplete XP, filtered
 -- by Completed Quests Only (s.questOverlayCompleted) and Current Zone Only
--- (s.questOverlayZone).
+-- (s.questOverlayZone). Hidden log entries (tracking entries the quest log
+-- never lists) count for nothing; a bonus objective in progress counts.
 local GetQuestLogRewardXP = GetQuestLogRewardXP  -- missing on a client: reads 0
+-- Whether a quest's log entry is hidden, read once per quest ID: GetInfo makes
+-- a table per call, and a quest's hidden flag does not change.
+local xpQuestHidden = {}
 local function XPQuestXP(s)
     if not GetQuestLogRewardXP then return 0, 0, 0 end
     local QL = C_QuestLog
@@ -1189,12 +1167,23 @@ local function XPQuestXP(s)
     for i = 1, QL.GetNumQuestLogEntries() do
         local q = QL.GetQuestIDForLogIndex(i)
         if q and q > 0 then
-            local complete = QL.IsComplete(q)
-            if complete or all then
-                local xp = GetQuestLogRewardXP(q) or 0
-                if complete then total = total + xp end
-                if ov and (not onlyZone or QL.IsOnMap(q)) then
-                    if complete then done = done + xp else inc = inc + xp end
+            local hidden = xpQuestHidden[q]
+            if hidden == nil then
+                -- an entry whose info is not readable yet counts, and is read again next scan
+                local info = QL.GetInfo(i)
+                if info then
+                    hidden = info.isHidden and true or false
+                    xpQuestHidden[q] = hidden
+                end
+            end
+            if not hidden then
+                local complete = QL.IsComplete(q)
+                if complete or all then
+                    local xp = GetQuestLogRewardXP(q) or 0
+                    if complete then total = total + xp end
+                    if ov and (not onlyZone or QL.IsOnMap(q)) then
+                        if complete then done = done + xp else inc = inc + xp end
+                    end
                 end
             end
         end
@@ -1319,6 +1308,16 @@ local function XPBarCanShow(s)
     return not ns.XPBarAtMaxLevel() and not (IsXPUserDisabled and IsXPUserDisabled())
 end
 
+-- The time played this level, as of now: stored, then shown.
+local function XPSetLevelTime(levelTime)
+    xpLvl, xpLvlBase, xpLvlStamp = UnitLevel("player"), levelTime, GetTime()
+    local frame = dataBarFrames.XPBar
+    if frame then
+        XPSyncLevelEvents(frame)
+        if frame:IsVisible() then XPRepaint(frame, "nc") end
+    end
+end
+
 -- /played, at most once per session: while Time This Level is in use and
 -- armed (the bar can show) and its time is unknown (or for another level).
 -- The game prints its two /played lines in chat for that one request; the
@@ -1330,7 +1329,8 @@ local function XPRequestPlayed(frame)
     if xpLvlBase and xpLvl == UnitLevel("player") then return end
     if ns.XPBarAtMaxLevel() or (IsXPUserDisabled and IsXPUserDisabled()) then return end
     xpLvlAsked = true
-    if RequestTimePlayed then RequestTimePlayed() end
+    local _, levelTime = EllesmereUI.RequestTimePlayed()
+    if levelTime then XPSetLevelTime(levelTime) end
 end
 
 -- PLAYER_LEVEL_UP (the bar's own event frame): the new level starts at no
@@ -1576,12 +1576,7 @@ xpTextEv:SetScript("OnEvent", function(self, event, arg1, arg2)
     if event == "TIME_PLAYED_MSG" then
         -- arg2: the time played this level, as of now.
         if type(arg2) ~= "number" then return end
-        xpLvl, xpLvlBase, xpLvlStamp = UnitLevel("player"), arg2, GetTime()
-        local frame = dataBarFrames.XPBar
-        if frame then
-            XPSyncLevelEvents(frame)
-            if frame:IsVisible() then XPRepaint(frame, "nc") end
-        end
+        XPSetLevelTime(arg2)
     elseif event == "PLAYER_LOGOUT" then
         -- Also fires on /reload, before SavedVariables are written.
         if xpLvlBase then

@@ -39,6 +39,7 @@ local PreCacheSortFields = ns.PreCacheSortFields
 local VisualSortCompare = ns.VisualSortCompare
 local RecentCompare = ns.RecentCompare
 local MergeDuplicates = ns.MergeDuplicates
+local RecentGainedItems = ns.RecentGainedItems
 local ApplySavedOrder = ns.ApplySavedOrder
 -- Junk Marker state, read once per RenderGridView pass for every RenderButton
 local junkOn = false
@@ -133,34 +134,60 @@ ns.GetOrCreateSlot = GetOrCreateSlot
 -- A slot's desaturation (locked; grey items and Junk Marker junk while Junk
 -- Item Visuals' Desaturate is on) and its Junk Marker coin badge (its Show Coin
 -- Icon): the game's coin, cropped round, lifted past the bottom-left corner.
+-- The coin badge of one slot or list row (made on first use), past the
+-- bottom-left corner of its icon. Mark mode shows it on every junk item, in
+-- the bags and the bank, so a click's result shows at once; outside the mode
+-- only the bag window's grid draws it (Show Coin Icon).
+local function PaintJunkCoin(btn, on)
+    local coin = btn._junkCoin
+    if not on then
+        if coin then coin:Hide() end
+        return
+    end
+    if not coin then
+        coin = btn:CreateTexture(nil, "OVERLAY", nil, 6)
+        coin:SetTexture(ns.JUNK_COIN)
+        coin:SetTexCoord(0.12, 0.88, 0.12, 0.88)
+        local mask = btn:CreateMaskTexture()
+        mask:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+        mask:SetAllPoints(coin)
+        coin:AddMaskTexture(mask)
+        coin:SetSize(12, 12)
+        coin:SetPoint("BOTTOMLEFT", btn._lvIcon or btn, "BOTTOMLEFT", -3, -3)
+        btn._junkCoin = coin
+    end
+    coin:Show()
+end
+ns.PaintJunkCoin = PaintJunkCoin
+
 local function PaintJunkState(btn, info, markerJunk)
     local p = BP()
     local quality = info.quality or 1
     SetItemButtonDesaturated(btn, info.isLocked
         or (p.bagDesaturateJunkItems == true and (quality == 0 or markerJunk)) or false)
-    if markerJunk and p.bagShowJunkCoin == true then
-        local coin = btn._junkCoin
-        if not coin then
-            coin = btn:CreateTexture(nil, "OVERLAY", nil, 6)
-            coin:SetTexture(ns.JUNK_COIN)
-            coin:SetTexCoord(0.12, 0.88, 0.12, 0.88)
-            local mask = btn:CreateMaskTexture()
-            mask:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-            mask:SetAllPoints(coin)
-            coin:AddMaskTexture(mask)
-            coin:SetSize(12, 12)
-            coin:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", -3, -3)
-            btn._junkCoin = coin
-        end
-        coin:Show()
-    elseif btn._junkCoin then
-        btn._junkCoin:Hide()
-    end
+    PaintJunkCoin(btn, markerJunk and (p.bagShowJunkCoin == true or EUI_Bags._junkMode) or false)
 end
 
--- Mark mode repaints the one slot it toggled
-function ns.GridPaintJunk(btn, info)
-    PaintJunkState(btn, info, EUI_CategoryManager:IsJunk(info.itemID, info.quality or 1))
+-- Stack count. A Recent Items picked-up proxy shows "OLD+N" with a green "+N"
+-- when that fits the button, else "+N" in green, also for 1. _recentGainedN
+-- marks a pooled button whose count color the next entry resets.
+local function SetSlotCount(btn, data)
+    local fs = btn.Count
+    if btn._recentGainedN and fs then fs:SetTextColor(1, 1, 1) end
+    local n = data._recentGained and data._mergedCount or nil
+    btn._recentGainedN = n
+    btn:SetItemButtonCount(data.info and (data._mergedCount or data.info.stackCount) or 0)
+    if n and fs then
+        local full, short = ns.RecentGainedText(n, data._recentCarried)
+        fs:Show()
+        if full then
+            fs:SetText(full)
+            fs:SetTextColor(1, 1, 1)
+            if fs:GetStringWidth() <= btn:GetWidth() - 2 then return end
+        end
+        fs:SetText(short)
+        fs:SetTextColor(GREEN_FONT_COLOR:GetRGB())
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -175,6 +202,10 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
 
     btn:SetID(data.slot or 0)
     parent:SetID(data.bag or 0)
+    -- For the cooldown-only pass: whether the button holds an item, and the
+    -- cooldown the block below paints it with.
+    btn._cdItem = data.info and true or nil
+    btn._cdS, btn._cdD = data._cdStart, data._cdDuration
 
     -- Always clear overlays upfront (pooled buttons carry stale state from prior items)
     if btn.ProfessionQualityOverlay then
@@ -187,12 +218,12 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
     if not btn._emptyBg then
         btn._emptyBg = btn:CreateTexture(nil, "BACKGROUND", nil, 1)
         btn._emptyBg:SetAllPoints()
-        btn._emptyBg:SetTexture("Interface\\AddOns\\EllesmereUIBags\\Media\\icon-bg.png")
+        ns.SetSlotBackgroundTexture(btn._emptyBg, true)
     end
 
     if not data.info then
         btn:SetItemButtonTexture(nil)
-        btn:SetItemButtonCount(0)
+        SetSlotCount(btn, data)
         SetItemButtonDesaturated(btn, false)
         if btn.icon then btn.icon:Hide() end
         btn._emptyBg:Show()
@@ -207,6 +238,7 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         end
         -- Reset to 1px and drop the marker, or a pooled slot vacated by a quest item keeps the 2px gold border + atlas.
         SetInsetBorderThickness(btn, (EUI and EUI.PP and EUI.PP.mult) or 1)
+        if btn._fvQuestBorder then btn._fvQuestBorder:Hide() end
         if btn._questMarker then btn._questMarker:Hide() end
         if btn._junkCoin then btn._junkCoin:Hide() end
         if btn.Cooldown then btn.Cooldown:Clear() end
@@ -224,14 +256,17 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         btn:EnableMouse(true)
         btn._emptyBg:Hide()
         if btn.icon then btn.icon:Show() end
-        btn:SetItemButtonTexture(data.info.iconFileID)
-        btn:SetItemButtonCount(data._mergedCount or data.info.stackCount)
+        ns.SetSlotIcon(btn, data.info.iconFileID)
+        SetSlotCount(btn, data)
         btn._isMerged = data._mergedCount and true or nil
 
         local quality = data.info.quality or 1
         PaintJunkState(btn, data.info, junkOn and EUI_CategoryManager:IsJunk(data.info.itemID, quality))
 
-        local filtered = data.info.isFiltered
+        -- Search misses, and a pinned item in a OneBag / MultiBag bag section
+        -- (the interactive slot sections) while Dim Items in OneBag/MultiBag
+        -- is on: its bright copy sits in the Pinned Items section.
+        local filtered = data.info.isFiltered or (interactiveEmpties and data._pinDim) or false
         btn:SetAlpha(filtered and 0.2 or 1)
         if btn._textOverlay then btn._textOverlay:SetAlpha(filtered and 0.2 or 1) end
 
@@ -369,7 +404,11 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         -- Quest items get a gold 2px border overriding the 1px quality border;
         -- thickness is re-set every render because buttons are pooled.
         local _bpx = (EUI and EUI.PP and EUI.PP.mult) or 1
-        if data._isQuest then
+        if btn._fvSlotBorder then
+            local r, g, b = QualityBorderColor(quality)
+            SetInsetBorderColor(btn, r, g, b, 1)
+            ns.SetForeverSlotQuestBorder(btn, data._isQuest, data._isQuestStarter)
+        elseif data._isQuest then
             SetInsetBorderThickness(btn, _bpx * 2)
             SetInsetBorderColor(btn, QUEST_BORDER_COLOR.r, QUEST_BORDER_COLOR.g, QUEST_BORDER_COLOR.b, filtered and 0.2 or 1)
         else
@@ -379,7 +418,7 @@ local function RenderButton(btn, data, _, col, row, startX, currentY, _, interac
         end
         -- Quest marker atlas (lazy, reused). Only for items that START a quest you
         -- have not accepted; active-quest objective items get the border, no marker.
-        if data._isQuestStarter then
+        if data._isQuestStarter and not btn._fvSlotBorder then
             if not btn._questMarker then
                 local qm = (btn._textOverlay or btn):CreateTexture(nil, "OVERLAY", nil, 6)
                 qm:SetAtlas("Crosshair_Quest_64")
@@ -467,12 +506,80 @@ local function GetHeaderHideButton(hdr)
     return hb
 end
 
+-- The category view's "Rename | Change Icon | Delete" links, built once (one
+-- frame, kept on the first header). A click asks about the open category
+-- through the sidebar menu's own asks.
+function ns.BuildCategoryLinks(parent, level)
+    local ef = CreateFrame("Frame", nil, parent)
+    ef:SetHeight(16)
+    ef:SetFrameLevel(level)
+    local function Click(self)
+        local ci = ns.GetSelection()
+        local cat = ci and ci > 0 and EUI_CategoryManager:GetCategories()[ci]
+        if cat then self._ask(cat._defaultName) end
+    end
+    local function Link(text, ask, r, g, b)
+        local btn = CreateFrame("Button", nil, ef)
+        btn._fs = btn:CreateFontString(nil, "OVERLAY")
+        SetBagFont(btn._fs, 10)
+        btn._fs:SetText(text)
+        btn._fs:SetTextColor(0.5, 0.5, 0.5, 0.7)
+        -- the link is as wide as its text, which differs per language
+        btn:SetAllPoints(btn._fs)
+        btn._ask = ask
+        btn:SetScript("OnEnter", function(s) s._fs:SetTextColor(r, g, b, 1) end)
+        btn:SetScript("OnLeave", function(s) s._fs:SetTextColor(0.5, 0.5, 0.5, 0.7) end)
+        btn:SetScript("OnClick", Click)
+        return btn
+    end
+    local function Bar()
+        local d = ef:CreateFontString(nil, "OVERLAY")
+        SetBagFont(d, 10)
+        d:SetText("|")
+        d:SetTextColor(0.3, 0.3, 0.3, 0.7)
+        return d
+    end
+    ef._rename = Link(EllesmereUI.L("Rename"), ns.AskRenameCategory, 1, 1, 1)
+    ef._icon = Link(EllesmereUI.L("Change Icon"), ns.AskCategoryIcon, 1, 1, 1)
+    ef._delete = Link(EllesmereUI.L("Delete"), ns.AskDeleteCategory, 1, 0.3, 0.3)
+    ef._bar1, ef._bar2 = Bar(), Bar()
+    return ef
+end
+
+-- Which links show, right to left: Delete while the category can go
+-- (CanDisableCategory), Change Icon, Rename. Laid out again only when that changes.
+function ns.LayoutCategoryLinks(ef, canDelete)
+    canDelete = canDelete and true or false
+    if ef._canDelete == canDelete then return end
+    ef._canDelete = canDelete
+    local del, icon, bar2 = ef._delete, ef._icon, ef._bar2
+    del._fs:ClearAllPoints()
+    bar2:ClearAllPoints()
+    icon._fs:ClearAllPoints()
+    if canDelete then
+        del._fs:SetPoint("RIGHT", ef, "RIGHT", 0, 0)
+        bar2:SetPoint("RIGHT", del._fs, "LEFT", -6, 0)
+        icon._fs:SetPoint("RIGHT", bar2, "LEFT", -6, 0)
+    else
+        icon._fs:SetPoint("RIGHT", ef, "RIGHT", 0, 0)
+    end
+    del:SetShown(canDelete)
+    bar2:SetShown(canDelete)
+    local bar1, ren = ef._bar1, ef._rename
+    bar1:ClearAllPoints()
+    bar1:SetPoint("RIGHT", icon._fs, "LEFT", -6, 0)
+    ren._fs:ClearAllPoints()
+    ren._fs:SetPoint("RIGHT", bar1, "LEFT", -6, 0)
+end
+
 -------------------------------------------------------------------------------
 --  Grid layout pass. Called by RefreshInventory after the shared scan,
 --  classify, filter and scroll setup; returns the content bottom (curY).
 -------------------------------------------------------------------------------
 function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, gridW, gridPadX, showPinned, pinnedSet)
     local selectedCategoryIndex, selectedGroupName = ns.GetSelection()
+    -- a virtual view's selection (nil for every other view): its own branch below
+    local view = EUI_CategoryManager:GetViewByIndex(selectedCategoryIndex)
     junkOn = EUI_CategoryManager:IsJunkMarkerEnabled()
     compactOn = EUI_Bags.IsCompactMode() == true
 
@@ -497,11 +604,11 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
         SetBagFont(hdr._label, catTitleSize)
         SetBagFont(hdr._hint, catTitleSize - 1)
     end
-    -- The user category's Edit | Delete row sits on the scroll child, outside
-    -- its header; the single category view shows it again when needed
+    -- The category view's Rename | Change Icon | Delete row sits on the scroll
+    -- child, outside its header; the single category view shows it again when needed
     do
-        local editDelete = _catHeaders[1] and _catHeaders[1]._editDeleteFrame
-        if editDelete then editDelete:Hide() end
+        local links = _catHeaders[1] and _catHeaders[1]._catLinksFrame
+        if links then links:Hide() end
     end
     for _, sh in pairs(_expSubHeaders) do
         sh:Hide()
@@ -527,9 +634,9 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
         f:EnableMouse(false)
         f._bg = f:CreateTexture(nil, "BACKGROUND", nil, 1)
         f._bg:SetAllPoints()
-        f._bg:SetTexture("Interface\\AddOns\\EllesmereUIBags\\Media\\icon-bg.png")
+        ns.SetSlotBackgroundTexture(f._bg, false)
         f._bg:SetAlpha(0.35)
-        CreateInsetBorder(f)
+        CreateInsetBorder(f, true)
         SetInsetBorderColor(f, 0, 0, 0, 0.3)
         _emptyPads[idx] = f
         return f
@@ -855,12 +962,13 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
             local recentItems = {}
             if EUI_Bags._recentItems then
                 for _, d in ipairs(tempItems) do
-                    if not d._pinnedOnly and d.info and d.info.itemID and EUI_Bags._recentItems[d.info.itemID] then
+                    if not d._pinnedOnly and EUI_Bags.IsRecentEntry(d) then
                         recentItems[#recentItems + 1] = d
                     end
                 end
             end
             if #recentItems > 0 then
+                recentItems = RecentGainedItems(recentItems)
                 recentItems = MergeDuplicates(recentItems)
                 table.sort(recentItems, RecentCompare)
             end
@@ -1073,6 +1181,9 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                 and not showPinAdd
                 and not alwaysShow
 
+            -- sectionName is the group's key; this is what the label shows
+            local label = EUI_CategoryManager:GroupDisplayName(sectionName)
+
             -- Compact: the collector draws this section (EllesmereUIBags_Compact.lua)
             if compactOn then
                 local assignKey
@@ -1082,7 +1193,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                 end
                 local kind = (showPinAdd and "pinned") or (alwaysShow and "recent")
                     or (useSlotNest and "slot") or (useExpNest and "exp") or "flat"
-                ns.CompactBagsSection(sectionName, sectionItems, kind, assignKey)
+                ns.CompactBagsSection(label, sectionItems, kind, assignKey)
                 return
             end
 
@@ -1092,7 +1203,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
             hdr:ClearAllPoints()
             hdr:SetPoint("TOPLEFT", child, "TOPLEFT", startX, curY)
             hdr:SetWidth(gridW)
-            hdr._label:SetText(sectionName .. " (" .. itemCount .. ")")
+            hdr._label:SetText(label .. " (" .. itemCount .. ")")
             -- Pinned / Recent: their hint shows while the label is hovered
             if showPinAdd then
                 ns.SetHeaderHint(hdr, EllesmereUI.L("Middle Click to Add or Remove"))
@@ -1269,6 +1380,8 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
         end
 
         local hiddenSet = BP().bagHiddenInAllItems or {}
+        -- A turned-off category shows no section (its items are in the catch-all's)
+        local dc = BP().bagDisabledCategories
         for ci, cat in ipairs(cats) do
             if cat.isPinned then
                 -- Pinned Items quickview
@@ -1288,11 +1401,12 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                    and (BP().bagShowRecentItems ~= false) then
                     local recentItems = {}
                     for _, data in ipairs(displayItems) do
-                        if not data._pinnedOnly and data.info and data.info.itemID and EUI_Bags._recentItems[data.info.itemID] then
+                        if not data._pinnedOnly and EUI_Bags.IsRecentEntry(data) then
                             recentItems[#recentItems + 1] = data
                         end
                     end
                     if #recentItems > 0 then
+                        recentItems = RecentGainedItems(recentItems)
                         recentItems = MergeDuplicates(recentItems)
                         table.sort(recentItems, RecentCompare)
                     end
@@ -1324,13 +1438,18 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                         if #merged > 0 then
                             ApplySavedOrder(cat.groupName, merged)
                         end
-                        RenderSection(cat.groupName, merged, false, nil, nil, members[1], true)
+                        -- Its "+" files into the first member that is on; a group
+                        -- whose members are all off has no section
+                        local firstOn = EUI_CategoryManager:FirstOnMember(cat.groupName, dc)
+                        if firstOn then
+                            RenderSection(cat.groupName, merged, false, nil, nil, firstOn, true)
+                        end
                     end
                 end
             elseif cat.isEquipSet then
                 -- Set children render inside their anchor's section
             else
-                if not hiddenSet[cat._defaultName] then
+                if not hiddenSet[cat._defaultName] and not EUI_CategoryManager:IsCategoryOff(cat, dc) then
                     local catItems = itemsByCat[ci] or {}
                     -- The Item Set Gear anchor folds in its set children's items
                     if cat.isSetGear and BP().bagSplitSetGearBySet then
@@ -1350,6 +1469,131 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                     RenderSection(cat.name, catItems, isUserCreated, cat.isPinned, cat.isRecent, ci, true)
                 end
             end
+        end
+    elseif view then
+        -- Virtual view (EUI_CategoryManager:RegisterVirtualView): EUI's Pinned Items and
+        -- Recent Items sections first when the view keeps them, then the view's groups in
+        -- its order, "Other" after them, and our own Junk section last (junk is never
+        -- offered to the provider). As in All Items, Pinned and Recent repeat their items:
+        -- an item in them is in its section too (a pinned item hidden in its category is
+        -- not). A section with no items is not drawn. Nothing here is saved.
+        local groups = view.groups
+        local nGroups = #groups
+        local byGroup = { [-3] = {}, [-2] = {}, [-1] = {} }  -- -1 Pinned, -2 Recent, -3 Junk, 0 Other, 1.. groups
+        for g = 0, nGroups do byGroup[g] = {} end
+        for _, data in ipairs(displayItems) do
+            -- _vg / _vgJunk / _vgPin / _vgRec / _vgOnly: set by Refresh. An item it left
+            -- unstamped (its link has not loaded) is not drawn, as in All Items.
+            local vg = data._vg
+            if vg then
+                if data._vgPin then byGroup[-1][#byGroup[-1] + 1] = data end
+                if data._vgRec then byGroup[-2][#byGroup[-2] + 1] = data end
+                if not data._vgOnly then
+                    local list = data._vgJunk and byGroup[-3] or byGroup[vg] or byGroup[0]
+                    list[#list + 1] = data
+                end
+            end
+        end
+        local headerIdx = 0
+        -- One section. kind: "pinned" / "recent" (EUI's own: its hint, Hide link, the pin
+        -- "+" cell and the Clear link, as in All Items) or nil (a group).
+        local function RenderViewSection(label, sItems, kind, hint)
+            if #sItems > 0 then
+                if kind == "recent" then
+                    sItems = RecentGainedItems(sItems)
+                    sItems = MergeDuplicates(sItems)
+                    table.sort(sItems, RecentCompare)
+                else
+                    PreCacheSortFields(sItems)
+                    table.sort(sItems, VisualSortCompare)
+                    sItems = MergeDuplicates(sItems)
+                end
+            elseif not kind then
+                return
+            end
+            local n = #sItems
+            if compactOn then
+                ns.CompactBagsSection(label, sItems, kind or "flat", nil, nil, hint)
+                return
+            end
+            headerIdx = headerIdx + 1
+            local hdr = GetOrCreateCatHeader(headerIdx)
+            hdr:SetParent(child)
+            hdr:ClearAllPoints()
+            hdr:SetPoint("TOPLEFT", child, "TOPLEFT", startX, curY)
+            hdr:SetWidth(gridW)
+            hdr._label:SetText(label .. " (" .. n .. ")")
+            if kind then
+                ns.SetHeaderHint(hdr, hint)
+                GetHeaderHideButton(hdr)
+                hdr._hideBtn._dbKey = kind == "pinned" and "bagShowPinnedItems" or "bagShowRecentItems"
+                hdr._hideBtn._tooltip = kind == "pinned" and "Hides Pinned Items. Re-show in settings."
+                    or "Hides Recent Items. Re-show in settings."
+                hdr._hideBtn:ClearAllPoints()
+                hdr._hideBtn:SetPoint("RIGHT", hdr, "RIGHT", 0, 0)
+                hdr._hideBtn:Show()
+                local lineAnchor = hdr._hideBtn
+                if kind == "recent" and BP().bagShowRecentClear == true
+                   and EUI_Bags._recentItems and next(EUI_Bags._recentItems) then
+                    lineAnchor = ShowRecentClearButton(hdr, hdr._hideBtn)
+                end
+                hdr._line:ClearAllPoints()
+                hdr._line:SetPoint("LEFT", hdr._hint, "RIGHT", 6, 0)
+                hdr._line:SetPoint("RIGHT", lineAnchor, "LEFT", -6, 0)
+            end
+            hdr:Show()
+            curY = curY - 22
+            for j, data in ipairs(sItems) do
+                slotIdx = slotIdx + 1
+                local btn = GetOrCreateSlot(slotIdx)
+                if btn then  -- nil during combat (avoids minting tainted secure buttons)
+                    btn:GetParent():SetParent(child)
+                    local col = (j - 1) % columns
+                    local row = math.floor((j - 1) / columns)
+                    RenderButton(btn, data, slotIdx, col, row, startX, curY, columns)
+                end
+            end
+            local cells = n
+            if kind == "pinned" then
+                -- The pin "+" cell, a regular empty slot with the "+" overlay on top
+                slotIdx = slotIdx + 1
+                local pinSlot = GetOrCreateSlot(slotIdx)
+                if pinSlot then
+                    pinSlot:GetParent():SetParent(child)
+                    RenderButton(pinSlot, { bag = 0, slot = 0 }, slotIdx, n % columns, math.floor(n / columns),
+                        startX, curY, columns)
+                    local ov = GetOrCreatePinOverlay()
+                    ov:SetParent(child)
+                    ov:ClearAllPoints()
+                    ov:SetAllPoints(pinSlot)
+                    ov:Show()
+                    cells = n + 1
+                end
+            end
+            local remainder = cells % columns
+            local padCount = cells == 0 and columns or (remainder == 0 and 0 or columns - remainder)
+            -- Cosmetic filler pads (see the group view)
+            if padCount > 0 then RenderEmptyPad(cells, padCount) end
+            curY = curY - (math.ceil((cells + padCount) / columns) * (SLOT_SIZE + SPACING)) - 6
+        end
+        -- Same switches as All Items: Show Pinned Items / Show Recent Items
+        if #byGroup[-1] > 0 or (view.keepPinned and showPinned and pinnedSet) then
+            RenderViewSection(EllesmereUI.L("Pinned Items"), byGroup[-1], "pinned",
+                EllesmereUI.L("Middle Click to Add or Remove"))
+        end
+        if #byGroup[-2] > 0 or (view.keepRecent and BP().bagShowRecentItems ~= false and EUI_Bags._recentItems) then
+            RenderViewSection(EllesmereUI.L("Recent Items"), byGroup[-2], "recent",
+                EllesmereUI.L("Extra quickview display, your items are also in their category"))
+        end
+        for g = 1, nGroups + 1 do
+            RenderViewSection(g <= nGroups and groups[g].name or view.otherName, byGroup[g <= nGroups and g or 0])
+        end
+        -- What Sell Junk sells stays ours: the Junk section, under the Junk category's name
+        -- (junk exists only while the Junk Marker is on, when this refresh's classify pass
+        -- has found that category)
+        if #byGroup[-3] > 0 then
+            local junkCat = EUI_CategoryManager:GetCategories()[EUI_CategoryManager._junkCatIdx]
+            RenderViewSection(junkCat and junkCat.name or EUI_CategoryManager.JUNK_KEY, byGroup[-3])
         end
     else
         if selectedGroupName then
@@ -1383,10 +1627,12 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
             end
 
             local hideEmpty = BP().bagHideEmptyCategories ~= false
+            -- A turned-off member shows no section
+            local dc = BP().bagDisabledCategories
             for _, mi in ipairs(members) do
                 local memberCat = cats[mi]
                 local memberItems = itemsByMember[mi] or {}
-                if not (hideEmpty and #memberItems == 0) then
+                if not (hideEmpty and #memberItems == 0) and not EUI_CategoryManager:IsCategoryOff(memberCat, dc) then
 
                 if #memberItems > 0 then
                     PreCacheSortFields(memberItems)
@@ -1476,6 +1722,7 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                     PreCacheSortFields(displayItems)
                     table.sort(displayItems, VisualSortCompare)
                 end
+                if selCat and selCat.isRecent then displayItems = RecentGainedItems(displayItems) end
                 displayItems = MergeDuplicates(displayItems)
                 if selCat and selCat.isRecent then table.sort(displayItems, RecentCompare) end
             end
@@ -1484,97 +1731,24 @@ function ns.RenderGridView(tempItems, displayItems, emptySlots, child, columns, 
                 local headerIdx = 1
                 local hdr = GetOrCreateCatHeader(headerIdx)
 
-                -- "Edit | Delete" links for user-created categories
-                if not hdr._editDeleteFrame then
-                    local ef = CreateFrame("Frame", nil, child)
-                    ef:SetHeight(16)
-                    ef:SetFrameLevel((hdr:GetFrameLevel() or 1) + 1)
-
-                    local delBtn = CreateFrame("Button", nil, ef)
-                    delBtn:SetHeight(20)
-                    delBtn._fs = delBtn:CreateFontString(nil, "OVERLAY")
-                    SetBagFont(delBtn._fs, 10)
-                    delBtn._fs:SetPoint("RIGHT", ef, "RIGHT", 0, 0)
-                    delBtn._fs:SetText(EllesmereUI.L("Delete"))
-                    delBtn._fs:SetTextColor(0.5, 0.5, 0.5, 0.7)
-                    delBtn:SetWidth(delBtn._fs:GetStringWidth() + 4)
-                    delBtn:SetAllPoints(delBtn._fs)
-                    delBtn:SetScript("OnEnter", function(s) s._fs:SetTextColor(1, 0.3, 0.3, 1) end)
-                    delBtn:SetScript("OnLeave", function(s) s._fs:SetTextColor(0.5, 0.5, 0.5, 0.7) end)
-                    delBtn:SetScript("OnClick", function()
-                        local ci = ns.GetSelection()
-                        if ci and ci > 0 and EUI_CategoryManager then
-                            EUI:ShowConfirmPopup({
-                                title = "Delete Category",
-                                message = EllesmereUI.L("Are you sure you want to delete this category? All item assignments will be removed."),
-                                confirmText = "Delete",
-                                cancelText = "Cancel",
-                                onConfirm = function()
-                                    EUI_CategoryManager:RemoveCustomCategory(ci)
-                                    ns.SetSelection(0, nil)
-                                    EUI_Bags:RefreshInventory()
-                                end,
-                            })
-                        end
-                    end)
-                    ef._delBtn = delBtn
-
-                    local divider = ef:CreateFontString(nil, "OVERLAY")
-                    SetBagFont(divider, 10)
-                    divider:SetPoint("RIGHT", delBtn._fs, "LEFT", -6, 0)
-                    divider:SetText("|")
-                    divider:SetTextColor(0.3, 0.3, 0.3, 0.7)
-                    ef._divider = divider
-
-                    local editBtn = CreateFrame("Button", nil, ef)
-                    editBtn:SetHeight(20)
-                    editBtn._fs = editBtn:CreateFontString(nil, "OVERLAY")
-                    SetBagFont(editBtn._fs, 10)
-                    editBtn._fs:SetPoint("RIGHT", divider, "LEFT", -6, 0)
-                    editBtn._fs:SetText(EllesmereUI.L("Edit"))
-                    editBtn._fs:SetTextColor(0.5, 0.5, 0.5, 0.7)
-                    editBtn:SetWidth(editBtn._fs:GetStringWidth() + 4)
-                    editBtn:SetAllPoints(editBtn._fs)
-                    editBtn:SetScript("OnEnter", function(s) s._fs:SetTextColor(1, 1, 1, 1) end)
-                    editBtn:SetScript("OnLeave", function(s) s._fs:SetTextColor(0.5, 0.5, 0.5, 0.7) end)
-                    editBtn:SetScript("OnClick", function()
-                        local ci = ns.GetSelection()
-                        if ci and ci > 0 and EUI_CategoryManager and EUI then
-                            local cats2 = EUI_CategoryManager:GetCategories()
-                            local cat2 = cats2[ci]
-                            if not cat2 then return end
-                            EUI:ShowInputPopup({
-                                title = "Rename Category",
-                                message = EllesmereUI.L("Enter a new name:"),
-                                placeholder = cat2.name,
-                                confirmText = "Rename",
-                                cancelText = "Cancel",
-                                onConfirm = function(text)
-                                    if text and text ~= "" then
-                                        EUI_CategoryManager:RenameCategory(ci, text)
-                                        EUI_Bags:RefreshInventory()
-                                    end
-                                end,
-                            })
-                        end
-                    end)
-                    ef._editBtn = editBtn
-
-                    ef:SetWidth(60)
-                    hdr._editDeleteFrame = ef
+                -- "Rename | Change Icon | Delete" over a category the user made or
+                -- a default one: the sidebar menu's asks, by the open category's key
+                if not hdr._catLinksFrame then
+                    hdr._catLinksFrame = ns.BuildCategoryLinks(child, (hdr:GetFrameLevel() or 1) + 1)
                 end
 
-                -- Position Edit | Delete above the header, then the header below
-                if selCat and selCat.isUserCreated then
-                    local ef = hdr._editDeleteFrame
+                -- Position the links above the header, then the header below
+                if selCat and not selCat.isEquipSet and not selCat.isVirtual then
+                    local ef = hdr._catLinksFrame
+                    ns.LayoutCategoryLinks(ef, EUI_CategoryManager:CanDisableCategory(selCat))
                     ef:SetParent(child)
                     ef:ClearAllPoints()
                     ef:SetPoint("TOPRIGHT", child, "TOPLEFT", startX + gridW, curY)
                     ef:SetWidth(gridW)
                     ef:Show()
                     curY = curY - 18
-                elseif hdr._editDeleteFrame then
-                    hdr._editDeleteFrame:Hide()
+                elseif hdr._catLinksFrame then
+                    hdr._catLinksFrame:Hide()
                 end
 
                 -- Compact draws the name as the group's label instead

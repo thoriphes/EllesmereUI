@@ -142,10 +142,19 @@ do
         "classPowerClassColors", "classPowerCustomColor", "classPowerGap",
         "classPowerShape", "classPowerBorder", "classPowerBorderColor", "classPowerBorderSize",
         "textSlotTop", "textSlotRight", "textSlotLeft", "textSlotCenter",
-        "textSlotBottomLeft", "textSlotBottomRight",
+        "textSlotBottomLeft", "textSlotBottomRight", "textSlotTopLeft", "textSlotTopRight",
         "nameYOffset",
         "healthBarHeight", "healthBarWidth", "castBarHeight",
     }
+    -- The energy bar beside the combo pips exists on WoW Forever alone.
+    if EllesmereUI.IS_FOREVER == true then
+        local keys = ns._displayPresetKeys
+        for _, k in ipairs({ "classPowerEnergyBar", "classPowerEnergyHeight", "classPowerEnergyWidth",
+            "classPowerEnergyAnchor", "classPowerEnergyXOffset", "classPowerEnergyYOffset",
+            "classPowerEnergyHideFull" }) do
+            keys[#keys + 1] = k
+        end
+    end
     ns._appendDisplayPresetKeys(ns._displayPresetKeys)
 
     -- Also handle spec changes that happen before the UI is ever opened

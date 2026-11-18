@@ -306,7 +306,6 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
             y = y - oh
         end
     end
-    if EllesmereUI._prebuilding then return y0 - y end
 
     -- Border Options cog (left): shifts and layering, textured styles only.
     do
@@ -325,7 +324,7 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
             if v ~= Shift(key, isY) then s[key] = v end
             Changed()
         end
-        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, {
             title = "Border Options",
             rows = {
                 { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -340,13 +339,16 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
                   set = function(v) getS().castBorderBehind = v; Changed() end },
             },
         })
-        local function UpdateCogVis()
-            local tex = getS().castBorderStyle or "solid"
-            if tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+        if not EllesmereUI._prebuilding then
+            local function UpdateCogVis()
+                local tex = getS().castBorderStyle or "solid"
+                if tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+            UpdateCogVis()
         end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
     end
+    if EllesmereUI._prebuilding then return y0 - y end
 
     -- Colour swatch (with alpha) on Border Size; greyed and blocked at 0.
     do
@@ -563,7 +565,6 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
             y = y - oh
         end
     end
-    if EllesmereUI._prebuilding then return y0 - y end
 
     -- Border Options cog (left): shifts and layering, own textured styles only.
     do
@@ -580,7 +581,7 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
             if v ~= Shift(key, isY) then B[key] = v end
             onChange()
         end
-        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, {
             title = "Border Options",
             rows = {
                 { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -607,18 +608,41 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
                   set = function(v) B.borderPowerSeam = v; onChange() end },
             },
         })
-        local function UpdateCogVis()
-            local tex = B.borderTexture or "solid"
-            if Inheriting() or tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+        if not EllesmereUI._prebuilding then
+            local function UpdateCogVis()
+                local tex = B.borderTexture or "solid"
+                if Inheriting() or tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+            UpdateCogVis()
         end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
     end
 
     -- Colour swatch (with alpha) on Border Size: shows what is drawn; greyed
     -- and blocked while inheriting or at 0.
     do
         local rgn = row._rightRegion
+        -- Corner Radius (EllesmereUI_RoundedCorners.lua): the boss table's own,
+        -- beside the control with the swatch left of it; while inheriting the
+        -- main frames' radius applies.
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Corner Radius", tip = "Corner Radius",
+            disabled = function() return Inheriting() or not EllesmereUI.RoundedStyleOK(B.borderTexture) end,
+            disabledTooltip = function()
+                if Inheriting() then return NEEDS_STYLE end
+                return "This option requires the Solid, Glow or Shadow border style."
+            end,
+            rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
+                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+                  get = function() return Src().cornerRadius or 0 end,
+                  set = function(v) B.cornerRadius = v; onChange() end },
+            }, function() return Src().cornerMask end, function(v) B.cornerMask = v; onChange() end),
+                "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
+                function() return B.cornerJoinPower end, function(v) B.cornerJoinPower = v; onChange() end,
+                function() local pos = B.powerPosition or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
+                "Detached Power Bar"),
+        })
+        if EllesmereUI._prebuilding then return y0 - y end
         local sw, updateSw = EllesmereUI.BuildColorSwatch(rgn, row:GetFrameLevel() + 3,
             function()
                 local s = Src()
@@ -654,25 +678,6 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
         end
         EllesmereUI.RegisterWidgetRefresh(UpdateSw)
         UpdateSw()
-        -- Corner Radius (EllesmereUI_RoundedCorners.lua): the boss table's own,
-        -- left of the swatch; while inheriting the main frames' radius applies.
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Corner Radius", tip = "Corner Radius",
-            disabled = function() return Inheriting() or not EllesmereUI.RoundedStyleOK(B.borderTexture) end,
-            disabledTooltip = function()
-                if Inheriting() then return NEEDS_STYLE end
-                return "This option requires the Solid, Glow or Shadow border style."
-            end,
-            rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
-                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
-                  get = function() return Src().cornerRadius or 0 end,
-                  set = function(v) B.cornerRadius = v; onChange() end },
-            }, function() return Src().cornerMask end, function(v) B.cornerMask = v; onChange() end),
-                "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
-                function() return B.cornerJoinPower end, function(v) B.cornerJoinPower = v; onChange() end,
-                function() local pos = B.powerPosition or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
-                "Detached Power Bar"),
-        })
     end
     return y0 - y
 end
@@ -905,8 +910,9 @@ initFrame:SetScript("OnEvent", function(self)
     local floor = math.floor
     local abs = math.abs
 
-    local GetUFOptOutline = EllesmereUI.GetFontOutlineFlag
-    local SetPVFont = EllesmereUI.ApplyModuleFont
+    -- The preview's texts show names as the frames do, so they take a font
+    -- family as live; every font write to them goes through here.
+    local SetPVFont = EllesmereUI.ApplyModuleFontFamily
 
     ---------------------------------------------------------------------------
     --  Shared helpers
@@ -1609,12 +1615,10 @@ initFrame:SetScript("OnEvent", function(self)
                 PP.Point(pFrame._previewTex, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", oR, oB)
             end
         end
-        if pFrame._previewModel then
-            -- 3D models ignore SetClipsChildren, so pin them to the frame bounds.
-            pFrame._previewModel:ClearAllPoints()
-            PP.Point(pFrame._previewModel, "TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-            PP.Point(pFrame._previewModel, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
-        end
+        -- 3D Portrait Below Border: the model inside the ring and under it,
+        -- as on the live portrait; off, it fills the frame over the ring.
+        ns.UF_PortraitShapeModel(pFrame, pFrame._shapeBorderTex, pFrame._previewModel,
+            pFrame._previewMode == "3d" and s.portrait3dBelowBorder == true, shape, rawBorderSize)
 
         -- Outer Ring / Inner Shadow: the live portrait's own helper. A shown
         -- Outer Ring and an unmasked ring below Size 7 reach past the frame,
@@ -1943,7 +1947,11 @@ initFrame:SetScript("OnEvent", function(self)
         factionIndicatorPosition    = { player=true, target=true },
         factionIndicatorX           = { player=true, target=true },
         factionIndicatorY           = { player=true, target=true },
-        buffAnchor           = { player=true, target=true, focus=true },
+        factionIndicatorTimer       = { player=true },
+        factionIndicatorTimerSize   = { player=true },
+        factionIndicatorTimerX      = { player=true },
+        factionIndicatorTimerY      = { player=true },
+        buffAnchor          = { player=true, target=true, focus=true },
         buffGrowth           = { player=true, target=true, focus=true },
         maxBuffs             = { player=true, target=true, focus=true },
         showPlayerCastbar    = { player=true },
@@ -2417,6 +2425,9 @@ initFrame:SetScript("OnEvent", function(self)
         if (optState.selectedUnit == "player" or optState.selectedUnit == "target") and parent._ufFactionRow then
             parent._sharedClickTargets.factionIndicator = { section = sharedAddHeader, target = parent._ufFactionRow, slotSide = "left" }
         end
+        if optState.selectedUnit == "player" and parent._ufPvpTimerRow then
+            parent._sharedClickTargets.pvpTimer = { section = sharedAddHeader, target = parent._ufPvpTimerRow, slotSide = "left" }
+        end
 
         return y
     end  -- BuildSharedSettings
@@ -2646,6 +2657,12 @@ initFrame:SetScript("OnEvent", function(self)
                     ov:SetShown(b[1]:IsShown())
                     pv._badgeOv[b[1]] = ov
                 end
+            end
+            -- The PvP Flagged Timer's sample text, the same way.
+            if pv._pvPvpTimer and targets.pvpTimer then
+                local ov = CreateHitOverlay(pv._pvPvpTimer, "pvpTimer", true, baseLevel + 20)
+                ov:SetShown(pv._pvPvpTimer:IsShown())
+                pv._badgeOv[pv._pvPvpTimer] = ov
             end
             pv._textOverlays = textOverlays
         end
@@ -3017,7 +3034,7 @@ initFrame:SetScript("OnEvent", function(self)
         classPowerPosOrder = classPowerPosOrder, classPowerPosValues = classPowerPosValues, classPowerStyleOrder = classPowerStyleOrder,
         classPowerStyleValues = classPowerStyleValues, classThemeSubOrder = classThemeSubOrder, classThemeSubValues = classThemeSubValues,
         db = db, DebuffModeDropdownCfg = DebuffModeDropdownCfg, detPortraitShapeOrder = detPortraitShapeOrder,
-        detPortraitShapeValues = detPortraitShapeValues, frames = frames, GetUFOptOutline = GetUFOptOutline,
+        detPortraitShapeValues = detPortraitShapeValues, frames = frames,
         GROUP_UNIT_ORDER = GROUP_UNIT_ORDER, HideExhaustionRow = HideExhaustionRow, healthTextOrder = healthTextOrder, healthTextOrderBoss = healthTextOrderBoss,
         healthTextOrderPlayer = healthTextOrderPlayer, healthTextOrderTargetFocus = healthTextOrderTargetFocus, healthTextValues = healthTextValues,
         MINI_GROUP_ORDER = MINI_GROUP_ORDER, optState = optState, portraitArtOrder = portraitArtOrder,
