@@ -44,7 +44,7 @@ initFrame:SetScript("OnEvent", function(self)
 
     local function BuildPage(_, parent, yOffset)
         local W  = EllesmereUI.Widgets
-        local PP = EllesmereUI.PP
+        local PP = EllesmereUI.PanelPP
         local y  = yOffset
         local row, h
 
@@ -213,13 +213,15 @@ initFrame:SetScript("OnEvent", function(self)
                   setValue=function(v) Set("customScrollbar", v); RefreshAll() end })
             y = y - h
 
-            -- Quest Difficulty Colors | Collapse Completed Quests
+            -- Quest Click | Collapse Completed Quests
             _, h = W:DualRow(parent, y,
-                { type="toggle", text="Quest Difficulty Colors",
-                  tooltip="Colors quest titles by difficulty for your level instead of the Title Color.",
+                { type="dropdown", text="Quest Click",
+                  tooltip="What left-clicking a quest does. Open Quest Details shows EllesmereUI's own details window and works in combat. Open Quest Log works out of combat only, for quests tracked in the quest log. Ctrl-click still collapses.",
+                  values = { collapse = "Collapse", map = "Open Quest Log", details = "Open Quest Details" },
+                  order  = { "collapse", "map", "details" },
                   disabled=Off, disabledTooltip="Custom Quest Tracker",
-                  getValue=function() return Cfg("customDifficultyColor") ~= false end,
-                  setValue=function(v) Set("customDifficultyColor", v); RefreshAll() end },
+                  getValue=function() return Cfg("customClickAction") or "collapse" end,
+                  setValue=function(v) Set("customClickAction", v); RefreshAll() end },
                 { type="toggle", text="Collapse Completed Quests",
                   tooltip="Hides the objectives of quests that are ready to turn in. Click a quest to expand it.",
                   disabled=Off, disabledTooltip="Custom Quest Tracker",
@@ -283,18 +285,6 @@ initFrame:SetScript("OnEvent", function(self)
                   setValue=function(v) Set("customFlashUpdates", v); RefreshAll() end })
             y = y - h
 
-            -- Quest Click (the section's odd last slot)
-            _, h = W:DualRow(parent, y,
-                { type="dropdown", text="Quest Click",
-                  tooltip="What left-clicking a quest does. Open Quest Details shows EllesmereUI's own details window and works in combat. Open Quest Log works out of combat only, for quests tracked in the quest log. Ctrl-click still collapses.",
-                  values = { collapse = "Collapse", map = "Open Quest Log", details = "Open Quest Details" },
-                  order  = { "collapse", "map", "details" },
-                  disabled=Off, disabledTooltip="Custom Quest Tracker",
-                  getValue=function() return Cfg("customClickAction") or "collapse" end,
-                  setValue=function(v) Set("customClickAction", v); RefreshAll() end },
-                EllesmereUI.BlankRowCfg())
-            y = y - h
-
             y = y - 10
         end
 
@@ -332,7 +322,7 @@ initFrame:SetScript("OnEvent", function(self)
               tooltip="Draws a 1px accent line above the background at the top of the tracker.",
               getValue=function() return Cfg("showTopLine") ~= false end,
               setValue=function(v) Set("showTopLine", v); if EQT.ApplyBackground then EQT.ApplyBackground() end end })
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = bgRow._leftRegion
             local ctrl = rgn._control
             -- The custom tracker can hide its background until hovered.
@@ -351,19 +341,21 @@ initFrame:SetScript("OnEvent", function(self)
                     },
                 })
             end
-            local bgSwatch, bgSwatchRefresh = EllesmereUI.BuildColorSwatch(
-                rgn, bgRow:GetFrameLevel() + 3,
-                function()
-                    return (Cfg("bgR") or 0), (Cfg("bgG") or 0), (Cfg("bgB") or 0)
-                end,
-                function(r, g, b)
-                    Set("bgR", r); Set("bgG", g); Set("bgB", b)
-                    if EQT.ApplyBackground then EQT.ApplyBackground() end
-                end,
-                false, 20)
-            PP.Point(bgSwatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
-            rgn._lastInline = bgSwatch
-            EllesmereUI.RegisterWidgetRefresh(function() bgSwatchRefresh() end)
+            if not EllesmereUI._prebuilding then
+                local bgSwatch, bgSwatchRefresh = EllesmereUI.BuildColorSwatch(
+                    rgn, bgRow:GetFrameLevel() + 3,
+                    function()
+                        return (Cfg("bgR") or 0), (Cfg("bgG") or 0), (Cfg("bgB") or 0)
+                    end,
+                    function(r, g, b)
+                        Set("bgR", r); Set("bgG", g); Set("bgB", b)
+                        if EQT.ApplyBackground then EQT.ApplyBackground() end
+                    end,
+                    false, 20)
+                PP.Point(bgSwatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
+                rgn._lastInline = bgSwatch
+                EllesmereUI.RegisterWidgetRefresh(function() bgSwatchRefresh() end)
+            end
         end
         y = y - h
 
@@ -452,34 +444,64 @@ initFrame:SetScript("OnEvent", function(self)
         -- function in EllesmereUIQuestTracker_Skin.lua, or the swatch will
         -- show a color (black) that doesn't match what's actually rendered
         -- until the user picks one explicitly.
+        local TITLE_KEYS, TITLE_DEFAULT = { r = "titleR", g = "titleG", b = "titleB" }, { 1.0, 0.910, 0.471 }
+        local DONE_KEYS, DONE_DEFAULT = { r = "completedR", g = "completedG", b = "completedB" }, { 0.251, 1.0, 0.349 }
+        local function ColorGetter(keys, default)
+            return function()
+                return (Cfg(keys.r) or default[1]), (Cfg(keys.g) or default[2]), (Cfg(keys.b) or default[3])
+            end
+        end
+        local function ColorSetter(keys)
+            return function(cr, cg, cb)
+                Set(keys.r, cr); Set(keys.g, cg); Set(keys.b, cb)
+                RefreshAll()
+            end
+        end
+        local function WireColorSwatch(r, rgn, keys, default)
+            local sw, swRefresh = EllesmereUI.BuildColorSwatch(
+                rgn, r:GetFrameLevel() + 3, ColorGetter(keys, default), ColorSetter(keys), false, 20)
+            PP.Point(sw, "RIGHT", rgn, "RIGHT", -20, 0)
+            EllesmereUI.RegisterWidgetRefresh(function() swRefresh() end)
+        end
         local function MakeColorRow(leftLabel, leftKeys, leftDefault, rightLabel, rightKeys, rightDefault)
             local r, rowH = W:DualRow(parent, y,
                 { type="label", text = leftLabel },
                 { type="label", text = rightLabel })
-            local function wire(rgn, keys, default)
-                local sw, swRefresh = EllesmereUI.BuildColorSwatch(
-                    rgn, r:GetFrameLevel() + 3,
-                    function()
-                        return (Cfg(keys.r) or default[1]), (Cfg(keys.g) or default[2]), (Cfg(keys.b) or default[3])
-                    end,
-                    function(cr, cg, cb)
-                        Set(keys.r, cr); Set(keys.g, cg); Set(keys.b, cb)
-                        RefreshAll()
-                    end,
-                    false, 20)
-                PP.Point(sw, "RIGHT", rgn, "RIGHT", -20, 0)
-                EllesmereUI.RegisterWidgetRefresh(function() swRefresh() end)
-            end
             if not EllesmereUI._prebuilding then
-            wire(r._leftRegion,  leftKeys,  leftDefault)
-            if rightKeys then wire(r._rightRegion, rightKeys, rightDefault) end
+            WireColorSwatch(r, r._leftRegion,  leftKeys,  leftDefault)
+            if rightKeys then WireColorSwatch(r, r._rightRegion, rightKeys, rightDefault) end
             end
             return r, rowH
         end
 
-        _, h = MakeColorRow(
-            "Title Color",    { r = "titleR",     g = "titleG",     b = "titleB"     }, { 1.0,   0.910, 0.471 },
-            "Completed Color",{ r = "completedR", g = "completedG", b = "completedB" }, { 0.251, 1.0,   0.349 })
+        if FOREVER then
+            -- Title Difficulty Colors | Completed Color. The toggle is the
+            -- game's own showQuestDifficultyColor option (EQT.TitleDifficultyOn),
+            -- which Blizzard's tracker and quest log follow and the custom
+            -- tracker reads; its inline swatch, the Title Color, greys out
+            -- while it is on. Retail has no quest title difficulty colors.
+            local r
+            r, h = W:DualRow(parent, y,
+                { type="toggle", text="Title Difficulty Colors",
+                  tooltip="Colors quest titles by difficulty for your level. This is the game's own option, so its quest log follows it too.",
+                  getValue=function() return EQT.TitleDifficultyOn() end,
+                  setValue=function(v)
+                      EllesmereUI.SetCVar("showQuestDifficultyColor", v and "1" or "0", "EllesmereUIQuestTracker")
+                      RefreshAll(); EllesmereUI:RefreshPage()
+                  end },
+                { type="label", text="Completed Color" })
+            if not EllesmereUI._prebuilding then
+                EllesmereUI.BuildInlineSwatches(r._leftRegion, {
+                    { tooltip = "Title Color", hasAlpha = false,
+                      getValue = ColorGetter(TITLE_KEYS, TITLE_DEFAULT),
+                      setValue = ColorSetter(TITLE_KEYS) },
+                }, { disabled = EQT.TitleDifficultyOn,
+                     disabledTooltip = "Title Difficulty Colors", requireState = "disabled" })
+                WireColorSwatch(r, r._rightRegion, DONE_KEYS, DONE_DEFAULT)
+            end
+        else
+            _, h = MakeColorRow("Title Color", TITLE_KEYS, TITLE_DEFAULT, "Completed Color", DONE_KEYS, DONE_DEFAULT)
+        end
         y = y - h
 
         -- Header Color / Line Color: each offers Class Color, Custom Color
@@ -644,8 +666,6 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         local ApplyWatches, ApplyProgress = EQT.ApplyQuestWatches, EQT.ApplyQuestProgress
-        local StandDown = EQT.QuestToolsStandDown
-        local GAMEPAD_TIP = "This option does not work with the Gamepad interface style."
         -- Quest Log Order is the base sort mode (a saved "default", the retired
         -- Blizzard order mode, reads as it).
         local function SortModeCfg()
@@ -654,10 +674,10 @@ initFrame:SetScript("OnEvent", function(self)
             return m
         end
         -- Section gate: Sort Quests, Filter Quests and Auto Track Zone Quests are
-        -- built only while Experimental Quest Tools is on (and usable); turning
+        -- built only while Experimental Quest Tools is on; turning
         -- it on or off rebuilds the page. The progress rows always show.
         -- The custom tracker needs no switch: it never edits the watch list.
-        local toolsOn = CUSTOM or (Cfg("questWatchExperimental") == true and not StandDown())
+        local toolsOn = CUSTOM or Cfg("questWatchExperimental") == true
         local function FilterRow(key, label)
             return { type="toggle", label=label,
                 get=function() return Cfg(key) or false end,
@@ -666,8 +686,8 @@ initFrame:SetScript("OnEvent", function(self)
 
         local expCfg = { type="toggle", text="Experimental Quest Tools",
               tooltip="Unlocks Sort Quests, Filter Quests and Auto Track Zone Quests.",
-              disabled=function() return CUSTOM or StandDown() end,
-              disabledTooltip=CUSTOM and "Always on with the Custom Quest Tracker." or GAMEPAD_TIP,
+              disabled=function() return CUSTOM end,
+              disabledTooltip="Always on with the Custom Quest Tracker.",
               rawTooltip=CUSTOM or nil,
               getValue=function() return CUSTOM or Cfg("questWatchExperimental") == true end,
               setValue=function(v)

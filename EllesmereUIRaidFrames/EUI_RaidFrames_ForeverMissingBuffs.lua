@@ -5,9 +5,12 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Missing Buffs indicator: on each raid, party and Extra Frames button, the
 --  icon of every buff the member lacks that the PLAYER can cast --
 --  Fortitude and Spirit (priest; Spirit needs the Divine Spirit talent),
---  Mark of the Wild and Thorns (druid), Salvation and a paladin blessing --
+--  Mark of the Wild and Thorns (druid), Arcane Intellect (mage; on mana users
+--  only), Salvation and a paladin blessing --
 --  i.e. a trained rank or the group version is in the player's spellbook. On
---  the member every rank and the group version count (looked up by name). A
+--  the member every rank and the group version count, another caster's
+--  included, and so does a stronger buff of the same stat that the game
+--  will not let the player's rank replace (EllesmereUI.ForeverFamilyAura). A
 --  member gets at most one blessing: the first of the priority list their
 --  assigned role takes (Tank / Healer / DPS Blessing; empty = no reminder; no
 --  role assigned = the DPS list) that the player can cast and the member
@@ -18,8 +21,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  solo or in a group without one.
 --  Settings (Indicators section, same shape as the raid marker):
 --  showMissingBuffs, missingBuffsPosition, missingBuffsSize,
---  missingBuffsOffsetX/Y, one switch per buff (missingBuffsFort/Mark/Spirit/
---  Thorns/Salvation, the cog's checkbox list, nil = on), missingBuffsThornsTank
+--  missingBuffsOffsetX/Y, one switch per buff (missingBuffsFort/Mark/Intellect/
+--  Spirit/Thorns/Salvation, the cog's checkbox list, nil = on), missingBuffsThornsTank
 --  (nil = off), missingBuffsBlessingTank/Healer/DPS (a list of blessing keys in
 --  priority order, or the older single key / "none"; unset = Might / Wisdom /
 --  Might, or none for all three while the retired single switch
@@ -63,10 +66,14 @@ if not (EllesmereUI and EllesmereUI.IS_FOREVER) then return end
 -- merged below into names (spells whose localized names cover every rank and
 -- the group version), ranks (the player ranks and the group version: the
 -- "player can cast it" and restriction tests) and ids (every spell that
--- applies the buff, for the aura-event probe).
+-- applies the buff, and the family's stronger buffs, for the aura-event
+-- probe).
 local FAMILIES = {
     { key = "fort",   class = "PRIEST", setting = "missingBuffsFort",   icon = 1243,  from = { "fort" } },
     { key = "mark",   class = "DRUID",  setting = "missingBuffsMark",   icon = 1126,  from = { "mark" } },
+    -- Arcane Intellect and Arcane Brilliance: mana users only (the family's
+    -- beneficiaries).
+    { key = "intellect", class = "MAGE", setting = "missingBuffsIntellect", icon = 1459, from = { "ai" } },
     { key = "spirit", class = "PRIEST", setting = "missingBuffsSpirit", icon = 14752, from = { "spirit" } },
     -- Thorns: six druid ranks (Balance), no group version.
     { key = "thorns", class = "DRUID",  setting = "missingBuffsThorns", icon = 467,   from = { "thorns" },
@@ -77,11 +84,11 @@ local FAMILIES = {
       notTank = true },
     -- The paladin blessings, normal and Greater: a member shows at most one,
     -- by role (the role settings, not a switch, pick it). The keys are the
-    -- role settings' values.
+    -- role settings' values (a saved "light", a blessing the game removed, is
+    -- skipped).
     { key = "might",     class = "PALADIN", blessing = true, icon = 19740, from = { "might" } },
     { key = "wisdom",    class = "PALADIN", blessing = true, icon = 19742, from = { "wisdom" } },
     { key = "kings",     class = "PALADIN", blessing = true, icon = 20217, from = { "kings" } },
-    { key = "light",     class = "PALADIN", blessing = true, icon = 19977, from = { "light" } },
 }
 local NUM_FAMILIES = #FAMILIES
 for i = 1, NUM_FAMILIES do
@@ -93,6 +100,13 @@ for i = 1, NUM_FAMILIES do
         for _, id in ipairs(shared.single) do ranks[#ranks + 1] = id end
         for _, id in ipairs(shared.group) do ranks[#ranks + 1] = id end
         for _, id in ipairs(shared.ids) do ids[#ids + 1] = id end
+        -- The shared read's stronger buffs: gaining one re-reads the member.
+        fam.amounts, fam.stronger = shared.amounts, shared.stronger
+        if shared.stronger then
+            for id in pairs(shared.stronger) do ids[#ids + 1] = id end
+        end
+        -- Only these classes need it (nil = everyone).
+        fam.only = shared.beneficiaries
     end
     fam.names, fam.ranks, fam.ids = names, ranks, ids
 end
@@ -138,23 +152,34 @@ local function Choice(s, role, class)
 end
 ns.RF_FvBlessingChoice, ns.RF_FvBlessingKey, ns.RF_FvBlessingExKey = Choice, BLESS_KEY, EX_KEY
 
+-- A list takes a blessing when it holds a key the indicator knows: a saved key
+-- it skips (a blessing the game removed) does not count.
+local function TakesOne(list)
+    for i = 1, #list do
+        if BLESS_INDEX[list[i]] then return true end
+    end
+    return false
+end
+
 -- Blessings are on in a settings table while any role takes one, or any
 -- class exception does.
 local function BlessingsOn(s)
-    if #Choice(s, "TANK") > 0 or #Choice(s, "HEALER") > 0 or #Choice(s, "DAMAGER") > 0 then return true end
+    if TakesOne(Choice(s, "TANK")) or TakesOne(Choice(s, "HEALER")) or TakesOne(Choice(s, "DAMAGER")) then
+        return true
+    end
     for _, key in pairs(EX_KEY) do
         local ex = s[key]
         if type(ex) == "table" then
             for _, list in pairs(ex) do
-                if type(list) == "table" and #list > 0 then return true end
+                if type(list) == "table" and TakesOne(list) then return true end
             end
         end
     end
     return false
 end
 
--- Only a priest, a druid or a paladin can ever cast one of these: every other
--- class keeps the whole indicator off (no events, no overlays).
+-- Only a priest, a druid, a mage or a paladin can ever cast one of these: every
+-- other class keeps the whole indicator off (no events, no overlays).
 local PLAYER_CLASS = select(2, UnitClass("player"))
 local CAN_EVER = false
 for i = 1, NUM_FAMILIES do
@@ -171,24 +196,11 @@ local solo = true        -- not in a group (full passes)
 local wantFam = {}       -- key -> switched on where the indicator shows (raid, party or Extra Frames)
 local enabled = false
 local trusted = {}       -- key -> readable right now (Trusted rebuilds it once per frame)
-local names = {}         -- family index -> { localized names }
 local icons = {}         -- family index -> texture
+local FamilyAura = EllesmereUI.ForeverFamilyAura
 
 local function SettingsFor(d)
     return d._isParty and ns._scaledPartyProxy or (d._isExtra and ns._scaledExtraProxy) or ns._scaledProfile
-end
-
-local function FamilyNames(i)
-    local n = names[i]
-    if n then return n end
-    n = {}
-    for _, id in ipairs(FAMILIES[i].names) do
-        local name = C_Spell.GetSpellName(id)
-        if name then n[#n + 1] = name end
-    end
-    -- Spell data can be cold this early: keep an empty answer uncached.
-    if #n > 0 then names[i] = n end
-    return n
 end
 
 local function FamilyIcon(i)
@@ -312,6 +324,16 @@ end
 -------------------------------------------------------------------------------
 --  Reading a member
 -------------------------------------------------------------------------------
+-- Whether the buff serves the member's class (no list = everyone); a class
+-- the game keeps secret reads as unknown, so no icon.
+local function Serves(fam, unit)
+    local only = fam.only
+    if not only then return true end
+    local _, class = UnitClass(unit)
+    if issecretvalue(class) then return false end
+    return only[class] == true
+end
+
 local function Evaluate(unit, restricted)
     local st = state[unit]
     if not st then st = {}; state[unit] = st end
@@ -324,28 +346,22 @@ local function Evaluate(unit, restricted)
     for i = 1, NUM_FAMILIES do
         local key = FAMILIES[i].key
         local value
-        -- A buff the player cannot cast, or switched off everywhere, is never
-        -- looked up (it never shows).
-        if known and Tracked(i) and not (restricted and not Trusted(i)) then
-            local list = FamilyNames(i)
-            if #list > 0 then
-                value = false
-                for n = 1, #list do
-                    local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, unit, list[n], "HELPFUL")
-                    if not ok or issecretvalue(aura) then value = nil; break end
-                    if aura then
-                        value = true
-                        -- The caster, not isFromPlayerOrPlayerPet: that is
-                        -- true for any player's aura, another paladin's too.
-                        if FAMILIES[i].blessing and mine ~= true then
-                            local src = aura.sourceUnit
-                            if issecretvalue(src) then mine = nil elseif src == "player" then mine = true end
-                        end
-                        local iid = aura.auraInstanceID
-                        if iid and not issecretvalue(iid) then found[iid] = true end
-                        break
-                    end
+        -- A buff the player cannot cast, switched off everywhere, or one the
+        -- member's class does not need, is never looked up (it never shows).
+        if known and Tracked(i) and not (restricted and not Trusted(i)) and Serves(FAMILIES[i], unit) then
+            local aura = FamilyAura(unit, FAMILIES[i])
+            if aura then
+                value = true
+                -- The caster, not isFromPlayerOrPlayerPet: that is
+                -- true for any player's aura, another paladin's too.
+                if FAMILIES[i].blessing and mine ~= true then
+                    local src = aura.sourceUnit
+                    if issecretvalue(src) then mine = nil elseif src == "player" then mine = true end
                 end
+                local iid = aura.auraInstanceID
+                if iid and not issecretvalue(iid) then found[iid] = true end
+            elseif aura == false then
+                value = false
             end
         end
         st[key] = value

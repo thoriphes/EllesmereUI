@@ -10,17 +10,26 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Resolution ladder (user-approved):
 --    1. keybind  -- any group whose keybind toggle is ON (creation order
 --                   breaks ties). Explicit user action outranks ambient state.
---    2. darkmode -- every per-module Dark Mode is on except the Class
+--    2. gamepad  -- WoW Forever's Gamepad interface style is on. An explicit
+--                   input-mode switch, so it outranks every ambient tier
+--                   below; the keybind toggle still wins. Never on retail.
+--    3. darkmode -- every per-module Dark Mode is on except the Class
 --                   Resource Bar's (it is excluded).
 --                   Location-independent, so it applies inside AND outside
---                   instances; below keybind (explicit action still wins).
---    3. instance -- dungeon / raid / arena / battleground. Naturally mutually
+--                   instances; below keybind and gamepad (explicit actions
+--                   still win).
+--    3b. secondaryspec -- WoW Forever only: the secondary spec group is the
+--                   active one (C_SpecializationInfo.GetActiveSpecGroup
+--                   reads 2). The primary spec has no condition: it is the
+--                   base. Location-independent, so below Dark Mode and above
+--                   instance. Never on retail.
+--    4. instance -- dungeon / raid / arena / battleground. Naturally mutually
 --                   exclusive (the client reports one instance type). First
 --                   group in creation order that checks the current type.
---    4. party    -- in a group that is not a raid, inside an instance or out.
+--    5. party    -- in a group that is not a raid, inside an instance or out.
 --                   Below instance, so a group for the current instance type
 --                   outranks it there. Only groups that check it can match.
---    5. solo     -- not in any group. Lowest priority.
+--    6. solo     -- not in any group. Lowest priority.
 --  Exactly one conditional group is active at a time, or none.
 --
 --  Condition flips NEVER happen in combat: flips are recomputed fresh at
@@ -44,6 +53,18 @@ local function DarkModeMasterOn()
     return (EllesmereUI.IsDarkModeAllOn(_dmMainFilter)) or false
 end
 
+-- WoW Forever spec group: 1 primary, 2 secondary; nil elsewhere.
+local function ActiveSpecGroup()
+    if EllesmereUI.IS_FOREVER ~= true then return nil end
+    local f = C_SpecializationInfo and C_SpecializationInfo.GetActiveSpecGroup
+    return f and f() or nil
+end
+
+-- Dual spec learned (GetNumSpecGroups returns 2).
+local function HasDualSpec()
+    return (GetNumSpecGroups and GetNumSpecGroups() == 2) or false
+end
+
 EllesmereUI.CONDITIONS = {
     { id = "keybind",      label = "Keybind (out of combat)" },
     { id = "party",        label = "Party (in a group, not a raid)" },
@@ -63,6 +84,17 @@ EllesmereUI.CONDITIONS = {
       tooltip = "Active while Dark Mode is on.",
       requiresHint = "Check every Dark Mode in Global Settings > Colors, except Class Resource Bar, to use this condition." },
 }
+-- WoW Forever only: its Gamepad interface style has no retail counterpart
+-- (PadGamepadUI reads false there), so retail lists no row or icon for it; a
+-- group imported there with it checked simply never matches on it.
+if EllesmereUI.IS_FOREVER == true then
+    EllesmereUI.CONDITIONS[#EllesmereUI.CONDITIONS + 1] = { id = "gamepad", label = "Gamepad Mode",
+        tooltip = "Active while WoW's gamepad interface is on." }
+    EllesmereUI.CONDITIONS[#EllesmereUI.CONDITIONS + 1] = { id = "secondaryspec", label = "Secondary Spec",
+        requires = HasDualSpec,
+        tooltip = "Active while your secondary spec is active.",
+        requiresHint = "Learn Dual Specialization to use this condition." }
+end
 
 local INSTANCE_COND = {
     party = "dungeon",
@@ -126,7 +158,7 @@ end
 --  Resolver
 -------------------------------------------------------------------------------
 
--- Tier 4: the first group (creation order) that checks Party, while the player
+-- Tier 5: the first group (creation order) that checks Party, while the player
 -- is in a party (a group that is not a raid, as the visibility rules' In Party).
 -- nil for every profile with no such group, so the other tiers resolve as if
 -- this one were not there.
@@ -146,7 +178,14 @@ function EllesmereUI.Conditions_ActiveGroup()
     for _, g in ipairs(groups) do
         if g.conds and g.conds.keybind and g.keyOn then return g end
     end
-    -- Tier 2: every per-module Dark Mode but the Class Resource Bar's (it is
+    -- Tier 2: WoW Forever's Gamepad interface style (an explicit input-mode
+    -- switch, so it outranks the ambient tiers; always false on retail).
+    if EllesmereUI.PadGamepadUI() then
+        for _, g in ipairs(groups) do
+            if g.conds and g.conds.gamepad then return g end
+        end
+    end
+    -- Tier 3: every per-module Dark Mode but the Class Resource Bar's (it is
     -- deliberately excluded -- see DarkModeMasterOn above).
     -- Location-independent, so it is checked BEFORE the instance early-outs.
     if DarkModeMasterOn() then
@@ -154,7 +193,13 @@ function EllesmereUI.Conditions_ActiveGroup()
             if g.conds and g.conds.darkmode then return g end
         end
     end
-    -- Tier 3: instance type (client reports exactly one).
+    -- Tier 3b: WoW Forever's secondary spec group (never on retail).
+    if ActiveSpecGroup() == 2 then
+        for _, g in ipairs(groups) do
+            if g.conds and g.conds.secondaryspec then return g end
+        end
+    end
+    -- Tier 4: instance type (client reports exactly one).
     local _, instanceType = IsInInstance()
     local cond = instanceType and INSTANCE_COND[instanceType]
     if cond then
@@ -164,10 +209,10 @@ function EllesmereUI.Conditions_ActiveGroup()
         -- In an instance: party can still apply, solo never does.
         return PartyGroup(groups)
     end
-    -- Tier 4: party.
+    -- Tier 5: party.
     local pg = PartyGroup(groups)
     if pg then return pg end
-    -- Tier 5: solo.
+    -- Tier 6: solo.
     if not IsInGroup() then
         for _, g in ipairs(groups) do
             if g.conds and g.conds.solo then return g end
@@ -357,7 +402,9 @@ end
 
 -------------------------------------------------------------------------------
 --  Events. GROUP_ROSTER_UPDATE drives party and solo; PEW/zone drive instance flips;
---  regen drains combat-deferred rechecks. Registration order matters for the
+--  the interface-style transition (WoW Forever) drives Gamepad Mode flips;
+--  ACTIVE_TALENT_GROUP_CHANGED (WoW Forever) drives spec group flips; regen
+--  drains combat-deferred rechecks. Registration order matters for the
 --  regen drain: this file loads after EllesmereUI_Profiles.lua, so the spec
 --  pipeline's regen branch runs first and our recompute sees settled state.
 -------------------------------------------------------------------------------
@@ -366,12 +413,32 @@ evFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 evFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 evFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 evFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+-- The interface-style switch is WoW Forever's. Registering an event name the
+-- client does not know errors at load, so the name is checked first (as the
+-- Action Bars and Quest Tracker registrations do).
+if EllesmereUI.IS_FOREVER == true
+   and not (C_EventUtils and C_EventUtils.IsEventValid
+            and not C_EventUtils.IsEventValid("INPUT_DEVICE_INTERFACE_TRANSITION")) then
+    evFrame:RegisterEvent("INPUT_DEVICE_INTERFACE_TRANSITION")
+end
+-- Spec group swap (WoW Forever) drives the Secondary Spec flips.
+if EllesmereUI.IS_FOREVER == true
+   and not (C_EventUtils and C_EventUtils.IsEventValid
+            and not C_EventUtils.IsEventValid("ACTIVE_TALENT_GROUP_CHANGED")) then
+    evFrame:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
+end
 evFrame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_REGEN_ENABLED" then
         if _flipPending then
             _flipPending = false
             EllesmereUI.Conditions_Recheck()
         end
+        return
+    end
+    if event == "INPUT_DEVICE_INTERFACE_TRANSITION" then
+        -- The style is read one frame after the transition event. A recheck
+        -- in combat flags itself and the regen drain above re-resolves.
+        C_Timer.After(0, EllesmereUI.Conditions_Recheck)
         return
     end
     if event == "PLAYER_ENTERING_WORLD" then

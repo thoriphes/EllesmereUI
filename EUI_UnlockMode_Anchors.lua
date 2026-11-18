@@ -826,13 +826,13 @@ function MatchH.ApplyWidthMatch(sourceKey, targetKey)
             if UM.isUnlocked then
                 local sb = UM.GetBarFrame(sourceKey)
                 local savedAlpha = sb and EllesmereUI._GetFFD(sb).restoreAlpha
-                if sb and not savedAlpha then EllesmereUI._UnlockSetBarAlpha(sb, 0) end
+                if sb and not savedAlpha then EllesmereUI._UnlockBlankBar(sb) end
                 _propagatingMatch = true; EllesmereUI._propagatingMatch = true
                 pcall(sourceElem.setWidth, sourceKey, targetW)
                 _propagatingMatch = false; EllesmereUI._propagatingMatch = false
                 EllesmereUI.RecenterBarAnchor(sourceKey)
                 if sb and not savedAlpha then
-                    C_Timer.After(0, function() EllesmereUI._UnlockSetBarAlpha(sb, 1) end)
+                    C_Timer.After(0, function() EllesmereUI._UnlockUnblankBar(sb) end)
                 end
                 local m = movers[sourceKey]
                 if m then m:SyncSize() end
@@ -916,13 +916,13 @@ function MatchH.ApplyHeightMatch(sourceKey, targetKey)
             if UM.isUnlocked then
                 local sb = UM.GetBarFrame(sourceKey)
                 local savedAlpha = sb and EllesmereUI._GetFFD(sb).restoreAlpha
-                if sb and not savedAlpha then EllesmereUI._UnlockSetBarAlpha(sb, 0) end
+                if sb and not savedAlpha then EllesmereUI._UnlockBlankBar(sb) end
                 _propagatingMatch = true; EllesmereUI._propagatingMatch = true
                 pcall(sourceElem.setHeight, sourceKey, targetH)
                 _propagatingMatch = false; EllesmereUI._propagatingMatch = false
                 EllesmereUI.RecenterBarAnchor(sourceKey)
                 if sb and not savedAlpha then
-                    C_Timer.After(0, function() EllesmereUI._UnlockSetBarAlpha(sb, 1) end)
+                    C_Timer.After(0, function() EllesmereUI._UnlockUnblankBar(sb) end)
                 end
                 local m = movers[sourceKey]
                 if m then m:SyncSize() end
@@ -1597,11 +1597,16 @@ local function HookFrameSizeChanged(key)
     -- No hooks on chat frames: ChatFrame1 is docked inside Blizzard's secure
     -- FCF_OpenTemporaryWindow chain and any addon code in OnSizeChanged/SetPoint
     -- hooks taints the execution context. Chat persists its own position/size.
-    -- The quest tracker is laid out by Blizzard's managed frame container, in
-    -- combat too, and places itself from its Edit Mode layout entry.
-    if key and (key:find("^ECHAT_") or key == "EQT_Tracker") then return end
+    if key and key:find("^ECHAT_") then return end
     local bar = UM.GetBarFrame(key)
     if not bar then return end
+    -- The quest tracker key: Blizzard's tracker is laid out by its managed
+    -- frame container, in combat too, and places itself from its Edit Mode
+    -- layout entry (its unlock session stand-in included), so it takes no
+    -- hooks. WoW Forever's custom tracker, a frame of ours under the same key
+    -- that grows with its quests, does: its resize re-applies its anchor link,
+    -- which otherwise keeps its centre and moves the edge it hangs from.
+    if key == "EQT_Tracker" and bar ~= _G.EUI_CustomQuestTracker then return end
     if not _sizeHookedFrames[bar] then
         _sizeHookedFrames[bar] = true
         bar:HookScript("OnSizeChanged", function()

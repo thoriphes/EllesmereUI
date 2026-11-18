@@ -84,14 +84,6 @@ end
 --  instead of :Hide() so the frame stays in the layout engine with valid bounds.
 --  Sub-widgets (icons, text, glows) inside these frames still use :Hide()/:Show().
 -------------------------------------------------------------------------------
--- The client names the quest-object cast "Opening - No Text"; cast bars show
--- the plain "Opening". A secret or non-string name is returned as it is.
-function EllesmereUI.CleanCastName(name)
-    if issecretvalue(name) or type(name) ~= "string" then return name end
-    local clean = name:gsub("%s*%-%s*No Text$", "")
-    return clean ~= "" and clean or name
-end
-
 function EllesmereUI.SetElementVisibility(frame, visible)
     if not frame then return end
     if visible then
@@ -451,6 +443,25 @@ do
         local st = placerStates[frame]
         if st and st.count > 0 then PlacerMark(st) end
     end
+end
+
+-------------------------------------------------------------------------------
+--  The seat of the stock (Blizzard Style) cast bar art on our own cast bars,
+--  shared by Unit Frames and Resource Bars, live bars and options previews.
+--  Returns: the frame art's reach past the bar on the left, on the right and
+--  on top; the spell name's Y nudge in the text box; the timer's on the bar;
+--  the spark's extra height, Y nudge and width.
+--  forever: the bar wears the WoW Forever art. Its thicker rim, drawn 2px
+--  out, would cover the bar's top edge and the border of an icon set flush
+--  against the bar, so it sits flush on top and on that side (iconSide:
+--  "left" | "right" | nil for no flush icon); the name sits 2px lower to
+--  centre in the text box under that rim, the timer 1px lower to centre on
+--  the fill the rim leaves; the pip art is tall and thin, so the spark stands
+--  4px taller than the bar, 1px lower and 5px wide.
+-------------------------------------------------------------------------------
+function EllesmereUI.CastChromeGeom(forever, iconSide)
+    if not forever then return 2, 2, 2, 0, 0, 0, 0, 8 end
+    return iconSide == "left" and 0 or 2, iconSide == "right" and 0 or 2, 0, -2, -1, 4, -1, 5
 end
 
 -------------------------------------------------------------------------------
@@ -816,8 +827,13 @@ end
 --  "coords" crops a file whose art does not fill it (the Classic banner sits in the
 --  top-left 42 of 64 pixels).
 --  Unknown styles fall back to "pvp", the default.
+--  Proportions: a caller's square is a box (EllesmereUI.FitFactionArt), and the art
+--  sits centred inside it at its own width and height: an atlas's, read from the game
+--  (the PvP Emblem's Alliance art is 28 x 41, the crest 82 x 92 / 88 x 101); the file
+--  styles are square (game icons, and the Classic banner's square crop).
 -------------------------------------------------------------------------------
 EllesmereUI.FACTION_ART = {
+    crest     = { atlas = "talenttree-%s-cornerlogo", lower = true },
     pvp       = { atlas = "UI-HUD-UnitFrame-Player-PVP-%sIcon" },
     honor     = { atlas = "honorsystem-portrait-%s", lower = true, badge = true },
     poi       = { atlas = "poi-%s", lower = true },
@@ -826,9 +842,9 @@ EllesmereUI.FACTION_ART = {
     honoricon = { file = "Interface\\Icons\\PVPCurrency-Honor-%s" },
     friends   = { file = "Interface\\FriendsFrame\\PlusManz-%s" },
 }
-EllesmereUI.FACTION_ART_ORDER = { "pvp", "honor", "poi", "classic", "banner", "honoricon", "friends" }
+EllesmereUI.FACTION_ART_ORDER = { "crest", "pvp", "honor", "poi", "classic", "banner", "honoricon", "friends" }
 EllesmereUI.FACTION_ART_LABELS = {
-    pvp = "PvP Emblem", honor = "Honor Portrait", poi = "Map Flag", classic = "Classic Banner",
+    crest = "Faction Crest", pvp = "PvP Emblem", honor = "Honor Portrait", poi = "Map Flag", classic = "Classic Banner",
     banner = "Banner Icon", honoricon = "Honor Icon", friends = "Friends Crest",
 }
 -- Honor Portrait is an empty hexagon; the unit's honor badge is drawn on top (30 on 50).
@@ -893,6 +909,44 @@ local function SetBadge(tex, file)
     if tex:IsShown() then host:Show() end
 end
 
+-- width / height of an atlas, read once per name (1 for a name the client lacks).
+local atlasAspect = {}
+local function AtlasAspect(name)
+    local a = atlasAspect[name]
+    if a == nil then
+        local info = C_Texture.GetAtlasInfo(name)
+        local w, h = info and info.width, info and info.height
+        a = (w and h and w > 0 and h > 0) and (w / h) or 1
+        atlasAspect[name] = a
+    end
+    return a
+end
+
+-- The art's size inside its box: the longer side fills it.
+local function FitArt(tex)
+    local box = tex._facBox
+    if not box then return end
+    local a = tex._facAspect or 1
+    if a >= 1 then tex:SetSize(box, box / a) else tex:SetSize(box * a, box) end
+end
+
+-- Sizes a faction texture for an sz x sz box. The caller anchors the texture by its
+-- CENTER on the box's centre (EllesmereUI.FactionBoxCenter for a box placed by a
+-- corner or an edge), so art narrower or shorter than the box stays centred in it.
+function EllesmereUI.FitFactionArt(tex, sz)
+    tex._facBox = sz
+    FitArt(tex)
+end
+
+-- The offset from a box's anchor point to its centre, for an sz x sz box anchored
+-- by `point` ("TOPLEFT", "RIGHT", "CENTER", ...).
+function EllesmereUI.FactionBoxCenter(point, sz)
+    local half = sz / 2
+    local dx = point:find("LEFT", 1, true) and half or (point:find("RIGHT", 1, true) and -half) or 0
+    local dy = point:find("TOP", 1, true) and -half or (point:find("BOTTOM", 1, true) and half) or 0
+    return dx, dy
+end
+
 function EllesmereUI.SetFactionArt(tex, style, faction, badgeFile)
     SetBadge(tex, badgeFile)
     local art = EllesmereUI.FACTION_ART[style] or EllesmereUI.FACTION_ART.pvp
@@ -914,11 +968,14 @@ function EllesmereUI.SetFactionArt(tex, style, faction, badgeFile)
         -- unless told to reset it, so clear it first and ask for the reset too.
         tex:SetTexCoord(0, 1, 0, 1)
         tex:SetAtlas(name, false, nil, true)
+        tex._facAspect = AtlasAspect(name)
     else
         tex:SetTexture(name)
         local c = art.coords
         if c then tex:SetTexCoord(c[1], c[2], c[3], c[4]) else tex:SetTexCoord(0, 1, 0, 1) end
+        tex._facAspect = 1
     end
+    FitArt(tex)
 end
 
 -------------------------------------------------------------------------------
@@ -934,6 +991,29 @@ function EllesmereUI.PlainString(v)
     -- The secrecy test comes first: comparing a secret string raises.
     if type(v) == "string" and not issecretvalue(v) and v ~= "" then return v end
     return nil
+end
+
+-------------------------------------------------------------------------------
+--  Power text formats ("smart", "curpp", "perpp", ...): WoW Forever offers no
+--  Smart Text, which chooses percent or value by spec, and Forever has no
+--  specs. There a saved "smart" reads as the value (Power Value, "curpp"; the
+--  Unit Frames smart rule, EllesmereUI.IsSmartPowerPercent, answers no there),
+--  and every format list leaves it out. Stored values moved once
+--  (forever_power_text_value_v1, EllesmereUI_Migration.lua).
+-------------------------------------------------------------------------------
+function EllesmereUI.PowerTextFormat(fmt)
+    if fmt == "smart" and EllesmereUI.IS_FOREVER then return "curpp" end
+    return fmt
+end
+-- A format dropdown's order list for this client: the same table, or on WoW
+-- Forever a copy without "smart".
+function EllesmereUI.PowerTextFormatOrder(order)
+    if not EllesmereUI.IS_FOREVER then return order end
+    local out = {}
+    for i = 1, #order do
+        if order[i] ~= "smart" then out[#out + 1] = order[i] end
+    end
+    return out
 end
 
 -------------------------------------------------------------------------------
@@ -1041,7 +1121,7 @@ do
             else
                 btn:SetAttribute("unit", owner:GetAttribute("unit"))
             end
-            btn:SetAttribute("*type1", "target")
+            EllesmereUI.SetLeftClickTarget(btn)
             btn:SetAttribute("toggleForVehicle", true)
             btn:RegisterForClicks("AnyUp")
             EllesmereUI.AttachSecureUnitMenu(btn)
@@ -1088,6 +1168,41 @@ do
     EllesmereUI.SyncPortraitClick = Sync
 end
 
+-- 3D models ignore parent alpha, UIParent's too: UIScaledAlpha applies a UIParent
+-- fade to a model's mirrored alpha; OnUIAlphaChanged hooks UIParent:SetAlpha lazily.
+do
+    local listeners, lastAlpha
+    local function Notify()
+        -- The listeners' one input is UIParent's alpha: a SetAlpha that repeats the last
+        -- one moves nothing. A secret alpha cannot be compared, so it always notifies.
+        local ui = UIParent:GetAlpha()
+        if issecretvalue(ui) then
+            lastAlpha = nil
+        elseif ui == lastAlpha then
+            return
+        else
+            lastAlpha = ui
+        end
+        for i = 1, #listeners do listeners[i]() end
+    end
+    function EllesmereUI.UIScaledAlpha(a)
+        local ui = UIParent:GetAlpha()
+        if issecretvalue(ui) or ui >= 1 then return a end
+        if issecretvalue(a) then return ui <= 0 and 0 or a end
+        return a * ui
+    end
+    function EllesmereUI.OnUIAlphaChanged(fn)
+        if not listeners then
+            listeners = {}
+            hooksecurefunc(UIParent, "SetAlpha", Notify)
+        end
+        for i = 1, #listeners do
+            if listeners[i] == fn then return end
+        end
+        listeners[#listeners + 1] = fn
+    end
+end
+
 -------------------------------------------------------------------------------
 --  Full Craft Time (player cast bars). A repeat craft queues the rest of the
 --  batch behind the current cast. SetCraftBatch fills f._craftExtra (seconds
@@ -1099,10 +1214,33 @@ end
 do
     local floor, format = math.floor, string.format
 
+    -- A stopped batch (cancel, movement) drops its count, so the next batch is
+    -- not read as the rest of it. Watched only while a batch is tracked.
+    local tracked, watch = {}, nil
+    local function WatchBatchStop(f)
+        if not watch then
+            watch = CreateFrame("Frame")
+            watch:SetScript("OnEvent", function(self)
+                if UnitCastingInfo("player") then return end
+                for bar in pairs(tracked) do bar._craftLeft = nil end
+                wipe(tracked)
+                self:UnregisterAllEvents()
+            end)
+        end
+        tracked[f] = true
+        watch:RegisterEvent("UPDATE_TRADESKILL_CAST_STOPPED")
+    end
+
     function EllesmereUI.SetCraftBatch(f, on, spellID, castID, castDur)
         local getLeft = C_TradeSkillUI and C_TradeSkillUI.GetRemainingRecasts
         if not (on and getLeft) then
             f._craftExtra, f._craftLeft = nil, nil
+            -- Nothing left to drop for this bar: the stop watch lets go with
+            -- the last tracked bar.
+            if tracked[f] then
+                tracked[f] = nil
+                if not next(tracked) then watch:UnregisterAllEvents() end
+            end
             return
         end
         local left = getLeft() or 0
@@ -1118,6 +1256,7 @@ do
             f._craftExtra = nil
             return
         end
+        WatchBatchStop(f)
         local done = f._craftDone
         local total = floor((done + 1 + left) * castDur)
         f._craftExtra = left * castDur
@@ -1141,34 +1280,82 @@ do
 end
 
 -------------------------------------------------------------------------------
+--  Cast names: the client names the quest-object cast "Opening - No Text";
+--  cast bars show the plain "Opening". A secret or non-string name is returned
+--  as it is.
+-------------------------------------------------------------------------------
+function EllesmereUI.CleanCastName(name)
+    if issecretvalue(name) or type(name) ~= "string" then return name end
+    local clean = name:gsub("%s*%-%s*No Text$", "")
+    return clean ~= "" and clean or name
+end
+
+-------------------------------------------------------------------------------
 --  Show Full Spell Name (cast bars). Shrinks the spell name's font just enough
 --  for the whole name to fit the FontString's set width, and puts it back at
 --  baseSize for names that already fit. Measured on a private FontString that
 --  only ever holds clean text, so the cast text's own (possibly secret) metrics
 --  are never read. A secret name stays at baseSize and truncates as before.
+--  A name on one of our font families (EllesmereUI.SetFontFamily: it may hold a
+--  target's name) keeps a family at every size and is measured on one, so a
+--  Cyrillic, Korean or Chinese name is measured in the face that draws it.
 -------------------------------------------------------------------------------
 do
     local floor = math.floor
     local MIN_SIZE = 6
-    local measure
+    local measure, measureFam
+
+    -- fs's face, size and flags. A string on one of our families gives its roman
+    -- member's (the chosen font, whatever script the text holds), true, and
+    -- whether the family carries a shadow; any other string its own GetFont.
+    local function FontOf(fs)
+        local fo = fs:GetFontObject()
+        local set = EllesmereUI._fontFamilySet
+        if fo and set and set[fo] and fo.GetFontObjectForAlphabet then
+            local roman = fo:GetFontObjectForAlphabet("roman")
+            local face, size, flags
+            if roman then face, size, flags = roman:GetFont() end
+            if face then
+                local _, _, _, sa = fo:GetShadowColor()
+                return face, size, flags, true, (sa or 0) > 0
+            end
+        end
+        local face, size, flags = fs:GetFont()
+        return face, size, flags, false, false
+    end
+
+    -- Two measuring strings: a plain SetFont pins a string's face, so the one that
+    -- takes families never takes a plain font.
+    local function MeasureString(fam)
+        local m
+        if fam then m = measureFam else m = measure end
+        if not m then
+            m = UIParent:CreateFontString(nil, "BACKGROUND")
+            m:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 100, -100)
+            m:SetAlpha(0)
+            if fam then measureFam = m else measure = m end
+        end
+        return m
+    end
 
     -- Width of a clean string in fs's font face (at size, or fs's own size).
     local function Measure(fs, str, size)
-        local font, cur, flags = fs:GetFont()
+        local font, cur, flags, isFam, shadow = FontOf(fs)
         if not font then return 0 end
-        if not measure then
-            measure = UIParent:CreateFontString(nil, "BACKGROUND")
-            measure:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 100, -100)
-            measure:SetAlpha(0)
+        local fam = isFam and EllesmereUI.GetFontFamily(font, size or cur, flags, shadow)
+        local m = MeasureString(fam)
+        if fam then
+            m:SetFontObject(fam)
+        else
+            m:SetFont(font, size or cur, flags)
         end
-        measure:SetFont(font, size or cur, flags)
-        measure:SetText(str)
-        return measure:GetUnboundedStringWidth() or 0
+        m:SetText(str)
+        return m:GetUnboundedStringWidth() or 0
     end
     EllesmereUI.MeasureCastText = Measure
 
     function EllesmereUI.FitCastName(fs, str, baseSize)
-        local font, cur, flags = fs:GetFont()
+        local font, cur, flags, isFam, shadow = FontOf(fs)
         if not font then return end
         local size = baseSize
         local room = fs:GetWidth()
@@ -1181,7 +1368,13 @@ do
                 if size < MIN_SIZE then size = MIN_SIZE end
             end
         end
-        if cur ~= size then fs:SetFont(font, size, flags) end
+        if cur ~= size then
+            if isFam then
+                EllesmereUI.SetFontFamily(fs, font, size, flags, shadow)
+            else
+                fs:SetFont(font, size, flags)
+            end
+        end
     end
 end
 
@@ -1210,4 +1403,195 @@ function EllesmereUI.AddRestFlipbook(frame, tex, duration)
     frame:SetScript("OnShow", function() anim:Play() end)
     frame:SetScript("OnHide", function() anim:Stop() end)
     return anim
+end
+
+-------------------------------------------------------------------------------
+--  WoW Forever talent trees, read by Forever Essentials' Classic Talents
+--  window and the Talent Conditions picker (EllesmereUI.ShowTalentConditionsPopup).
+--  The active config's one trait tree holds the class's three vanilla trees
+--  as trait groups.
+-------------------------------------------------------------------------------
+do
+    local function ByOrder(a, b) return a.orderIndex < b.orderIndex end
+
+    -- The config ID (the active one unless another is given: a dual spec group's build)
+    -- and tree ID, and the trees in their order, each
+    -- { groupID, name, nodes = { nodeID, ... } } with its visible talents
+    -- (name: the game's own). The list is nil while there is no tree.
+    -- namesOnly: the node lists stay empty (no walk of the tree).
+    function EllesmereUI.ForeverTalentTrees(configID, namesOnly)
+        configID = configID or C_ClassTalents.GetActiveConfigID()
+        local config = configID and C_Traits.GetConfigInfo(configID)
+        local treeID = config and config.treeIDs[1]
+        if not treeID then return configID, nil, nil end
+        local groups = C_Traits.GetGroupDisplayInfoByTreeID(treeID)
+        table.sort(groups, ByOrder)
+        local trees, byGroup = {}, {}
+        for i, g in ipairs(groups) do
+            trees[i] = { groupID = g.groupID, name = g.displayName, nodes = {} }
+            byGroup[g.groupID] = trees[i]
+        end
+        if namesOnly then return configID, treeID, trees end
+        for _, nodeID in ipairs(C_Traits.GetTreeNodes(treeID)) do
+            local info = C_Traits.GetNodeInfo(configID, nodeID)
+            if info and info.isVisible and info.entryIDs[1] then
+                for _, groupID in ipairs(info.groupIDs) do
+                    local t = byGroup[groupID]
+                    if t then
+                        t.nodes[#t.nodes + 1] = nodeID
+                        break
+                    end
+                end
+            end
+        end
+        return configID, treeID, trees
+    end
+
+    -- One axis of a tree's grid from its node positions: the first line, the
+    -- step, and the last line before any position far beyond the rest. The step
+    -- is the smallest gap between neighbouring positions above a quarter of the
+    -- median gap: some nodes sit a few units off their line (the hunter's,
+    -- paladin's and warlock's trees), and a gap that small is the same line, never
+    -- a step of its own (taken as one, it spread a tree over hundreds of rows).
+    local gaps = {}
+    local function GridAxis(values)
+        table.sort(values)
+        local n = 0
+        for i = 2, #values do
+            local d = values[i] - values[i - 1]
+            if d > 0 then n = n + 1; gaps[n] = d end
+        end
+        for i = #gaps, n + 1, -1 do gaps[i] = nil end
+        local first = values[1] or 0
+        if n == 0 then return first, 1, first end
+        table.sort(gaps)
+        local least = gaps[math.floor(n / 2) + 1] / 4
+        local step
+        for i = 1, n do
+            if gaps[i] > least then step = gaps[i]; break end
+        end
+        -- Lines follow each other a few steps apart at most; past a bigger jump
+        -- the rest lie off the grid (see Line).
+        local last = first
+        for i = 2, #values do
+            if values[i] - values[i - 1] > 4 * step then break end
+            last = values[i]
+        end
+        return first, step, last
+    end
+
+    -- A position's line (from 0) on one axis. A node far beyond the others whose
+    -- tenth falls on the grid is read there: an extra zero in the game's data
+    -- (the hunter's and priest's trees have such nodes).
+    local function Line(v, first, step, last)
+        if v > last + 4 * step then
+            local t = v / 10
+            local k = (t - first) / step
+            local r = math.floor(k + 0.5)
+            if r >= 0 and t <= last + step / 4 and math.abs(k - r) < 0.25 then v = t end
+        end
+        return math.floor((v - first) / step + 0.5)
+    end
+
+    -- Each talent's column and row (from 0) in its tree, from the node
+    -- positions: cells[nodeID] = { col, row, info } and the row count.
+    function EllesmereUI.TalentTreeGrid(configID, nodes)
+        local xs, ys, infos = {}, {}, {}
+        for i, nodeID in ipairs(nodes) do
+            local info = C_Traits.GetNodeInfo(configID, nodeID)
+            infos[nodeID] = info
+            xs[i], ys[i] = info.posX, info.posY
+        end
+        local x0, dx, xLast = GridAxis(xs)
+        local y0, dy, yLast = GridAxis(ys)
+        local cells, rows = {}, 0
+        for _, nodeID in ipairs(nodes) do
+            local info = infos[nodeID]
+            local col = Line(info.posX, x0, dx, xLast)
+            local row = Line(info.posY, y0, dy, yLast)
+            cells[nodeID] = { col = col, row = row, info = info }
+            rows = math.max(rows, row)
+        end
+        return cells, rows + 1
+    end
+end
+
+-------------------------------------------------------------------------------
+--  Talent Conditions: a list of { nodeID, entryID, spellID, taken } holds
+--  while every talent it names is taken (a committed rank) or not taken, as
+--  each entry asks. entryID only for a choice node (which side must be
+--  picked); spellID is for display only. Read by the Cooldown Manager's
+--  per-icon conditions and the WoW Forever swing timer; the picker is
+--  EllesmereUI.ShowTalentConditionsPopup (EllesmereUIOptions).
+--
+--  Node states are cached per node for the active talent config (a new config
+--  ID starts the cache over). Each reader wipes it on its own talent events
+--  through EllesmereUI.TalentCondInvalidate, so nothing here listens.
+-------------------------------------------------------------------------------
+do
+    -- nodeID -> the node's committed entryID when taken (true if the client
+    -- reports a rank but no entry), false when not taken or not in the tree.
+    local nodeState, nodeConfig = {}, nil
+
+    function EllesmereUI.TalentCondInvalidate()
+        wipe(nodeState)
+        nodeConfig = nil
+    end
+
+    local function NodeState(nodeID, configID)
+        if configID ~= nodeConfig then
+            wipe(nodeState)
+            nodeConfig = configID
+        end
+        local st = nodeState[nodeID]
+        if st == nil then
+            st = false
+            -- Guarded: a saved nodeID can outlive a talent-tree rework in a patch.
+            -- Runs on a cache miss only (once per node per talent change).
+            local ok, info
+            if configID then ok, info = pcall(C_Traits.GetNodeInfo, configID, nodeID) end
+            if ok and info then
+                -- Committed state only: activeRank/activeEntry also count picks staged
+                -- in the talent UI and never applied. A granted rank (activeRank above
+                -- ranksPurchased) cannot be staged, so it counts as taken as well.
+                local committed = info.entryIDsWithCommittedRanks
+                if committed and #committed > 0 then
+                    st = committed[1]
+                elseif (info.activeRank or 0) > (info.ranksPurchased or 0) then
+                    st = (info.activeEntry and info.activeEntry.entryID) or true
+                end
+            end
+            nodeState[nodeID] = st
+        end
+        return st
+    end
+
+    local function IsTaken(nodeID, entryID, configID)
+        local st = NodeState(nodeID, configID)
+        if st == false then return false end
+        return entryID == nil or st == entryID
+    end
+
+    -- True when the node (or, for a choice node, that side of it) is taken now.
+    function EllesmereUI.TalentCondIsTaken(nodeID, entryID)
+        return IsTaken(nodeID, entryID, C_ClassTalents.GetActiveConfigID())
+    end
+
+    -- True when every condition in the list holds (an empty or missing list
+    -- holds). A node that is not in the active tree reads as not taken.
+    -- configID: the config a caller already read for a whole pass (false =
+    -- none); nil reads the active one.
+    function EllesmereUI.TalentConditionsHold(conds, configID)
+        if type(conds) ~= "table" then return true end
+        if configID == nil then configID = C_ClassTalents.GetActiveConfigID() end
+        for i = 1, #conds do
+            local c = conds[i]
+            if type(c) == "table" and c.nodeID then
+                if IsTaken(c.nodeID, c.entryID, configID or nil) ~= (c.taken ~= false) then
+                    return false
+                end
+            end
+        end
+        return true
+    end
 end

@@ -493,8 +493,12 @@ end
             spark:SetSize(ss, ss)
             sparkY = C.sparkY * h / C.barH
         else
-            spark:SetSize(8, h)
+            local _, _, _, _, _, sparkExtraH, sparkNudge, sparkW = ns.ERB_CastChromeGeom(cb)
+            spark:SetSize(sparkW, h + sparkExtraH)
+            sparkY = sparkNudge
         end
+        -- The per-tick re-anchor (UpdateCastBar) keeps this offset.
+        castBarFrame._sparkY = sparkY
         spark:ClearAllPoints()
 
         if cb.gradientEnabled and castBarFrame._gradClip then
@@ -531,6 +535,24 @@ end
                 end
             end
         end
+        -- WoW Forever: the stock fill art has shaped ends, the zone is a
+        -- plain rectangle; masked to the fill's shape so its corners never
+        -- show past the fill (a channel's front zone left a red corner pixel
+        -- at the frame art's rounded corner). Once: the style is latched.
+        if blizzKit and ns.ERB_CastForever() then
+            local m = castBarFrame._latencyMask
+            if not m then
+                local fillAtlas = ns.ERB_BlizzAtlas("cast")
+                if fillAtlas then
+                    m = bar:CreateMaskTexture()
+                    m:SetAtlas(fillAtlas)
+                    m:SetAllPoints(bar)
+                    castBarFrame._latencyMask = m
+                end
+            end
+            ns.ERB_MaskTex(castBarFrame._latencyOverlay, m)
+            ns.ERB_MaskTex(castBarFrame._latencyOverlayFront, m)
+        end
     else
         if castBarFrame._latencyOverlay then castBarFrame._latencyOverlay:Hide() end
         if castBarFrame._latencyOverlayFront then castBarFrame._latencyOverlayFront:Hide() end
@@ -556,7 +578,8 @@ end
         local pt, xb, jh = ns.GetCastTextAnchor(durSide, false, timerW)
         timerText:ClearAllPoints()
         timerText:SetJustifyH(jh)
-        timerText:SetPoint(pt, bar, pt, xb + (cb.timerX or 0), cb.timerY or 0)
+        local _, _, _, _, timerNudge = ns.ERB_CastChromeGeom(cb)
+        timerText:SetPoint(pt, bar, pt, xb + (cb.timerX or 0), (cb.timerY or 0) + timerNudge)
         timerText:Show()
         ns.ERB_CastTextColor(timerText, cb.timerR, cb.timerG, cb.timerB, cb.timerA)
     else
@@ -586,9 +609,9 @@ end
     ns.ReflowFontString(nameText)
     -- Blizzard Style chrome: frame art + text box (moves the spell name under the bar).
     if blizz then ns.ERB_ApplyBlizzCastChrome(cb, barW) end
-    -- Show Full Spell Name: the font above reset the name to its configured
-    -- size; re-fit a cast in flight to the width it now has.
-    if cb.fitSpellName then ns.ERB_FitCastName(cb) end
+    -- Re-size a cast in flight: the slot above only fits a plain countdown,
+    -- and Show Full Spell Name needs a re-fit after the font reset.
+    ns.ERB_SizeCastName(cb)
 
     -- Hide pips (build reset), then RE-LAY them for an in-flight empower:
     -- same wipe-sticks class as the channel ticks below (field: Evokers
@@ -999,6 +1022,10 @@ end
 -- the Lua fill in UpdateCastBar when the duration API is unavailable or returns
 -- nil. Re-called from DELAYED/CHANNEL_UPDATE/EMPOWER_UPDATE so a mid-cast time
 -- change retargets the engine timer. Returns true when the timer is armed.
+-- kind "craft" is a merged craft batch (Craft Batches: Merge Bar): the cast's
+-- own duration covers one craft, so the bar takes a duration object of ours
+-- over the whole batch (_startTime to _endTime), set again at every craft
+-- start and pushback and never read back.
 ns.ApplyCastTimer = function(kind)
     if not castBarFrame then return end
     castBarFrame._nativeFill = nil
@@ -1014,6 +1041,17 @@ ns.ApplyCastTimer = function(kind)
     elseif kind == "empower" then
         -- true = include the hold-at-max window, matching the event mirrors
         durObj = UnitEmpoweredChannelDuration and UnitEmpoweredChannelDuration("player", true)
+        dir = Enum.StatusBarTimerDirection.ElapsedTime
+    elseif kind == "craft" then
+        local s, e = castBarFrame._startTime, castBarFrame._endTime
+        if e > s and C_DurationUtil and C_DurationUtil.CreateDuration then
+            durObj = castBarFrame._craftDur
+            if not durObj then
+                durObj = C_DurationUtil.CreateDuration()
+                castBarFrame._craftDur = durObj
+            end
+            durObj:SetTimeFromStart(s, e - s)
+        end
         dir = Enum.StatusBarTimerDirection.ElapsedTime
     else
         durObj = UnitCastingDuration and UnitCastingDuration("player")
@@ -1199,7 +1237,7 @@ SetUpdateCastBar(function(dt)
         if castBarFrame._sparkAnchor ~= target then
             castBarFrame._sparkAnchor = target
             castBarFrame._spark:ClearAllPoints()
-            castBarFrame._spark:SetPoint("CENTER", target, "RIGHT", 0, 0)
+            castBarFrame._spark:SetPoint("CENTER", target, "RIGHT", 0, castBarFrame._sparkY or 0)
         end
     end
 end)
@@ -1432,17 +1470,19 @@ function ns.CastDisplayName(cb, name, spellID)
     return name
 end
 
--- Show Full Spell Name: shrink the spell text to fit its width instead of
--- cutting it off (player cast names are always clean strings).
-function ns.ERB_FitCastName(cb)
+-- Size the spell text's room off this cast's timer string; Show Full Spell
+-- Name then shrinks the text to fit it (player cast names are always clean).
+function ns.ERB_SizeCastName(cb)
     local f = castBarFrame
     if not (f and cb.showSpellText) then return end
     local fs = f._nameText
     -- The layout's timer slot fits a plain countdown; Show Total Duration,
     -- latency text and Full Craft Time write wider strings. Size the name's
     -- room (and its push, when it shares the timer's side) off the widest one
-    -- this cast will show. Blizzard Style moves the name off the bar.
-    if cb.showTimer and f._endTime and f._startTime and not ns.ERB_CastBlizz() then
+    -- this cast will show, while a cast is in flight. Blizzard Style moves the
+    -- name off the bar into its text box; Classic WoW UI keeps it on the bar.
+    if cb.showTimer and (f._casting or f._channeling or f._empowering) and f._endTime and f._startTime
+        and not (ns.ERB_CastBlizz() and not ns.ERB_CastClassic()) then
         local total = cb.showTotalDuration
         local sample
         if f._craftExtra and f._craftTotal then
@@ -1464,7 +1504,9 @@ function ns.ERB_FitCastName(cb)
         end
         fs:SetWidth(max(20, barW - 8 - (spellSide == "center" and 2 or 1) * timerW))
     end
-    EllesmereUI.FitCastName(fs, fs:GetText(), cb.spellTextSize or 11)
+    if cb.fitSpellName then
+        EllesmereUI.FitCastName(fs, fs:GetText(), cb.spellTextSize or 11)
+    end
 end
 
 OnCastStart = function()
@@ -1479,7 +1521,7 @@ OnCastStart = function()
         (cb.fullCraftTime or cb.mergeCrafts) and isTradeSkill,
         spellID, barID, castDurSec)
 
-    -- Merge Craft Casts: one bar spans the whole batch. The batch start is kept
+    -- Merge Bar: one bar spans the whole batch. The batch start is kept
     -- from the first craft (or backdated by the crafts done). _craftExtra becomes
     -- 0 (queued time now lives in _endTime) so the craft timer reads the batch end.
     local merge = cb.mergeCrafts and castBarFrame._craftExtra
@@ -1510,11 +1552,9 @@ OnCastStart = function()
         .. (castBarFrame._craftExtra and castBarFrame._craftCountSuffix or ""))
     ns.ERB_SetBlizzCastFill("cast")
     ns.ERB_CastOverrideStart(cb, notInterruptible)
-    -- The engine timer covers one cast only, so a merged batch fills from Lua.
-    if merge then
-        castBarFrame._nativeFill = nil
-    end
-    if merge or not ns.ApplyCastTimer("cast") then
+    -- The engine timer animates the fill (a merged batch over the whole
+    -- batch); the Lua fill is the fallback.
+    if not ns.ApplyCastTimer(merge and "craft" or "cast") then
         local s, e = castBarFrame._startTime, castBarFrame._endTime
         local initProgress = (e > s) and ((GetTime() - s) / (e - s)) or 0
         castBarFrame._bar:SetValue(min(max(initProgress, 0), 1))
@@ -1540,7 +1580,7 @@ OnCastStart = function()
 
     ShowLatencyOverlay("cast")
     -- After the latency overlay: its " (NNms)" suffix widens the timer.
-    if cb.fitSpellName then ns.ERB_FitCastName(cb) end
+    ns.ERB_SizeCastName(cb)
 
     ns.ActivateCastBar()
 end
@@ -1605,7 +1645,7 @@ OnChannelStart = function()
     ShowChannelTicks(spellID)
 
     ShowLatencyOverlay("channel")
-    if cb.fitSpellName then ns.ERB_FitCastName(cb) end
+    ns.ERB_SizeCastName(cb)
 
     ns.ActivateCastBar()
 end
@@ -1632,7 +1672,7 @@ local function OnCastComplete(eventCastID)
     if not castBarFrame then return end
     if not castBarFrame._casting then return end
     if not eventCastID or not castBarFrame._castID or eventCastID ~= castBarFrame._castID then return end
-    -- Merge Craft Casts: more crafts queued, keep the bar running into the next one.
+    -- Merge Bar: more crafts queued, keep the bar running into the next one.
     if castBarFrame._craftMerge and (castBarFrame._craftLeft or 0) > 0 then return end
     castBarFrame._casting = false
     castBarFrame._castID = nil
@@ -1824,7 +1864,7 @@ do
     end
 end
 
--- Merge Craft Casts: a cancelled batch (movement, Escape) ends the merged bar.
+-- Merge Bar: a cancelled batch (movement, Escape) ends the merged bar.
 -- Watched only while a merged batch is on the bar.
 do
     local watch
@@ -1895,8 +1935,9 @@ function ns.RB_SyncBlizzCastSuppress()
 end
 
 -- Hide While Using Gamepad (Global Settings > Gamepad): Blizzard's gamepad UI
--- draws its own player cast bar, so this one stands down while a controller is
--- connected. A runtime flag (ns._erbCastPadHidden) gates the cast starts and
+-- draws its own player cast bar, so this one stands down while
+-- EllesmereUI.PadModeOn says gamepad mode is on (WoW Forever's Gamepad
+-- interface style, elsewhere a connected controller). A runtime flag (ns._erbCastPadHidden) gates the cast starts and
 -- the idle pass the way `enabled` does; the saved `enabled` is never written,
 -- Blizzard's bar stays suppressed (handed back under WoW Forever's Gamepad
 -- interface style, ns.RB_SyncBlizzCastSuppress) and the frame keeps its
@@ -1916,7 +1957,7 @@ function ns.RB_ApplyGamepadCastbar(padOn)
     end
     local hide = false
     if want then
-        if padOn == nil then padOn = EllesmereUI.PadConnected() end
+        if padOn == nil then padOn = EllesmereUI.PadModeOn() end
         hide = padOn and true or false
     end
     if hide == (ns._erbCastPadHidden == true) then return end
@@ -1972,7 +2013,7 @@ OnEmpowerStart = function()
     castBarFrame._totalDurSuffix = " / " .. format("%.1f", (endTimeMS - startTimeMS) / 1000)
     HideLatencyOverlay()
     castBarFrame._nameText:SetText(ns.CastDisplayName(cb, name, spellID))
-    if cb.fitSpellName then ns.ERB_FitCastName(cb) end
+    ns.ERB_SizeCastName(cb)
     ns.ERB_SetBlizzCastFill("cast")
     ns.ERB_CastOverrideStart(cb, notInterruptible)
     if not ns.ApplyCastTimer("empower") then

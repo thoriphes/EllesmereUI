@@ -72,7 +72,6 @@ local EXCLUDED_CONTEXTS = {
     ["EllesmereUIAuraBuffReminders"] = true,
     ["EllesmereUIForeverEssentials"] = true,
     ["EllesmereUIQuickdraw"]         = true,
-    ["EllesmereUILoadoutManager"]    = true,
     ["EllesmereUIGroupFinder"]       = true,
     ["EllesmereUISimpleLootCouncil"] = true,
     -- CDM: module eligible (bar settings override); these two tabs are
@@ -107,6 +106,7 @@ Cond.ICONS = {
     arena        = "override-arena.png",
     battleground = "override-horde.png",
     solo         = "override-solo.png",
+    gamepad      = "override-gamepad.png",
 }
 
 --- True while EITHER override editing session (spec or conditional) is live.

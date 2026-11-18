@@ -3,7 +3,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  EllesmereUIMythicTimer.lua  --  M+ Timer overlay for EllesmereUI
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.RegisterNumberFormatCallback) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the run summary redraws through the parent's RegisterNumberFormatCallback)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.RegisterNumberFormatCallback and EllesmereUI.ApplyModuleFontFamily and EllesmereUI.SetFontFamily) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the run summary redraws through the parent's RegisterNumberFormatCallback, and the texts naming players take font families through its ApplyModuleFontFamily / SetFontFamily)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 local EMT = EllesmereUI.Lite.NewAddon(ADDON_NAME)
@@ -727,12 +727,14 @@ local function FormatEnemyForcesText(enemyObj, formatId, compact)
     elseif formatId == "COUNT_PERCENT" then
         return format("%d/%d - %.2f%%%s", RoundToInt(rawCurrent), RoundToInt(rawTotal), percent, suffix)
     elseif formatId == "COUNT_REMAINING" then
-        return format("%d/%d (%d left)%s", RoundToInt(rawCurrent), RoundToInt(rawTotal), RoundToInt(remaining), suffix)
+        -- The count left goes through the same "%d left" text as the compact Remaining.
+        return format("%d/%d (%s)%s", RoundToInt(rawCurrent), RoundToInt(rawTotal),
+            EllesmereUI.Lf("%d left", RoundToInt(remaining)), suffix)
     elseif formatId == "REMAINING" then
         if compact then
-            return format("%d left", RoundToInt(remaining))
+            return EllesmereUI.Lf("%d left", RoundToInt(remaining))
         end
-        return format("%d remaining%s", RoundToInt(remaining), suffix)
+        return EllesmereUI.Lf("%d remaining", RoundToInt(remaining)) .. suffix
     end
 
     return format("%.2f%%%s", percent, suffix)
@@ -1858,7 +1860,9 @@ local function CreateStandaloneFrame()
     local function EnsureRows(n)
         for i = #deathTT._rows + 1, n do
             local nameFS = deathTT:CreateFontString(nil, "OVERLAY")
-            nameFS:SetFont(TT_FONT, 10, "")
+            -- A group member's name: a font family (Cyrillic, Korean and Chinese
+            -- names draw), no shadow, its only font write.
+            EllesmereUI.SetFontFamily(nameFS, TT_FONT, 10, "", false)
             nameFS:SetJustifyH("LEFT")
             local countFS = deathTT:CreateFontString(nil, "OVERLAY")
             countFS:SetFont(TT_FONT, 10, "")

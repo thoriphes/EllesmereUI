@@ -61,7 +61,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --       preview strip re-solves from the block measurements that pass settled.
 
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool and EllesmereUI.RequestTimePlayed and EllesmereUI.FormatDuration) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Time Played block asks /played through RequestTimePlayed and formats through FormatDuration)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI._Pool and EllesmereUI.RequestTimePlayed and EllesmereUI.FormatDuration and EllesmereUI.SetFontFamily and EllesmereUI.Chars and EllesmereUI.CharData and EllesmereUI.CharFieldMap and EllesmereUI.CharGUID and EllesmereUI.ClearCharField and EllesmereUI.ForgetCharField) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Time Played block asks /played through RequestTimePlayed and formats through FormatDuration; the tooltip rows take font families through SetFontFamily; its per-character data is in the parent's roster: Chars, CharData, CharFieldMap, CharGUID, ClearCharField, ForgetCharField)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
@@ -120,6 +120,7 @@ local L = {
     ON_COOLDOWN          = "On Cooldown",
     MYTHIC_TELEPORTS     = "Mythic+ Teleports",
     USE_HEARTHSTONE      = "Use Hearthstone",
+    OTHER_CHARACTERS     = "Other Characters",
     RANDOM_HEARTHSTONE   = "Random Hearthstone",
     RETURN_FROM_HOME     = "Return from Home",
     RETURN_AVAILABLE     = "Return available",
@@ -356,19 +357,26 @@ end
 -------------------------------------------------------------------------------
 --  Fonts
 -------------------------------------------------------------------------------
-function ns.SetFont(fs, size, barCfg)
+-- family: the text can show other players' writing (the tooltip rows that list
+-- friends and guild members with their names and notes). It takes a font family
+-- (EllesmereUI.SetFontFamily): Cyrillic, Korean and Chinese letters draw in the
+-- client's own faces. Every font write to such a string passes family.
+function ns.SetFont(fs, size, barCfg, family)
     if not (fs and fs.SetFont) then return end
     local path  = EllesmereUI.GetFontPath("dataBars")
     local flags = EllesmereUI.GetFontOutlineFlag()
     local scale = 100
     if barCfg and barCfg.fontScale then scale = barCfg.fontScale end
     local sz = max(6, floor((size or 11) * scale / 100 + 0.5))
+    local useShadow = flags == "" and EllesmereUI.GetFontUseShadow()
+    if family then
+        -- The family carries the drop shadow.
+        EllesmereUI.SetFontFamily(fs, path, sz, flags, useShadow and true or false)
+        return
+    end
     -- SetShadowOffset does not render on 12.x; shadows must ride a FontObject.
     -- Prime BEFORE SetFont -- the inherited shadow survives the typeface call.
-    if EllesmereUI.PrimeFontShadow then
-        local useShadow = flags == "" and EllesmereUI.GetFontUseShadow()
-        EllesmereUI.PrimeFontShadow(fs, useShadow and true or false)
-    end
+    EllesmereUI.PrimeFontShadow(fs, useShadow and true or false)
     fs:SetFont(path, sz, flags)
 end
 
@@ -1008,7 +1016,9 @@ do
     -- rectangles (ignores overlay buttons), so a clickable row still counts as
     -- "over the tip". Both rects test EXPANDED (the tip sits a 6px gap off the
     -- bar; unexpanded would drop the tip crossing that dead zone). Two-tick
-    -- grace (~0.2s) covers slow diagonal exits past a corner.
+    -- grace (~0.2s) covers slow diagonal exits past a corner. An owner whose
+    -- hover area reaches past its frame (hit rect insets) also counts while it
+    -- has the mouse.
     local KA_SLACK = 12
     local function StartKeepAlive()
         if keepAlive then return end
@@ -1016,7 +1026,7 @@ do
         keepAlive = C_Timer.NewTicker(0.1, function()
             if not (tip and tip:IsShown()) then StopKeepAlive(); return end
             local overOwner = owner and owner.IsMouseOver
-                and owner:IsMouseOver(KA_SLACK, -KA_SLACK, -KA_SLACK, KA_SLACK)
+                and (owner:IsMouseOver(KA_SLACK, -KA_SLACK, -KA_SLACK, KA_SLACK) or owner:IsMouseMotionFocus())
             local overTip = tip:IsMouseOver(KA_SLACK, -KA_SLACK, -KA_SLACK, KA_SLACK)
             if overOwner or overTip then
                 missed = 0
@@ -1234,11 +1244,13 @@ do
         for i = 1, dataCount do
             local d = data[i]
             local row = EnsureRow(i)
-            ns.SetFont(row.left, FONT_SIZE)
+            -- Both columns can list players (friends, guild members, their
+            -- notes, the account's characters): font families.
+            ns.SetFont(row.left, FONT_SIZE, nil, true)
             -- The right FS needs a font even on left-only rows: SetText("") on a
             -- never-fonted FontString hard-errors, and a pooled row's first use
             -- can be a plain line.
-            ns.SetFont(row.right, FONT_SIZE)
+            ns.SetFont(row.right, FONT_SIZE, nil, true)
             -- Rows are pooled: reset wrap state every pass so a wrapped row
             -- reused as plain measures naturally. Wrapped rows measure
             -- UNWRAPPED here so GetStringWidth reports the natural one-line

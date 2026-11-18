@@ -10,7 +10,7 @@ local GFNS = ns
 local CM = ns.EUI
 
 local EXPR_TEX = "Interface\\AddOns\\" .. FOLDER .. "\\media\\icons\\eui-expression.png"
-local function Secret(v) return issecretvalue and issecretvalue(v) or false end
+local Secret = EllesmereUI.IsSecret
 local function Readable(t) return type(t) == "table" and not Secret(t) and not (canaccesstable and not canaccesstable(t)) end
 
 -------------------------------------------------------------------------------
@@ -333,7 +333,7 @@ do
     for _, op in ipairs({ "=", "~=", "&&", "||", "!" }) do HUE[op] = cmp end
 end
 local function Hex(c) return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255) end
-local BAD_HEX = "|cffff5555"
+local BAD_HEX = EllesmereUI.COLOR_CODES.BAD
 
 local function Colorize(text)
     local out, i, n = {}, 1, #text
@@ -436,7 +436,7 @@ local function BuildHelp(panel, K, onClick)
                         local lines = {}
                         for _, ex in ipairs(spec.examples) do
                             -- starts with a color code so the tooltip keeps our colors
-                            lines[#lines + 1] = "|cffffffff|r" .. Colorize(ex[1]) .. "   |cff8f8f8f" .. ex[2] .. "|r"
+                            lines[#lines + 1] = "|cffffffff|r" .. Colorize(ex[1]) .. "   " .. EllesmereUI.COLOR_CODES.DIM .. ex[2] .. "|r"
                         end
                         K.Tip(self, EllesmereUI.Lf("%1$s Examples", spec.title), unpack(lines))
                     end)
@@ -530,7 +530,7 @@ local function Paint(K)
     if not btn then return end
     local f, err = Current()
     if f then btn.Glyph:SetVertexColor(K.Accent()) else btn.Glyph:SetVertexColor(K.GLYPH, K.GLYPH, K.GLYPH) end
-    btn.activeEdge:SetShown(f ~= nil)
+    if GFNS.ActiveLook then GFNS.ActiveLook(btn, f ~= nil) elseif btn.activeEdge then btn.activeEdge:SetShown(f ~= nil) end
     if shown and box then shown:SetText(Colorize(box:GetText())) end
     if not status then return end
     local text = box and box:GetText() or ""
@@ -540,20 +540,23 @@ local function Paint(K)
     elseif f then
         status:SetText("|cff66dd66" .. EllesmereUI.L("Filtering with this expression.") .. "|r")
     else
-        status:SetText("|cffff5555" .. (err or EllesmereUI.L("can't read that")) .. "|r")
+        status:SetText(BAD_HEX .. (err or EllesmereUI.L("can't read that")) .. "|r")
     end
 end
 
 local function Build(SP, K)
     btn = K.GlyphButton(SP, K.ROW1_H, EXPR_TEX)
     btn.Glyph:SetSize(14, 14)
-    -- green edge while an expression is filtering
-    btn.activeEdge = CreateFrame("Frame", nil, btn)
-    btn.activeEdge:SetAllPoints()
-    btn.activeEdge:SetFrameLevel(btn:GetFrameLevel() + 3)
-    btn.activeEdge:EnableMouse(false)
-    CM.MakeBorder(btn.activeEdge, 0.3, 0.85, 0.4, 1, CM.PanelPP)
-    btn.activeEdge:Hide()
+    -- green edge while an expression is filtering (skin off: no edge is made,
+    -- GFNS.ActiveLook tints the button's box)
+    if GFNS.SkinOn and GFNS.SkinOn() then
+        btn.activeEdge = CreateFrame("Frame", nil, btn)
+        btn.activeEdge:SetAllPoints()
+        btn.activeEdge:SetFrameLevel(btn:GetFrameLevel() + 3)
+        btn.activeEdge:EnableMouse(false)
+        CM.MakeBorder(btn.activeEdge, 0.3, 0.85, 0.4, 1, CM.PanelPP)
+        btn.activeEdge:Hide()
+    end
     btn:SetFrameLevel(SP:GetFrameLevel() + 5)
 
     panel = CreateFrame("Frame", nil, SP)
@@ -565,7 +568,7 @@ local function Build(SP, K)
     bg:SetAllPoints()
     local fr, fg, fb = K.ThemeFill()
     bg:SetColorTexture(fr, fg, fb, 0.98)
-    CM.MakeBorder(panel, K.ThemeBorder())
+    if not (GFNS.StockBox and GFNS.StockBox(panel, bg)) then CM.MakeBorder(panel, K.ThemeBorder()) end
 
     local title = panel:CreateFontString(nil, "OVERLAY")
     K.Font(title, 9)
@@ -574,7 +577,7 @@ local function Build(SP, K)
     title:SetText(EllesmereUI.L("Expressions"))
 
     -- clear button, skinned
-    local clear = CreateFrame("Button", nil, panel)
+    local clear = GFNS.NewButton and GFNS.NewButton(panel) or CreateFrame("Button", nil, panel)
     clear:SetSize(46, 16)
     clear:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -8, -4)
     clear:SetNormalFontObject("GameFontHighlight")
@@ -587,7 +590,8 @@ local function Build(SP, K)
     ct:SetTextColor(CM.TEXT_DIM_R, CM.TEXT_DIM_G, CM.TEXT_DIM_B, CM.TEXT_DIM_A)
     local skin = CM._ModuleNS and CM._ModuleNS.EllesmereUIBlizzardSkin
     local S = skin and skin.WSkin
-    if S and S.Button then
+    if not (GFNS.SkinOn and GFNS.SkinOn()) then  -- the template's rounded art
+    elseif S and S.Button then
         S.Button(clear, { "Label" })
     else
         local cbg = clear:CreateTexture(nil, "BACKGROUND")

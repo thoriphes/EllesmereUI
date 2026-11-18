@@ -6,9 +6,9 @@ if not EllesmereUI.IS_FOREVER then return end
 -- Our own quest tracker frame, used instead of ObjectiveTrackerFrame when the
 -- Custom Quest Tracker option is on. Blizzard's tracker is muted (alpha 0,
 -- click-through, see EQT.MuteBlizzardTracker) and never skinned or fed watch
--- list edits. This file only reads the quest log and watch list: untracking,
--- zone auto-track, filters and sorting all live in our own list (the
--- Forever file's quest tools, read-only).
+-- list edits. This file only reads the quest log, the watch list and the
+-- tracked recipes: untracking, zone auto-track, filters and sorting all live
+-- in our own list (the Forever file's quest tools, read-only).
 -------------------------------------------------------------------------------
 local _, ns = ...
 local EQT = ns.EQT
@@ -30,7 +30,6 @@ local UNLOCK_KEY = "EQT_Tracker"
 do
     local qt = ns.QT_DEFAULTS.profile.questTracker
     qt.customGroupByZone       = true
-    qt.customDifficultyColor   = true
     qt.customWidth             = DEF_WIDTH
     qt.customMaxHeight         = DEF_HEIGHT
     qt.customGrowUp            = false     -- grows up from its bottom edge
@@ -65,10 +64,14 @@ local lines, used = {}, 0
 local order, zoneOf, seen = {}, {}, {}
 local pending = false
 local stale = false   -- skipped a render while hidden
+local empty = false   -- nothing to list: hidden, like Blizzard's empty tracker
+local emptyOnly = false  -- hidden for that alone: renders go on, to see the first quest come in
+local UpdateVisibility
 local fontGen = 1
 local inEncounter = false
 local prevObj = {}    -- questID -> objective texts last shown (update flashes)
 local rowHooks, hookW = {}, 0  -- public row hooks; hookW: width they reserve
+local TITLE_MIN_W = 40         -- the narrowest a quest title gets, whatever the hooks reserve
 
 -------------------------------------------------------------------------------
 -- Per-character state: untracked = removed from our list by the player,
@@ -80,16 +83,13 @@ local rowHooks, hookW = {}, 0  -- public row hooks; hookW: width they reserve
 local charDB
 local function CharDB()
     if charDB then return charDB end
-    local all = EllesmereUIDB.questTrackerChars
-    if type(all) ~= "table" then all = {}; EllesmereUIDB.questTrackerChars = all end
-    local guid = UnitGUID("player")
-    local sv = all[guid]
-    if type(sv) ~= "table" then sv = {}; all[guid] = sv end
+    local kept = EllesmereUI.CharData("questTracker", true)
+    local sv = kept or {} -- GUID unread: a throwaway with the same sets, not cached
     if type(sv.ctUntracked) ~= "table" then sv.ctUntracked = {} end
     if type(sv.ctCollapsed) ~= "table" then sv.ctCollapsed = {} end
     if type(sv.ctDoneOpen) ~= "table" then sv.ctDoneOpen = {} end
     if type(sv.ctPinned) ~= "table" then sv.ctPinned = {} end
-    charDB = sv
+    charDB = kept
     return sv
 end
 
@@ -176,8 +176,8 @@ local function StyleText(fs, size)
     end
 end
 
-local SIZE_KEY = { zone = "customZoneFontSize", quest = "titleFontSize", obj = "objectiveFontSize" }
-local SIZE_DEF = { zone = 13, quest = 12, obj = 10 }
+local SIZE_KEY = { zone = "customZoneFontSize", quest = "titleFontSize", recipe = "titleFontSize", obj = "objectiveFontSize" }
+local SIZE_DEF = { zone = 13, quest = 12, recipe = 12, obj = 10 }
 
 -- key: objective identity, so a flash survives re-renders of the same row.
 local function AcquireLine(kind, id, text, x, y, width, key)
@@ -260,9 +260,10 @@ local DONE_RGB = OBJECTIVE_TRACKER_COLOR and OBJECTIVE_TRACKER_COLOR.Complete or
 local function TitleRGB(questID, complete)
     if questID == C_SuperTrack.GetSuperTrackedQuestID() then return EQT.GetFocusRGB() end
     if complete then return EQT.GetCompletedRGB() end
-    if Cfg("customDifficultyColor") ~= false then
-        local c = GetDifficultyColor(C_PlayerInfo.GetContentDifficultyQuestForPlayer(questID))
-        if c then return c.r, c.g, c.b end
+    -- Title Difficulty Colors: the game's own option (EQT.TitleDifficultyOn)
+    if EQT.TitleDifficultyOn() then
+        local r, g, b = EQT.QuestDifficultyRGB(questID)
+        if r then return r, g, b end
     end
     return EQT.GetTitleRGB()
 end
@@ -523,7 +524,7 @@ local function TimerBar(l)
     if bar then return bar end
     bar = CreateFrame("StatusBar", nil, l)
     bar:SetHeight(BAR_H)
-    bar:SetStatusBarTexture("Interface\Buttons\WHITE8X8")
+    bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
     bar:SetMinMaxValues(0, 1)
     local bg = bar:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
@@ -610,6 +611,128 @@ local function AddTimer(questID, y, width, x)
         y = y + BAR_H + 2
     end
     PaintTimer(l, now)
+    return y
+end
+
+-------------------------------------------------------------------------------
+-- Tracked recipes. Blizzard lists them in its tracker's Professions module,
+-- muted with the rest of that tracker, so they follow the quests here under a
+-- Professions header: each recipe with its required reagents, written as
+-- Blizzard writes them. A click on a recipe goes to its block in Blizzard's
+-- tracker through the header overlay below (out of combat), so Blizzard's own
+-- code opens the recipe, untracks it or opens its menu.
+-------------------------------------------------------------------------------
+local RECIPE_KEY = "@recipes"                 -- the header's id, never a zone name
+local RECIPE_COLLAPSED = "z:" .. RECIPE_KEY   -- its key in the collapsed set
+local reagentState = {}     -- a reagent line's progress, for ObjectiveRGBA
+local recipeEvents = false  -- bag and currency events: while a recipe is listed
+local nameAsked = {}        -- itemID -> true once its name was asked for, false if it never loads
+local nameWait, nameListen = false, false  -- a reagent name is loading; ITEM_DATA_LOAD_RESULT registered
+local schematics = {}       -- recipe id (negative: recraft) -> its schematic, until the tracked recipes change
+
+-- One required reagent slot: "- 2/4 Linen Cloth". A reagent whose item name
+-- has not loaded is left out, asked for once; its load renders the list again.
+local function AddReagent(id, slot, y, width, x)
+    local r = slot.reagents and slot.reagents[1]
+    if not r then return y end
+    local name
+    if ProfessionsUtil.IsReagentSlotBasicRequired(slot) then
+        if r.itemID then
+            name = C_Item.GetItemNameByID(r.itemID)
+            if not name and nameAsked[r.itemID] ~= false then
+                nameWait = true
+                if not nameAsked[r.itemID] then
+                    nameAsked[r.itemID] = true
+                    C_Item.RequestLoadItemDataByID(r.itemID)
+                end
+            end
+        elseif r.currencyID then
+            local info = C_CurrencyInfo.GetCurrencyInfo(r.currencyID)
+            name = info and info.name
+        end
+    elseif ProfessionsUtil.IsReagentSlotModifyingRequired(slot) and slot.slotInfo then
+        name = slot.slotInfo.slotText
+    end
+    if not name then return y end
+    local text
+    if slot:IsVariableQuantityReagent(r) then
+        text = PROFESSIONS_TRACKER_REAGENT_RANGE_FORMAT:format(slot:GetVariableQuantityRange(r))
+        reagentState.finished, reagentState.numRequired = false, 0
+    else
+        local need = slot:GetQuantityRequired(r)
+        local have = ProfessionsUtil.AccumulateReagentsInPossession(slot.reagents)
+        text = PROFESSIONS_TRACKER_REAGENT_COUNT_FORMAT:format(have, need)
+        reagentState.finished, reagentState.numFulfilled, reagentState.numRequired = have >= need, have, need
+    end
+    local l, h = AcquireLine("obj", id, "- " .. PROFESSIONS_TRACKER_REAGENT_FORMAT:format(text, name), x, y, width - x)
+    l.text:SetTextColor(ObjectiveRGBA(reagentState))
+    return y + h + (Cfg("customObjSpacing") or 1)
+end
+
+-- id: the recipe, negative for a recraft, as Blizzard keys its blocks.
+local function AddRecipeList(list, isRecraft, y, width, titleX, objX)
+    for _, recipeID in ipairs(list) do
+        local id = isRecraft and -recipeID or recipeID
+        -- A recipe's schematic is game data: read once and kept until the
+        -- tracked recipes change (names and counts are read on every pass).
+        local schematic = schematics[id]
+        if not schematic then
+            schematic = ProfessionsUtil.GetRecipeSchematic(recipeID, isRecraft)
+            schematics[id] = schematic
+        end
+        local name = schematic.name or ""
+        if isRecraft then name = PROFESSIONS_CRAFTING_FORM_RECRAFTING_HEADER:format(name) end
+        local l, h = AcquireLine("recipe", id, name, titleX, y, math.max(TITLE_MIN_W, width - titleX))
+        l.text:SetTextColor(EQT.GetTitleRGB())
+        y = y + h + 2
+        -- Modifying reagent slots first, as Blizzard lists them.
+        local slots = schematic.reagentSlotSchematics
+        for _, slot in ipairs(slots) do
+            if ProfessionsUtil.IsReagentSlotModifyingRequired(slot) then
+                y = AddReagent(id, slot, y, width, objX)
+            end
+        end
+        for _, slot in ipairs(slots) do
+            if ProfessionsUtil.IsReagentSlotRequired(slot) and not ProfessionsUtil.IsReagentSlotModifyingRequired(slot) then
+                y = AddReagent(id, slot, y, width, objX)
+            end
+        end
+        y = y + (Cfg("customQuestSpacing") or 4)
+    end
+    return y
+end
+
+-- The Professions section, after the quests. Its bag and currency events
+-- (reagent counts) are registered only while a recipe is tracked.
+local function AddRecipes(y, width, titleX, objX, collapsed, zr, zg, zb)
+    local list, recrafts = C_TradeSkillUI.GetRecipesTracked(false), C_TradeSkillUI.GetRecipesTracked(true)
+    local any = (list[1] or recrafts[1]) ~= nil
+    if any ~= recipeEvents then
+        recipeEvents = any
+        if any then
+            evt:RegisterEvent("BAG_UPDATE_DELAYED")
+            evt:RegisterEvent("CURRENCY_DISPLAY_UPDATE")
+        else
+            evt:UnregisterEvent("BAG_UPDATE_DELAYED")
+            evt:UnregisterEvent("CURRENCY_DISPLAY_UPDATE")
+        end
+    end
+    nameWait = false
+    if any then
+        if y > 0 then y = y + 6 end
+        local shut = collapsed[RECIPE_COLLAPSED]
+        local l, h = AcquireLine("zone", RECIPE_KEY, (shut and "+ " or "") .. PROFESSIONS_TRACKER_HEADER_PROFESSION, 0, y, width)
+        l.text:SetTextColor(zr, zg, zb, 1)
+        y = y + h + 3
+        if not shut then
+            y = AddRecipeList(list, false, y, width, titleX, objX)
+            y = AddRecipeList(recrafts, true, y, width, titleX, objX)
+        end
+    end
+    if nameWait ~= nameListen then
+        nameListen = nameWait
+        if nameWait then evt:RegisterEvent("ITEM_DATA_LOAD_RESULT") else evt:UnregisterEvent("ITEM_DATA_LOAD_RESULT") end
+    end
     return y
 end
 
@@ -733,10 +856,53 @@ local function RunRowHooks(l, questID)
     end
 end
 
+-- The header's filter button in the header colour, as the header's text and
+-- the button on Blizzard's header are. Desaturated first, so the art's own
+-- colour does not multiply with ours.
+local function TintFilterToggle()
+    local btn = header.filter
+    if not btn then return end
+    local r, g, b = EQT.GetHeaderRGB()
+    local normal, pushed, highlight = btn:GetNormalTexture(), btn:GetPushedTexture(), btn:GetHighlightTexture()
+    if normal then normal:SetDesaturated(true); normal:SetVertexColor(r, g, b) end
+    if pushed then pushed:SetDesaturated(true); pushed:SetVertexColor(r, g, b) end
+    if highlight then highlight:SetDesaturated(true); highlight:SetVertexColor(r, g, b) end
+end
+
+-- Show Toggle on Quests Header: the Forever file puts it on Blizzard's
+-- header, which is muted here. Built on first use.
+local function SyncFilterToggle()
+    local btn = header.filter
+    local want = Cfg("filterHeaderToggle") == true
+    if not btn then
+        if not want then return end
+        btn = CreateFrame("Button", nil, header)
+        btn:SetSize(16, 16)
+        btn:SetPoint("RIGHT", header.count, "LEFT", -6, 0)
+        btn:SetNormalAtlas("ui-questtrackerbutton-filter")
+        btn:SetPushedAtlas("ui-questtrackerbutton-filter-pressed")
+        btn:SetHighlightAtlas("ui-questtrackerbutton-red-highlight", "ADD")
+        btn:SetScript("OnEnter", function(self) UpdateHover(); EllesmereUI.ShowWidgetTooltip(self, EQT.FilterToggleTip()) end)
+        btn:SetScript("OnLeave", function() UpdateHover(); EllesmereUI.HideWidgetTooltip() end)
+        btn:SetScript("OnClick", function(self)
+            EQT.Set("filterEnabled", not Cfg("filterEnabled"))
+            EQT.ApplyQuestWatches()
+            EllesmereUI:RefreshPage()
+            EllesmereUI.ShowWidgetTooltip(self, EQT.FilterToggleTip())
+        end)
+        header.filter = btn
+        TintFilterToggle()
+    end
+    btn:SetShown(want)
+    btn:SetAlpha(Cfg("filterEnabled") and 1 or 0.4)
+end
+
 local function Render()
     pending = false
     if not frame then return end
-    if not frame:IsShown() then stale = true; return end
+    -- Hidden only for being empty: still render, to see the first quest come
+    -- in. Hidden by anything else, the render waits for the next show.
+    if not frame:IsShown() and not emptyOnly then stale = true; return end
     stale = false
     HideOverlay()
     frame:SetMouseMotionEnabled(HoverWanted() and true or false)
@@ -803,7 +969,8 @@ local function Render()
                 local itemW = item and itemSize + 8 or 0
                 if y == 0 then y = focusRise end
                 local top = y
-                local l, h = AcquireLine("quest", questID, QuestTitle(questID), titleX, y, width - titleX - itemW - hookW)
+                local l, h = AcquireLine("quest", questID, QuestTitle(questID), titleX, y,
+                    math.max(TITLE_MIN_W, width - titleX - itemW - hookW))
                 l.text:SetTextColor(TitleRGB(questID, complete))
                 if rowHooks[1] then RunRowHooks(l, questID) end
                 if focusSize > 0 then
@@ -825,12 +992,14 @@ local function Render()
                 y = y + (Cfg("customQuestSpacing") or 4)
             end
         end
+        y = AddRecipes(y, width, titleX, objX, collapsed, zr, zg, zb)
     end
     for i = used + 1, #lines do lines[i]:Hide() end
 
     local _, numQuests = C_QuestLog.GetNumQuestLogEntries()
     header.count:SetText((numQuests or 0) .. "/" .. C_QuestLog.GetMaxNumQuestsCanAccept())
     header.toggle:SetText(collapsed.all and "+" or "-")
+    SyncFilterToggle()
 
     contentH = y
     child:SetHeight(math.max(y, 1))
@@ -841,6 +1010,14 @@ local function Render()
     local h = EllesmereUI._unlockActive and maxH or math.min(HEADER_H + body, maxH)
     viewH = math.max(h - HEADER_H - PAD, 0)
     frame:SetHeight(h)
+    -- An Unlock Mode link places the tracker by its centre, from its height:
+    -- back onto it in the render that changed the height, as Unlock Mode's own
+    -- resize notice is throttled and can skip the last change of a burst (a
+    -- quest in a new zone arrives over several renders).
+    if h ~= frame.renderH then
+        frame.renderH = h
+        if not EllesmereUI._unlockActive then EllesmereUI.ReapplyOwnAnchor(UNLOCK_KEY) end
+    end
     UpdateThumb()
     if (itemSize and true or false) ~= cdRegistered then
         cdRegistered = not cdRegistered
@@ -848,6 +1025,14 @@ local function Render()
     end
     SyncItems()
     ArmTick(GetTime())
+    -- Unlock Mode keeps it shown, so the mover stays visible.
+    local nowEmpty = order[1] == nil and not EllesmereUI._unlockActive
+        and C_TradeSkillUI.GetRecipesTracked(false)[1] == nil
+        and C_TradeSkillUI.GetRecipesTracked(true)[1] == nil
+    if nowEmpty ~= empty then
+        empty = nowEmpty
+        UpdateVisibility()
+    end
 end
 
 function Queue()
@@ -865,7 +1050,7 @@ function EllesmereUI.RegisterQuestTrackerRow(id, fn, width)
     for _, h in ipairs(rowHooks) do
         if h.id == id then return false end
     end
-    width = math.max(0, math.min(math.floor(tonumber(width) or 0), HOOK_MAX_W))
+    width = Clamp(math.floor(tonumber(width) or 0), 0, HOOK_MAX_W)
     rowHooks[#rowHooks + 1] = { id = id, fn = fn, width = width, x = hookW }
     hookW = hookW + width
     Queue()
@@ -878,7 +1063,9 @@ EllesmereUI.RefreshQuestTrackerRows = Queue
 -------------------------------------------------------------------------------
 -- Interaction. Nothing here touches Blizzard's tracker, the watch list, the
 -- super-track or the world map (opening it from addon code taints its pins:
--- SetPassThroughButtons blocked in combat, tested 2026-10-17).
+-- SetPassThroughButtons blocked in combat, tested 2026-10-17). Untrack is our
+-- list's own; a modified click that untracks reaches Blizzard's own quest header
+-- through the secure overlay below, whose code edits the watch list.
 -------------------------------------------------------------------------------
 local function Untrack(questID)
     local db = CharDB()
@@ -933,12 +1120,22 @@ local function ShowMenu(owner, questID)
         text = CharDB().ctPinned[questID] and EllesmereUI.L("Unpin") or EllesmereUI.L("Pin to Top"),
         onClick = function() TogglePin(questID) end }
     items[#items + 1] = { text = OBJECTIVES_STOP_TRACKING, noLoc = true, onClick = function() Untrack(questID) end }
+    -- Sharing a quest is refused in combat (a blocked action from addon code): the entry
+    -- is greyed there, and a click after combat began with the menu open does nothing.
     if IsInGroup() and C_QuestLog.IsPushableQuest(questID) then
-        items[#items + 1] = { text = SHARE_QUEST, noLoc = true, onClick = function()
+        items[#items + 1] = { text = SHARE_QUEST, noLoc = true, isDisabled = InCombatLockdown, onClick = function()
+            if InCombatLockdown() then return end
             QuestLogPushQuest(C_QuestLog.GetLogIndexForQuestID(questID))
         end }
     end
     items[#items + 1] = { text = ABANDON_QUEST_ABBREV, noLoc = true, onClick = function() Abandon(questID) end }
+    -- Wowhead Quest Links: the entry Blizzard's tracker menu gets, after a divider
+    -- as there (QuestLinks.lua).
+    if EQT.WowheadQuestOK(questID) then
+        items[#items + 1] = "---"
+        items[#items + 1] = { text = EllesmereUI.L("Wowhead Link"), noLoc = true,
+            onClick = function() EQT.ShowWowheadLink(questID) end }
+    end
     EllesmereUI.ShowContextMenu(owner, items, MENU_OPTS)
 end
 
@@ -973,15 +1170,24 @@ function OnLineClick(self, button)
 end
 
 -------------------------------------------------------------------------------
--- Open Quest Log overlay (customClickAction "map"). Opening the map from
--- addon code taints its pins (SetPassThroughButtons blocked in combat), and a
--- macro /run carries ForceTaint_Strong into them, so one secure button clicks
--- the quest's block in Blizzard's muted tracker, whose own header click opens
--- the map. Placed over the hovered quest line by screen position like the
--- item buttons. Out of combat only: it hides when combat starts, and a click
--- then does nothing. Open Quest Details uses our own window (Details.lua).
+-- Blizzard header overlay. One secure button over the hovered quest line clicks
+-- the quest's block in Blizzard's muted tracker, so Blizzard's own header click
+-- does what addon code cannot do cleanly: with Open Quest Log (customClickAction
+-- "map") a plain left click opens the map (from addon code it taints the map's
+-- pins, SetPassThroughButtons blocked in combat, and a macro /run carries
+-- ForceTaint_Strong into them), and on every setting the untrack modifier
+-- (QUESTWATCHTOGGLE, Shift by default) untracks the quest in the game's own watch
+-- list, so the quest log follows (or, with the chat box open, puts its link in
+-- chat). Over a tracked recipe it takes every left and right click to the
+-- recipe's block, whose own code opens the recipe, untracks it, links it or
+-- opens its menu. Only for a quest or recipe Blizzard's tracker lists; placed by
+-- screen position like the item buttons; out of combat only: it hides when
+-- combat starts, and a click then takes our own path (none for a recipe). Open
+-- Quest Details uses our own window (Details.lua).
 -------------------------------------------------------------------------------
 local QUEST_MODULES = { "QuestObjectiveTracker", "CampaignQuestObjectiveTracker" }
+-- The untrack modifier as a secure attribute prefix (a single-modifier binding)
+local UNTRACK_PREFIX = { SHIFT = "shift-", CTRL = "ctrl-", ALT = "alt-" }
 local overlay
 
 -- The header button of Blizzard's block for the quest, if it has one.
@@ -993,14 +1199,35 @@ local function BlizzardHeader(questID)
     end
 end
 
+-- The header button of Blizzard's block for a tracked recipe (id: negative
+-- for a recraft, as Blizzard keys its blocks), if it has one.
+local function RecipeHeader(id)
+    local module = _G.ProfessionsRecipeTracker
+    local block = module and module.GetExistingBlock and module:GetExistingBlock(id)
+    return block and block.HeaderButton
+end
+
 local function Overlay()
     if overlay then return overlay end
     overlay = CreateFrame("Button", nil, itemLayer, "SecureActionButtonTemplate")
     overlay:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    -- Unmodified left click only (type1 set per quest); the rest goes to PostClick.
+    -- The clicks set per line (ShowOverlay) go to Blizzard's header; the rest
+    -- go to PostClick, our own line click.
     overlay:SetAttribute("useOnKeyDown", false)
     overlay:SetScript("PostClick", function(self, button)
-        if button == "LeftButton" and not IsModifierKeyDown() then return end
+        -- A recipe: Blizzard's recipe block took the click.
+        if self.line.kind == "recipe" then return end
+        if button == "LeftButton" then
+            local prefix = SecureButton_GetModifierPrefix(self)
+            if self:GetAttribute(prefix .. "type1") == "click" then
+                -- Blizzard's header took it. A quest it untracked also leaves our
+                -- list for good, or zone auto-track would list it again.
+                if prefix ~= "" and not C_QuestLog.GetQuestWatchType(self.line.id) then
+                    Untrack(self.line.id)
+                end
+                return
+            end
+        end
         OnLineClick(self.line, button)
     end)
     overlay:SetScript("OnEnter", function(self) OnLineEnter(self.line) end)
@@ -1017,8 +1244,10 @@ end
 
 -- Covers the part of the line inside the scroll view.
 local function ShowOverlay(l)
-    if InCombatLockdown() or Cfg("customClickAction") ~= "map" then return end
-    local header = BlizzardHeader(l.id)
+    if InCombatLockdown() then return end
+    local recipe = l.kind == "recipe"
+    local header
+    if recipe then header = RecipeHeader(l.id) else header = BlizzardHeader(l.id) end
     if not header then return end
     local top, bottom = math.min(l:GetTop(), scroll:GetTop()), math.max(l:GetBottom(), scroll:GetBottom())
     if top <= bottom then return end
@@ -1027,8 +1256,19 @@ local function ShowOverlay(l)
     o:ClearAllPoints()
     o:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", l:GetLeft() * s, top * s)
     o:SetSize(l:GetWidth() * s, (top - bottom) * s)
-    o:SetAttribute("type1", "click")
-    o:SetAttribute("clickbutton1", header)
+    -- Plain left click: Open Quest Log only. The untrack modifier: always.
+    -- A recipe: every left and right click.
+    local map = recipe or Cfg("customClickAction") == "map"
+    o:SetAttribute("type1", map and "click" or nil)
+    o:SetAttribute("clickbutton1", map and header or nil)
+    local untrack = UNTRACK_PREFIX[GetModifiedClick("QUESTWATCHTOGGLE") or ""]
+    for _, prefix in pairs(UNTRACK_PREFIX) do
+        local on = recipe or prefix == untrack
+        o:SetAttribute(prefix .. "type1", on and "click" or nil)
+        o:SetAttribute(prefix .. "clickbutton1", on and header or nil)
+    end
+    o:SetAttribute("type2", recipe and "click" or nil)
+    o:SetAttribute("clickbutton2", recipe and header or nil)
     o.line = l
     o:Show()
 end
@@ -1065,6 +1305,8 @@ end
 
 function OnLineEnter(self)
     UpdateHover()
+    -- A recipe: only the overlay that takes its clicks to Blizzard's block.
+    if self.kind == "recipe" then ShowOverlay(self); return end
     if self.kind ~= "quest" then return end
     ShowOverlay(self)
     GameTooltip:SetOwner(self, TooltipSide())
@@ -1099,6 +1341,7 @@ local function ApplyBackground()
     local hr, hg, hb = EQT.GetHeaderRGB()
     header.text:SetTextColor(hr, hg, hb)
     header.toggle:SetTextColor(hr, hg, hb)
+    TintFilterToggle()
 end
 
 local function RefreshFonts()
@@ -1412,10 +1655,14 @@ local function Blocked()
     return Cfg("enabled") == false or EQT.IsSuppressed() or AutoHidden()
 end
 
-local function UpdateVisibility()
+function UpdateVisibility()
     if not frame then return end
     local vis = not Blocked() and EllesmereUI.EvalVisibility(EQT.DB())
-    if not vis then frame:Hide(); return end
+    -- An empty tracker that would otherwise show is hidden with its renders
+    -- going on; one skipped while something else hid it is made up now.
+    emptyOnly = (vis and empty) and true or false
+    if emptyOnly and stale then Queue() end
+    if not vis or empty then frame:Hide(); return end
     frame:Show()
     frame:SetAlpha(vis == "mouseover" and 0 or 1)
 end
@@ -1427,7 +1674,7 @@ local EVENTS = {
     "QUEST_LOG_UPDATE", "QUEST_WATCH_LIST_CHANGED", "QUEST_ACCEPTED", "QUEST_REMOVED",
     "SUPER_TRACKING_CHANGED", "ZONE_CHANGED", "ZONE_CHANGED_NEW_AREA",
     "PLAYER_ENTERING_WORLD", "PLAYER_LEVEL_UP", "ENCOUNTER_START", "ENCOUNTER_END",
-    "PLAYER_REGEN_DISABLED",
+    "PLAYER_REGEN_DISABLED", "TRACKED_RECIPE_UPDATE",
 }
 
 evt:SetScript("OnEvent", function(_, event, questID, added)
@@ -1449,6 +1696,13 @@ evt:SetScript("OnEvent", function(_, event, questID, added)
     elseif event == "EDIT_MODE_LAYOUTS_UPDATED" then
         SeedSoon()
         return
+    elseif event == "ITEM_DATA_LOAD_RESULT" then
+        -- A reagent name the recipe list asked for (questID is the item here,
+        -- added whether it loaded); any other item load is not ours.
+        if not nameAsked[questID] then return end
+        if not added then nameAsked[questID] = false end
+    elseif event == "TRACKED_RECIPE_UPDATE" then
+        wipe(schematics)
     elseif event == "QUEST_WATCH_LIST_CHANGED" then
         -- Tracking it again in the quest log brings it back.
         if questID and added then CharDB().ctUntracked[questID] = nil end
