@@ -562,6 +562,34 @@ local function BuildGeneralPage(pageName, parent, yOffset)
         TypeScaleCfg("Non-Elite Enemy Scale (Percent)", "nonEliteEnemyScale",
             "Scales the nameplates of non-elite enemies in dungeons only; 100% = no change."));  y = y - h
 
+    -- Row 7: Hide Gray-Level Enemy Nameplates | Always Show Quest Mob Nameplates
+    _, h = W:DualRow(parent, y,
+        { type="toggle", text="Hide Gray-Level Enemy Nameplates",
+          getValue=function() return DBVal("hideTrivialEnemies") == true end,
+          setValue=function(v)
+            DB().hideTrivialEnemies = v
+            if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
+          end,
+          tooltip="Hide the nameplates of enemies too low level to give experience (grey level), such as critters and low-level wildlife.\n\nA hidden nameplate still shows while that enemy is your target or focus, or is in combat with you." },
+        { type="toggle", text="Always Show Quest Mob Nameplates",
+          getValue=function() return DBVal("questMobAlwaysShow") == true end,
+          setValue=function(v)
+            DB().questMobAlwaysShow = v
+            if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
+          end,
+          tooltip="Enemies you still need for a quest keep their nameplates, even when Hide Gray-Level Enemy Nameplates, Hide Neutral Enemy Nameplates or Hide Enemy Nameplates out of Combat would hide them.\n\nWith Hide Enemy Nameplates out of Combat on, the other enemy nameplates are then hidden by EllesmereUI instead of the game setting." });  y = y - h
+
+    -- Row 8: Hide Neutral Enemy Nameplates
+    _, h = W:DualRow(parent, y,
+        { type="toggle", text="Hide Neutral Enemy Nameplates",
+          getValue=function() return DBVal("hideNeutralEnemies") == true end,
+          setValue=function(v)
+            DB().hideNeutralEnemies = v
+            if ns.TRIV_RefreshSetting then ns.TRIV_RefreshSetting() end
+          end,
+          tooltip="Hide the nameplates of neutral (yellow) enemies that are not fighting you, such as wildlife that won't attack unless provoked.\n\nA hidden nameplate still shows while that enemy is your target or focus, or is in combat with you." },
+        { type="label", text="" });  y = y - h
+
     -- Row 7: Show Enemy Pet Nameplates | the class option, if any. Hide Copies
     -- of Blood Plague (Blood Death Knight only) and Show Sunder Armor (WoW Forever
     -- warriors only) are not built at all for anyone else -- each only affects
