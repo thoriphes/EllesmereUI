@@ -333,8 +333,8 @@ function ns.CdmDurationHideFor(frame, barKey, baseHide)
     local fcd = _ecmeFC[frame]
     local sidD = (ns.GetCanonicalSpellIDForFrame and ns.GetCanonicalSpellIDForFrame(frame))
         or (fcd and fcd.spellID)
-    if not (sidD and barKey and ns.ResolveSpellSettings) then return baseHide end
-    local ssD = ns.ResolveSpellSettings(frame, sidD, ns.GetBarSpellData(barKey), barKey)
+    if not (sidD and barKey and ns.ResolveBuffSettings) then return baseHide end
+    local ssD = ns.ResolveBuffSettings(frame, sidD, ns.GetBarSpellData(barKey), barKey)
     if ssD and ssD.showCooldownText ~= nil then return not ssD.showCooldownText end
     return baseHide
 end
@@ -682,9 +682,11 @@ end
 -- for any reason but missing power, so a reactive spell (Overpower, Victory
 -- Rush, Execute) shows once its proc or condition is up, tinted by Blizzard
 -- while rage / energy / mana is short, and power ticks never flip the answer.
--- IsSpellUsable returns plain booleans on every client.
-function ns.CdmSpellNotUsable(liveSid)
+-- IsSpellUsable returns plain booleans on every client. requirePower (a Bar
+-- Glow's Require Resource) counts missing power as unavailable too.
+function ns.CdmSpellNotUsable(liveSid, requirePower)
     local usable, noPower = C_Spell.IsSpellUsable(liveSid)
+    if requirePower then return not usable end
     return not (usable or noPower)
 end
 
