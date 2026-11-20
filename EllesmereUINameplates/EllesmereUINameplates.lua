@@ -379,6 +379,7 @@ local defaults = {
     -- or busy tag, so each is a choice of its own and off until asked.
     friendlyStatusTagAFK = false,
     friendlyStatusTagDND = false,
+    forceTargetPlate = false,  -- Force Nameplate on Current Target (EUI_Nameplates_TargetForce.lua)
     -- Show Enemy Pet Nameplates has no default either: nil means the user never
     -- chose, and nil reads as off. Its click writes nameplateShowEnemyPets alone
     -- (ns.ApplyPetCVars); the enemy minion CVars stay the client's own.
