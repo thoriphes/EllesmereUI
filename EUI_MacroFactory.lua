@@ -247,6 +247,16 @@ if EllesmereUI.IS_FOREVER == true then
         },
         trinkets[1],
         trinkets[2],
+        {
+            -- Find Minerals and Find Herbs share one tracking slot, so each press
+            -- swaps to the other one. A cast refused by the GCD does not advance
+            -- the sequence, so the key can be spammed.
+            name = "EUI_FindMinHerb",
+            icon = "Interface\\Icons\\spell_nature_earthquake",
+            label = "Find Minerals / Herbs",
+            spells = {2580, 2383}, -- Find Minerals, Find Herbs
+            fixedBody = "/castsequence {1}, {2}",
+        },
     }
 
     local CLASS_MACROS = {
