@@ -422,6 +422,66 @@ local function TbbFuzzyNameOK(cfg, frame)
     return TbbCfgFamilyMatch(cfg, fam, true)
 end
 
+-- Umbrella ("family") items: one viewer slot whose cooldownInfo names a GROUP
+-- spell that is not itself one of its linkedSpellIDs. WoW Forever's "Seals"
+-- (cooldownIDs 200339/200340, spell 1323522) links every rank of every seal:
+-- the slot reports 1323522 while no seal is up, and the live seal (20918, ...)
+-- once one is. A bar picked from that slot is saved as 1323522, so every
+-- per-spell match below misses it the moment a seal is up (and the aura
+-- fallback asks for 1323522, which is never an aura): the bar never shows
+-- while Blizzard's own bar does. A config saved under the umbrella id wants
+-- the slot itself, whichever member is live.
+-- cooldownID -> list of umbrella ids, or false. cooldownIDs are stable per
+-- session and stay plain in secret windows, so a verdict learned from a clean
+-- read keeps answering in combat. Unreadable (secret) reads retry later.
+local _tbbUmbrellaByCdID = {}
+
+local function TbbSlotUmbrellaIDs(frame)
+    local cd = frame.cooldownID
+    if type(cd) ~= "number" or (issecretvalue and issecretvalue(cd)) then return nil end
+    local known = _tbbUmbrellaByCdID[cd]
+    if known ~= nil then return known or nil end
+    local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+    if not gci then return nil end
+    local ok, info = pcall(gci, cd)
+    if not ok or not info then return nil end
+    local isSec = issecretvalue
+    local lids = info.linkedSpellIDs
+    if type(lids) ~= "table" or #lids < 2 then
+        _tbbUmbrellaByCdID[cd] = false
+        return nil
+    end
+    local linked = {}
+    for k = 1, #lids do
+        local lid = lids[k]
+        if isSec and isSec(lid) then return nil end
+        linked[lid] = true
+    end
+    local ids
+    for _, sid in ipairs({ info.spellID, info.overrideSpellID }) do
+        if isSec and isSec(sid) then return nil end
+        if type(sid) == "number" and sid > 0 and not linked[sid] then
+            ids = ids or {}
+            ids[#ids + 1] = sid
+        end
+    end
+    _tbbUmbrellaByCdID[cd] = ids or false
+    return ids
+end
+
+-- Does this config track the umbrella slot itself?
+local function CfgWantsUmbrella(cfg, frame)
+    if cfg.trackType == "cooldown" or cfg.spellIDs then return false end
+    local want = cfg.spellID
+    if type(want) ~= "number" or want <= 0 then return false end
+    local ids = TbbSlotUmbrellaIDs(frame)
+    if not ids then return false end
+    for i = 1, #ids do
+        if ids[i] == want then return true end
+    end
+    return false
+end
+
 local function AssignFramesToConfigs(bars)
     local assignment = _tbbAssignment
     -- Memo: pairing moves only on composition edges (player aura events, pool
@@ -509,6 +569,9 @@ local function AssignFramesToConfigs(bars)
                         if fam and fam ~= want then keep = false end
                     end
                 end
+                -- Umbrella binding: the live member's id and name never match
+                -- the umbrella config, and that is expected.
+                if not keep and CfgWantsUmbrella(cfg, bound) then keep = true end
                 if keep then
                     assignment[cfg]      = bound
                     consumed[bound]      = true
@@ -564,6 +627,24 @@ local function AssignFramesToConfigs(bars)
                 consumed[pick]       = true
                 _tbbStickyFrame[cfg] = pick
                 _tbbStickyCdID[cfg]  = pick.cooldownID
+            end
+        end
+    end
+
+    -- Pass 2b: umbrella slots (see TbbSlotUmbrellaIDs). After pass 2, so a bar
+    -- for one specific member still takes its slot first. Sticky: the slot's
+    -- umbrella id is a fixed property of the cooldownID, not a fuzzy guess.
+    for _, cfg in ipairs(bars) do
+        if not assignment[cfg] then
+            for i = 1, #frames do
+                local frame = frames[i]
+                if not consumed[frame] and CfgWantsUmbrella(cfg, frame) then
+                    assignment[cfg]      = frame
+                    consumed[frame]      = true
+                    _tbbStickyFrame[cfg] = frame
+                    _tbbStickyCdID[cfg]  = frame.cooldownID
+                    break
+                end
             end
         end
     end
