@@ -1405,10 +1405,10 @@ function ns.ShowIdleCastBar()
     if not castBarFrame then return end
     local cb = ERB.db.profile.castBar
 
-    -- Empty the fill. A plain SetValue also cancels the engine-driven cast
-    -- timer armed by ns.ApplyCastTimer, which would otherwise keep animating
-    -- the fill from the finished cast's duration object.
+    -- Empty the fill and hide it: the idle bar (Always Show) draws nothing of
+    -- it. ns.ActivateCastBar shows it again.
     castBarFrame._bar:SetValue(0)
+    castBarFrame._bar:GetStatusBarTexture():Hide()
     castBarFrame._nativeFill = nil
     castBarFrame._cstKey = nil
     castBarFrame._craftMerge, castBarFrame._craftCastEnd = nil, nil
@@ -1447,6 +1447,7 @@ end
 function ns.ActivateCastBar()
     if not castBarFrame then return end
     local cb = ERB.db.profile.castBar
+    castBarFrame._bar:GetStatusBarTexture():Show()
     -- The idle state hides the spark unconditionally; a live cast brings it
     -- back if the user wants one. The icon is owned by the per-cast code,
     -- which knows whether the spell actually has one.

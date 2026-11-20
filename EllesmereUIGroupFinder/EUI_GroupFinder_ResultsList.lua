@@ -86,6 +86,9 @@ local SP, frame, body, rows, shown = nil, nil, nil, {}, {}
 local scrollPx = 0
 local active = false
 local guard = false
+-- blizzard's start a group button sits in its list, which takes no clicks under ours: our button
+-- hands the click over through the secure click action, so the click stays blizzard's own
+local startBtn, startProxy
 local lastClickID, lastClickTime, clickCount = nil, 0, 0
 local selected  -- ours, blizzard's is never touched
 local Paint  -- defined further down
@@ -514,6 +517,7 @@ local function StatusColor(line)
     if type(c) == "table" then return c.r or 1, c.g or 1, c.b or 1 end
     return line[2], line[3], line[4]
 end
+ns.StatusColor = StatusColor
 local LINE_OF = {
     [STATUS.declined_delisted] = LINE_DELISTED,
     [STATUS.applied] = LINE_SIGNED, [STATUS.invited] = LINE_ACCEPTED, [STATUS.inviteaccepted] = LINE_ACCEPTED,
@@ -1766,6 +1770,24 @@ function Paint()  -- forward-declared up top
     else
         empty:SetText("")
     end
+    -- blizzard only offers it with no results at all: here also when your filters leave none
+    ns.PlaceStartGroup(#shown == 0 and not SP.searching and not SP.searchFailed)
+end
+
+-- over the middle of our list: a child of the list (not protected), so it moves, scales,
+-- dims and hides with it, in combat too. Blizzard's button decides whether it can be used.
+function ns.PlaceStartGroup(want)
+    if not startProxy then return end
+    if not want then
+        startProxy:Hide()
+        return
+    end
+    local w, h = startBtn:GetSize()
+    startProxy:SetSize(math.max(w or 0, 140), math.max(h or 0, 22))
+    -- above the rows, also after something raised the list
+    startProxy:SetFrameLevel(frame:GetFrameLevel() + 20)
+    startProxy:SetEnabled(startBtn:IsEnabled())
+    startProxy:Show()
 end
 
 -- keep blizzard's list hidden while ours shows
@@ -1888,32 +1910,68 @@ local function Build()
     thumb = frame:CreateTexture(nil, "OVERLAY")
     thumb:SetWidth(3)
     thumb:SetColorTexture(1, 1, 1, 0.3)
-    -- our sign up button over blizzard's
-    local sb = SP.SignUpButton
-    if sb then
-        local stock = not Skinned()
-        signBtn = CreateFrame("Button", nil, SP, stock and "UIPanelButtonTemplate" or nil)
-        signBtn:SetAllPoints(sb)
-        signBtn:SetFrameLevel(sb:GetFrameLevel() + 5)
-        signBtn:SetNormalFontObject("GameFontNormal")
-        signBtn:SetHighlightFontObject("GameFontHighlight")
-        signBtn:SetDisabledFontObject("GameFontDisable")
-        signBtn:SetText(SIGN_UP or "Sign Up")
-        signBtn:SetMotionScriptsWhileDisabled(true)
+    -- our buttons: the skin's look, or blizzard's template with the skin off
+    local stock = not Skinned()
+    local function NewButton(parent, template, text)
+        local b = CreateFrame("Button", nil, parent, (stock and template) and (template .. ",UIPanelButtonTemplate")
+            or stock and "UIPanelButtonTemplate" or template)
+        b:SetNormalFontObject("GameFontNormal")
+        b:SetHighlightFontObject("GameFontHighlight")
+        b:SetDisabledFontObject("GameFontDisable")
+        b:SetText(text)
         local skin = EUI._ModuleNS and EUI._ModuleNS.EllesmereUIBlizzardSkin
         local S = skin and skin.WSkin
         -- stock keeps the template's art
         if not stock and S and S.Button then
-            S.Button(signBtn)
+            S.Button(b)
         elseif not stock then
-            local bg = signBtn:CreateTexture(nil, "BACKGROUND")
+            local bg = b:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints()
             bg:SetColorTexture(0.06, 0.06, 0.06, 0.95)
-            EUI.MakeBorder(signBtn, 0.25, 0.25, 0.25, 1, EUI.PanelPP)
-            local hl = signBtn:CreateTexture(nil, "HIGHLIGHT")
+            EUI.MakeBorder(b, 0.25, 0.25, 0.25, 1, EUI.PanelPP)
+            local hl = b:CreateTexture(nil, "HIGHLIGHT")
             hl:SetAllPoints()
             hl:SetColorTexture(1, 1, 1, 0.1)
         end
+        return b
+    end
+    startBtn = SP.ScrollBox.StartGroupButton or SP.StartGroupButton
+    -- start a group: InsecureActionButtonTemplate (the confirm popup's confirmClick shape) is not
+    -- protected, so it is built at any time and lives in our list; its click runs blizzard's own
+    -- secure click action out of combat and nothing in combat, as blizzard's template does.
+    if startBtn then
+        startProxy = NewButton(frame, "InsecureActionButtonTemplate", START_A_GROUP or "Start a Group")
+        startProxy:Hide()
+        startProxy:SetPoint("CENTER", frame, "CENTER", 0, 0)
+        -- the left release only: left unset, the secure handler follows the key-down CVar
+        startProxy:RegisterForClicks("LeftButtonUp")
+        startProxy:SetAttribute("useOnKeyDown", false)
+        startProxy:SetAttribute("type", "click")
+        startProxy:SetAttribute("clickbutton", startBtn)
+        startProxy:SetMotionScriptsWhileDisabled(true)
+        startProxy:HookScript("PreClick", function()
+            if InCombatLockdown() then EUI.PrintError(ERR_NOT_IN_COMBAT) end
+        end)
+        -- blizzard's reason when its button is off (not the leader, already listed, queued)
+        startProxy:HookScript("OnEnter", function(self)
+            local tip = not startBtn:IsEnabled() and startBtn.tooltip
+            if type(tip) == "string" and tip ~= "" then EUI.ShowWidgetTooltip(self, tip) end
+        end)
+        startProxy:HookScript("OnLeave", function() EUI.HideWidgetTooltip() end)
+        -- blizzard turns its button on and off here (leader, roster, queue and listing changes)
+        if LFGListSearchPanel_UpdateButtonStatus then
+            hooksecurefunc("LFGListSearchPanel_UpdateButtonStatus", function()
+                if startProxy:IsShown() then startProxy:SetEnabled(startBtn:IsEnabled()) end
+            end)
+        end
+    end
+    -- our sign up button over blizzard's
+    local sb = SP.SignUpButton
+    if sb then
+        signBtn = NewButton(SP, nil, SIGN_UP or "Sign Up")
+        signBtn:SetAllPoints(sb)
+        signBtn:SetFrameLevel(sb:GetFrameLevel() + 5)
+        signBtn:SetMotionScriptsWhileDisabled(true)
         signBtn:SetScript("OnClick", function()
             SendMismatchCancels()
             SignUp(selected)
@@ -2076,6 +2134,11 @@ if ns.WhenGroupFinder then
                 -- a profile switched while the window was closed brings its own sizes
                 styleGen = styleGen + 1
                 if ns.OwnListOn() then ns.OwnListRefresh() end
+            end)
+            -- the panel went away (window closed, another panel): hand the list back, so none of
+            -- its events stay registered while nothing shows (the refresh reads SP:IsVisible())
+            sp:HookScript("OnHide", function()
+                if active then ns.OwnListRefresh() end
             end)
         end
     end)
