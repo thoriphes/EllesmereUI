@@ -72,9 +72,16 @@ local function FrameBorderEnter(self)
     -- Per-mini-frame opt-out: with "Show Highlight Border" off, a mini frame never
     -- recolors on hover even when the donor (main frame) highlight is enabled. (When the
     -- donor highlight is off we already returned above, so this has no effect then.)
-    if isMini and GetSettingsForUnit(unit).showHighlightBorder == false then return end
-    local hc = settings.highlightColor or { r = 1, g = 1, b = 1 }
-    local ha = settings.highlightAlpha or 1
+    local hc, ha = settings.highlightColor, settings.highlightAlpha
+    if isMini then
+        local own = GetSettingsForUnit(unit)
+        if own.showHighlightBorder == false then return end
+        -- Advanced borders: the mini frame may carry its own highlight color.
+        hc = ns.ResolveMiniBorderValue(own, "highlightColor", settings)
+        ha = ns.ResolveMiniBorderValue(own, "highlightAlpha", settings)
+    end
+    hc = hc or { r = 1, g = 1, b = 1 }
+    ha = ha or 1
     EllesmereUI.SetBorderStyleColor(self.unifiedBorder, hc.r, hc.g, hc.b, ha)
     -- The portrait's Outer Ring wears the frame border tint (only once built).
     local pt = self.Portrait
@@ -97,8 +104,14 @@ local function FrameBorderLeave(self)
     end
     local isMini = (unit == "pet" or unit == "targettarget" or unit == "focustarget")
     local settings = isMini and GetMiniDonorSettings(unit) or GetSettingsForUnit(unit)
-    local bc = settings.borderColor or { r = 0, g = 0, b = 0 }
-    local ba = settings.borderAlpha or 1
+    local bc, ba = settings.borderColor, settings.borderAlpha
+    if isMini then
+        local own = GetSettingsForUnit(unit)
+        bc = ns.ResolveMiniBorderValue(own, "borderColor", settings)
+        ba = ns.ResolveMiniBorderValue(own, "borderAlpha", settings)
+    end
+    bc = bc or { r = 0, g = 0, b = 0 }
+    ba = ba or 1
     EllesmereUI.SetBorderStyleColor(self.unifiedBorder, bc.r, bc.g, bc.b, ba)
     local pt = self.Portrait
     local ring = pt and pt.backdrop and pt.backdrop._outerRing
