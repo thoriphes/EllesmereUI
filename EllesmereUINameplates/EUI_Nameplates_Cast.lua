@@ -15,6 +15,7 @@ local pairs, type = pairs, type
 local UnitName = UnitName
 local UnitIsUnit = UnitIsUnit
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
+local UnitClassification = UnitClassification
 local UnitCastingInfo, UnitChannelInfo = UnitCastingInfo, UnitChannelInfo
 local GetTime = GetTime
 local Enum = Enum
@@ -33,7 +34,302 @@ I.classPowerTypeSetters[#I.classPowerTypeSetters + 1] = function(v) classPowerTy
 local p
 I.profileSetters[#I.profileSetters + 1] = function(v) p = v end
 
-function NameplateFrame:UpdateImportantCastGlow(spellID)
+-- Minor / Non-Elite Enemy Scale: factors cached from the profile (1 = off), so while both
+-- are off every hook is one flag read. Each plate stores its type base in _typeScale.
+ns._typeScaleOn = false
+local minorScale, nonEliteScale = 1, 1
+
+-- Re-reads the plate's type base; true when it changed. Classification is read here only,
+-- never in ApplyScale. A unit first seen this session reads "normal" (and its name
+-- UNKNOWNOBJECT) until its data arrives, so Non-Elite waits for UNIT_NAME_UPDATE then:
+-- a dungeon elite never spawns shrunk and grows back.
+function NameplateFrame:UpdateTypeScale()
+    local base = 1
+    local unit = self.unit
+    if unit and ns._typeScaleOn then
+        local c = UnitClassification(unit)
+        if c == "minus" or c == "trivial" then
+            base = minorScale
+        elseif c == "normal" and nonEliteScale ~= 1 and ns._inDungeon and not UnitIsPlayer(unit) then
+            local name = UnitName(unit)
+            if (issecretvalue and issecretvalue(name)) or name ~= UNKNOWNOBJECT then
+                base = nonEliteScale
+            end
+        end
+    end
+    if self._typeScale == base then return false end
+    self._typeScale = base
+    return true
+end
+
+-- From the sliders, OnInitialize and RefreshAllSettings.
+function ns.NP_RefreshTypeScaleSetting()
+    minorScale = ((p and p.minorEnemyScale) or defaults.minorEnemyScale) / 100
+    nonEliteScale = ((p and p.nonEliteEnemyScale) or defaults.nonEliteEnemyScale) / 100
+    ns._typeScaleOn = minorScale ~= 1 or nonEliteScale ~= 1
+    for _, plate in pairs(ns.plates) do
+        if plate.unit then
+            plate:UpdateTypeScale()
+            plate:ApplyScale()
+        end
+    end
+end
+
+-- Non-Elite Enemy Scale is dungeon-only: from RefreshThreatContextAndPlateColors, which runs
+-- on roster, role and spec events too, so the plates are walked only when ns._inDungeon flips.
+local lastInDungeon
+function ns.NP_RefreshTypeScale()
+    local d = ns._inDungeon
+    if d == lastInDungeon then return end
+    lastInDungeon = d
+    if not ns._typeScaleOn or nonEliteScale == 1 then return end
+    for _, plate in pairs(ns.plates) do
+        if plate.unit and plate:UpdateTypeScale() then plate:ApplyScale() end
+    end
+end
+
+local function EnsureCastGlowOverlay(self, field, levelOffset)
+    local ov = self[field]
+    if not ov then
+        ov = CreateFrame("Frame", nil, self.cast)
+        ov:SetAllPoints(self.cast)
+        ov:SetFrameLevel(self.cast:GetFrameLevel() + levelOffset)
+        ov:EnableMouse(false)
+        self[field] = ov
+    end
+    return ov
+end
+
+-- The two cast bar glows' flat-schema keys, built once (so a cast start does no string work).
+local IMP_GLOW_KEYS = EllesmereUI.Glows.FlatKeys("importantCastGlow")
+local TGT_GLOW_KEYS = EllesmereUI.Glows.FlatKeys("castTargetGlow")
+-- One scratch spec for every plate and both glows: StartSpecGlow reads it synchronously.
+local castGlowSpec = {}
+
+-- Modern WoW Glow on a cast bar is Blizzard's own nameplate cast bar art, not the action bar
+-- proc art the style draws on icons (square art: stretched to a bar it reached over both
+-- ends, across the spell name and the timer). Blizzard draws each art at one bar size, so
+-- here it is cut into eight pieces on one frame per glow overlay: its four corners keep
+-- their own size, its two lines stretch along the bar and its two end pieces up it, and the
+-- frame sits on the bar's edges at any bar size (stretched whole, its ends stood off the
+-- bar and its lines lay over it). w / h: the art's size in its own pixels; capL / capT /
+-- capR / capB: the corners; left / top / right / bottom: how far the art reaches past the
+-- bar's corners, in the bar's units, as Blizzard's nameplates place it. The important cast
+-- art pulses between half and full alpha over two seconds (an engine animation; Blizzard's
+-- own goes down to none); the targeted art is steady. A colour tints the art as it tints
+-- the other art styles; the Default colour is the art's own. A client without the art keeps
+-- the old glow.
+-- The art shows above everything else on the plate, borders included: its frame sits on the
+-- strata the plate's custom borders and texts use (the cast bar's own while Casts In Front of
+-- Nameplates lifts the bar), at LEVEL, above the texts' 900 and the name marker's 901.
+-- A spell icon standing beside the bar counts as part of the bar while it is not Full Sized
+-- and its Y offset is within ICON_Y either way: the art then goes around the icon and the
+-- bar together.
+local CastArt = {
+    important = { atlas = "ui-hud-nameplates-importantcast", h = 16, top = 3, bottom = 3, capT = 3, capB = 3, pulse = true },
+    targeted  = { atlas = "ui-hud-nameplates-targetedbyenemy", w = 218, h = 19, left = 4, top = 4, right = 4, bottom = 4,
+                  capL = 9, capT = 8, capR = 9, capB = 8 },
+    LEVEL = 950,
+    ICON_Y = 2,
+}
+for i, entry in ipairs(EllesmereUI.Glows.STYLES) do
+    if entry.name == "Modern WoW Glow" then CastArt.style = i break end
+end
+-- The shared style drawn as that art, for the options.
+ns.NP_CAST_ART_STYLE = CastArt.style
+
+-- Whether the client has this art; its sheet file and coordinates are read once. The
+-- important cast art comes in two revisions, told apart by their proportions: retail's is
+-- 264 x 16 and its end flares reach 26 and 25 past the bar (Blizzard's own offsets); WoW
+-- Forever ships an older, paler one, 248 x 16, whose flares reach 18 and 17. Each corner
+-- runs 6 or 7 past its flare.
+function CastArt.Has(art)
+    local has = art.has
+    if has == nil then
+        local info = C_Texture.GetAtlasInfo(art.atlas)
+        local file = info and (info.file or info.filename)
+        has = file ~= nil
+        if has then
+            if not art.w then
+                local older = (info.width or 264) / (info.height or 16) < 16
+                art.w = older and 248 or 264
+                art.left, art.right = older and 18 or 26, older and 17 or 25
+                art.capL, art.capR = art.left + 6, art.right + 7
+            end
+            art.file = file
+            art.l, art.r, art.t, art.b = info.leftTexCoord, info.rightTexCoord, info.topTexCoord, info.bottomTexCoord
+        end
+        art.has = has
+    end
+    return has
+end
+
+-- The art's eight pieces on its frame f, cut from the sheet: 1 to 3 its top line (left
+-- corner, stretch, right corner), 4 and 5 its left and right end pieces, 6 to 8 its bottom
+-- line. No pixel snapping: the pieces must meet at every plate scale.
+function CastArt.Build(f, art)
+    local du, dv = (art.r - art.l) / art.w, (art.b - art.t) / art.h
+    local x1, x2 = art.l + art.capL * du, art.r - art.capR * du
+    local y1, y2 = art.t + art.capT * dv, art.b - art.capB * dv
+    local p = {}
+    for i = 1, 8 do
+        local tex = f:CreateTexture(nil, "OVERLAY")
+        tex:SetTexture(art.file)
+        tex:SetSnapToPixelGrid(false)
+        tex:SetTexelSnappingBias(0)
+        p[i] = tex
+    end
+    p[1]:SetTexCoord(art.l, x1, art.t, y1)
+    p[1]:SetSize(art.capL, art.capT)
+    p[1]:SetPoint("TOPLEFT", f, "TOPLEFT")
+    p[3]:SetTexCoord(x2, art.r, art.t, y1)
+    p[3]:SetSize(art.capR, art.capT)
+    p[3]:SetPoint("TOPRIGHT", f, "TOPRIGHT")
+    p[6]:SetTexCoord(art.l, x1, y2, art.b)
+    p[6]:SetSize(art.capL, art.capB)
+    p[6]:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT")
+    p[8]:SetTexCoord(x2, art.r, y2, art.b)
+    p[8]:SetSize(art.capR, art.capB)
+    p[8]:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT")
+    p[2]:SetTexCoord(x1, x2, art.t, y1)
+    p[2]:SetPoint("TOPLEFT", p[1], "TOPRIGHT")
+    p[2]:SetPoint("BOTTOMRIGHT", p[3], "BOTTOMLEFT")
+    p[7]:SetTexCoord(x1, x2, y2, art.b)
+    p[7]:SetPoint("TOPLEFT", p[6], "TOPRIGHT")
+    p[7]:SetPoint("BOTTOMRIGHT", p[8], "BOTTOMLEFT")
+    p[4]:SetTexCoord(art.l, x1, y1, y2)
+    p[4]:SetPoint("TOPLEFT", p[1], "BOTTOMLEFT")
+    p[4]:SetPoint("BOTTOMRIGHT", p[6], "TOPRIGHT")
+    p[5]:SetTexCoord(x2, art.r, y1, y2)
+    p[5]:SetPoint("TOPLEFT", p[3], "BOTTOMLEFT")
+    p[5]:SetPoint("BOTTOMRIGHT", p[8], "TOPRIGHT")
+    return p
+end
+
+-- How far the art reaches past the bar's four edges (left, top, right, bottom), in the bar's
+-- units: its own reach, plus the spell icon while the icon counts as part of the bar. The
+-- icon is a square of the bar's height at its own scale, hung from the bar's top corner on
+-- its side and moved by its offsets (ns.LayoutCastIcon); the reach takes in whatever of it
+-- stands past the bar's end on its side, above the bar and below it.
+function CastArt.Reach(plate, art)
+    local l, t, r, b = art.left, art.top, art.right, art.bottom
+    if not ns.GetShowCastIcon() or ns.GetCastIconFullSize() or ns.NP_Classic() then return l, t, r, b end
+    local yOff = (p and p.castIconOffsetY) or defaults.castIconOffsetY
+    if yOff < -CastArt.ICON_Y or yOff > CastArt.ICON_Y then return l, t, r, b end
+    local scale = ns.GetCastIconScale() or 1
+    local barH = plate.cast:GetHeight()
+    local side = barH * scale
+    local x = ((p and p.castIconOffsetX) or defaults.castIconOffsetX) * scale
+    local y = yOff * scale
+    local onRight = ns.GetCastIconOnRight()
+    local out = onRight and (side + x) or (side - x)
+    if out > 0 then
+        if onRight then r = r + out else l = l + out end
+    end
+    if y > 0 then t = t + y end
+    local below = side - y - barH
+    if below > 0 then b = b + below end
+    return l, t, r, b
+end
+
+-- Seats the art's frame on its overlay: above everything else on the plate, and around the
+-- bar (and the spell icon, CastArt.Reach). A strata change resets a frame's level, and the
+-- cast bar's own strata change resets its children's, so both are checked on every call;
+-- nothing is written while nothing moved.
+function CastArt.Place(plate, ov, art)
+    local f = ov._art
+    local strata = plate._castOverlayLifted and plate.cast:GetFrameStrata() or "MEDIUM"
+    if f:GetFrameStrata() ~= strata then f:SetFrameStrata(strata) end
+    if f:GetFrameLevel() ~= CastArt.LEVEL then f:SetFrameLevel(CastArt.LEVEL) end
+    local l, t, r, b = CastArt.Reach(plate, art)
+    if f._l ~= l or f._t ~= t or f._r ~= r or f._b ~= b then
+        f._l, f._t, f._r, f._b = l, t, r, b
+        f:SetPoint("TOPLEFT", ov, "TOPLEFT", -l, t)
+        f:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", r, -b)
+    end
+end
+
+-- Shows the art on a plate's overlay (its frame and pieces are built once per overlay) in
+-- colour r, g, b; r nil = its own colours. Repaints only when the colour changed.
+function CastArt.Show(plate, ov, art, r, g, b)
+    local f = ov._art
+    if not f then
+        f = CreateFrame("Frame", nil, ov)
+        f._pieces = CastArt.Build(f, art)
+        if art.pulse then
+            local ag = f:CreateAnimationGroup()
+            ag:SetLooping("REPEAT")
+            local up = ag:CreateAnimation("Alpha")
+            up:SetOrder(1)
+            up:SetDuration(1)
+            up:SetFromAlpha(0.5)
+            up:SetToAlpha(1)
+            local down = ag:CreateAnimation("Alpha")
+            down:SetOrder(2)
+            down:SetDuration(1)
+            down:SetFromAlpha(1)
+            down:SetToAlpha(0.5)
+            ov._artPulse = ag
+        end
+        ov._art = f
+        ov._artTint = false
+    end
+    CastArt.Place(plate, ov, art)
+    if ov._artTint ~= (r ~= nil) or ov._artR ~= r or ov._artG ~= g or ov._artB ~= b then
+        ov._artTint, ov._artR, ov._artG, ov._artB = r ~= nil, r, g, b
+        local pieces = f._pieces
+        for i = 1, 8 do
+            local tex = pieces[i]
+            if r then
+                tex:SetDesaturated(true)
+                tex:SetVertexColor(r, g, b)
+            else
+                tex:SetDesaturated(false)
+                tex:SetVertexColor(1, 1, 1)
+            end
+        end
+    end
+    if not ov._artOn then
+        ov._artOn = true
+        f:Show()
+        if ov._artPulse then ov._artPulse:Play() end
+    end
+end
+
+function CastArt.Hide(ov)
+    if not ov._artOn then return end
+    ov._artOn = false
+    if ov._artPulse then ov._artPulse:Stop() end
+    ov._art:Hide()
+end
+
+-- Starts the glow on a cast bar overlay: the nameplate art for Modern WoW Glow, the glow
+-- engine for every other style (it restarts only when the setting or the bar size changed).
+-- Switching between the two stops the other.
+local function StartCastGlow(self, ov, cfg, k, art)
+    local Glows = EllesmereUI.Glows
+    local style = cfg[k.style] or defaults[k.style] or 1
+    if type(style) ~= "number" or style < 1 or style > #PANDEMIC_GLOW_STYLES then style = 1 end
+    local spec = Glows.SpecFromFlat(castGlowSpec, cfg, k, cfg[k.mode] or "custom", defaults)
+    spec.style = ns.NP_TO_SHARED_GLOW[style] or 1
+    if spec.style == CastArt.style and CastArt.Has(art) then
+        if ov._engineGlow then
+            ov._engineGlow = false
+            Glows.StopAllGlows(ov)
+        end
+        CastArt.Show(self, ov, art, spec.r, spec.g, spec.b)
+        return
+    end
+    CastArt.Hide(ov)
+    ov._engineGlow = true
+    local pW, pH = self.cast:GetWidth(), self.cast:GetHeight()
+    if pW < 5 then pW = 100 end
+    if pH < 5 then pH = 14 end
+    Glows.StartSpecGlow(ov, spec, pW, pH, "bar")
+end
+
+-- Reads self._castImportant, cached by UpdateCast just before.
+function NameplateFrame:UpdateImportantCastGlow()
     local cfg = p or defaults
     local enabled = cfg.importantCastGlow
     if enabled == nil then enabled = defaults.importantCastGlow end
@@ -43,54 +339,82 @@ function NameplateFrame:UpdateImportantCastGlow(spellID)
         self:ClearImportantCastGlow(); return
     end
 
-    if not self._importantCastOverlay then
-        local ov = CreateFrame("Frame", nil, self.cast)
-        ov:SetAllPoints(self.cast)
-        ov:SetFrameLevel(self.cast:GetFrameLevel() + 5)
-        ov:EnableMouse(false)
-        self._importantCastOverlay = ov
-    end
-
-    local Glows = EllesmereUI.Glows
-
-    local style = cfg.importantCastGlowStyle or defaults.importantCastGlowStyle or 1
-    if type(style) ~= "number" or style < 1 or style > #PANDEMIC_GLOW_STYLES then style = 1 end
-    local c = cfg.importantCastGlowColor or defaults.importantCastGlowColor or { r = 1, g = 0.2, b = 0.2 }
-    local bgColor = cfg.importantCastGlowBackgroundColor or defaults.importantCastGlowBackgroundColor or { r = 0, g = 0, b = 0 }
-    -- One scratch spec for every plate: StartSpecGlow reads it synchronously.
-    local spec = ns._impCastGlowSpec
-    if not spec then spec = {}; ns._impCastGlowSpec = spec end
-    spec.style = ns.NP_TO_SHARED_GLOW[style] or 1
-    spec.r, spec.g, spec.b = Glows.ResolveColor(cfg.importantCastGlowColorMode or "custom", c.r, c.g, c.b)
-    spec.lines = cfg.importantCastGlowLines or defaults.importantCastGlowLines
-    spec.thickness = cfg.importantCastGlowThickness or defaults.importantCastGlowThickness
-    spec.speed = cfg.importantCastGlowSpeed or defaults.importantCastGlowSpeed
-    spec.bg = (cfg.importantCastGlowBackground == true) or nil
-    spec.bgR, spec.bgG, spec.bgB = bgColor.r, bgColor.g, bgColor.b
-    local pW, pH = self.cast:GetWidth(), self.cast:GetHeight()
-    if pW < 5 then pW = 100 end
-    if pH < 5 then pH = 14 end
-    -- Restarts only when the setting or the bar size changed.
-    Glows.StartSpecGlow(self._importantCastOverlay, spec, pW, pH, "bar")
+    local ov = EnsureCastGlowOverlay(self, "_importantCastOverlay", 5)
+    StartCastGlow(self, ov, cfg, IMP_GLOW_KEYS, CastArt.important)
     self._importantGlowActive = true
 
     -- SetAlphaFromBoolean handles the secret boolean taint-free.
     -- Important = alpha 1 (glow visible), not important = alpha 0 (glow hidden).
-    self._importantCastOverlay:Show()
-    local ok, isImportant = pcall(C_Spell.IsSpellImportant, spellID or 0)
-    if ok then
-        self._importantCastOverlay:SetAlphaFromBoolean(isImportant)
+    ov:Show()
+    ov:SetAlphaFromBoolean(self._castImportant)
+end
+
+-- Cast Targets You Glow (opt-in): the cast bar glows while the cast's target is the player.
+-- PlayerIsSpellTarget is SECRET, so it only drives the overlay's alpha. Read at cast start,
+-- as Blizzard's own nameplate cast bar does. Runs after UpdateImportantCastGlow: while the
+-- important glow shows, it wins (this overlay sits above it), so the important flag folds
+-- into this alpha.
+function NameplateFrame:UpdateCastTargetGlow()
+    local cfg = p or defaults
+    if not cfg.castTargetGlow or not PlayerIsSpellTarget then
+        self:ClearCastTargetGlow(); return
+    end
+    local ov = EnsureCastGlowOverlay(self, "_castTargetOverlay", 6)
+    StartCastGlow(self, ov, cfg, TGT_GLOW_KEYS, CastArt.targeted)
+    self._castTargetGlowActive = true
+    ov:Show()
+    if self._importantGlowActive then
+        -- Both flags may be SECRET: folded C-side, the result only reaches SetAlpha
+        -- (the kick tick's pattern).
+        local ev = C_CurveUtil.EvaluateColorValueFromBoolean
+        local isImp = self._castImportant
+        if type(isImp) == "nil" then isImp = false end
+        ov:SetAlpha(ev(PlayerIsSpellTarget(self.unit), ev(isImp, 0, 1), 0))
     else
-        self._importantCastOverlay:SetAlpha(0)
+        ov:SetAlphaFromBoolean(PlayerIsSpellTarget(self.unit))
+    end
+end
+
+function NameplateFrame:ClearCastTargetGlow()
+    if self._castTargetGlowActive and self._castTargetOverlay then
+        EllesmereUI.Glows.StopAllGlows(self._castTargetOverlay)
+        self._castTargetOverlay._engineGlow = false
+        CastArt.Hide(self._castTargetOverlay)
+        self._castTargetOverlay:SetAlpha(0)
+        self._castTargetOverlay:Hide()
+        self._castTargetGlowActive = false
     end
 end
 
 function NameplateFrame:ClearImportantCastGlow()
     if self._importantGlowActive and self._importantCastOverlay then
         EllesmereUI.Glows.StopAllGlows(self._importantCastOverlay)
+        self._importantCastOverlay._engineGlow = false
+        CastArt.Hide(self._importantCastOverlay)
         self._importantCastOverlay:SetAlpha(0)
         self._importantCastOverlay:Hide()
         self._importantGlowActive = false
+    end
+end
+
+-- The art showing on a plate takes its seat again: the plate's spell icon was laid out anew
+-- (the art goes around it) or its cast bar was lifted or lowered (Casts In Front of
+-- Nameplates). Two field reads for a plate that shows no art.
+function ns.NP_PlaceCastGlowArt(plate)
+    local ov = plate._importantCastOverlay
+    if ov and ov._artOn then CastArt.Place(plate, ov, CastArt.important) end
+    ov = plate._castTargetOverlay
+    if ov and ov._artOn then CastArt.Place(plate, ov, CastArt.targeted) end
+end
+
+-- A cast glow setting changed (its options row, Global Settings > Glows): the casts already
+-- showing take it at once. A new cast reads the settings itself.
+function ns.NP_RefreshCastGlows()
+    for _, plate in pairs(ns.plates) do
+        if plate.unit and plate.isCasting then
+            plate:UpdateImportantCastGlow()
+            plate:UpdateCastTargetGlow()
+        end
     end
 end
 
@@ -127,6 +451,7 @@ function NameplateFrame:UpdateCast()
         self._castDirtyFull = nil
         self:HideKickTick()
         self:ClearImportantCastGlow()
+        self:ClearCastTargetGlow()
         self:ApplyScale()
         if GetShowClassPower() and classPowerType and self._cpPips and self.unit and UnitIsUnit(self.unit, "target") then
             UpdateClassPowerOnPlate(self)
@@ -182,6 +507,12 @@ function NameplateFrame:UpdateCast()
         if C_Spell and C_Spell.IsSpellImportant then
             local impOK, imp = pcall(C_Spell.IsSpellImportant, castSpellID or 0)
             if impOK then self._castImportant = imp end
+        end
+        -- A cast that starts before the last one's stop was handled skips NotifyCastStarted:
+        -- Full Opacity While Casting (Important Casts) takes the new flag here.
+        if self.isCasting and ns._ntCastFull and ns._ntCastImportantOnly and ns._ntAlpha < 1 then
+            self._ntBoolHi = nil
+            ns.NT_Apply(self)
         end
         local cfg = p or defaults
         local unintColor = cfg.castBarUninterruptible or defaults.castBarUninterruptible
@@ -252,7 +583,9 @@ function NameplateFrame:UpdateCast()
         self._kickGeoDirty = nil
         self:ApplyScale()
         self:UpdateKickTick(kickProtected, isChannel, isEmpowered)
-        self:UpdateImportantCastGlow(castSpellID)
+        self:UpdateImportantCastGlow()
+        self:UpdateCastTargetGlow()
+        if p and p.castingEnemyColors then ns.NP_NoteCastKind(self, kickProtected) end
         if GetShowClassPower() and classPowerType and self._cpPips and self.unit and UnitIsUnit(self.unit, "target") then
             UpdateClassPowerOnPlate(self)
         end
@@ -299,6 +632,10 @@ function NameplateFrame:ApplyScale()
     if self.unit and UnitIsUnit(self.unit, "target") then
         local ts = GetTargetScale() / 100
         if ts ~= 1 then base = ts end
+    elseif ns._typeScaleOn then
+        -- Minor Enemy Scale: minor (minus) and trivial mobs. Non-Elite Enemy Scale: normal NPCs in
+        -- dungeons (the Mini Enemies color's scope). The target keeps Target Scale.
+        base = self._typeScale or 1
     end
     local cs = GetCastScale() / 100
     local dest = base
@@ -805,12 +1142,23 @@ function NameplateFrame:UNIT_NAME_UPDATE()
     -- A unit first seen this session reads "normal" until its data arrives, the
     -- same moment its name resolves: re-read the elite/rare badge with the name.
     self:UpdateClassification()
+    if ns._typeScaleOn and self:UpdateTypeScale() then self:ApplyScale() end
 end
 function NameplateFrame:UNIT_CLASSIFICATION_CHANGED()
     self:UpdateClassification()
+    if ns._typeScaleOn and self:UpdateTypeScale() then self:ApplyScale() end
 end
 function NameplateFrame:UNIT_THREAT_LIST_UPDATE()
     self:UpdateHealthColor()
+    -- An aggro change often moves the target: the target texts follow (throttled).
+    if ns._npTgtTexts then self:RefreshTargetTexts() end
+    -- Out of Combat Opacity: UNIT_FLAGS alone misses some pulls.
+    if ns._oocAlpha < 1 then ns.NT_Apply(self) end
+end
+-- Out of Combat Opacity, registered only while it is on: the only signal when an
+-- evading mob drops combat after the player has.
+function NameplateFrame:UNIT_FLAGS()
+    ns.NT_Apply(self)
 end
 -- Faction badge: faction and PvP flag changes. The tap-state repaint rides the
 -- shared UNIT_FACTION handler (factionFrame), not this one.
@@ -820,10 +1168,14 @@ end
 function NameplateFrame:UNIT_SPELLCAST_START()
     self._castDirtyFull = true
     self:UpdateCast()
+    -- A cast may turn the caster (its target field moves late or not at all, so this
+    -- is a throttled repaint like any other, chained casts included).
+    if ns._npTgtTexts then self:RefreshTargetTexts() end
 end
 function NameplateFrame:UNIT_SPELLCAST_CHANNEL_START()
     self._castDirtyFull = true
     self:UpdateCast()
+    if ns._npTgtTexts then self:RefreshTargetTexts() end
 end
 function NameplateFrame:UNIT_SPELLCAST_DELAYED()
     -- Cast timing changed: the kick-tick geometry (min/max, positioner
@@ -848,6 +1200,7 @@ function NameplateFrame:UNIT_SPELLCAST_STOP()
         self.isCasting = false
         self:HideKickTick()
         self:ClearImportantCastGlow()
+        self:ClearCastTargetGlow()
         self:ApplyScale()
         if not self._interrupted then
             self.cast:Hide()
@@ -882,6 +1235,7 @@ function NameplateFrame:UNIT_SPELLCAST_CHANNEL_STOP(_, _, _, interrupterGUID)
     self.isCasting = false
     self:HideKickTick()
     self:ClearImportantCastGlow()
+    self:ClearCastTargetGlow()
     self:ApplyScale()
     if not self._interrupted then
         self.cast:Hide()
@@ -928,6 +1282,7 @@ function NameplateFrame:KickProtectionChanged()
     self._kickProtected = kickProtected
     self:ApplyCastColor(kickProtected)
     self:RefreshKickTick()
+    if p and p.castingEnemyColors then ns.NP_NoteCastKind(self, kickProtected) end
 end
 function NameplateFrame:UNIT_SPELLCAST_INTERRUPTIBLE()
     self:KickProtectionChanged()
@@ -953,6 +1308,7 @@ function NameplateFrame:UNIT_SPELLCAST_EMPOWER_STOP(_, _, _, _, interrupterGUID)
     self.isCasting = false
     self:HideKickTick()
     self:ClearImportantCastGlow()
+    self:ClearCastTargetGlow()
     self:ApplyScale()
     if not self._interrupted then
         self.cast:Hide()

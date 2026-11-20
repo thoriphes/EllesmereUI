@@ -77,6 +77,8 @@ function _G._EUI_BuildColorsPage(pageName, parent, yOffset)
 
     -- items = { { label, classToken, getColor, setColor, resetFn }, ... }
     local function BuildColorGrid(par, yPos, items)            local totalRows = math.ceil(#items / GRID_COLS)
+        -- Swatch cells hold nothing the search indexes.
+        if EllesmereUI._prebuilding then return totalRows * GRID_ROW_H end
         local totalW = par:GetWidth() - GRID_PAD * 2
         local colW = math.floor(totalW / GRID_COLS)
 
@@ -185,7 +187,7 @@ function _G._EUI_BuildColorsPage(pageName, parent, yOffset)
         -- condition); the class resource bar never does.
         local DM_ITEMS = {
             { key = "unitFrames",   label = "Unit Frames" },
-            { key = "raidFrames",   label = "Raid Frames" },
+            { key = "raidFrames",   label = "Raid & Party Frames" },
             { key = "resourceBars", label = "Class Resource Bar" },
         }
         local function DMProvider(id)

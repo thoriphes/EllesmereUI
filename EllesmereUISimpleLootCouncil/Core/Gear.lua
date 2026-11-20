@@ -1,4 +1,5 @@
-if EUI_CLIENT_BLOCKED then return end if select(2, ...).slcInert then return end 
+if EUI_CLIENT_BLOCKED then return end if ... == "SimpleLootCouncil" and SimpleLootCouncil and SimpleLootCouncil.EDITION == "eui" then return end if (select(2, ...)).slcInert then return end
+
 
 
 
@@ -9,11 +10,7 @@ local T = addon.Locale.Text
 local Gear = {}
 addon.Gear = Gear
 
-local issecretvalue = issecretvalue
-
-local function IsSecret(value)
-    return issecretvalue and issecretvalue(value) or false
-end
+local IsSecret = addon.IsSecret
 
 
 
@@ -31,6 +28,13 @@ local OFFHAND_ONLY = {
     INVTYPE_HOLDABLE      = true,
     INVTYPE_WEAPONOFFHAND = true,
 }
+
+
+local OFFHAND_ITEM = {
+    INVTYPE_SHIELD   = true,
+    INVTYPE_HOLDABLE = true,
+}
+local MAIN_ONLY = { INVSLOT_MAINHAND }
 
 
 local TWO_HANDED = {
@@ -76,9 +80,25 @@ local EQUIP_SLOTS = {
 
 
 
+local FOREVER_RANGED = {
+    INVTYPE_RANGED = true, INVTYPE_RANGEDRIGHT = true, INVTYPE_RANGEDLEFT = true,
+    INVTYPE_THROWN = true, INVTYPE_RELIC = true,
+}
+
+
+
+
 local function ResolveSlots(equipLoc, linkFor, equipLocFor)
+    if addon.IsForever and FOREVER_RANGED[equipLoc] then return { INVSLOT_RANGED or 18 } end
     local slots = EQUIP_SLOTS[equipLoc]
     if not slots then return nil end
+
+    if equipLoc == "INVTYPE_WEAPON" then
+
+        local offHand = linkFor(INVSLOT_OFFHAND)
+        if offHand and OFFHAND_ITEM[equipLocFor(offHand) or ""] then return MAIN_ONLY end
+        return slots
+    end
 
     if not OFFHAND_ONLY[equipLoc] then return slots end
 
@@ -253,9 +273,19 @@ function Gear:Equipped(equipLoc)
 end
 
 
+function Gear:ItemLevel(item)
+    if item == nil or IsSecret(item) then return nil end
+    local kind = type(item)
+    if (kind ~= "string" and kind ~= "number") or item == "" then return nil end
+    local level = C_Item.GetDetailedItemLevelInfo(item)
+    if type(level) == "number" and not IsSecret(level) and level > 0 then return level end
+    level = select(4, C_Item.GetItemInfo(item))
+    if type(level) == "number" and not IsSecret(level) then return level end
+    return nil
+end
+
 local function ItemLevel(item)
-    if not item then return nil end
-    return (select(4, C_Item.GetItemInfo(item)))
+    return Gear:ItemLevel(item)
 end
 
 
@@ -274,6 +304,67 @@ function Gear:Diff(itemLink, g1, g2)
     if not worst then return nil end
 
     return incoming - worst
+end
+
+
+local OFFHAND_WEAPON = {
+    INVTYPE_WEAPON        = true,
+    INVTYPE_WEAPONOFFHAND = true,
+    INVTYPE_2HWEAPON      = true,
+}
+
+
+local PAIRED = {
+    INVTYPE_FINGER  = true,
+    INVTYPE_TRINKET = true,
+}
+
+
+
+
+function Gear.DualWield(equipLoc, gear1, gear2, diff, equipLocFor, levelFor)
+    if not gear1 or not gear2 then return false end
+    if not PAIRED[equipLoc] and (equipLoc ~= "INVTYPE_WEAPON"
+        or not OFFHAND_WEAPON[equipLocFor(gear2) or ""]) then
+        return false
+    end
+
+    local mainLevel, offLevel = levelFor(gear1), levelFor(gear2)
+    local incoming
+    if diff and mainLevel and offLevel then
+        incoming = math.min(mainLevel, offLevel) + diff
+    end
+    return true, mainLevel, offLevel, incoming
+end
+
+
+
+
+function Gear.Compared(equipLoc, gear1, gear2, diff, equipLocFor, levelFor)
+    if equipLoc ~= "INVTYPE_WEAPON" or not gear1 or not gear2
+        or not OFFHAND_ITEM[equipLocFor(gear2) or ""] then
+        return gear1, gear2, diff, false
+    end
+    if not diff then return gear1, nil, nil, false end
+
+    local mainLevel, offLevel = levelFor(gear1), levelFor(gear2)
+    if not (mainLevel and offLevel) then return gear1, nil, nil, true end
+    return gear1, nil, math.min(mainLevel, offLevel) + diff - mainLevel, false
+end
+
+
+local function InstantEquipLoc(item)
+    return (select(4, C_Item.GetItemInfoInstant(item)))
+end
+
+function Gear:DualWieldAgainst(equipLoc, candidate)
+    return Gear.DualWield(equipLoc, candidate.gear1, candidate.gear2, candidate.diff,
+        InstantEquipLoc, ItemLevel)
+end
+
+function Gear:ComparedFor(equipLoc, candidate)
+    return Gear.Compared(equipLoc, candidate.gear1, candidate.gear2, candidate.diff,
+        InstantEquipLoc, ItemLevel)
 end
 
 
@@ -354,8 +445,11 @@ end
 
 
 
-function Gear.SetProgress(setCount)
+function Gear.SetProgress(setCount, replaces)
     if setCount == nil then return nil end
+    if replaces == 1 or replaces == true then
+        return addon.Locale.Format(T["%d/4 set"], setCount), false
+    end
     local total = setCount + 1
     if total == 2 or total == 4 then
         return addon.Locale.Format(T["+%dset"], total), true
@@ -398,6 +492,21 @@ local function CurrentSetSummary()
         linkFor = CurrentSetLink,
         infoFor = CurrentSetInfo,
     })
+end
+
+local function ReplacesSetPiece(equipLoc, setID)
+    if not setID then return false end
+    local slots = ResolveSlots(equipLoc, CurrentSetLink, function(link)
+        return (select(9, C_Item.GetItemInfo(link)))
+    end)
+    if not slots or not slots[1] then return false end
+    for _, slot in ipairs(slots) do
+        local link = CurrentSetLink(slot)
+        if not link then return false end
+        local cached, pieceSetID, hasBonus = CurrentSetInfo(link)
+        if not (cached and hasBonus and pieceSetID == setID) then return false end
+    end
+    return true
 end
 
 
@@ -460,6 +569,8 @@ function Gear:BuildResponsePayload(itemLink)
     end
     local ilvl = Gear:GetSummary()
     local setInfo = CurrentSetSummary()
+    local replaces = setInfo and not tokenGear
+        and ReplacesSetPiece(equipLoc, setInfo.setID) and 1 or nil
     local k1 = Gear:Sockets(g1)
     local k2 = Gear:Sockets(g2)
 
@@ -474,6 +585,7 @@ function Gear:BuildResponsePayload(itemLink)
 
         t  = setInfo and setInfo.count or nil,
         ts = setInfo and setInfo.setID or nil,
+        tr = replaces,
 
 
         k1 = k1,
@@ -488,10 +600,11 @@ local LINK_MAX, ITEM_MAX = 512, 255
 local RANGES = {
     diff = { -9999, 9999 }, ilvl = { 0, 9999 }, setCount = { 0, 99 },
     setID = { 0, 2 ^ 31 }, sockets1 = { 0, 9 }, sockets2 = { 0, 9 },
+    setReplaces = { 1, 1 },
 }
 
 local WIRE = { gear1 = "g1", gear2 = "g2", diff = "d", ilvl = "il", setCount = "t",
-    setID = "ts", sockets1 = "k1", sockets2 = "k2" }
+    setID = "ts", sockets1 = "k1", sockets2 = "k2", setReplaces = "tr" }
 
 
 

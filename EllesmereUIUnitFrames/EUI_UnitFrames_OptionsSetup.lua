@@ -82,10 +82,16 @@ local function SetupOptionsPanel()
         end
         frames._toggleClassPower(wantCP)
     end
-    reloadThrottle:SetScript("OnUpdate", function(self)
-        self:Hide()
-        reloadPending = false
+    -- One reload pass. ReloadFrames returns under combat lockdown right after
+    -- its tag-global refresh (every frame write it holds is protected), while
+    -- the rest of this body runs as it always did; a pass that lands in combat
+    -- therefore asks for a whole new pass at combat end (one per combat: the
+    -- queue keys it), instead of dropping the frame work as it used to.
+    local function RunReload()
         ReloadFrames()
+        if InCombatLockdown() then
+            ns.CombatQueue.Defer("ReloadFrames", ns.ReloadFrames)
+        end
         ApplyBlizzCastbarState()
         -- Hide While Using Gamepad: a profile switch or spec override changes
         -- the saved toggles without calling the options setter.
@@ -117,10 +123,16 @@ local function SetupOptionsPanel()
         -- other callers -- styles changed by overrides, profile switch, or
         -- import land here.
         RealiseClassPowerStyle()
-        -- Threat watchers: a profile switch or spec override changes the
-        -- saved toggles without calling their setters.
+        -- Threat watchers and the targeting sounds: a profile switch or spec
+        -- override changes the saved toggles without calling their setters.
         ns.SyncPlayerThreat()
         if ns.SyncThreatPct then ns.SyncThreatPct() end
+        ns.UF_SyncTargetSounds()
+    end
+    reloadThrottle:SetScript("OnUpdate", function(self)
+        self:Hide()
+        reloadPending = false
+        RunReload()
     end)
     ns.ReloadFrames = function()
         if not reloadPending then
@@ -252,8 +264,7 @@ local function SetupOptionsPanel()
         if simple then
             showCD = settings.simpleDebuffShowCooldownText
             cdSize = settings.simpleDebuffCooldownTextSize or 14
-            cdOffX = settings.simpleDebuffCooldownTextOffsetX or 0
-            cdOffY = settings.simpleDebuffCooldownTextOffsetY or 0
+            cdOffX, cdOffY = ns.GetBossSimpleCdTextOffset(settings, false)
         else
             showCD = settings.debuffShowCooldownText
             cdSize = settings.debuffCooldownTextSize or 10

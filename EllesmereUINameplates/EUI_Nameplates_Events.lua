@@ -208,9 +208,11 @@ local function RefreshThreatContextAndPlateColors()
     -- stale quest-mob decisions that were made under a different context.
     wipe(questMobCache)
     wipe(ns._questObjText)
+    if ns._questObjectiveTypeEnabled then ns.InvalidateQuestObjectiveTypeCache() end
     for _, plate in pairs(ns.plates) do
         plate:UpdateHealthColor()
     end
+    ns.NP_RefreshTypeScale()
 end
 
 factionFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -304,6 +306,9 @@ function ns._ClearMouseoverPlate(plate)
         if plate.ApplyBorder then plate:ApplyBorder() end
     end
     plate._hoverFxOn = nil
+    if ns.FriendlyOverlayActive and ns.FriendlyOverlayActive() then
+        ns.OnTargetChangedNPCOverlays()
+    end
 end
 
 function ns._UpdateMouseover()
@@ -312,6 +317,9 @@ function ns._UpdateMouseover()
         ns.HideHoverEffect(cur)
         ns.ClearHoverExtras(cur)
         ns._currentMouseoverPlate = nil
+    end
+    if ns.FriendlyOverlayActive and ns.FriendlyOverlayActive() then
+        ns.OnTargetChangedNPCOverlays()
     end
     if not UnitExists("mouseover") then return end
     local found
@@ -341,7 +349,7 @@ ns.FRIENDLY_Y_BASE = 26
 -- Refresh Y-offset on all visible friendly name-only plates
 function ns.RefreshFriendlyNameOnlyOffset()
     local db = p or defaults
-    local nameOnly = (db.friendlyNameOnly ~= false)
+    local nameOnly = ns.FriendlyNameOnlyNow(db)
     local yOff = nameOnly and ((db.friendlyNameOnlyYOffset or 0) + ns.FRIENDLY_Y_BASE) or 0
     for unit, nameplate in pairs(pendingUnits) do
         if nameplate.UnitFrame then
@@ -371,11 +379,11 @@ manager:SetScript("OnEvent", function(self, event, unit)
             if ns.TryColorFriendlyNPCName then ns.TryColorFriendlyNPCName(unit, nameplate) end
             -- Hide NPC health bars in name-only mode (show name only)
             if ns.TrySuppressNPCHealthBar then ns.TrySuppressNPCHealthBar(unit, nameplate) end
-            -- Ensure the Blizzard UF is visible for name-only friendly plates. UnitFrames are
+            -- Ensure the Blizzard UF is visible for name-only friendly player plates. UnitFrames are
             -- pooled; children an earlier enemy parked already came back in the
-            -- OnNamePlateAdded hook (ns.NP_ReclaimBlizzardFrame).
+            -- OnNamePlateAdded hook (ns.NP_ReclaimBlizzardFrame). Friendly NPCs and pets stay suppressed.
             local db = p or defaults
-            if db.friendlyNameOnly ~= false then
+            if ns.FriendlyNameOnlyNow(db) and UnitIsPlayer(unit) then
                 local uf = nameplate.UnitFrame
                 if uf then
                     -- Restore alpha in case the recycled UF was suppressed
@@ -424,17 +432,17 @@ manager:SetScript("OnEvent", function(self, event, unit)
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
         questMobCache[unit] = nil
         ns._questObjText[unit] = nil
+        if ns._questObjectiveTypeEnabled then ns._questObjType[unit] = nil end
         -- The driver has already released this base's UnitFrame (base.UnitFrame is nil
         -- here); its parked pieces come back on the next acquire (ns.NP_ReclaimBlizzardFrame).
         local nameplate = C_NamePlate.GetNamePlateForUnit(unit)
-        -- Restore NPC name color if we tinted it
-        if nameplate and ns.RestoreFriendlyNPCNameColor then
-            ns.RestoreFriendlyNPCNameColor(nameplate)
+        -- Hand the plate back: its overlay and anything this file parked on it
+        if nameplate and ns.RestoreNPCNameplate then
+            ns.RestoreNPCNameplate(nameplate)
         end
-        -- Restore NPC health bar if we suppressed it
-        if nameplate and ns.RestoreNPCHealthBar then
-            ns.RestoreNPCHealthBar(nameplate)
-        end
+        -- The base is often unfindable by now (the driver clears its unit first),
+        -- and a name-only NPC overlay left on one would outlive the unit it names.
+        if ns.ReleaseOrphanNPCOverlays then ns.ReleaseOrphanNPCOverlays() end
         -- Drop the name-only Y-offset flag only: the pool release clears the UnitFrame's
         -- anchors and the next acquire re-anchors it (SetAllPoints).
         if nameplate then
@@ -479,9 +487,15 @@ manager:SetScript("OnEvent", function(self, event, unit)
             ns._cachedTargetPlate:ApplyTarget()
             ns._cachedTargetPlate:UpdateHealthColor()
         end
-        -- Non-Target Opacity: gaining/losing a target flips every plate's fade state, so this
-        -- is the one full-iteration site. Zero cost while off (single compare).
-        if ns._ntAlpha < 1 then ns.NT_ApplyAll() end
+        -- Non-Target and Out of Combat Opacity: gaining/losing a target flips every plate's
+        -- fade state, so this is the one full-iteration site. Zero cost while off (compares).
+        if ns._ntAlpha < 1 or ns._oocAlpha < 1 then ns.NT_ApplyAll() end
+        if ns.FriendlyOverlayActive and ns.FriendlyOverlayActive() then
+            -- Second pass on the next frame: the plate's own unit is not always
+            -- settled when PLAYER_TARGET_CHANGED runs.
+            ns.OnTargetChangedNPCOverlays()
+            C_Timer.After(0, ns.OnTargetChangedNPCOverlays)
+        end
     elseif event == "PLAYER_FOCUS_CHANGED" then
         -- PERF: only update old + new focus plates instead of iterating all
         local oldFocus = ns._cachedFocusPlate
@@ -503,6 +517,9 @@ manager:SetScript("OnEvent", function(self, event, unit)
                 local castH = GetCastBarHeight()
                 if UnitIsUnit(plate.unit, "focus") then
                     castH = math.floor(castH * focusPct / 100 + 0.5)
+                    plate._focusCastSized = true
+                else
+                    plate._focusCastSized = nil
                 end
                 ns.LayoutCastBar(plate, ns.GetHealthBarWidth(), castH)
                 ns.LayoutCastIcon(plate, castH)
@@ -514,9 +531,9 @@ manager:SetScript("OnEvent", function(self, event, unit)
         if ns._cachedFocusPlate and ns._cachedFocusPlate ~= oldFocus then
             UpdateFocusPlate(ns._cachedFocusPlate)
         end
-        -- Non-Target Opacity: only the old and new focus plates change
-        -- fade state on a focus swap.
-        if ns._ntAlpha < 1 then
+        -- Non-Target and Out of Combat Opacity: only the old and new focus
+        -- plates change fade state on a focus swap.
+        if ns._ntAlpha < 1 or ns._oocAlpha < 1 then
             if oldFocus then ns.NT_Apply(oldFocus) end
             if ns._cachedFocusPlate and ns._cachedFocusPlate ~= oldFocus then
                 ns.NT_Apply(ns._cachedFocusPlate)
@@ -532,15 +549,17 @@ manager:SetScript("OnEvent", function(self, event, unit)
             plate:UpdateRaidIcon()
             if p and p.nameRaidMarkerEnabled == true then plate:RefreshNamePosition(true) end
             -- A marker appearing/clearing in a side slot changes the side extents the target
-            -- arrows sit outside of, so re-run arrow positioning (no-op without arrows), then
-            -- reanchor the container-bearing sides -- same order as the target-swap path.
+            -- arrows sit outside of, so re-run arrow positioning (no-op without arrows).
             ns.PositionArrowsOutsideAuras(plate)
-            if ns.NPC_ReanchorArrows then ns.NPC_ReanchorArrows(plate) end
         end
+        -- A marked NPC is shown by the name-only overlay even with its nameplate
+        -- toggle off, so the marker has to decide those plates too.
+        if ns.RefreshMarkedNPCOverlays then ns.RefreshMarkedNPCOverlays() end
     elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
         for _, plate in pairs(ns.plates) do
             plate:UpdateHealthColor()
         end
+        if ns._oocAlpha < 1 then ns.NT_ApplyAll() end
     elseif event == "DISPLAY_SIZE_CHANGED" or event == "UI_SCALE_CHANGED" then
         if ns.ApplyNamePlateClickArea then
             ns.ApplyNamePlateClickArea()

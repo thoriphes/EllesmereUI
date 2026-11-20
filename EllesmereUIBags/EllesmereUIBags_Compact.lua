@@ -30,9 +30,13 @@ local PITCH = SLOT_SIZE + SPACING
 -- icon spacing
 local BLOCK_GAP = 14
 local GAP_EXTRA = BLOCK_GAP - SPACING
+ns.OnSlotMetrics(function(m)
+    SLOT_SIZE, SPACING = m[1], m[2]
+    PITCH, GAP_EXTRA = SLOT_SIZE + SPACING, BLOCK_GAP - SPACING
+end)
 -- The fewest cells a block takes when another block follows it in its band;
 -- a band's last block takes what it needs
-local MID_MIN_CELLS = 3
+local MID_MIN_CELLS = 2
 -- Band height above the label font size; space a label leaves before the next block
 local BAND_PAD, LABEL_PAD = 4, 6
 -- Space between a label band and the icons under it (the labels keep their spot)
@@ -80,7 +84,7 @@ function ns.CompactNewOut()
         bandTop = {}, bandH = {},               -- per band
         labelBand = 0,                          -- label band height used (0: no labels)
         -- Inputs of the last plan
-        _mN = 0, _mColumns = 0, _mBandH = 0, _mLooks = 0, _mSize = {}, _mLabel = {},
+        _mN = 0, _mColumns = 0, _mBandH = 0, _mLooks = 0, _mPitch = 0, _mGap = 0, _mSize = {}, _mLabel = {},
         -- The last plan: per group its icon columns and block width in cells,
         -- per band its first and last group and its rows
         _pCols = {}, _pWidth = {}, _pBands = 0, _pFirst = {}, _pLast = {}, _pRows = {},
@@ -375,10 +379,10 @@ function ns.CompactPack(size, labelW, n, columns, bandH, startY, out)
     if columns < 1 then columns = 1 end
     -- Memo inputs: the group count, each group's cells and label width
     -- (rounded up to whole px, which keeps every label cell count), columns,
-    -- bandH and LOOKS_ROWS
+    -- bandH, LOOKS_ROWS and the slot pitch / gap
     local mSize, mLabel = out._mSize, out._mLabel
     local same = out._mN == n and out._mColumns == columns and out._mBandH == bandH
-        and out._mLooks == LOOKS_ROWS
+        and out._mLooks == LOOKS_ROWS and out._mPitch == PITCH and out._mGap == GAP_EXTRA
     local band = 0
     for g = 1, n do
         local s, lw = size[g], ceil(labelW[g])
@@ -393,6 +397,7 @@ function ns.CompactPack(size, labelW, n, columns, bandH, startY, out)
     if band > 0 then band = band + LABEL_BELOW end
     if not same then
         out._mN, out._mColumns, out._mBandH, out._mLooks = n, columns, bandH, LOOKS_ROWS
+        out._mPitch, out._mGap = PITCH, GAP_EXTRA
         pSize, pColumns, pCap, pBand = mSize, columns, columns * PITCH, band
         for g = 1, n do pLabel[g] = max(1, ceil((mLabel[g] + 2 * SPACING - BLOCK_GAP) / PITCH)) end
         Plan(n, out)
@@ -637,7 +642,7 @@ local ZONE_PIN, ZONE_ASSIGN = 1, 2
 -- One pass's groups and cells, reused across passes (entries past the counts are stale)
 local gN, cN = 0, 0
 local gLabel, gHint, gInter, gClear, gSize, gW, gLi = {}, {}, {}, {}, {}, {}, {}
-local gZone, gKey, gPlanW = {}, {}, {}
+local gZone, gKey, gPlanW, gReag = {}, {}, {}, {}
 local cData = {}
 -- A counted label per group index and what it was made from, so an
 -- unchanged label makes no string
@@ -655,7 +660,7 @@ local function CountLabel(g, a, b, n)
     return text
 end
 
-local function AddGroup(label, hint, interactive, clear, zone, key)
+local function AddGroup(label, hint, interactive, clear, zone, key, reagent)
     gN = gN + 1
     gLabel[gN] = (label and label ~= "") and label or false
     gHint[gN] = hint or false
@@ -663,6 +668,7 @@ local function AddGroup(label, hint, interactive, clear, zone, key)
     gClear[gN] = clear and true or false
     gZone[gN] = zone or false
     gKey[gN] = key or false
+    gReag[gN] = reagent and true or false
     gSize[gN] = 0
 end
 
@@ -682,11 +688,12 @@ end
 -- buckets) | "exp" (expansion buckets) | "pinned" | "recent". assignKey: the
 -- category a drop zone over the section's blocks assigns to. keepEmpty: show
 -- the name even with no cells. hint: a flat group's label tooltip line (the
--- single Pinned / Recent views).
+-- single Pinned / Recent views). reagent: a Reagent Bag section (no Reagent
+-- Bag Icon on its cells).
 -- A nested section becomes one group per bucket; the first is named
 -- "<section>: <bucket>", the others by their bucket. Labels end in their
 -- item count.
-function ns.CompactBagsSection(name, items, kind, assignKey, keepEmpty, hint)
+function ns.CompactBagsSection(name, items, kind, assignKey, keepEmpty, hint, reagent)
     local count = #items
     local pin = kind == "pinned"
     local zone = false
@@ -701,7 +708,7 @@ function ns.CompactBagsSection(name, items, kind, assignKey, keepEmpty, hint)
             local bItems = bucket.items
             local bn = #bItems
             if bn > 0 then
-                AddGroup(CountLabel(gN + 1, first and name, bucket.label, bn), false, false, false, zone, assignKey)
+                AddGroup(CountLabel(gN + 1, first and name, bucket.label, bn), false, false, false, zone, assignKey, reagent)
                 for j = 1, bn do AddCell(bItems[j]) end
                 first = false
             end
@@ -719,7 +726,7 @@ function ns.CompactBagsSection(name, items, kind, assignKey, keepEmpty, hint)
     -- An empty section is dropped, but the Pinned block and an assignable
     -- category stay as a label-only block (a drop target)
     if count == 0 and not pin and not assignKey and not keepEmpty then return end
-    AddGroup(name ~= "" and CountLabel(gN + 1, false, name, count) or false, hint, false, clear, zone, assignKey)
+    AddGroup(name ~= "" and CountLabel(gN + 1, false, name, count) or false, hint, false, clear, zone, assignKey, reagent)
     for j = 1, count do AddCell(items[j]) end
 end
 
@@ -741,7 +748,7 @@ end
 -- A category whose blocks already hold the item keeps no zone (Pinned: an
 -- item already pinned), so a drop on its own category still reaches the item
 -- buttons (stack merges, swaps); a nested section's blocks count as one. A
--- pinned item counts toward its own category too: with Hide from Other
+-- pinned item counts toward its own category too: with Hide Items in Their
 -- Categories it shows only in the Pinned block.
 -- The zones register no events: the bag window's cursor watch (StartAddon,
 -- registered only while the window shows) calls ns.CompactZonesSync on every
@@ -778,7 +785,7 @@ local function SyncZones()
         for i = 1, zoneItemN do
             if zoneItem[i] == itemID then zoneHeld[zoneItemKey[i]] = true end
         end
-        pinned = ns.IsItemPinned(EllesmereUIDB.bagPinnedItems, link, itemID) and true or false
+        pinned = ns.IsItemPinned(ns.PinnedItems(), link, itemID) and true or false
     end
     for i = 1, zoneN do
         local z = zones[i]
@@ -941,7 +948,7 @@ function ns.CompactBagsPlace(child, startX, startY, columns, slotIdx)
     local cellX, cellY = out.cellX, out.cellY
     local ci = 0
     for g = 1, n do
-        local interactive = gInter[g]
+        local interactive, reagent = gInter[g], gReag[g]
         for _ = 1, gSize[g] do
             ci = ci + 1
             slotIdx = slotIdx + 1
@@ -950,7 +957,7 @@ function ns.CompactBagsPlace(child, startX, startY, columns, slotIdx)
             local btn = GetOrCreateSlot(slotIdx)
             if btn then
                 btn:GetParent():SetParent(child)
-                RenderButton(btn, cData[ci], slotIdx, 0, 0, startX + cellX[ci], cellY[ci], columns, interactive)
+                RenderButton(btn, cData[ci], slotIdx, 0, 0, startX + cellX[ci], cellY[ci], columns, interactive, reagent)
             end
         end
     end

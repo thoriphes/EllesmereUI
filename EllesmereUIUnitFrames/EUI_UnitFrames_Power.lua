@@ -22,6 +22,7 @@ local UnsnapTex, healthBarTextures = I.UnsnapTex, I.healthBarTextures
 local ApplyBarGradient, ApplyPowerBarAlpha = I.ApplyBarGradient, I.ApplyPowerBarAlpha
 local EUI_IsSmartPowerPercent = I.EUI_IsSmartPowerPercent
 local PLAYER_POWER_DEFAULT, PLAYER_POWER_ALT = I.PLAYER_POWER_DEFAULT, I.PLAYER_POWER_ALT
+local ClassColorSourceUnit = I.ClassColorSourceUnit
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
@@ -394,6 +395,15 @@ function ns.UF_PowerShouldGray(u)
     return true
 end
 
+-- Class Colored power fill (powerClassColored): players and AI party members use
+-- their class color, the pet its owner's; NPCs return false and keep the power color.
+-- Returns ok, r, g, b; r/g/b may be SECRET (see ns.ResolveBgClassColor).
+ns.UF_PowerClassColor = function(unit)
+    local cu = ClassColorSourceUnit(unit, unit)
+    if not (UnitIsPlayer(cu) or (UnitInPartyIsAI and UnitInPartyIsAI(cu))) then return false end
+    return ns.ResolveBgClassColor(cu)
+end
+
 local function CreatePowerBar(frame, unit, settings)
     local powerPos = ns.UF_PowerPos(settings)
 
@@ -469,16 +479,27 @@ local function CreatePowerBar(frame, unit, settings)
         if not s2 then return end
         local useP = s2.powerPercentPowerColor ~= false
         local bR, bG, bB
+        -- PLAIN stand-ins for bR, which is secret for a restricted unit's class color.
+        local haveBase, baseSecret = false, false
         if not useP then
             local cf = s2.customPowerFillColor
             if cf then bR, bG, bB = cf.r, cf.g, cf.b else bR, bG, bB = 0, 0, 1 end
+            haveBase = true
         else
-            -- Secret-safe: player via the clean token, non-player via the clean integer
-            -- power type, so the custom color applies on EVERY unit without depending
-            -- on oUF's colors.power sync. Unmapped power types return nil (keep oUF's).
-            bR, bG, bB = EllesmereUI.ResolveUnitPowerColor(unit)
+            if s2.powerClassColored then
+                haveBase, bR, bG, bB = ns.UF_PowerClassColor(unit)
+                baseSecret = haveBase and issecretvalue(bR)
+            end
+            if not haveBase then
+                -- Secret-safe: player via the clean token, non-player via the clean integer
+                -- power type, so the custom color applies on EVERY unit without depending
+                -- on oUF's colors.power sync. Unmapped power types return nil (keep oUF's).
+                bR, bG, bB = EllesmereUI.ResolveUnitPowerColor(unit)
+                haveBase = bR ~= nil
+            end
         end
-        if s2.powerGradientEnabled and bR then
+        -- SetGradient rejects secrets; a secret base falls through to the flat paint.
+        if s2.powerGradientEnabled and haveBase and not baseSecret then
             local gc = s2.powerGradientColor
             -- Bake Bar Opacity into the gradient endpoint alphas (a gradient
             -- overrides region alpha).
@@ -490,8 +511,8 @@ local function CreatePowerBar(frame, unit, settings)
         elseif not useP then
             local cf = s2.customPowerFillColor
             if cf then self:SetStatusBarColor(cf.r, cf.g, cf.b) else self:SetStatusBarColor(0, 0, 1) end
-        elseif bR then
-            -- Power-color mode without gradient: apply EUI's GLOBAL power color.
+        elseif haveBase then
+            -- Power/class-color mode without gradient: apply EUI's GLOBAL color.
             -- oUF.colors.power is not overridden, so oUF would otherwise leave the
             -- bar on its built-in default instead of the user's.
             self:SetStatusBarColor(bR, bG, bB)
@@ -617,18 +638,20 @@ local function CreatePowerBar(frame, unit, settings)
         local pctSuffix = showPct and "%%" or ""
         local fmt = s.powerTextFormat or "perpp"
         local TP = ns.TextPieces
-        if fmt == "curpp" then
+        if fmt == "custom" then
+            -- Tag template (powerTextCustomFormat); a missing format shows nothing.
+            ns.SetTextZone(frame, ppFS, "custom", "powerText", s)
+        elseif fmt == "curpp" then
             ns.SetTextZoneRaw(frame, ppFS, "%s", { TP.curpp })
         elseif fmt == "curmaxpp" then
             ns.SetTextZoneRaw(frame, ppFS, "%s / %s", { TP.curpp, TP.maxpp })
         elseif fmt == "both" then
             ns.SetTextZoneRaw(frame, ppFS, "%s | %s" .. pctSuffix, { TP.curpp, TP.perpp })
         elseif fmt == "smart" then
-            -- Percent for mana-based specs, numeric otherwise; resolved at apply
-            -- time and re-applied on spec change via ReloadAndUpdate. WoW Forever
-            -- passes the player's forced power (druid Mana) so it follows the bar.
-            local isPercent = EUI_IsSmartPowerPercent(unit == "player" and EllesmereUI.IS_FOREVER == true
-                and EllesmereUI.GetPlayerPowerOverride() or nil)
+            -- Percent for mana-based specs, numeric otherwise (always numeric on
+            -- WoW Forever); resolved at apply time and re-applied on spec change
+            -- via ReloadAndUpdate.
+            local isPercent = EUI_IsSmartPowerPercent()
             if isPercent then
                 ns.SetTextZoneRaw(frame, ppFS, "%s" .. pctSuffix, { TP.perpp })
             else
@@ -667,7 +690,8 @@ local function CreatePowerBar(frame, unit, settings)
             self._grayedOut = true
             if self.bg then
                 self.bg:SetColorTexture(0.25, 0.25, 0.25, 1)
-                self.bg:SetAlpha(1)
+                -- Gray tints the bg; its opacity stays the user's Background Opacity.
+                self.bg:SetAlpha((s.customPowerBgAlpha or 100) / 100)
             end
         elseif not shouldGray and self._grayedOut then
             self._grayedOut = false

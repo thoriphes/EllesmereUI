@@ -495,6 +495,7 @@ function ns.SetupViewerHooks()
             end
             ns._btCleanFires = 0
             ns._btDirty = nil
+            local noPandemic = ns.CDM_NO_PANDEMIC
             local p = ECME and ECME.db and ECME.db.profile
             if not p or not p.cdmBars or not p.cdmBars.bars then return true end
             local needsReanchor = false
@@ -645,8 +646,10 @@ function ns.SetupViewerHooks()
                                 -- or a glow already running when the user disables it never
                                 -- takes down (stuck lit until the aura lapses, re-lapses, since
                                 -- only that finally makes the stop branch reachable). The buff glow directly above already has this shape.
+                                -- WoW Forever has no pandemic window (ns.CDM_NO_PANDEMIC): nothing
+                                -- to draw or hook there.
                                 local inPandemic = false
-                                if fd then
+                                if fd and not noPandemic then
                                     -- Blizzard Default (-1) is the ONLY config that
                                     -- needs no hook: Blizzard's native PandemicIcon
                                     -- does the whole job, so that config still costs
@@ -1012,8 +1015,6 @@ function ns.SetupViewerHooks()
         end
     end
 
-    ns.SyncViewerToContainer = function() end
-
     -- CDM settings panel: reanchor when user finishes editing
     if CooldownViewerSettings then
         CooldownViewerSettings:HookScript("OnHide", function()
@@ -1101,7 +1102,7 @@ end
 
 local function ShowEditModeLockNotice()
     if not _editModeLockNoticeShown then
-        EllesmereUI.Print("|cff0cd29fEllesmereUI CDM:|r Cooldown Viewer settings are managed by EllesmereUI. Edit Mode changes are disabled.")
+        EllesmereUI.Print(EllesmereUI.L("|cff0cd29fEllesmereUI CDM:|r Cooldown Viewer settings are managed by EllesmereUI. Edit Mode changes are disabled."))
         _editModeLockNoticeShown = true
     end
 end

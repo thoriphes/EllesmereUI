@@ -17,6 +17,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --
 --  The main file calls ns.UF_ForeverFormBar where the player power bar is
 --  built and restyled; on every other client and class it stays nil.
+--  Bottom-anchored player auras keep clear of the bar while it shows under
+--  the frame (ns.UF_ForeverFormBarShown, read by the aura containers' bottom
+--  reserve): each time it shows, hides or is laid out again, the bar asks
+--  for one re-anchor on the next frame.
 --  Cost: off = no frames, no events. On: UNIT_DISPLAYPOWER only, plus the
 --  form power's events while the bar shows.
 -------------------------------------------------------------------------------
@@ -28,20 +32,38 @@ if playerClass ~= "DRUID" then return end
 
 local MANA = (Enum and Enum.PowerType and Enum.PowerType.Mana) or 0
 local WHITE = "Interface\\Buttons\\WHITE8X8"
-local UNDER_ART_GAP = 2
 local UnitPower, UnitPowerMax, UnitPowerType = UnitPower, UnitPowerMax, UnitPowerType
 
 -- Event host at file scope, so its work bills Unit Frames.
 local evf = CreateFrame("Frame")
 -- bar (the StatusBar), settings (player settings as last applied), on (the
 -- option is on and the power bar draws), live (form power events registered),
+-- shown (the bar shows, as the aura reserve last heard),
 -- pt / token (the form's power type as last read), text ("cur" / "pct" /
 -- "both" while the text shows, else nil) with its format strings fmtPct and
 -- fmtBoth (built per apply, so a paint builds no string).
-local S = { on = false, live = false }
+local S = { on = false, live = false, shown = false }
 
-local function Secret(v)
-    return issecretvalue and issecretvalue(v)
+local Secret = EllesmereUI.IsSecret
+
+-- The bar while it shows, else nil: the bottom-anchored player auras reserve
+-- the space it takes under the frame (EUI_UnitFrames_AuraContainers.lua).
+function ns.UF_ForeverFormBarShown()
+    if S.shown then return S.bar end
+end
+
+-- One re-anchor of the player auras on the next frame (a no-op unless they
+-- are bottom-anchored).
+local function Reanchor()
+    if EllesmereUI.UF_RequestResourceReanchor then EllesmereUI.UF_RequestResourceReanchor() end
+end
+
+-- The form text's own setting; unset follows the power bar's.
+local function FormVal(s, key, base, def)
+    local v = s[key]
+    if v == nil then v = s[base] end
+    if v == nil then v = def end
+    return v
 end
 
 local function Paint()
@@ -54,6 +76,8 @@ local function Paint()
         bar.text:SetFormattedText("%d", UnitPower("player", pt))
     elseif mode == "pct" then
         bar.text:SetFormattedText(S.fmtPct, UnitPowerPercent("player", pt, true, CurveConstants.ScaleTo100))
+    elseif mode == "curmax" then
+        bar.text:SetFormattedText("%d / %d", UnitPower("player", pt), UnitPowerMax("player", pt))
     elseif mode == "both" then
         bar.text:SetFormattedText(S.fmtBoth, UnitPower("player", pt),
             UnitPowerPercent("player", pt, true, CurveConstants.ScaleTo100))
@@ -69,9 +93,11 @@ local function Color()
     local op = s.powerBarOpacity or 100
     if op <= 1.0 then op = op * 100 end
     bar:SetStatusBarColor(r, g, b, op / 100)
-    -- Text Color: power-coloured takes the form's colour, else custom or white.
-    local tc = s.powerTextColor
-    if s.powerPercentTextPowerColor then
+    -- Form Text Color: power-coloured takes the form's colour, else custom or
+    -- white. Neither set follows the power bar's Text Color.
+    local pc, tc = s.foreverFormTextPowerColor, s.foreverFormTextColor
+    if pc == nil and tc == nil then pc, tc = s.powerPercentTextPowerColor, s.powerTextColor end
+    if pc then
         bar.text:SetTextColor(r, g, b)
     elseif tc then
         bar.text:SetTextColor(tc.r, tc.g, tc.b, tc.a or 1)
@@ -104,12 +130,16 @@ local function SetLive(on)
 end
 
 -- Shows the bar while the form runs on a power other than mana. A secret
--- read keeps the last verdict.
-local function Sync()
+-- read keeps the last verdict. laidOut: the bar was just laid out, so a
+-- shown bar may have moved.
+local function Sync(laidOut)
     local bar = S.bar
     if not bar then return end
     local pt, token = UnitPowerType("player")
-    if Secret(pt) or Secret(token) then return end
+    if Secret(pt) or Secret(token) then
+        if laidOut and S.shown then Reanchor() end
+        return
+    end
     local show = S.on and pt ~= MANA
     if show then
         S.pt, S.token = pt, token
@@ -118,6 +148,10 @@ local function Sync()
     end
     SetLive(show)
     bar:SetShown(show)
+    if show ~= S.shown or (show and laidOut) then
+        S.shown = show
+        Reanchor()
+    end
 end
 
 evf:SetScript("OnEvent", function(_, event, _, token)
@@ -149,25 +183,25 @@ local function Build(frame)
     S.bar = bar
 end
 
--- The power bar's text settings: Power Text (format), Text Position and its
--- cog (size, offsets), the percent sign. Smart shows the value (form power is
--- never mana).
+-- The Form Power Text settings (format, position, size, offsets, percent
+-- sign); each unset one follows the power bar's. Smart shows the value (form
+-- power is never mana).
 local function StyleText(s)
     local fs = S.bar.text
-    local pos, fmt = s.powerPercentText or "none", s.powerTextFormat or "perpp"
+    local pos = FormVal(s, "foreverFormTextPos", "powerPercentText", "none")
+    local fmt = FormVal(s, "foreverFormTextFormat", "powerTextFormat", "perpp")
     if pos == "none" or fmt == "none" then
         S.text = nil
         fs:Hide()
         return
     end
-    S.text = (fmt == "curpp" or fmt == "smart") and "cur" or (fmt == "both" and "both") or "pct"
-    local sign = (s.powerShowPercent ~= false) and "%%" or ""
+    S.text = (fmt == "curpp" or fmt == "smart") and "cur" or (fmt == "curmaxpp" and "curmax")
+        or (fmt == "both" and "both") or "pct"
+    local sign = (FormVal(s, "foreverFormShowPercent", "powerShowPercent", true) ~= false) and "%%" or ""
     S.fmtPct, S.fmtBoth = "%d" .. sign, "%d | %d" .. sign
-    EllesmereUI.ApplyModuleFont(fs, nil, s.powerPercentSize or 9, "unitFrames")
-    -- Its own offsets (Form Text X / Y in the Text Position cog); unset follows the power text's.
-    local ox, oy = s.foreverFormTextX, s.foreverFormTextY
-    if ox == nil then ox = s.powerPercentX or 0 end
-    if oy == nil then oy = s.powerPercentY or 0 end
+    EllesmereUI.ApplyModuleFont(fs, nil, FormVal(s, "foreverFormTextSize", "powerPercentSize", 9), "unitFrames")
+    local ox = FormVal(s, "foreverFormTextX", "powerPercentX", 0)
+    local oy = FormVal(s, "foreverFormTextY", "powerPercentY", 0)
     fs:ClearAllPoints()
     if pos == "left" then
         fs:SetJustifyH("LEFT")
@@ -182,14 +216,10 @@ local function StyleText(s)
     fs:Show()
 end
 
--- Where the stock art ends under the bars, up from the stock box's bottom.
--- The WoW Forever kit copies Blizzard Style's and lowers vis.b for its level
--- badge at the far left; under the bars the art ends where Blizzard's does.
-local function ArtBottom(G)
-    local base = ns.UF_Forever() and ns.UF_KITS.blizzard
-    local bg = base and ((G == ns.UF_BLIZZ.target) and base.target or base.player)
-    return (bg and bg.vis and bg.vis.b) or G.vis.b
-end
+-- Under the bars, every stock art ends at the power track's edge (vis.b is
+-- the level badge's or portrait ring's, far lower). WoW Forever's track
+-- has a rim below it, so the bar drops past that.
+local FOREVER_RIM_DROP = 3
 
 local function Layout(frame, power, s)
     local bar, PP = S.bar, EllesmereUI.PP
@@ -198,13 +228,15 @@ local function Layout(frame, power, s)
     -- A stock look draws an attached power bar inside its frame art.
     local G = (not detached) and ns.UF_Blizz() and ns.UF_BlizzGeom(frame)
     local bs, c, h
+    -- Form Bar X / Y Offset (Power Type cog).
+    local ox, oy = s.foreverFormBarX or 0, s.foreverFormBarY or 0
     bar:ClearAllPoints()
     if G and G.power and G.vis and G.h then
         -- Just under the art, lined up with the power bar.
         bs, h = 1, G.power.h
-        local drop = G.h - ArtBottom(G) - (G.power.y + G.power.h) + UNDER_ART_GAP
-        bar:SetPoint("TOPLEFT", power, "BOTTOMLEFT", 0, -drop)
-        bar:SetPoint("TOPRIGHT", power, "BOTTOMRIGHT", 0, -drop)
+        local drop = ns.UF_Forever() and FOREVER_RIM_DROP or 0
+        bar:SetPoint("TOPLEFT", power, "BOTTOMLEFT", ox, oy - drop)
+        bar:SetPoint("TOPRIGHT", power, "BOTTOMRIGHT", ox, oy - drop)
     else
         -- Against the power bar, overlapping by the border so the two share
         -- one line: the frame's border on an attached bar, its own when detached.
@@ -216,11 +248,11 @@ local function Layout(frame, power, s)
         h = power:GetHeight()
         local overlap = bs * PP.mult
         if pos == "above" or pos == "detached_top" then
-            bar:SetPoint("BOTTOMLEFT", power, "TOPLEFT", 0, -overlap)
-            bar:SetPoint("BOTTOMRIGHT", power, "TOPRIGHT", 0, -overlap)
+            bar:SetPoint("BOTTOMLEFT", power, "TOPLEFT", ox, oy - overlap)
+            bar:SetPoint("BOTTOMRIGHT", power, "TOPRIGHT", ox, oy - overlap)
         else
-            bar:SetPoint("TOPLEFT", power, "BOTTOMLEFT", 0, overlap)
-            bar:SetPoint("TOPRIGHT", power, "BOTTOMRIGHT", 0, overlap)
+            bar:SetPoint("TOPLEFT", power, "BOTTOMLEFT", ox, oy + overlap)
+            bar:SetPoint("TOPRIGHT", power, "BOTTOMRIGHT", ox, oy + overlap)
         end
     end
     bar:SetHeight(math.max(1, h or 1))
@@ -246,6 +278,10 @@ function ns.UF_ForeverFormBar(frame, power, s)
         evf:UnregisterAllEvents()
         S.live = false
         if S.bar then S.bar:Hide() end
+        if S.shown then
+            S.shown = false
+            Reanchor()
+        end
         return
     end
     if not S.bar then Build(frame) end
@@ -256,9 +292,18 @@ function ns.UF_ForeverFormBar(frame, power, s)
     bar:SetFrameLevel(power:GetFrameLevel() + 1)
     bar.border:SetFrameLevel(bar:GetFrameLevel() + 5)
     bar.textFrame:SetFrameLevel(bar:GetFrameLevel() + 6)
-    S.settings = s
+    S.settings, S.frame, S.power = s, frame, power
     Layout(frame, power, s)
     StyleText(s)
     evf:RegisterUnitEvent("UNIT_DISPLAYPOWER", "player")
-    Sync()
+    Sync(true)
+end
+
+-- The form bar's own options re-apply only this bar: a full frame reload per
+-- slider step visibly rebuilds the player frame.
+function ns.UF_ForeverFormBarRelayout()
+    if not (S.on and S.bar) then return end
+    Layout(S.frame, S.power, S.settings)
+    StyleText(S.settings)
+    Sync(true)
 end

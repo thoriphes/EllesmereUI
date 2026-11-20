@@ -460,11 +460,6 @@ local function BookIDForName(name)
 end
 ns.WipeCdmBookNameCache = function() _bookByName = nil end
 ns.CdmBookIDForName = BookIDForName
-ns.CdmBookNameCount = function()
-    local n = 0
-    for _ in pairs(EnsureBookNameMap()) do n = n + 1 end
-    return n
-end
 
 -- Resolve the spell whose ICON an inactive placeholder should paint. An ACTIVE
 -- buff frame renders the live aura, so a talent that REPLACES a spell shows the
@@ -596,6 +591,10 @@ local function GetOrCreatePlaceholderFrame(barKey, spellID, iconID, identKey)
         end)
         f:SetScript("OnLeave", GameTooltip_Hide)
         _placeholderFrames[fkey] = f
+        -- A new icon starts in full colour: the buff ticker draws Desaturate
+        -- Off CD on it once the placement that made it has decorated it.
+        ns._btDirty = true
+        if ns.ArmBuffTicker then ns.ArmBuffTicker() end
     end
     -- Re-assert on reuse: a pooled frame outlives a talent swap, so the id it
     -- was created with can name the pre-talent spell (its tooltip would still

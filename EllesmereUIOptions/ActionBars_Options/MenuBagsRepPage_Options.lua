@@ -38,14 +38,17 @@ local REACTIVE_PREVIEW = {
 
 -- After a change to Use Blizzard's Rep Bars or the XP Bar Style: the page
 -- re-reads its values, and a change that leaves our bars wanted but never
--- built (they are built at login only while Blizzard's are off) asks for the
--- reload that creates them.
+-- built (they are built at login only while Blizzard's are off), or brings
+-- Blizzard's bars back after their events were dropped, asks for the reload
+-- that applies it.
 local function AfterDataBarSwitch(needsReload)
     EllesmereUI:RefreshPage()
     if needsReload then
         EllesmereUI:ShowConfirmPopup({
             title       = "Reload Required",
-            message     = "Your own XP and reputation bars are created on reload.",
+            message     = ns.EAB.db.profile.useBlizzardDataBars
+                and "Blizzard's XP and reputation bars return after a UI reload."
+                or "Your own XP and reputation bars are created on reload.",
             confirmText = "Reload Now",
             cancelText  = "Later",
             reload      = true,
@@ -198,7 +201,6 @@ local function DataBarKit(parent)
     -- along the bar. Each setting goes to every bar of `keys`, as the
     -- orientation does.
     function K.OrientCog(region, keys, dividers)
-        if EllesmereUI._prebuilding then return end
         local lead = keys[1]
         local function Flag(key)
             local b = EAB.db.profile.bars[lead]
@@ -284,6 +286,7 @@ local function DataBarKit(parent)
     local function RefreshDataBar(bk)
         local f = ns.dataBarFrames and ns.dataBarFrames[bk]
         if f and f._updateFunc then f._updateFunc() end
+        ns.RefreshDataBarPreview(bk, true)
     end
 
     -- Custom Border (each data-bar section's opt-in). Its two sync links copy
@@ -477,8 +480,9 @@ local function DataBarKit(parent)
             _, h = W:DualRow(parent, y, ocfgL, ocfgR);  y = y - h
         end
 
-        -- Row chrome (frames: never on the search pre-build's absorber rows).
-        if not EllesmereUI._prebuilding then
+        -- Row chrome (frames: never on the search pre-build's absorber rows,
+        -- except the cog, which the index pass reads).
+        do
             -- Border Options cog (Shift X / Shift Y / Show Behind): textured
             -- styles only, hidden (not dimmed) for Solid and under Blizzard bars.
             local lRgn = brdRow._leftRegion
@@ -495,7 +499,7 @@ local function DataBarKit(parent)
                 Done()
             end
             local cogBtn = EllesmereUI.BuildInlineCog(lRgn, {
-                icon = EllesmereUI.DIRECTIONS_ICON, anchorTo = lRgn._control,
+                anchorTo = lRgn._control,
                 title = "Border Options",
                 tip = "Fine-tunes the textured border's position and draws it under the bar fill when Show Behind is on.",
                 captureRegion = lRgn,
@@ -530,41 +534,43 @@ local function DataBarKit(parent)
                       end },
                 },
             })
-            if cogBtn then
-                local function UpdateCogVis()
-                    cogBtn:SetShown(Textured() and not _blizzDis())
+            if not EllesmereUI._prebuilding then
+                if cogBtn then
+                    local function UpdateCogVis()
+                        cogBtn:SetShown(Textured() and not _blizzDis())
+                    end
+                    EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                    UpdateCogVis()
                 end
-                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-                UpdateCogVis()
-            end
 
-            -- Border color with alpha, left of the Border Size slider.
-            EllesmereUI.BuildInlineSwatches(brdRow._rightRegion, {
-                { tooltip = "Border Color", hasAlpha = true,
-                  getValue = function()
-                      local c = V().borderColor
-                      if c then return c.r or 0, c.g or 0, c.b or 0, c.a or 1 end
-                      return 0, 0, 0, 1
-                  end,
-                  setValue = function(r, g, b, a)
-                      Wr().borderColor = { r = r, g = g, b = b, a = a or 1 }
-                      Done()
-                  end },
-            }, {
-                size = 20,
-                disabled = function() return _blizzDis() or BorderOff() end,
-                disabledTooltip = function()
-                    if _blizzDis() then return BLIZZ_DIS_TIP end
-                    return "This option requires a Border Size above 0."
-                end,
-                rawTooltip = true,
-            })
+                -- Border color with alpha, left of the Border Size slider.
+                EllesmereUI.BuildInlineSwatches(brdRow._rightRegion, {
+                    { tooltip = "Border Color", hasAlpha = true,
+                      getValue = function()
+                          local c = V().borderColor
+                          if c then return c.r or 0, c.g or 0, c.b or 0, c.a or 1 end
+                          return 0, 0, 0, 1
+                      end,
+                      setValue = function(r, g, b, a)
+                          Wr().borderColor = { r = r, g = g, b = b, a = a or 1 }
+                          Done()
+                      end },
+                }, {
+                    size = 20,
+                    disabled = function() return _blizzDis() or BorderOff() end,
+                    disabledTooltip = function()
+                        if _blizzDis() then return BLIZZ_DIS_TIP end
+                        return "This option requires a Border Size above 0."
+                    end,
+                    rawTooltip = true,
+                })
 
-            if S().customBorder == true and BORDER_SYNCS[barKey] then
-                DataBarSyncIcon(lRgn, barKey, "Apply Border Style to all Rep Bars",
-                    CopyDataBarStyle, SameDataBarStyle)
-                DataBarSyncIcon(brdRow._rightRegion, barKey, "Apply Border Size and Color to all Rep Bars",
-                    CopyDataBarSize, SameDataBarSize)
+                if S().customBorder == true and BORDER_SYNCS[barKey] then
+                    DataBarSyncIcon(lRgn, barKey, "Apply Border Style to all Rep Bars",
+                        CopyDataBarStyle, SameDataBarStyle)
+                    DataBarSyncIcon(brdRow._rightRegion, barKey, "Apply Border Size and Color to all Rep Bars",
+                        CopyDataBarSize, SameDataBarSize)
+                end
             end
         end
         return y
@@ -701,7 +707,6 @@ local function DataBarKit(parent)
     -- The Bar Text Offsets cog on a Text Size control: the anchor and
     -- offsets, then extraRows (the XP bar text's Show Rested).
     function K.TextCog(region, barKey, extraRows)
-        if EllesmereUI._prebuilding then return end
         local function S() return EAB.db.profile.bars[barKey] end
         local textRows = {
                 { type="dropdown", label="Anchor",
@@ -726,7 +731,7 @@ local function DataBarKit(parent)
         if extraRows then
             for _, r in ipairs(extraRows) do textRows[#textRows + 1] = r end
         end
-        EllesmereUI.BuildInlineCog(region, { icon = EllesmereUI.DIRECTIONS_ICON, anchorTo = region._control,
+        EllesmereUI.BuildInlineCog(region, { anchorTo = region._control,
             title = "Bar Text Offsets",
             disabled = _blizzDis, disabledTooltip = BLIZZ_DIS_TIP, rawTooltip = true,
             rows = textRows,
@@ -739,10 +744,13 @@ local function DataBarKit(parent)
     -- Click Through | Text Size. While Never only the rows up to Visibility
     -- are built. Returns the new y and the Visibility row.
     function K.Section(y, barKey, sectionTitle, visLabel, lead)
-        local _, h
+        local _, h, hdr
         local function S() return EAB.db.profile.bars[barKey] end
 
-        _, h = W:SectionHeader(parent, sectionTitle, y);  y = y - h
+        hdr, h = W:SectionHeader(parent, sectionTitle, y);  y = y - h
+        -- The Move in Unlock Mode button on this bar's section: greyed while
+        -- Blizzard's bars are in use, since our bar (and its mover) is not built then.
+        EllesmereUI.BuildSectionUnlockJump(hdr, { key = barKey, disabled = _blizzDis, disabledTooltip = BLIZZ_DIS_TIP, rawTooltip = true })
         if lead then y = lead(y) end
         -- Custom Border, the opt-in for this bar's own border style, size and
         -- color, fills the Visibility row's free slot. Its rows below are built

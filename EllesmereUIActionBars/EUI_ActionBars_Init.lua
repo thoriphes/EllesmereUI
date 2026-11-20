@@ -34,6 +34,7 @@ function EAB:OnInitialize()
         or (rawDB.profiles and not next(rawDB.profiles))
 
     self.db = EllesmereUI.Lite.NewDB("EllesmereUIActionBarsDB", defaults, true)
+    self:RefreshCustomFadeGate()
     -- Expose for ApplyAnchorPosition's growth-direction edge read.
     EllesmereUI._abBarPositions = self.db.profile.barPositions
 
@@ -63,6 +64,7 @@ function EAB:OnInitialize()
 
     _G._EAB_ApplyKeyDown = function() ApplyKeyDownCVar() end
     _G._EAB_Apply = function()
+        EAB:RefreshCustomFadeGate()
         -- Re-point the exposed barPositions view at the active profile's table.
         -- Profile swaps replace db.profile wholesale and the unlock system reads
         -- saved growth edges / follow baselines through this reference; a stale
@@ -70,6 +72,10 @@ function EAB:OnInitialize()
         if EAB.db and EAB.db.profile and EAB.db.profile.barPositions then
             EllesmereUI._abBarPositions = EAB.db.profile.barPositions
         end
+        -- Toggle keys participate by the effective mode, which an override or a
+        -- profile swap can change. Before ApplyAll so a dropped toggle state is
+        -- already gone for its visibility pass (defers itself in combat).
+        EAB:RebuildVisToggleBindings()
         ApplyAll()
         -- Data bars: ApplyAll never lays them out, so a profile swap, an import
         -- or a spec override repaints their size, texture, text and Custom
@@ -89,6 +95,10 @@ function EAB:OnInitialize()
                 end
             end)
         end
+        -- Count alpha: a profile swap or an override can change a bar's Charge
+        -- Numbers or Hide Count at 0, which no count event repaints until the
+        -- button's next one (alpha on our own buttons only: safe in combat).
+        EAB:RefreshCountVisibility()
     end
 
 

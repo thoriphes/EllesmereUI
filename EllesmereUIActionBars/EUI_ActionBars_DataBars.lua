@@ -229,11 +229,11 @@ function ns.DataBarPlaceText(frame, s)
     end
 end
 
-local function ApplyDataBarLayout(barKey)
-    local frame = dataBarFrames[barKey]
-    if not frame then return end
-    local s = EAB.db.profile.bars[barKey]
-    if not s then return end
+-- A data bar frame's look from its settings: size, texture, orientation, the
+-- XP bar's style, text, dividers and Custom Border. Frame-bound only, so the
+-- options preview's own frame takes it too; ApplyDataBarLayout adds the live
+-- bar's size matching and value update. On ns.
+function ns.StyleDataBarFrame(frame, s)
     local w = s.width or 400
     local h = s.height or 18
     local orient = s.orientation or "HORIZONTAL"
@@ -263,7 +263,7 @@ local function ApplyDataBarLayout(barKey)
     end
 
     -- XP bar art style and profession fill (both opt-in; EUI_ActionBars_XPBar.lua).
-    if barKey == "XPBar" then ns.ApplyXPBarStyle(frame, s) end
+    if frame._isXP then ns.ApplyXPBarStyle(frame, s) end
 
     -- Per-bar Text Size (default 9) and the readout's placement (anchor,
     -- offsets, rotation, background). Re-applied here so the options take
@@ -273,7 +273,7 @@ local function ApplyDataBarLayout(barKey)
         -- saved fonts and a login spec-profile switch.
         frame._text:SetFont(EllesmereUI.GetFontPath("actionBars"), s.textSize or 9, EllesmereUI.GetFontOutlineFlag("actionBars"))
         ns.DataBarPlaceText(frame, s)
-        if barKey == "XPBar" then ns.XPBarTextSlots(frame, s) end
+        if frame._isXP then ns.XPBarTextSlots(frame, s) end
     end
 
     -- Dividers (EUI_ActionBars_XPBar.lua): one boolean read while off; a
@@ -282,20 +282,43 @@ local function ApplyDataBarLayout(barKey)
         ns.AB_DataBarDividers(frame, w, h, orient, s)
     end
 
-    -- Custom Border (one boolean read while off), then its reach for width /
-    -- height matching (value-compared and deferred; a no-op in unlock mode and
-    -- before the bar is registered).
+    -- Custom Border (one boolean read while off).
     ns.ApplyDataBarBorder(frame, s)
-    EllesmereUI.MatchPadChanged(barKey)
+end
 
-    if frame._updateFunc then frame._updateFunc() end
+local function ApplyDataBarLayout(barKey)
+    local frame = dataBarFrames[barKey]
+    local s = EAB.db.profile.bars[barKey]
+    if frame and s then
+        ns.StyleDataBarFrame(frame, s)
+        -- The Custom Border's reach for width / height matching (value-compared
+        -- and deferred; a no-op in unlock mode and before the bar is registered).
+        EllesmereUI.MatchPadChanged(barKey)
+        if frame._updateFunc then frame._updateFunc() end
+    end
+    ns.RefreshDataBarPreview(barKey)
 end
 ns.ApplyDataBarLayout = ApplyDataBarLayout
 
-local function CreateDataBarFrame(barKey, updateFunc)
-    local holder = CreateFrame("Frame", "EllesmereEAB_" .. barKey, UIParent)
+-- An options preview of a data bar repaints after the live bar (one per bar
+-- key in ns._dataBarPreview, set by the options; also while Blizzard's bars
+-- build no frame of ours). Every options write that repaints the live bar
+-- calls it: through ApplyDataBarLayout, or directly after a value-only
+-- update (valueOnly: the fill alone changed). On ns.
+function ns.RefreshDataBarPreview(barKey, valueOnly)
+    local pv = ns._dataBarPreview
+    local hook = pv and pv[barKey]
+    if hook then hook(valueOnly) end
+end
+
+-- parent: a preview frame for the options (its own parent, no global names,
+-- not in dataBarFrames, holder._preview set); nil builds the live bar.
+local function CreateDataBarFrame(barKey, updateFunc, parent)
+    local holder = CreateFrame("Frame", not parent and "EllesmereEAB_" .. barKey or nil, parent or UIParent)
     holder:SetSize(400, 18)
-    holder:SetClampedToScreen(true)
+    if not parent then holder:SetClampedToScreen(true) end
+    holder._preview = parent and true or nil
+    holder._isXP = (barKey == "XPBar") or nil
 
     -- Pixel-perfect background
     local bg = holder:CreateTexture(nil, "BACKGROUND")
@@ -314,7 +337,7 @@ local function CreateDataBarFrame(barKey, updateFunc)
         holder._border = EllesmereUI.MakeBorder(holder, 0, 0, 0, 1)
     end
 
-    local bar = CreateFrame("StatusBar", "EllesmereEAB_" .. barKey .. "_Bar", holder)
+    local bar = CreateFrame("StatusBar", not parent and "EllesmereEAB_" .. barKey .. "_Bar" or nil, holder)
     bar:SetStatusBarTexture("Interface\\BUTTONS\\WHITE8X8")
     if PP then
         PP.SetInside(bar, holder, 1, 1)
@@ -351,7 +374,7 @@ local function CreateDataBarFrame(barKey, updateFunc)
     holder._text = text
     holder._updateFunc = updateFunc
 
-    dataBarFrames[barKey] = holder
+    if not parent then dataBarFrames[barKey] = holder end
     return holder
 end
 -- The XP bar (EUI_ActionBars_XPBar.lua) builds its frame through this too.
@@ -376,7 +399,7 @@ function EAB_VTABLE.ExtraBars.BeginManagedDataBarUpdate(barKey)
 
     local s = EAB.db.profile.bars[barKey]
     if not s then return nil, nil end
-    if s.alwaysHidden or not EAB_VTABLE.ExtraBars.ShouldShowManagedNonSecureBar(s) then
+    if not EAB_VTABLE.ExtraBars.ShouldShowManagedNonSecureBar(s) then
         if info then
             EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(info, frame, s, false, true)
         else
@@ -565,7 +588,7 @@ end
 -- Lua 5.1 200 cap. WoW Forever has no housing: there the block never runs,
 -- so no bar is built, nothing registers and ns._CreateFavorBar stays nil.
 if not EllesmereUI.IS_FOREVER then
-local favorState  -- { level, displayLevel, favor, needed } from the last payload
+local favorState  -- { level, displayLevel, favor, base, needed } from the last payload
 local favorEv, favorArmed
 local ArmFavorEvents  -- forward: mutual recursion with UpdateFavorBar
 
@@ -585,7 +608,7 @@ local function FavorWanted()
     local p = EAB.db and EAB.db.profile
     if not p or p.useBlizzardDataBars then return false end
     local s = p.bars and p.bars.FavorBar
-    return (s and not s.alwaysHidden) and true or false
+    return (s and not EAB.VisibilityCompat.IsNever(s)) and true or false
 end
 
 local function UpdateFavorBar()
@@ -605,11 +628,11 @@ local function UpdateFavorBar()
 
     local current = st.favor or 0
     if current > st.needed then current = st.needed end
-    bar:SetMinMaxValues(0, st.needed)
+    bar:SetMinMaxValues(st.base, st.needed)
     bar:SetValue(current)
     bar:SetStatusBarColor(ns.ResolveDataBarColor(s, DATA_BAR_COLORS.favor.r, DATA_BAR_COLORS.favor.g, DATA_BAR_COLORS.favor.b))
 
-    local pct = (current / st.needed) * 100
+    local pct = ((current - st.base) / (st.needed - st.base)) * 100
     text:SetText(format(EllesmereUI.L("House Level %d: %d / %d"), st.displayLevel or 1, current, st.needed))
 
     -- Auto-size text if bar is too narrow (too short, for text rotated to
@@ -642,10 +665,16 @@ local function OnFavorEvent(_, event, arg1)
             local level = arg1.houseLevel or 0
             local needed = C_Housing.GetHouseLevelFavorForLevel
                 and C_Housing.GetHouseLevelFavorForLevel(level + 1)
+            local favor = arg1.houseFavor or 0
+            -- Favor totals are cumulative: the bar runs from this level's
+            -- threshold to the next one.
+            local base = needed and C_Housing.GetHouseLevelFavorForLevel(level) or 0
+            if base > favor or base >= (needed or 0) then base = 0 end
             favorState = {
                 level = level,
                 displayLevel = level + 1,
-                favor = arg1.houseFavor or 0,
+                favor = favor,
+                base = base,
                 needed = needed or 0,
             }
         else
@@ -693,7 +722,7 @@ local function CreateFavorBar()
         GameTooltip:AddLine(EllesmereUI.L("House Favor"), 1, 1, 1)
         GameTooltip:AddDoubleLine(EllesmereUI.L("House Level"), tostring(st.displayLevel or 1), 1, 1, 1, 1, 1, 1)
         local current = math.min(st.favor or 0, st.needed)
-        local pct = (current / st.needed) * 100
+        local pct = ((current - st.base) / (st.needed - st.base)) * 100
         GameTooltip:AddDoubleLine(EllesmereUI.L("Favor"), format("%s / %s (%.1f%%)", BreakUpLargeNumbers(current), BreakUpLargeNumbers(st.needed), pct), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine(EllesmereUI.L("Remaining"), BreakUpLargeNumbers(st.needed - current), 1, 1, 1, 1, 1, 1)
         GameTooltip:Show()
@@ -914,26 +943,27 @@ end
 -- here. On: our built data bars hide (each update then runs its hidden
 -- path, so the Favor bar disarms its events) and Blizzard's status tracking
 -- bars return. Off: our built bars show unless set to Never and repaint, and
--- Blizzard's hide. Returns true when a bar this client builds does not exist
--- yet (they are built at login only while the switch is off), so the caller
--- can offer a reload. On ns.
+-- Blizzard's hide. Returns true when the switch needs a reload, so the caller
+-- can offer one: a bar of ours this client builds does not exist yet (they are
+-- built at login only while the switch is off), or Blizzard's bars come back
+-- after their events were dropped this session. On ns.
 function ns.SetUseBlizzardDataBars(v)
     local p = EAB.db.profile
     p.useBlizzardDataBars = v
-    local anyMissing = false
+    local needsReload = false
     for _, info in ipairs(EXTRA_BARS) do
         local k = info.key
         -- WoW Forever builds no House Favor bar: never a reload for it there.
         if info.isDataBar and not (k == "FavorBar" and EllesmereUI.IS_FOREVER) then
             local frame = dataBarFrames[k]
             if not frame then
-                if not v then anyMissing = true end
+                if not v then needsReload = true end
             elseif v then
                 frame:Hide()
                 if frame._updateFunc then frame._updateFunc() end
             else
                 local s = p.bars[k]
-                if not s or not s.alwaysHidden then
+                if not s or not EAB.VisibilityCompat.IsNever(s) then
                     frame:Show()
                     if frame._updateFunc then frame._updateFunc() end
                 end
@@ -943,13 +973,17 @@ function ns.SetUseBlizzardDataBars(v)
     if StatusTrackingBarManager then
         if v then
             StatusTrackingBarManager:Show()
-            StatusTrackingBarManager:RegisterAllEvents()
+            -- Dropped events come back only with a reload: a registration made
+            -- from here would run every one of them, and the bottom bar stack
+            -- pass a shown or hidden bar starts, under our taint.
+            if ns._eabBlizzDataBarsDropped then needsReload = true end
         else
             StatusTrackingBarManager:UnregisterAllEvents()
             StatusTrackingBarManager:Hide()
+            ns._eabBlizzDataBarsDropped = true
         end
     end
-    return anyMissing
+    return needsReload
 end
 
 I.SetupDataBars = SetupDataBars -- called by EUI_ActionBars_ExtraBars.lua

@@ -34,45 +34,57 @@ if EllesmereUI.IS_FOREVER then
     ns._threatPctPositionOrder = { "RIGHT", "LEFT", "CENTER", "OUTRIGHT", "OUTLEFT" }
 end
 
--- Settings-cog rows of a text slot that can show a name. WoW Forever puts its
--- Name Format row at the top (the name's first word, its last word, or all of
--- it -- unset); every other client gets rows back untouched. prefix is the
--- slot's key prefix ("leftText", "btbLeft"): content at <prefix>Content, format
--- at <prefix>NameFormat. get(key, default) / set(key, v) are the page's
--- accessors. On ns for the same upvalue cap.
-if EllesmereUI.IS_FOREVER then
+-- Settings-cog rows of a text slot that can show a name: its Name Format.
+-- prefix is the slot's key prefix ("leftText", "btbLeft"): content at
+-- <prefix>Content, format at <prefix>NameFormat. get(key, default) /
+-- set(key, v) are the page's accessors. On ns for the same upvalue cap.
+do
     local HAS_NAME = { name = true, levelname = true, namelevel = true, nametotarget = true, targetname = true }
-    local FORMATS, FORMAT_ORDER = EllesmereUI.NAME_FORMAT_VALUES, EllesmereUI.NAME_FORMAT_ORDER
-    function ns.UF_NameFormatRows(prefix, contentDefault, get, set, rows)
-        local contentKey, formatKey = prefix .. "Content", prefix .. "NameFormat"
-        table.insert(rows, 1, { type="dropdown", label="Name Format", values=FORMATS, order=FORMAT_ORDER,
-            get=function() return get(formatKey, "full") end,
-            -- First and Last is the unset default.
-            set=function(v) set(formatKey, (v ~= "full") and v or nil) end,
-            disabled=function() return not HAS_NAME[get(contentKey, contentDefault)] end,
-            disabledTooltip="This option only applies when the text shows a name." })
+    -- A custom format shows a name when its parse holds a name tag.
+    function ns.UF_ContentShowsName(content, customFmt)
+        if content ~= "custom" then return HAS_NAME[content] or false end
+        local parsed = EllesmereUI.TextTags.Parse(ns.UF_TextTags, customFmt)
+        return parsed ~= nil and (parsed.has.name or parsed.has.target) == true
+    end
+    -- contentKey: the slot's content key when it is not <prefix>Content
+    -- (the power text's powerTextFormat). A unit frame text can show an enemy's
+    -- name (target, focus, boss, a Name > Target text).
+    local ENEMIES = { enemies = true }
+    function ns.UF_NameFormatRows(prefix, contentDefault, get, set, rows, contentKey)
+        local formatKey = prefix .. "NameFormat"
+        contentKey = contentKey or (prefix .. "Content")
+        local row = EllesmereUI.NameFormatCogRow(function() return get(formatKey) end,
+            function(v) set(formatKey, v) end, ENEMIES)
+        row.disabled = function()
+            return not ns.UF_ContentShowsName(get(contentKey, contentDefault), get(prefix .. "CustomFormat"))
+        end
+        row.disabledTooltip = "This option only applies when the text shows a name."
+        table.insert(rows, 1, row)
         return rows
     end
-    -- The same slots for the Forever Essentials NAME FORMAT section, which
-    -- reads and sets every name text at once: { unit settings key, content key,
-    -- format key, text bar slot }, keys prebuilt so its reads build no strings.
-    -- Boss frames have no text bar; the other mini frames no extra text either.
-    do
-        local MAIN = { "leftText", "rightText", "centerText", "extraText", "btbLeft", "btbRight", "btbCenter" }
-        local BOSS = { "leftText", "rightText", "centerText", "extraText" }
-        local MINI = { "leftText", "rightText", "centerText" }
-        local slots = {}
-        for _, set in ipairs({ { "player", MAIN }, { "target", MAIN }, { "focus", MAIN }, { "boss", BOSS },
-                { "targettarget", MINI }, { "focustarget", MINI }, { "pet", MINI } }) do
-            for _, pre in ipairs(set[2]) do
-                slots[#slots + 1] = { unit = set[1], content = pre .. "Content", format = pre .. "NameFormat",
-                    btb = pre:sub(1, 3) == "btb" }
-            end
+end
+
+-- The same slots for the Forever Essentials NAME FORMAT section, a page that
+-- exists on WoW Forever only.
+if EllesmereUI.IS_FOREVER then
+    local MAIN = { "leftText", "rightText", "centerText", "extraText", "btbLeft", "btbRight", "btbCenter" }
+    local BOSS = { "leftText", "rightText", "centerText", "extraText" }
+    local MINI = { "leftText", "rightText", "centerText" }
+    local slots = {}
+    for _, set in ipairs({ { "player", MAIN }, { "target", MAIN }, { "focus", MAIN }, { "boss", BOSS },
+            { "targettarget", MINI }, { "focustarget", MINI }, { "pet", MINI } }) do
+        for _, pre in ipairs(set[2]) do
+            slots[#slots + 1] = { unit = set[1], content = pre .. "Content", custom = pre .. "CustomFormat", format = pre .. "NameFormat",
+                btb = pre:sub(1, 3) == "btb" }
         end
-        ns.UF_NAME_FORMAT_SLOTS, ns.UF_HAS_NAME = slots, HAS_NAME
     end
-else
-    function ns.UF_NameFormatRows(_, _, _, _, rows) return rows end
+    -- The power text: a name only through a custom format, shown while
+    -- its Text Position is not None (power = that position key).
+    for _, unit in ipairs({ "player", "target", "focus", "boss", "pet" }) do
+        slots[#slots + 1] = { unit = unit, content = "powerTextFormat", custom = "powerTextCustomFormat",
+            format = "powerTextNameFormat", power = "powerPercentText" }
+    end
+    ns.UF_NAME_FORMAT_SLOTS = slots
 end
 
 -- Classic WoW UI: a cast bar section's closing Border Size row (the odd last
@@ -107,9 +119,7 @@ function ns.UF_ClassicCastBorderRow(W, parent, y, getS, key, onChange, sync, mat
                 if t then t[ns.UF_CastClassicKey(units[i])] = v end
             end
             sync.reload()
-            if EllesmereUI.ReapplyMatchPads then
-                for i = 1, #units do EllesmereUI.ReapplyMatchPads(units[i] .. "Castbar") end
-            end
+            for i = 1, #units do EllesmereUI.ReapplyMatchPads(units[i] .. "Castbar") end
             EllesmereUI:RefreshPage()
         end
         EllesmereUI.BuildSyncIcon({
@@ -296,7 +306,6 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
             y = y - oh
         end
     end
-    if EllesmereUI._prebuilding then return y0 - y end
 
     -- Border Options cog (left): shifts and layering, textured styles only.
     do
@@ -315,7 +324,7 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
             if v ~= Shift(key, isY) then s[key] = v end
             Changed()
         end
-        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, {
             title = "Border Options",
             rows = {
                 { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -330,13 +339,16 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
                   set = function(v) getS().castBorderBehind = v; Changed() end },
             },
         })
-        local function UpdateCogVis()
-            local tex = getS().castBorderStyle or "solid"
-            if tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+        if not EllesmereUI._prebuilding then
+            local function UpdateCogVis()
+                local tex = getS().castBorderStyle or "solid"
+                if tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+            UpdateCogVis()
         end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
     end
+    if EllesmereUI._prebuilding then return y0 - y end
 
     -- Colour swatch (with alpha) on Border Size; greyed and blocked at 0.
     do
@@ -553,7 +565,6 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
             y = y - oh
         end
     end
-    if EllesmereUI._prebuilding then return y0 - y end
 
     -- Border Options cog (left): shifts and layering, own textured styles only.
     do
@@ -570,7 +581,7 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
             if v ~= Shift(key, isY) then B[key] = v end
             onChange()
         end
-        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+        local cogBtn = EllesmereUI.BuildInlineCog(row._leftRegion, {
             title = "Border Options",
             rows = {
                 { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -597,18 +608,41 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
                   set = function(v) B.borderPowerSeam = v; onChange() end },
             },
         })
-        local function UpdateCogVis()
-            local tex = B.borderTexture or "solid"
-            if Inheriting() or tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+        if not EllesmereUI._prebuilding then
+            local function UpdateCogVis()
+                local tex = B.borderTexture or "solid"
+                if Inheriting() or tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+            UpdateCogVis()
         end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
     end
 
     -- Colour swatch (with alpha) on Border Size: shows what is drawn; greyed
     -- and blocked while inheriting or at 0.
     do
         local rgn = row._rightRegion
+        -- Corner Radius (EllesmereUI_RoundedCorners.lua): the boss table's own,
+        -- beside the control with the swatch left of it; while inheriting the
+        -- main frames' radius applies.
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Corner Radius", tip = "Corner Radius",
+            disabled = function() return Inheriting() or not EllesmereUI.RoundedStyleOK(B.borderTexture) end,
+            disabledTooltip = function()
+                if Inheriting() then return NEEDS_STYLE end
+                return "This option requires the Solid, Glow or Shadow border style."
+            end,
+            rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
+                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+                  get = function() return Src().cornerRadius or 0 end,
+                  set = function(v) B.cornerRadius = v; onChange() end },
+            }, function() return Src().cornerMask end, function(v) B.cornerMask = v; onChange() end),
+                "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
+                function() return B.cornerJoinPower end, function(v) B.cornerJoinPower = v; onChange() end,
+                function() local pos = B.powerPosition or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
+                "Detached Power Bar"),
+        })
+        if EllesmereUI._prebuilding then return y0 - y end
         local sw, updateSw = EllesmereUI.BuildColorSwatch(rgn, row:GetFrameLevel() + 3,
             function()
                 local s = Src()
@@ -644,25 +678,6 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
         end
         EllesmereUI.RegisterWidgetRefresh(UpdateSw)
         UpdateSw()
-        -- Corner Radius (EllesmereUI_RoundedCorners.lua): the boss table's own,
-        -- left of the swatch; while inheriting the main frames' radius applies.
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Corner Radius", tip = "Corner Radius",
-            disabled = function() return Inheriting() or not EllesmereUI.RoundedStyleOK(B.borderTexture) end,
-            disabledTooltip = function()
-                if Inheriting() then return NEEDS_STYLE end
-                return "This option requires the Solid, Glow or Shadow border style."
-            end,
-            rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
-                { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
-                  get = function() return Src().cornerRadius or 0 end,
-                  set = function(v) B.cornerRadius = v; onChange() end },
-            }, function() return Src().cornerMask end, function(v) B.cornerMask = v; onChange() end),
-                "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
-                function() return B.cornerJoinPower end, function(v) B.cornerJoinPower = v; onChange() end,
-                function() local pos = B.powerPosition or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
-                "Detached Power Bar"),
-        })
     end
     return y0 - y
 end
@@ -689,20 +704,27 @@ local function TrackedList(unitKey, field)
     if not s[field] then s[field] = {} end
     return s[field]
 end
-function ns.UFOpt_ShowTrackedAuras(unitKey)
+-- Shared by the debuff and buff Tracked Auras popups: the units the Copy row
+-- offers (every other unit of the list), and the reapply after every edit.
+local function TrackedChoices(units, unitKey)
     local choices = {}
-    for i = 1, #TRACKED_UNITS do
-        local u = TRACKED_UNITS[i]
+    for i = 1, #units do
+        local u = units[i]
         if u.key ~= unitKey then choices[#choices + 1] = u end
     end
-    local function Changed()
-        if ns.ReloadFrames then ns.ReloadFrames() end
-        if ns.UpdatePreview then ns.UpdatePreview() end
-        -- Non-force: the Debuff Filter dropdown's empty warning (Only Tracked
-        -- Auras with its list emptied) re-reads live, without rebuilding the
-        -- page under the popup.
-        EllesmereUI:RefreshPage()
-    end
+    return choices
+end
+local function TrackedChanged()
+    if ns.ReloadFrames then ns.ReloadFrames() end
+    if ns.UpdatePreview then ns.UpdatePreview() end
+    -- Non-force: the filter dropdown's empty warning (Only Tracked Auras with
+    -- its list emptied) re-reads live, without rebuilding the page under the
+    -- popup.
+    EllesmereUI:RefreshPage()
+end
+function ns.UFOpt_ShowTrackedAuras(unitKey)
+    local choices = TrackedChoices(TRACKED_UNITS, unitKey)
+    local Changed = TrackedChanged
     EllesmereUI.ShowTrackedAurasPopup({
         eyebrow = "UNIT FRAME AURA FILTERS",
         title = TRACKED_TITLES[unitKey] or "Tracked Auras",
@@ -729,12 +751,7 @@ function ns.UFOpt_ShowTrackedAuras(unitKey)
                 local src = db and db.profile and db.profile[srcKey]
                 local dst = db and db.profile and db.profile[unitKey]
                 if not (src and dst) then return end
-                local function Clone(t)
-                    if not t then return nil end
-                    local c = {}
-                    for k, v in pairs(t) do c[k] = v end
-                    return c
-                end
+                local Clone = EllesmereUI.Lite.DeepCopy
                 dst.debuffInclude = Clone(src.debuffInclude)
                 dst.debuffExclude = Clone(src.debuffExclude)
                 -- The caster-scope maps have opposite polarity per unit kind (boss:
@@ -759,6 +776,53 @@ function ns.UFOpt_ShowTrackedAuras(unitKey)
                         dst.debuffIncludeAnyCaster = nil
                     end
                 end
+                Changed()
+            end,
+        },
+    })
+end
+
+-- Buff Tracked Auras popup: the target/focus Buff Filter's "Edit Tracked
+-- Auras" action. The engine applies the lists only while the unit is friendly
+-- (BuffTrack in EUI_UnitFrames_AuraContainers.lua). No boss entry: boss frames
+-- are hostile.
+local BUFF_TRACKED_UNITS = {
+    { key = "target", label = "Target" },
+    { key = "focus",  label = "Focus" },
+}
+local BUFF_TRACKED_TITLES = {
+    target = "Target Tracked Buffs",
+    focus  = "Focus Tracked Buffs",
+}
+function ns.UFOpt_ShowBuffTrackedAuras(unitKey)
+    local choices = TrackedChoices(BUFF_TRACKED_UNITS, unitKey)
+    local Changed = TrackedChanged
+    EllesmereUI.ShowTrackedAurasPopup({
+        eyebrow = "UNIT FRAME AURA FILTERS",
+        title = BUFF_TRACKED_TITLES[unitKey] or "Tracked Buffs",
+        subtitle = "Friendly units only. Included buffs show on top of your Buff Filter (or alone with Only Tracked Auras).",
+        includeGet = function() return TrackedList(unitKey, "buffInclude") end,
+        excludeGet = function() return TrackedList(unitKey, "buffExclude") end,
+        includeMine = {
+            mineGet = function() return TrackedList(unitKey, "buffIncludeMine") end,
+        },
+        includeTitle = "INCLUDED BUFFS",
+        excludeTitle = "EXCLUDED BUFFS",
+        includePrompt = "Enter the spell ID of the buff to always show on this frame.",
+        excludePrompt = "Enter the spell ID of the buff to hide on this frame.",
+        onChanged = Changed,
+        copyFrom = {
+            label = "Copy Included/Excluded Buffs From:",
+            choices = choices,
+            apply = function(srcKey)
+                local db = ns.db
+                local src = db and db.profile and db.profile[srcKey]
+                local dst = db and db.profile and db.profile[unitKey]
+                if not (src and dst) then return end
+                local Clone = EllesmereUI.Lite.DeepCopy
+                dst.buffInclude = Clone(src.buffInclude)
+                dst.buffExclude = Clone(src.buffExclude)
+                dst.buffIncludeMine = Clone(src.buffIncludeMine)
                 Changed()
             end,
         },
@@ -856,7 +920,7 @@ local function HideExhaustionRow(getS, onChanged)
         tooltip = "Hides Sated, Exhaustion, Temporal Displacement and the other Bloodlust lockout debuffs.",
         get = function() return getS().debuffHideExhaustion ~= false end,
         set = function(v)
-            getS().debuffHideExhaustion = (not v) and false or nil
+            if v then getS().debuffHideExhaustion = nil else getS().debuffHideExhaustion = false end
             onChanged()
         end }
 end
@@ -895,8 +959,9 @@ initFrame:SetScript("OnEvent", function(self)
     local floor = math.floor
     local abs = math.abs
 
-    local GetUFOptOutline = EllesmereUI.GetFontOutlineFlag
-    local SetPVFont = EllesmereUI.ApplyModuleFont
+    -- The preview's texts show names as the frames do, so they take a font
+    -- family as live; every font write to them goes through here.
+    local SetPVFont = EllesmereUI.ApplyModuleFontFamily
 
     ---------------------------------------------------------------------------
     --  Shared helpers
@@ -909,6 +974,7 @@ initFrame:SetScript("OnEvent", function(self)
     local optState = {}
     optState.showCombatIndicatorPreview = false
     optState.showHealAbsorbPreview      = false  -- eyeball toggle for the Heal Absorb Style preview
+    optState.showMaxHealthPreview       = false  -- eyeball toggle for the Max Health Style preview
     optState.showDispelOverlayPreview   = false  -- eyeball toggle for the player dispel overlay preview
     -- Preview hover-highlight hint text (shared across Single/Multi tabs)
     optState._ufPreviewHintFS_display = nil  -- hint FontString for the Main Frames page
@@ -1306,14 +1372,15 @@ initFrame:SetScript("OnEvent", function(self)
         ["healabsorb"]      = "Heal Absorb Amount",
         ["healabsorbshort"] = "Heal Absorb Short (80k)",
         ["group"]        = "Group Number",
+        ["custom"]       = "Custom",
         ["none"]         = "None",
     }
-    local healthTextOrder = { "none", "---", "name", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both" }
+    local healthTextOrder = { "none", "---", "custom", "---", "name", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both" }
     -- Boss frames also get "Name > Target" (the boss's target); ToT/FoT/Pet do not.
-    local healthTextOrderBoss = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
-    local healthTextOrderPlayer = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort", "group" }
+    local healthTextOrderBoss = { "none", "---", "custom", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
+    local healthTextOrderPlayer = { "none", "---", "custom", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort", "group" }
     -- Target/Focus: player's absorb options minus "group" (raid group number is meaningless off the player).
-    local healthTextOrderTargetFocus = { "none", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
+    local healthTextOrderTargetFocus = { "none", "---", "custom", "---", "name", "nametotarget", "targetname", "levelname", "namelevel", "level", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "bothdash", "perhpnumdash", "absorb", "absorbshort", "healabsorb", "healabsorbshort" }
 
     -- Text bar (BTB) text dropdown values (includes power options)
     local btbTextValues = {
@@ -1330,9 +1397,10 @@ initFrame:SetScript("OnEvent", function(self)
         ["curmaxpp"]     = "Power Value / Max",
         ["curhp_curpp"]  = "Health | Power Value",
         ["perhp_perpp"]  = "Health | Power %",
+        ["custom"]       = "Custom",
         ["none"]         = "None",
     }
-    local btbTextOrder = { "none", "---", "name", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "perpp", "curpp", "curmaxpp", "curhp_curpp", "perhp_perpp" }
+    local btbTextOrder = { "none", "---", "custom", "---", "name", "perhp", "perhpnosign", "curhpshort", "healthshort", "curmaxhp", "perhpnum", "both", "perpp", "curpp", "curmaxpp", "curhp_curpp", "perhp_perpp" }
 
     -- Class theme portrait icons: full-size versions of the sidebar class art.
     local ICONS_PATH = "Interface\\AddOns\\EllesmereUI\\media\\icons\\"
@@ -1343,7 +1411,7 @@ initFrame:SetScript("OnEvent", function(self)
     local classIconValues = {
         ["none"]="None", ["modern"]="Modern",
         ["arcade"]="Arcade", ["glyph"]="Glyph", ["legend"]="Legend",
-        ["midnight"]="Midnight", ["pixel"]="Pixel", ["pixelsComic"]="Pixels Comic", ["runic"]="Runic",
+        ["midnight"]="Midnight", ["pixel"]="Pixel", ["pixelsComic"]="Comic", ["runic"]="Runic",
         _menuOpts = { itemHeight = 32, icon = function(key)
             if key == "none" then return nil end
             local _, ct = UnitClass("player")
@@ -1446,6 +1514,15 @@ initFrame:SetScript("OnEvent", function(self)
             if ct then
                 local c = RAID_CLASS_COLORS[ct]
                 if c then bR, bG, bB = c.r, c.g, c.b end
+            end
+        end
+
+        if pFrame._previewBg then
+            local bgc = isDetached and s.detachedPortraitBgColor
+            if bgc then
+                pFrame._previewBg:SetColorTexture(bgc.r, bgc.g, bgc.b, bgc.a or 1)
+            else
+                pFrame._previewBg:SetColorTexture(0.082, 0.082, 0.082, 1)
             end
         end
 
@@ -1587,12 +1664,10 @@ initFrame:SetScript("OnEvent", function(self)
                 PP.Point(pFrame._previewTex, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", oR, oB)
             end
         end
-        if pFrame._previewModel then
-            -- 3D models ignore SetClipsChildren, so pin them to the frame bounds.
-            pFrame._previewModel:ClearAllPoints()
-            PP.Point(pFrame._previewModel, "TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-            PP.Point(pFrame._previewModel, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
-        end
+        -- 3D Portrait Below Border: the model inside the ring and under it,
+        -- as on the live portrait; off, it fills the frame over the ring.
+        ns.UF_PortraitShapeModel(pFrame, pFrame._shapeBorderTex, pFrame._previewModel,
+            pFrame._previewMode == "3d" and s.portrait3dBelowBorder == true, shape, rawBorderSize)
 
         -- Outer Ring / Inner Shadow: the live portrait's own helper. A shown
         -- Outer Ring and an unmasked ring below Size 7 reach past the frame,
@@ -1608,7 +1683,7 @@ initFrame:SetScript("OnEvent", function(self)
     -- Portrait art style dropdown values
     local classThemeSubValues = {
         ["modern"]="Modern", ["arcade"]="Arcade", ["glyph"]="Glyph",
-        ["legend"]="Legend", ["midnight"]="Midnight", ["pixel"]="Pixel", ["pixelsComic"]="Pixels Comic",
+        ["legend"]="Legend", ["midnight"]="Midnight", ["pixel"]="Pixel", ["pixelsComic"]="Comic",
         ["runic"]="Runic",
     }
     local classThemeSubOrder = { "modern", "arcade", "glyph", "legend", "midnight", "pixel", "pixelsComic", "runic" }
@@ -1840,7 +1915,7 @@ initFrame:SetScript("OnEvent", function(self)
     -- color settings do nothing: grey out and block the whole DualRow region (every
     -- swatch/slider/cog/sync in it). A widget-refresh callback tracks the toggle live
     -- (RefreshPage's fast path re-runs these without a full rebuild).
-    local function AddDarkModeBlock(rgn)
+    local function AddDarkModeBlock(rgn, unitFn)
         if not rgn then return end
         local block = CreateFrame("Frame", nil, rgn)
         block:SetAllPoints()
@@ -1849,7 +1924,7 @@ initFrame:SetScript("OnEvent", function(self)
         block:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(block, "Not available in Dark Mode. Dark Mode colors can be adjusted in Global Settings -> Colors.") end)
         block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         local function Update()
-            if db and db.profile and db.profile.darkTheme then
+            if ns.UF_DarkThemeOn(unitFn()) then
                 rgn:SetAlpha(0.3); block:Show()
             else
                 rgn:SetAlpha(1); block:Hide()
@@ -1878,6 +1953,10 @@ initFrame:SetScript("OnEvent", function(self)
         healAbsorbColor      = { player=true, target=true, focus=true },
         healAbsorbEdgeMode   = { player=true, target=true, focus=true },
         healAbsorbBgOpacity  = { player=true, target=true, focus=true },
+        maxHealthStyle       = { player=true, target=true, focus=true },
+        maxHealthOpacity     = { player=true, target=true, focus=true },
+        maxHealthColor       = { player=true, target=true, focus=true },
+        maxHealthBgOpacity   = { player=true, target=true, focus=true },
         healPrediction       = { player=true, target=true, focus=true },
         healPredOpacity      = { player=true, target=true, focus=true },
         healPredOverheal     = { player=true, target=true, focus=true },
@@ -1917,7 +1996,11 @@ initFrame:SetScript("OnEvent", function(self)
         factionIndicatorPosition    = { player=true, target=true },
         factionIndicatorX           = { player=true, target=true },
         factionIndicatorY           = { player=true, target=true },
-        buffAnchor           = { player=true, target=true, focus=true },
+        factionIndicatorTimer       = { player=true },
+        factionIndicatorTimerSize   = { player=true },
+        factionIndicatorTimerX      = { player=true },
+        factionIndicatorTimerY      = { player=true },
+        buffAnchor          = { player=true, target=true, focus=true },
         buffGrowth           = { player=true, target=true, focus=true },
         maxBuffs             = { player=true, target=true, focus=true },
         showPlayerCastbar    = { player=true },
@@ -1945,6 +2028,8 @@ initFrame:SetScript("OnEvent", function(self)
         castbarKickTickEnabled     = { target=true, focus=true },
         castbarImportantGlow       = { target=true, focus=true },
         castCombineNameTarget      = { target=true, focus=true },
+        castFullCraftTime          = { player=true },
+        castFitSpellName           = { player=true, target=true, focus=true },
         showClassPowerBar    = { player=true },
         lockClassPowerToFrame= { player=true },
         classPowerStyle      = { player=true },
@@ -2389,6 +2474,9 @@ initFrame:SetScript("OnEvent", function(self)
         if (optState.selectedUnit == "player" or optState.selectedUnit == "target") and parent._ufFactionRow then
             parent._sharedClickTargets.factionIndicator = { section = sharedAddHeader, target = parent._ufFactionRow, slotSide = "left" }
         end
+        if optState.selectedUnit == "player" and parent._ufPvpTimerRow then
+            parent._sharedClickTargets.pvpTimer = { section = sharedAddHeader, target = parent._ufPvpTimerRow, slotSide = "left" }
+        end
 
         return y
     end  -- BuildSharedSettings
@@ -2618,6 +2706,12 @@ initFrame:SetScript("OnEvent", function(self)
                     ov:SetShown(b[1]:IsShown())
                     pv._badgeOv[b[1]] = ov
                 end
+            end
+            -- The PvP Flagged Timer's sample text, the same way.
+            if pv._pvPvpTimer and targets.pvpTimer then
+                local ov = CreateHitOverlay(pv._pvPvpTimer, "pvpTimer", true, baseLevel + 20)
+                ov:SetShown(pv._pvPvpTimer:IsShown())
+                pv._badgeOv[pv._pvPvpTimer] = ov
             end
             pv._textOverlays = textOverlays
         end
@@ -2956,7 +3050,7 @@ initFrame:SetScript("OnEvent", function(self)
                 if not s then return nil end
                 if Inheriting(s) then return "This option requires a Bar Texture other than Inherit (Main Frames)." end
                 if Tex(s) == "none" then return "This option requires a Bar Texture other than None." end
-                if db.profile.darkTheme then return "This option requires a Dark Mode Fill of 100 (Global Settings > Colors)." end
+                if ns.UF_DarkThemeOn(s) then return "This option requires a Dark Mode Fill of 100 (Global Settings > Colors)." end
                 if mini == "boss" then return "This option requires a health Fill Color of 100." end
                 return "This option requires a health Fill Opacity of 100."
             end,
@@ -2989,7 +3083,7 @@ initFrame:SetScript("OnEvent", function(self)
         classPowerPosOrder = classPowerPosOrder, classPowerPosValues = classPowerPosValues, classPowerStyleOrder = classPowerStyleOrder,
         classPowerStyleValues = classPowerStyleValues, classThemeSubOrder = classThemeSubOrder, classThemeSubValues = classThemeSubValues,
         db = db, DebuffModeDropdownCfg = DebuffModeDropdownCfg, detPortraitShapeOrder = detPortraitShapeOrder,
-        detPortraitShapeValues = detPortraitShapeValues, frames = frames, GetUFOptOutline = GetUFOptOutline,
+        detPortraitShapeValues = detPortraitShapeValues, frames = frames,
         GROUP_UNIT_ORDER = GROUP_UNIT_ORDER, HideExhaustionRow = HideExhaustionRow, healthTextOrder = healthTextOrder, healthTextOrderBoss = healthTextOrderBoss,
         healthTextOrderPlayer = healthTextOrderPlayer, healthTextOrderTargetFocus = healthTextOrderTargetFocus, healthTextValues = healthTextValues,
         MINI_GROUP_ORDER = MINI_GROUP_ORDER, optState = optState, portraitArtOrder = portraitArtOrder,

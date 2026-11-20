@@ -14,7 +14,8 @@ local I = EUI_NS._soInternals
 if not I or I.broken then return end
 I.broken = true
 
-local BlacklistedFKey, CurrentSpecID, DBFor = I.BlacklistedFKey, I.CurrentSpecID, I.DBFor
+local BlacklistedFKey, ConflictSpec = I.BlacklistedFKey, I.ConflictSpec
+local CurrentSpecID, DBFor = I.CurrentSpecID, I.DBFor
 local EDIT_B, EDIT_G, EDIT_R, EntryOwning = I.EDIT_B, I.EDIT_G, I.EDIT_R, I.EntryOwning
 local FKeyLoaded, FOLDER_BLACKLIST, GetGroups = I.FKeyLoaded, I.FOLDER_BLACKLIST, I.GetGroups
 local GetStore, HasRegisteredDefault, L = I.GetStore, I.HasRegisteredDefault, I.L
@@ -26,6 +27,7 @@ local HarvestDefaults, HarvestGroup = I.HarvestDefaults, I.HarvestGroup
 local WriteDefaultValues, WriteGroupValues = I.WriteDefaultValues, I.WriteGroupValues
 local WriteSpecValues, Cond, CurrentContext = I.WriteSpecValues, I.Cond, I.CurrentContext
 local DiffProfiles, IsExcludedContext = I.DiffProfiles, I.IsExcludedContext
+local SlotReads = I.SlotReads
 local RequestGoldWalk, SnapshotProfiles = I.RequestGoldWalk, I.SnapshotProfiles
 local UpdateEditLocks, SetEditGroup = I.UpdateEditLocks, I.SetEditGroup
 local SetDefaultView, SetEnterSnap = I.SetDefaultView, I.SetEnterSnap
@@ -117,7 +119,107 @@ local function SampleAttribution()
     end
 end
 
-local function AutoCapture(changes)
+-- An override entry's crumb from its fields, each localized: module title, element,
+-- the page's tab label, section; nil while the module is not registered. The list
+-- rebuilds it live (BuildListRow); capture stores it for when the module is missing.
+local function BuildEntryCrumb(module, element, page, section)
+    local modTitle = module and EllesmereUI:GetModuleTitle(module)
+    if not modTitle then return nil end
+    local parts = { L(modTitle) }
+    if element then parts[#parts + 1] = L(element) end
+    if page then parts[#parts + 1] = L(EUI_NS.GetTabLabel(module, page)) end
+    if section then parts[#parts + 1] = L(section) end
+    return table.concat(parts, "  >  ")
+end
+
+-- The entry a slot with no entry under its name already has in the session's OWN
+-- store (the conditional store in a conditional session, else the spec store), so a
+-- row renamed or moved keeps its one entry. Proof is a key the slot's getters read
+-- (cfg traced through SlotReads; a setter's write to another row's key is never
+-- read by this slot, so it never counts):
+--   1. the entry owning one of `owned` (the same edit's fkeys that store owned
+--      already; the captured paths never are) that the slot reads;
+--   2. else an entry under the slot's own label on the same page (a row moved to
+--      another section, or to the page its module's movedSections names for the
+--      entry: EUI_NS.EntryPage) whose every key the slot reads (a size key's
+--      exact-size partner counts with it), for an edit that writes only keys no
+--      entry owns.
+-- Only an entry of the same module and element qualifies, and on the spec side never
+-- one a conflicting group owns (its values never bank in this session). nil = none.
+local function SlotOwnerEntry(cfg, owned, condSession, module, element, page, slotLabel, sStore)
+    local reads = SlotReads(cfg)
+    if not next(reads) then return nil end
+    local owning = condSession and Cond.EntryOwning or EntryOwning
+    local function Qualifies(e)
+        return e and e.module == module and (e.element or "") == (element or "")
+           and (condSession or not ConflictSpec(e, _editGroup)) and true or false
+    end
+    for i = 1, (owned and #owned or 0) do
+        if reads[owned[i]] then
+            local e = owning(owned[i])
+            if Qualifies(e) then return e end
+        end
+    end
+    for _, e in ipairs(sStore or {}) do
+        local def = e.values and e.values.default
+        if type(def) == "table" and e.slotLabel == slotLabel
+           and (EUI_NS.EntryPage(e.module, e.page, e.section, slotLabel) or "") == (page or "") and Qualifies(e) then
+            local any, all = false, true
+            for fkey in pairs(def) do
+                local base = type(fkey) == "string" and fkey:match("^(.*)Px$")
+                if reads[fkey] or (base and reads[base] and PxCo.Partner(base) == fkey) then
+                    any = true
+                else
+                    all = false
+                end
+            end
+            if any and all then return e end
+        end
+    end
+    return nil
+end
+
+-- The slot's current name and place, on the entry it already has.
+local function TakeOverEntry(entry, slotLabel, module, element, page, section)
+    entry.label, entry.slotLabel = slotLabel, slotLabel
+    entry.crumb = BuildEntryCrumb(module, element, page, section) or entry.crumb
+    entry.page, entry.section, entry.element = page, section, element
+end
+
+-- An edit that writes only keys the session's store already owns captures nothing,
+-- but a renamed or moved slot still takes over the entry it has (SlotOwnerEntry's
+-- proof: a key the slot's getters read). Values are untouched. Same attribution,
+-- context and burst guards as AutoCapture below.
+local function RelabelOwnedSlot(owned)
+    if EllesmereUI._prebuilding then return end
+    local snap = _lastAttr.snap
+    if not (snap and snap.cfg and (GetTime() - _lastAttr.time) < 3) then return end
+    local section = snap.section
+    if IsExcludedContext(section) or #owned > 12 then return end
+    local condSession = Cond._edit
+    local sStore = condSession and Cond.GetStore(true) or GetStore(true)
+    if not sStore then return end
+    local cfg = snap.cfg
+    local slotLabel = tostring(cfg.text or "?")
+    local module = EllesmereUI:GetActiveModule()
+    local page = EllesmereUI:GetActivePage()
+    local element = CurrentContext()
+    for _, e in ipairs(sStore) do
+        if e.slotLabel == slotLabel and e.module == module
+           and (e.element or "") == (element or "")
+           and (e.page or "") == (page or "")
+           and (e.section or "") == (section or "") then
+            return  -- already under this slot's name
+        end
+    end
+    local entry = SlotOwnerEntry(cfg, owned, condSession, module, element, page, slotLabel, sStore)
+    if entry then TakeOverEntry(entry, slotLabel, module, element, page, section) end
+end
+
+-- changes: the edit's fkeys no entry of the session's store owns (captured here);
+-- owned (optional): the same edit's fkeys that store already owns (array of fkeys),
+-- read only to find the entry a renamed or moved slot already has.
+local function AutoCapture(changes, owned)
     -- Hidden search prebuild: selector setters and lazy page seeding write
     -- db.profile from a pass the user never sees -- never capture them.
     if EllesmereUI._prebuilding then return end
@@ -217,17 +319,18 @@ local function AutoCapture(changes)
     end
     local isNew = false
     if not entry then
+        -- No entry under this slot's name: the entry the slot already has (its row
+        -- was renamed or moved) takes the slot's current name and place instead of
+        -- a second entry starting.
+        entry = SlotOwnerEntry(cfg, owned, condSession, module, element, page, slotLabel, sStore)
+        if entry then TakeOverEntry(entry, slotLabel, module, element, page, section) end
+    end
+    if not entry then
         isNew = true
-        local crumbParts = {}
-        local modTitle = module and EllesmereUI:GetModuleTitle(module)
-        if modTitle then crumbParts[#crumbParts + 1] = L(modTitle) end
-        if element then crumbParts[#crumbParts + 1] = L(element) end
-        if page then crumbParts[#crumbParts + 1] = L(page) end
-        if section then crumbParts[#crumbParts + 1] = L(section) end
         entry = {
             label = slotLabel,
             slotLabel = slotLabel,
-            crumb = table.concat(crumbParts, "  >  "),
+            crumb = BuildEntryCrumb(module, element, page, section),
             module = module, page = page,
             element = element, section = section,
             group = condSession and condSession.id or (_editGroup and _editGroup.id or nil),
@@ -458,23 +561,31 @@ local function WatchTick()
     local diffs = DiffProfiles(_watchSnap)
     if #diffs == 0 then return end
     if not _watchResync then
-        local newOnes = nil
+        local newOnes, ownedOnes = nil, nil
         for _, c in ipairs(diffs) do
+            -- Conditional session: spec-owned fkeys are editable here too
+            -- (each store keeps its own value; the session shows
+            -- conditional-over-default) but spec still wins at RUNTIME.
+            -- Cond-owned fkeys bank at exit.
+            local owned
             if Cond._edit then
-                -- Conditional session: spec-owned fkeys are editable here too
-                -- (each store keeps its own value; the session shows
-                -- conditional-over-default) but spec still wins at RUNTIME.
-                -- Cond-owned fkeys bank at exit.
-                if not Cond.EntryOwning(c.fkey) then
-                    newOnes = newOnes or {}
-                    newOnes[#newOnes + 1] = c
-                end
-            elseif not EntryOwning(c.fkey) then
+                owned = Cond.EntryOwning(c.fkey)
+            else
+                owned = EntryOwning(c.fkey)
+            end
+            if not owned then
                 newOnes = newOnes or {}
                 newOnes[#newOnes + 1] = c
+            else
+                ownedOnes = ownedOnes or {}
+                ownedOnes[#ownedOnes + 1] = c.fkey
             end
         end
-        if newOnes then AutoCapture(newOnes) end
+        if newOnes then
+            AutoCapture(newOnes, ownedOnes)
+        elseif ownedOnes then
+            RelabelOwnedSlot(ownedOnes)
+        end
     end
     SetWatchResync(false)
     _watchSnap = SnapshotProfiles()
@@ -567,7 +678,7 @@ local function ProcessNotifiedWrites()
     end
     local diffs = DiffProfiles(_watchSnap)
     if #diffs == 0 then return end
-    local newOnes
+    local newOnes, ownedOnes
     for _, c in ipairs(diffs) do
         -- Ownership filter mirrors WatchTick's session branch: in a cond
         -- session cond-owned fkeys bank at exit (HarvestEdit); everything else
@@ -581,9 +692,16 @@ local function ProcessNotifiedWrites()
         if not owned then
             newOnes = newOnes or {}
             newOnes[#newOnes + 1] = c
+        else
+            ownedOnes = ownedOnes or {}
+            ownedOnes[#ownedOnes + 1] = c.fkey
         end
     end
-    if newOnes then AutoCapture(newOnes) end
+    if newOnes then
+        AutoCapture(newOnes, ownedOnes)
+    elseif ownedOnes then
+        RelabelOwnedSlot(ownedOnes)
+    end
     _watchSnap = SnapshotProfiles()
 end
 
@@ -689,6 +807,10 @@ end
 --- snap: the slot snapshot the factory took before the setter ran (optional;
 --- a detached one stands alone, with no frame).
 function EllesmereUI._NotifySettingWrite(frame, snap)
+    -- The written slot's inline cog takes notice (the cog notice in
+    -- EllesmereUI_Widgets_RowAddons.lua, defined once the options load).
+    local cogNotice = EllesmereUI._CogWriteNotice
+    if cogNotice then cogNotice(frame) end
     -- Conditional sessions capture through this path too. Without them in the gate they
     -- fall back to watcher/exit-sweep capture only, losing edits whenever a setter's
     -- forced refresh raises the resync absorb before a tick can attribute them.
@@ -783,6 +905,9 @@ EnsurePanelHideHook = function()
         -- exit sweep adopts those seeds as phantom captures. Close them with the panel.
         if EllesmereUI._specOvNamePopup then EllesmereUI._specOvNamePopup:Hide() end
         if Cond._namePopup then Cond._namePopup:Hide() end
+        -- The condition picker leads into the name popup and holds a key
+        -- capture that must not stay up into combat: it closes too.
+        if Cond._pickerPopup then Cond._pickerPopup:Hide() end
     end)
     -- Re-entering the panel returns to the Default Editing Mode view, or after
     -- an options-entered unlock roundtrip back to the session that was active
@@ -829,10 +954,8 @@ local function EnsureEditBanner()
     local bg = editBanner:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(0.05, 0.05, 0.06, 0.92)
-    local brd = editBanner:CreateTexture(nil, "BORDER")
-    brd:SetPoint("BOTTOMLEFT"); brd:SetPoint("BOTTOMRIGHT")
-    brd:SetHeight(1)
-    brd:SetColorTexture(EDIT_R, EDIT_G, EDIT_B, 0.7)
+    -- Rounded gold outline, as the Unlock Mode override banner.
+    EllesmereUI.MakeRoundedBorder(editBanner, EDIT_R, EDIT_G, EDIT_B, 0.7, bg)
     editBannerText = editBanner:CreateFontString(nil, "OVERLAY")
     editBannerText:SetFont(EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 13, "")
     editBannerText:SetPoint("TOPLEFT", editBanner, "TOPLEFT", 16, -8)
@@ -844,8 +967,9 @@ local function EnsureEditBanner()
     local done = CreateFrame("Button", nil, editBanner)
     done:SetSize(74, 24)
     done:SetPoint("RIGHT", editBanner, "RIGHT", -12, 0)
-    EllesmereUI.SolidTex(done, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
-    local dbrd = EllesmereUI.MakeBorder(done, 1, 1, 1, 0.22)
+    local dbg = EllesmereUI.SolidTex(done, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
+    dbg:SetAllPoints()
+    local dbrd = EllesmereUI.MakeRoundedBorder(done, 1, 1, 1, 0.22, dbg)
     local dlbl = EllesmereUI.MakeFont(done, 11, nil, 1, 1, 1, 0.9)
     dlbl:SetPoint("CENTER")
     dlbl:SetText(L("Done"))
@@ -1104,12 +1228,13 @@ function EllesmereUI.SpecOverrides_CloseEditSessions()
     if _defaultView and ExitDefaultView then ExitDefaultView() end
 end
 
-EnterGroupEdit = function(group)
+EnterGroupEdit = function(group, force)
     if _editGroup == group then return end
     if not group or not group.specs or #group.specs == 0 then return end
     -- BM page lock: while the Buff Manager page is bound to a live fork, only
     -- THAT group's session may open from the cards popup; any other context
-    -- would edit settings the page is not displaying.
+    -- would edit settings the page is not displaying. force: the manager
+    -- sidebar's override list switches directly (the page rebuild rebinds).
     do
         local lockKind, lockGid
         local lockLabel = "Buff Manager"
@@ -1120,7 +1245,7 @@ EnterGroupEdit = function(group)
             lockKind, lockGid = EllesmereUI.SpecOverrides_DmPageLockInfo()
             if lockKind then lockLabel = "Debuff Manager" end
         end
-        if lockKind and not (lockKind == "spec" and lockGid == group.id) then
+        if lockKind and not force and not (lockKind == "spec" and lockGid == group.id) then
             EllesmereUI:ShowConfirmPopup({
                 title = string.format(L("%s Override Active"), L(lockLabel)),
                 message = string.format(L("The active override's custom %s is bound to this page. Leave the %s tab to switch to another override."), L(lockLabel), L(lockLabel)),
@@ -1281,17 +1406,23 @@ Cond.ExitEdit = function(noRestore, noRecheck)
         if EllesmereUI.IS_FOREVER and not noRecheck and PanelShown() then
             EllesmereUI._SO_ForeverConverge()
         end
+    else
+        -- The transition re-applies only the spec layer, and its conditional
+        -- recheck is a no-op while the applied group holds: put the applied
+        -- overlay back over the session's values here (spec-owned fkeys skip).
+        local t2 = Cond.WriteValues(
+            EllesmereUI.Conditions_AppliedGid and EllesmereUI.Conditions_AppliedGid() or nil)
+        if t2 then RunRefreshers(t2) end
     end
-    -- noRestore: store writes only -- the transition applies + refreshes.
     if Cond.RefreshCards then Cond.RefreshCards() end
 end
 
-Cond.EnterEdit = function(g)
+Cond.EnterEdit = function(g, force)
     if Cond._edit == g then return end
     if not g then return end
     -- BM page lock: while the Buff Manager page is bound to a live fork, only
     -- that fork's own conditional session may open; anything else would edit
-    -- settings the page is not displaying.
+    -- settings the page is not displaying. force: as in EnterGroupEdit.
     do
         local lockKind, lockGid
         local lockLabel = "Buff Manager"
@@ -1302,7 +1433,7 @@ Cond.EnterEdit = function(g)
             lockKind, lockGid = EllesmereUI.SpecOverrides_DmPageLockInfo()
             if lockKind then lockLabel = "Debuff Manager" end
         end
-        if lockKind and not (lockKind == "cond" and lockGid == g.id) then
+        if lockKind and not force and not (lockKind == "cond" and lockGid == g.id) then
             EllesmereUI:ShowConfirmPopup({
                 title = string.format(L("%s Override Active"), L(lockLabel)),
                 message = string.format(L("The active override's custom %s is bound to this page. Leave the %s tab to switch to another override."), L(lockLabel), L(lockLabel)),
@@ -1353,5 +1484,6 @@ Cond.EnterEdit = function(g)
 end
 
 I.EnsurePanelHideHook, I.EnterGroupEdit = EnsurePanelHideHook, EnterGroupEdit
+I.BuildEntryCrumb = BuildEntryCrumb
 I.ExitGroupEdit, I.OnPageRebuilt = ExitGroupEdit, OnPageRebuilt
 I.broken = false

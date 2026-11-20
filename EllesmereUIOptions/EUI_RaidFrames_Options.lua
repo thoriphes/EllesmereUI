@@ -65,7 +65,7 @@ function ns.RF_OptMoveFramesButton(row, rgn, opts)
     local bbg = btn:CreateTexture(nil, "BACKGROUND")
     bbg:SetAllPoints()
     bbg:SetColorTexture(0.077, 0.068, 0.058, 0.92)
-    EllesmereUI.MakeBorder(btn, 1, 1, 1, 0.25)
+    EllesmereUI.MakeRoundedBorder(btn, 1, 1, 1, 0.25, bbg)
     local lbl = btn:CreateFontString(nil, "OVERLAY")
     EllesmereUI.ApplyModuleFont(lbl, nil, 13, "raidFrames")
     lbl:SetPoint("CENTER", btn, "CENTER", 0, 0)
@@ -149,7 +149,7 @@ function ns.RF_BuildPartyPortrait(parent, y, W, PSSet)
 
     -- Art Style: 2D, 3D, or class art in one of seven sets (the flyout).
     local classVals = { modern = "Modern", arcade = "Arcade", glyph = "Glyph", legend = "Legend",
-        midnight = "Midnight", pixel = "Pixel", pixelsComic = "Pixels Comic", runic = "Runic" }
+        midnight = "Midnight", pixel = "Pixel", pixelsComic = "Comic", runic = "Runic" }
     local classOrder = { "modern", "arcade", "glyph", "legend", "midnight", "pixel", "pixelsComic", "runic" }
     local artValues = {
         ["3d"] = "3D Portrait",
@@ -171,7 +171,8 @@ function ns.RF_BuildPartyPortrait(parent, y, W, PSSet)
 
     -- Row 1: Portrait Mode | Art Style. A mode change can widen the frame
     -- (the full party pass) and shows or hides the rows below (a rebuild).
-    _, h = W:DualRow(parent, y,
+    local modeRow
+    modeRow, h = W:DualRow(parent, y,
         ns.RF_PartyKitGate({ type="dropdown", text="Portrait Mode",
           tooltip="Attached widens each frame by the portrait.",
           values={ none = "None", attached = "Attached", detached = "Detached" },
@@ -227,6 +228,36 @@ function ns.RF_BuildPartyPortrait(parent, y, W, PSSet)
               SetArt(v)
               RunWidgetRefresh()
           end });  y = y - h
+    -- Portrait Settings (Detached only): Clickable Portrait, Background Color.
+    EllesmereUI.BuildInlineCog(modeRow._leftRegion, {
+        title = "Portrait Settings",
+        disabled = function() return kit or PV("partyPortraitStyle", "none") ~= "detached" end,
+        disabledTooltip = function()
+            if kit then return "Frame Style: Party Frames" end
+            return "This option requires Portrait Mode to be set to Detached."
+        end,
+        rawTooltip = function() return not kit end,
+        requireState = "disabled",
+        rows = {
+            { type="toggle", label="Clickable Portrait",
+              tooltip="Clicking or hovering the detached portrait acts like clicking or hovering the frame's bars.",
+              get=function() return PV("partyPortraitClickable", false) end,
+              set=function(v) PtSet("partyPortraitClickable", v or nil) end },
+            { type="colorpicker", label="Background Color", hasAlpha=true,
+              tooltip="Fill color behind the detached portrait.",
+              disabled=function() return PV("partyPortraitShape", "portrait") == "none" end,
+              disabledTooltip="This option requires a Shape other than None.",
+              rawTooltip=true,
+              get=function()
+                  local c = db.profile.partyPortraitBgColor
+                  if c then return c.r, c.g, c.b, c.a or 1 end
+                  return 0.1, 0.1, 0.1, 1
+              end,
+              set=function(r, g, b, a)
+                  PtSet("partyPortraitBgColor", { r = r, g = g, b = b, a = a or 1 })
+              end },
+        },
+    })
 
     if kit or PV("partyPortraitStyle", "none") == "none" then return y end
 
@@ -289,7 +320,7 @@ function ns.RF_BuildPartyPortrait(parent, y, W, PSSet)
         { type="slider", label="Y Offset", min=-100, max=100, step=1,
           get=function() return PV("partyPortraitY", 0) end,
           set=function(v) PtSet("partyPortraitY", v) end },
-    }, icon = EllesmereUI.DIRECTIONS_ICON,
+    },
     disabled = function() return PV("partyPortraitStyle", "none") ~= "detached" end,
     disabledTooltip = "This option requires Portrait Mode to be set to Detached." })
 
@@ -427,9 +458,9 @@ function ns.RF_BuildPartyTargets(parent, y, W)
     -- target frames' own keys).
     row, h = W:DualRow(parent, y,
         { type="dropdown", text="Fill Color",
-          values={ class = "Class Color", dark = "Dark Mode", classic = "Classic", custom = "Custom Color" },
-          order={ "class", "dark", "classic", "custom" },
-          tooltip="Class Color uses the class color for players and the reaction color for NPCs.",
+          values={ class = "Class Color", dark = "Dark Mode", classic = "Classic", custom = "Custom Color", customDynamic = "Custom Dynamic Colors" },
+          order={ "class", "dark", "classic", "custom", "customDynamic" },
+          tooltip="Custom Dynamic Colors: the health bar smoothly blends between three colors you pick -- one for full health (100%), one for half (50%), and one for empty (0%) -- shifting through them as the unit takes damage or is healed.",
           getValue=function() return PV("partyTargetHealthColorMode", "class") end,
           setValue=function(v)
               PtSet("partyTargetHealthColorMode", v)
@@ -440,38 +471,20 @@ function ns.RF_BuildPartyTargets(parent, y, W)
           disabledTooltip=DARK_TIP, rawTooltip=true,
           getValue=function() return PV("partyTargetBgDarkness", 50) end,
           setValue=function(v) PtSet("partyTargetBgDarkness", v) end });  y = y - h
-    -- Custom fill swatch: live only in Custom mode, dimmed and blocked otherwise.
-    if not EllesmereUI._prebuilding then
-        local rgn = row._leftRegion
-        local swatch = EllesmereUI.BuildColorSwatch(
-            rgn, row:GetFrameLevel() + 3,
-            function()
-                local c = db.profile.partyTargetCustomFillColor
-                if c then return c.r, c.g, c.b, 1 end
-                return 37/255, 193/255, 29/255, 1
-            end,
-            function(r, g, b)
-                PtSet("partyTargetCustomFillColor", { r=r, g=g, b=b })
-            end, false, 20)
-        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        -- Blocking overlay: non-clickable + tooltip unless Fill Color is Custom.
-        local block = CreateFrame("Frame", nil, swatch)
-        block:SetAllPoints()
-        block:SetFrameLevel(swatch:GetFrameLevel() + 10)
-        block:EnableMouse(true)
-        block:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(swatch, "Only available with Custom fill color") end)
-        block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        local function UpdateSwatchVis()
-            if PV("partyTargetHealthColorMode", "class") == "custom" then
-                swatch:SetAlpha(1); block:Hide()
-            else
-                swatch:SetAlpha(0.3); block:Show()
-            end
-        end
-        EllesmereUI.RegisterWidgetRefresh(UpdateSwatchVis)
-        UpdateSwatchVis()
-    end
+    -- The Custom Color swatch (live only in Custom mode) and the three gradient stops of Custom
+    -- Dynamic Colors, which take its place there.
+    EllesmereUI.BuildFillColorSwatches(row._leftRegion, {
+        mode = function() return PV("partyTargetHealthColorMode", "class") end,
+        getCustom = function()
+            local c = db.profile.partyTargetCustomFillColor
+            if c then return c.r, c.g, c.b end
+            return 37/255, 193/255, 29/255
+        end,
+        setCustom = function(r, g, b) PtSet("partyTargetCustomFillColor", { r=r, g=g, b=b }) end,
+        keys = { "partyTargetDynamicColor100", "partyTargetDynamicColor50", "partyTargetDynamicColor0" },
+        getStop = function(key) return PV(key, nil) end,
+        setStop = function(key, r, g, b) PtSet(key, { r=r, g=g, b=b }) end,
+    })
     -- Background Custom + Class swatch pair: clicking either toggles partyTargetBgClassColored, the inactive one dims (mirrors the fill picker).
     if not EllesmereUI._prebuilding then
         local rgn = row._rightRegion
@@ -548,11 +561,11 @@ function ns.RF_BuildPartyTargets(parent, y, W)
           getValue=function() return PV("partyTargetHeight", 33) end,
           setValue=function(v) LaySet("partyTargetHeight", v) end });  y = y - h
 
-    -- Row 4: Position (+ offsets cog). Shows the side the frames actually
-    -- take (the Horizontal Frames setter's refresh re-reads it); a pick of
-    -- the side an unset Position shows (the kit's move included) is stored
-    -- as unset, so it keeps following the layout and the frame style.
-    -- Under the Party Frames kit the stacked frames' buff side is taken.
+    -- Row 4: Position (+ offsets cog) | Text Color (the target's name). Position shows the
+    -- side the frames actually take (the Horizontal Frames setter's refresh re-reads it); a
+    -- pick of the side an unset Position shows (the kit's move included) is stored as unset,
+    -- so it keeps following the layout and the frame style. Under the Party Frames kit the
+    -- stacked frames' buff side is taken.
     row, h = W:DualRow(parent, y,
         { type="dropdown", text="Position",
           tooltip="Right by default, or Bottom with Horizontal Frames. With Frame Style: Party Frames, the side holding the buffs is not available.",
@@ -575,7 +588,46 @@ function ns.RF_BuildPartyTargets(parent, y, W)
               if db.profile.partyCompactMode and ns.PT_PositionAlongStack(v, db.profile.partyHorizontal) then return end
               LaySet("partyTargetPosition", (v ~= ns.PT_ShownSide(true)) and v or nil)
           end },
-        BLANK());  y = y - h
+        { type="multiSwatch", text="Text Color",
+          swatches = {
+            { tooltip = "Custom Color",
+              hasAlpha = false,
+              getValue = function()
+                  local c = db.profile.partyTargetCustomTextColor
+                  if c then return c.r, c.g, c.b, 1 end
+                  return 1, 1, 1, 1
+              end,
+              setValue = function(r, g, b)
+                  PtSet("partyTargetCustomTextColor", { r=r, g=g, b=b })
+              end,
+              onClick = function(self)
+                  if PV("partyTargetTextClassColored", false) then
+                      PtSet("partyTargetTextClassColored", false)
+                      EllesmereUI:RefreshPage()
+                      return
+                  end
+                  if self._eabOrigClick then self._eabOrigClick(self) end
+              end,
+              refreshAlpha = function()
+                  return PV("partyTargetTextClassColored", false) and 0.3 or 1
+              end },
+            { tooltip = "Class Color",
+              hasAlpha = false,
+              getValue = function()
+                  local _, ct = UnitClass("player")
+                  local cc = ct and EllesmereUI.GetClassColor(ct)
+                  if cc then return cc.r, cc.g, cc.b, 1 end
+                  return 1, 1, 1, 1
+              end,
+              setValue = function() end,
+              onClick = function()
+                  PtSet("partyTargetTextClassColored", true)
+                  EllesmereUI:RefreshPage()
+              end,
+              refreshAlpha = function()
+                  return PV("partyTargetTextClassColored", false) and 1 or 0.3
+              end },
+          } });  y = y - h
     EllesmereUI.BuildInlineCog(row._leftRegion, { title = "Target Position Offsets", rows = {
         { type="slider", label="X Offset", min=-100, max=100, step=1,
           get=function() return PV("partyTargetOffsetX", 0) end,
@@ -583,7 +635,7 @@ function ns.RF_BuildPartyTargets(parent, y, W)
         { type="slider", label="Y Offset", min=-100, max=100, step=1,
           get=function() return PV("partyTargetOffsetY", 0) end,
           set=function(v) LaySet("partyTargetOffsetY", v) end },
-    }, icon = EllesmereUI.DIRECTIONS_ICON })
+    }})
     return y
 end
 
@@ -775,24 +827,6 @@ initFrame:SetScript("OnEvent", function(self)
     }
     local healthColorOrder = { "class", "classReactive", "dark", "classic", "custom", "customDynamic" }
 
-    local namePositionValues = EllesmereUI.POSITION_GRID_VALUES
-    local namePositionOrder = EllesmereUI.POSITION_GRID_ORDER
-
-    -- Name Position adds "None" (hides the name); Health Text Position reuses these base tables, so keep "None" out of the shared set.
-    local namePositionValuesName = EllesmereUI.POSITION_GRID_VALUES_NONE
-    local namePositionOrderName = { "topleft", "top", "topright", "left", "center", "right", "bottomleft", "bottom", "bottomright", "none" }
-
-    local healthTextValues = {
-        ["none"]          = "None",
-        ["percent"]       = "Percent",
-        ["percentNoSign"] = "Percent (No Sign)",
-        ["number"]        = "Number",
-        ["numberPercent"] = "Number | Percent",
-        ["percentNumber"] = "Percent | Number",
-        ["missing"]       = "Missing Number",
-    }
-    local healthTextOrder = { "none", "percent", "percentNoSign", "number", "numberPercent", "percentNumber", "missing" }
-
     local absorbStyleValues = {
         ["none"]            = "None",
         ["striped"]         = "Striped",
@@ -848,7 +882,7 @@ initFrame:SetScript("OnEvent", function(self)
             background = function(key)
                 if not key or key == "---" or key == "none" then return nil end
                 if key == "blizzardModern" then return ns.ResolveAbsorbStyleTex("striped"), modernSwatch end
-                if key == "maxHealthStripes" then return "Interface\\AddOns\\EllesmereUIRaidFrames\\Media\\striped-maxhp.png" end
+                if key == "maxHealthStripes" then return EllesmereUI.MAX_HEALTH_STRIPES_TEX end
                 return ns.ResolveAbsorbStyleTex and ns.ResolveAbsorbStyleTex(key) or nil
             end,
         }
@@ -1017,7 +1051,7 @@ initFrame:SetScript("OnEvent", function(self)
             local host = CreateFrame("Frame", nil, ddCtrl)
             host:SetAllPoints(ddCtrl)
             host:SetFrameLevel(ddCtrl:GetFrameLevel() + 30)
-            EllesmereUI.PP.CreateBorder(host, gold[1], gold[2], gold[3], 0.9, 1, "OVERLAY", 7)
+            EllesmereUI.MakeRoundedBorder(host, gold[1], gold[2], gold[3], 0.9)
             host:Hide()
             if not EllesmereUI._prebuilding then
                 local e = pvModeCtrls[pvCtx]
@@ -1572,9 +1606,33 @@ initFrame:SetScript("OnEvent", function(self)
         end)
     end
 
+    -- Textured Background: the Health Bar Fill cog's row, shared with Global
+    -- Settings > Textures. read(key, default) / write(key, value): the page's own
+    -- settings access (the Textures card reads and writes the raid keys).
+    local function TexBgRowCfg(read, write)
+        local function Dark() return read("healthColorMode", "class") == "dark" end
+        return { type="toggle", label="Textured Background",
+            tooltip="Draws the bar texture on the health and power backgrounds too.",
+            disabled=function()
+                if read("healthBarTexture", "atrocity") == "none" then return true end
+                if Dark() then return not ns.RF_TexBgOpaque(nil, true) end
+                return read("healthBarOpacity", 100) < 100
+            end,
+            disabledTooltip=function()
+                if read("healthBarTexture", "atrocity") == "none" then
+                    return "This option requires a Health Bar Texture other than None."
+                end
+                if Dark() then return "This option requires a Dark Mode Fill of 100 (Global Settings > Colors)." end
+                return "This option requires a Fill Opacity of 100."
+            end,
+            get=function() return read("textureBg", false) == true end,
+            set=function(v) write("textureBg", v and true or false) end }
+    end
+
     -- Shared with the page builders under RaidFrames_Options\ (read in their
     -- prologs). Every field is final here: optState holds the mutable state.
     ns._RFO_OptEnv = {
+        TexBgRowCfg = TexBgRowCfg,
         AbbreviateNumbers = AbbreviateNumbers, absorbStyleOrder = absorbStyleOrder,
         absorbStyleValues = absorbStyleValues, allGrowthOrder = allGrowthOrder,
         BuildPreviewModeRow = BuildPreviewModeRow, BuildVisualSections = BuildVisualSections,
@@ -1582,11 +1640,8 @@ initFrame:SetScript("OnEvent", function(self)
         groupGrowthValues = groupGrowthValues, hbtOrder = hbtOrder,
         hbtValues = hbtValues, healAbsorbStyleOrder = healAbsorbStyleOrder,
         healthColorOrder = healthColorOrder, healthColorValues = healthColorValues,
-        healthTextOrder = healthTextOrder, healthTextValues = healthTextValues,
         IsPreviewOff = IsPreviewOff, KeepGrowthPerpendicular = KeepGrowthPerpendicular,
         maxHealthStyleOrder = maxHealthStyleOrder, MissingGlowDesc = MissingGlowDesc,
-        namePositionOrder = namePositionOrder, namePositionOrderName = namePositionOrderName,
-        namePositionValues = namePositionValues, namePositionValuesName = namePositionValuesName,
         optState = optState, PP = PP, ReadGroupGrowth = ReadGroupGrowth,
         ReloadAndUpdate = ReloadAndUpdate, SGet = SGet,
         SGetPx = SGetPx, SSet = SSet, SVal = SVal, SWrite = SWrite,
@@ -1665,10 +1720,12 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     EllesmereUI:RegisterModule("EllesmereUIRaidFrames", {
-        title       = "Raid Frames",
-        description = "Configure raid frame appearance and behavior.",
+        title       = "Raid & Party Frames",
+        description = "Configure raid and party frame appearance and behavior.",
         -- No Auras page: debuffs and defensives/externals live in the managers.
         pages       = { PAGE_MAIN, PAGE_PARTY, PAGE_BUFFS, PAGE_DM, PAGE_CLICKCAST },
+        -- Module-scoped: "Frames" is a generic page name another module could use.
+        tabLabels   = { [PAGE_MAIN] = "Raid" },
         -- The managers draw over the scroll frame: no inline search there.
         noSearchPages = { [PAGE_BUFFS] = true, [PAGE_DM] = true, [PAGE_CLICKCAST] = true },
         searchTerms = rfSearchTerms,
@@ -1736,6 +1793,14 @@ initFrame:SetScript("OnEvent", function(self)
             -- Mirrors buildPage's root cleanup: fires INSTEAD of buildPage when the target page is already cached.
             -- Without it, switching from Buffs/HoverCast to a cached page never hides ns._bmRoot/ns._ccRoot, which are built onto the shared live scroll frame (not a per-page wrapper) and would stay stuck over the restored page.
             DropManagerRoots(pageName)
+            -- Presets, spec changes and profile switches can alter the text list
+            -- while the page is cached (EUI_RaidFrames_TextDisplay_Options.lua).
+            local textCheck = ns._rfTextChecks and ns._rfTextChecks[pageName]
+            if textCheck and textCheck() then
+                C_Timer.After(0, function()
+                    if RFPageShown(pageName) then EllesmereUI:RefreshPage(true) end
+                end)
+            end
             if pageName == PAGE_MAIN then
                 local mode = db.profile.previewMode or "overlay"
                 -- Skip-restore; see buildPage.

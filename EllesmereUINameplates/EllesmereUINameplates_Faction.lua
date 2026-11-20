@@ -19,8 +19,10 @@ local function GetBadge(nameplate)
     if not b then
         b = CreateFrame("Frame", nil, nameplate)
         b:SetFrameStrata("MEDIUM")
+        -- The frame is the badge's box; the art sits centred in it at its own
+        -- proportions (EllesmereUI.FitFactionArt in Refresh).
         b.tex = b:CreateTexture(nil, "ARTWORK")
-        b.tex:SetAllPoints()
+        b.tex:SetPoint("CENTER")
         b:Hide()
         badges[nameplate] = b
     end
@@ -62,14 +64,17 @@ local function Refresh(fp)
     b = b or GetBadge(nameplate)
     local sz = ns.NP_GetFactionIconSize()
     b:SetSize(sz, sz)
+    EllesmereUI.FitFactionArt(b.tex, sz)
     b:SetFrameLevel(nameplate:GetFrameLevel() + 5)
     b:ClearAllPoints()
     b:SetPoint("RIGHT", fs, "LEFT", -2, 0)
-    -- Repaint only when the art or the dim changes (inputs: faction, Icon Style, dim).
+    -- Repaint only when the art or the dim changes (inputs: faction, Icon Style, honor
+    -- badge, dim).
     local style = ns.NP_GetFactionStyle()
-    if b.facArt ~= atlas or b.facStyle ~= style then
-        EllesmereUI.SetFactionArt(b.tex, style, atlas)
-        b.facArt, b.facStyle = atlas, style
+    local badge = EllesmereUI.FactionBadgeFor(style, unit)
+    if b.facArt ~= atlas or b.facStyle ~= style or b.facBadge ~= badge then
+        EllesmereUI.SetFactionArt(b.tex, style, atlas, badge)
+        b.facArt, b.facStyle, b.facBadge = atlas, style, badge
     end
     if b.facDim ~= dim then
         b.tex:SetDesaturated(dim)

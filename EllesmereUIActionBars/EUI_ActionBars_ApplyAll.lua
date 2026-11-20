@@ -53,7 +53,7 @@ local function ApplyAll()
         if frame and s and not inCombat then
             if s.enabled == false then
                 frame:Hide()
-            elseif not s.alwaysHidden then
+            elseif not EAB.VisibilityCompat.IsNever(s) then
                 -- Skip Show if a state-visibility driver is managing this frame
                 -- (the driver handles show/hide; calling Show() causes a one-frame blink)
                 if not frame._eabLastVisStr then
@@ -97,6 +97,8 @@ local function ApplyAll()
     EAB:RefreshMouseover()
     EAB:RefreshProcGlows()
     EAB:ApplyRangeColoring()
+    -- WoW Forever: the Swing Timer swipe (EUI_ActionBars_ForeverSwingSweep.lua).
+    if ns.AB_SwingSweepApply then ns.AB_SwingSweepApply() end
 
     -- A full apply that ran DURING combat skipped every `not inCombat` step
     -- above; the REGEN_ENABLED re-run (gated on this flag) converges them.
@@ -116,7 +118,18 @@ local function ApplyAll()
     -- the engine's SetPoint hook.
     ns.PartySpin_Refresh()
 
-    if not inCombat then ns.RefreshPagingCycleMacros() end
+    -- Paging drivers are built at setup and rebuilt by the options controls; a
+    -- profile swap or spec override apply changes paging settings with neither,
+    -- so re-check here. Unchanged bars are skipped (see RebuildBarPaging).
+    if not inCombat then
+        local rebuilt
+        for barKey in pairs(EAB_VTABLE.BAR_KEY_TO_PAGE) do
+            if ns.RebuildBarPaging(barKey, true) then rebuilt = true end
+        end
+        -- The keybind routing pass the rebuilt bars left out, once for all of them.
+        if rebuilt and _G._EAB_UpdateKeybinds then _G._EAB_UpdateKeybinds() end
+        ns.RefreshPagingCycleMacros()
+    end
     SetIsApplyingAll(false)
 end
 

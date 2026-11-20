@@ -502,10 +502,12 @@ do
 
     -- Effective threshold config for a frame's spell: per-spell family store (tier-chained) first,
     -- then the preset/custom customActiveStates entry -- the same two homes Reverse Swipe reads. Returns the arming block, or nil.
-    function ns.ResolveThresholdTextSettings(frame, sid, sd, barKey)
+    function ns.ResolveThresholdTextSettings(frame, sid, sd, barKey, asBuff)
         if not sid then return nil end
         local ss
-        if ns.ResolveSpellSettings then
+        if asBuff and ns.ResolveBuffSettings then
+            ss = ns.ResolveBuffSettings(frame, sid, sd, barKey)
+        elseif ns.ResolveSpellSettings then
             ss = ns.ResolveSpellSettings(frame, sid, sd, barKey)
         end
         if ss and (tonumber(ss.thresholdSeconds) or 0) > 0 then return ss end
@@ -520,8 +522,10 @@ end
 -- Styles the custom-spell "Show Charges" count text (created lazily by the CdmHooks ticker) to
 -- match the bar's native stack/charge text: font, size, color, anchor position and X/Y offset.
 -- Called at creation and from every RefreshCDMIconAppearance pass so option changes apply live. With no bar data the defaults resolve to size 11, bottom-right, +2 nudge.
-function ns.StyleCustomChargeText(icon, barKey)
-    local fs = icon and icon._castCountText
+-- fs: another count FontString of ours on the icon (Buff Stacks); defaults to
+-- the custom-spell charge text.
+function ns.StyleCustomChargeText(icon, barKey, fs)
+    fs = fs or (icon and icon._castCountText)
     if not fs then return end
     local barData = (barKey and barDataByKey[barKey]) or {}
     -- Fonts render at the frame's native scale; compensate like the main pass.
@@ -550,12 +554,41 @@ function ns.StyleCustomChargeText(icon, barKey)
     fs:SetPoint(scPoint, txOverlay or icon, scPoint, scX, scY)
 end
 
+-- Duration Above Glows (opt-in, per bar). The swipe and the countdown number share one
+-- Cooldown widget, so raising the widget would lift the swipe over the glow as well. Instead
+-- only the countdown FontString moves, onto our own carrier: a child of cd (so it shows, hides
+-- and fades with the widget) levelled above every glow overlay (the buff and proc overlays at
+-- +16, the pandemic overlay at +17) and below textOverlay (+23). The
+-- number stays anchored to cd. Keyed weakly by cd, never a field on a Blizzard frame; built on
+-- first enable only, and turning it off moves the number back onto cd. Returns the frame that
+-- holds the number now.
+local CD_TEXT_CARRIER_LEVEL = 18
+local _cdTextCarrier = setmetatable({}, { __mode = "k" })
+local function CdmCountdownHost(icon, cd, on)
+    local car = _cdTextCarrier[cd]
+    if on and not car then
+        car = CreateFrame("Frame", nil, cd)
+        car:SetAllPoints(cd)
+        car:EnableMouse(false)
+        _cdTextCarrier[cd] = car
+    end
+    if not car then return cd end
+    local fs = cd.GetCountdownFontString and cd:GetCountdownFontString()
+    if not fs then return cd end
+    if on then car:SetFrameLevel(icon:GetFrameLevel() + CD_TEXT_CARRIER_LEVEL) end
+    local host = on and car or cd
+    if fs:GetParent() ~= host then fs:SetParent(host) end
+    return host
+end
+
 -- Refresh visual properties of existing icons (called when settings change)
 local function RefreshCDMIconAppearance(barKey)
     -- Custom auras render in their own engine container, so their style is
     -- re-applied here rather than in the icon loop -- and before the early-outs
     -- below, since a bar can hold custom auras and no icons of its own.
     if ns.RefreshAuraCustomStyle then ns.RefreshAuraCustomStyle(barKey) end
+    -- Our aura icons' slots wear the same look (EUI_CDM_AuraIcons.lua).
+    if ns.CDM_AuraIconsRestyle then ns.CDM_AuraIconsRestyle(barKey) end
     local icons = cdmBarIcons[barKey]
     if not icons then return end
 
@@ -637,7 +670,7 @@ local function RefreshCDMIconAppearance(barKey)
             if sidb then
                 local sdb = ns.GetBarSpellData(barKey)
                 -- Shared resolver: matches the key against the frame's full identity set (canon first, then resolvedSid/baseSpellID).
-                ssb = ns.ResolveSpellSettings and ns.ResolveSpellSettings(icon, sidb, sdb, barKey)
+                ssb = ns.ResolveBuffSettings and ns.ResolveBuffSettings(icon, sidb, sdb, barKey)
             end
             -- Stash the effective Buff Glow on fd so the BuffTicker hot path reads it without a
             -- per-tick lookup. Only restart the live glow when the effective value actually changed (no flicker on no-op rebuilds).
@@ -807,7 +840,7 @@ local function RefreshCDMIconAppearance(barKey)
                     or (ttFc and ttFc.spellID)
                 local tt
                 if ttSid and ns.ResolveThresholdTextSettings then
-                    tt = ns.ResolveThresholdTextSettings(icon, ttSid, ns.GetBarSpellData(barKey), barKey)
+                    tt = ns.ResolveThresholdTextSettings(icon, ttSid, ns.GetBarSpellData(barKey), barKey, true)
                 end
                 ns.ApplyThresholdFormatter(cd, tt)
             end
@@ -816,6 +849,8 @@ local function RefreshCDMIconAppearance(barKey)
             local hideCD = not showCD
             if ns.CdmShouldHideCountdown then hideCD = ns.CdmShouldHideCountdown(icon, hideCD) end
             cd:SetHideCountdownNumbers(hideCD)
+            -- Opt-in Duration Above Glows: the number may live on a carrier above the glow.
+            local cdTextHost = CdmCountdownHost(icon, cd, barData.cooldownTextAboveGlow)
             -- Apply cooldown text font directly.
             if showCD then
                 local cdFont = GetCDMFont()
@@ -827,11 +862,12 @@ local function RefreshCDMIconAppearance(barKey)
                     or barData.cooldownTextPosition or "center"
                 local cdX = (ssb and ssb.cooldownTextX) or barData.cooldownTextX or 0
                 local cdY = (ssb and ssb.cooldownTextY) or barData.cooldownTextY or 0
-                -- Find Blizzard's countdown FontString on the Cooldown widget. Keep it ON the
-                -- widget (anchored to cd) so the user's position and X/Y offset work -- REPARENTING
-                -- it makes Blizzard's engine re-center and ignore both. Setting our own anchor also
+                -- Find Blizzard's countdown FontString on its host: the Cooldown widget, or the
+                -- Duration Above Glows carrier (a child of the widget). Keep it anchored to cd so
+                -- the user's position and X/Y offset work -- hung from a frame outside the widget
+                -- Blizzard's engine re-centers it and ignores both. Setting our own anchor also
                 -- overrides the engine's stale baseline (raw SetFont vs SetCountdownFont); off-center anchors are where a missed or stomped anchor first becomes visible.
-                for _, rgn in pairs({ cd:GetRegions() }) do
+                for _, rgn in pairs({ cdTextHost:GetRegions() }) do
                     if rgn and rgn.GetObjectType and rgn:GetObjectType() == "FontString" then
                         EllesmereUI.ApplyIconTextFont(rgn, cdFont, cdSize, "cdm")
                         rgn:SetTextColor(cdR, cdG, cdB)
@@ -880,11 +916,18 @@ local function RefreshCDMIconAppearance(barKey)
         -- zero-charge / Hide Charge Text alpha channel (CdmHooks); non-buff
         -- bars never write (csAlpha nil), so that channel keeps single
         -- ownership of its counters.
-        local csAlpha
+        local csAlpha, appsAlpha
         if barData.barType == "buffs" or barData.barType == "custom_buff" then
             local showCS = barData.showChargeStackText ~= false
             if ssb and ssb.showChargeStackText ~= nil then showCS = ssb.showChargeStackText end
             csAlpha = showCS and 1 or 0
+            appsAlpha = csAlpha
+        else
+            -- A buff hosted on a cd/utility bar: only its stack counter, which that
+            -- bar's charge-text channel never writes, follows the per-spell toggle.
+            if fd and fd._isBuffViewerFrame then
+                appsAlpha = (ssb and ssb.showChargeStackText == false) and 0 or 1
+            end
         end
         -- Text must render above borders. Levels are relative to the icon's own frame level (CdmHooks: border +13, text +23).
         local textLvl = icon:GetFrameLevel() + 23
@@ -896,7 +939,7 @@ local function RefreshCDMIconAppearance(barKey)
                 SetBlizzCDMFont(appsFS, scFont, scSize, scR, scG, scB)
                 appsFS:ClearAllPoints()
                 appsFS:SetPoint(scPoint, icon, scPoint, scX, scY)
-                if csAlpha then appsFS:SetAlpha(csAlpha) end
+                if appsAlpha then appsFS:SetAlpha(appsAlpha) end
             end
         end
         -- ChargeCount (spell charges like Sigil/Roll) -- not an item count. Blizzard manages show/hide based on charge state.
@@ -922,6 +965,8 @@ local function RefreshCDMIconAppearance(barKey)
         if icon._castCountText then
             ns.StyleCustomChargeText(icon, barKey)
         end
+        -- Per-spell Buff Stacks text (EUI_CDM_CdBuffStacks.lua), same settings.
+        if ns.CdBuffStacksRestyle then ns.CdBuffStacksRestyle(icon, barKey) end
 
         -- Update keybind text style
         if kbText then
@@ -1050,6 +1095,13 @@ local function RefreshCDMIconAppearance(barKey)
             local m = cse and ns.CD_STATE_HIDE[cse]
             local cseShift, cseUsable, cseForm
             if m then cse, cseShift, cseUsable, cseForm = m.base, m.shift, m.usable, m.form end
+            -- Stance Bar (EllesmereUICdmStanceBar.lua): one more hide reason. Alone,
+            -- it runs as Hidden (On CD) with the cooldown never read.
+            local stance = ns.CdmStanceBarOf(csSs, icon)
+            local stanceOnly = false
+            if stance and cse ~= "hiddenOnCD" and cse ~= "hiddenReady" and cse ~= "lowerAlphaOnCD" then
+                cse, stanceOnly = "hiddenOnCD", true
+            end
             if cse or csGlow then
                 local csLive = csSid
                 if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
@@ -1058,7 +1110,9 @@ local function RefreshCDMIconAppearance(barKey)
                 -- realCD is the plain cooldown read the glow runs on; onCD is
                 -- what the hide runs on (the form alone, or unusable counting too).
                 local realCD, onCD
-                if cseForm then
+                if stanceOnly then
+                    onCD = false
+                elseif cseForm then
                     -- Only the form decides; form changes re-arm through the form watch.
                     onCD = ns.CdmSpellOutsideForm(csLive)
                     ns.WatchCdUsable(icon, true)
@@ -1071,7 +1125,19 @@ local function RefreshCDMIconAppearance(barKey)
                     -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
                     ns.WatchCdUsable(icon)
                 end
-                if cse == "hiddenOnCD" or cse == "hiddenReady" then
+                local sHide, sShift = false, false
+                if stance then
+                    sHide, sShift = ns.CdmStanceBarHidden(stance)
+                    -- Page changes re-arm through the stance bar watch.
+                    ns.WatchCdUsable(icon, cseForm, true, cseUsable)
+                end
+                if sHide then
+                    icon:SetAlpha(0)
+                    if fc then
+                        fc._cdStateHidden = true
+                        if ns.SetCdStateShiftHidden then ns.SetCdStateShiftHidden(fc, sShift) end
+                    end
+                elseif cse == "hiddenOnCD" or cse == "hiddenReady" then
                     local hide
                     if cse == "hiddenOnCD" then
                         hide = onCD and true or false
@@ -1171,6 +1237,21 @@ local function RefreshCDMIconAppearance(barKey)
     end
 end
 ns.RefreshCDMIconAppearance = RefreshCDMIconAppearance
+
+-- Per-icon menu setters: a buff's settings also style its "Replace with Buff" icons on cd/util bars.
+function ns.RefreshCDMIconSettings(barKey)
+    RefreshCDMIconAppearance(barKey)
+    -- Desaturate Inactive (fd._desatOverride, stashed above) is drawn by the
+    -- dirty-gated buff ticker.
+    ns._btDirty = true
+    if ns.ArmBuffTicker then ns.ArmBuffTicker() end
+    if not ns._cdmAnyBuffReplace then return end
+    local bd = barDataByKey[barKey]
+    if not (bd and (bd.barType == "buffs" or bd.barType == "custom_buff")) then return end
+    for bk in pairs(ns._buffReplaceBars) do
+        if bk ~= barKey then RefreshCDMIconAppearance(bk) end
+    end
+end
 
 I.RefreshCDMIconAppearance = RefreshCDMIconAppearance
 I.broken = false

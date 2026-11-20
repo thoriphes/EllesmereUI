@@ -6,6 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUIResourceBars"]
 if not ns then return end  -- module disabled: no options page
+local CreateFrame = EllesmereUI._Pool.CreateFrame
 
 -- Bar Display page
 function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
@@ -22,6 +23,72 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
 
     -- Shared row references for sync icon flashTargets, filled per section
     local _syncRows = {}
+
+    -- Preview eye beside a section title: shows or hides that bar in the
+    -- preview header. Session state only (ns._erbPvHidden), so every bar
+    -- starts shown. Open eye = shown; a bar that cannot show (off, none for
+    -- this spec) gets a dimmed crossed eye whose tooltip names what it needs.
+    -- UpdatePreviewHeader re-reads every eye (ns._erbPvEyes): not every flip
+    -- that blocks a bar rebuilds the page. `after`: the title's Move in Unlock
+    -- Mode button, which the eye then follows instead of the title itself.
+    ns._erbPvHidden = ns._erbPvHidden or {}
+    if not EllesmereUI._prebuilding then ns._erbPvEyes = {} end
+    local function AddPreviewEye(hdr, label, key, after)
+        if EllesmereUI._prebuilding or not hdr then return end
+        local hidden = ns._erbPvHidden
+        local lbl
+        for _, rgn in ipairs({ hdr:GetRegions() }) do
+            if rgn.GetText and EllesmereUI.EnKey(rgn:GetText()) == label then
+                lbl = rgn; break
+            end
+        end
+        local eyeBtn = CreateFrame("Button", nil, hdr)
+        PP.Size(eyeBtn, 24, 24)
+        if after then
+            PP.Point(eyeBtn, "LEFT", after, "RIGHT", 4, 0)
+        elseif lbl then
+            PP.Point(eyeBtn, "LEFT", lbl, "RIGHT", 5, 0)
+        else
+            PP.Point(eyeBtn, "LEFT", hdr, "BOTTOMLEFT", 85, 8)
+        end
+        eyeBtn:SetFrameLevel(hdr:GetFrameLevel() + 5)
+        local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+        eyeTex:SetAllPoints()
+        local function Blocked()
+            local p = DB()
+            return p and env.PreviewAvail(p, key) or nil
+        end
+        -- A button the pool dressed again since (another page) is not this eye any more.
+        local gen = EllesmereUI._Pool.Gen(eyeBtn)
+        local function RefreshEye()
+            if EllesmereUI._Pool.Gen(eyeBtn) ~= gen then return end
+            local blocked = Blocked()
+            local shown = not blocked and not hidden[key]
+            -- The art is named the other way round: EYE_INVISIBLE_ICON is the open eye.
+            eyeTex:SetTexture(shown and EllesmereUI.EYE_INVISIBLE_ICON or EllesmereUI.EYE_VISIBLE_ICON)
+            EllesmereUI.SetGlyphAlpha(eyeBtn, blocked and 0.15 or 0.4)
+        end
+        ns._erbPvEyes[key] = RefreshEye
+        RefreshEye()
+        eyeBtn:SetScript("OnClick", function()
+            if Blocked() then return end
+            hidden[key] = not hidden[key] or nil
+            env.UpdatePreviewHeader()
+        end)
+        eyeBtn:SetScript("OnEnter", function(self)
+            local blocked = Blocked()
+            if blocked then
+                EllesmereUI.ShowWidgetTooltip(self, blocked)
+                return
+            end
+            EllesmereUI.SetGlyphAlpha(self, 0.7)
+            EllesmereUI.ShowWidgetTooltip(self, hidden[key] and EllesmereUI.L("Show in preview") or EllesmereUI.L("Hide in preview"))
+        end)
+        eyeBtn:SetScript("OnLeave", function()
+            RefreshEye()
+            EllesmereUI.HideWidgetTooltip()
+        end)
+    end
 
     -- Bar texture dropdown values from the _ERB globals. SharedMedia is re-appended here because options open later than init, so SM packs that register textures lazily are available by now.
     EllesmereUI.AppendSharedMediaTextures(
@@ -70,6 +137,8 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     -- search pre-build clears nothing.
     if not EllesmereUI._prebuilding then
         _clickMappings.classResource, _clickMappings.countText = nil, nil
+        _clickMappings.power, _clickMappings.health = nil, nil
+        _clickMappings.arcaneSoul = nil
     end
 
     -- Per-spec editing lives in the shared Spec Overrides system (spec groups + editing-as); legacy Advanced data migrates via MigrateRBAdvancedProfile.
@@ -222,35 +291,9 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
           end }
     );  y = y - h
     -- Background inline swatch is color-only: opacity lives in the slider, a view over the same bgA keys.
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = bgRow._rightRegion
         local ctrl = rgn._control
-        local bgSwatch, bgUpdateSwatch = EllesmereUI.BuildColorSwatch(
-            rgn, bgRow:GetFrameLevel() + 3,
-            function()
-                local p = DB()
-                if p and p.splitBg == true then
-                    return p.secondary.barBgR or 0, p.secondary.barBgG or 0,
-                           p.secondary.barBgB or 0
-                end
-                return (p and p.health.bgR or 0x11/255), (p and p.health.bgG or 0x11/255),
-                       (p and p.health.bgB or 0x11/255)
-            end,
-            function(r, g, b)
-                local p = DB(); if not p then return end
-                if p.splitBg == true then
-                    p.secondary.barBgR, p.secondary.barBgG, p.secondary.barBgB = r, g, b
-                else
-                    p.health.bgR, p.health.bgG, p.health.bgB = r, g, b
-                    p.primary.bgR, p.primary.bgG, p.primary.bgB = r, g, b
-                    p.secondary.barBgR, p.secondary.barBgG, p.secondary.barBgB = r, g, b
-                end
-                SmoothRefresh()
-                EllesmereUI:RefreshPage()
-            end,
-            nil, 20)
-        PP.Point(bgSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-        EllesmereUI.RegisterWidgetRefresh(bgUpdateSwatch)
 
         -- Split cog. The feature is an options-side VIEW: the bars already read their own keys
         -- at runtime (health.bg*, primary.bg*, secondary.barBg*) and the unified row just writes
@@ -262,7 +305,6 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
         -- by the show wrapper on first open.
         local _, splitCogShow
         _, splitCogShow = EllesmereUI.BuildInlineCog(rgn, {
-            anchorTo = bgSwatch,
             title = "Background",
             minWidth = 290,
             rows = {
@@ -292,6 +334,36 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                   end },
             },
         })
+
+        if not EllesmereUI._prebuilding then
+            local bgSwatch, bgUpdateSwatch = EllesmereUI.BuildColorSwatch(
+                rgn, bgRow:GetFrameLevel() + 3,
+                function()
+                    local p = DB()
+                    if p and p.splitBg == true then
+                        return p.secondary.barBgR or 0, p.secondary.barBgG or 0,
+                               p.secondary.barBgB or 0
+                    end
+                    return (p and p.health.bgR or 0x11/255), (p and p.health.bgG or 0x11/255),
+                           (p and p.health.bgB or 0x11/255)
+                end,
+                function(r, g, b)
+                    local p = DB(); if not p then return end
+                    if p.splitBg == true then
+                        p.secondary.barBgR, p.secondary.barBgG, p.secondary.barBgB = r, g, b
+                    else
+                        p.health.bgR, p.health.bgG, p.health.bgB = r, g, b
+                        p.primary.bgR, p.primary.bgG, p.primary.bgB = r, g, b
+                        p.secondary.barBgR, p.secondary.barBgG, p.secondary.barBgB = r, g, b
+                    end
+                    SmoothRefresh()
+                    EllesmereUI:RefreshPage()
+                end,
+                nil, 20)
+            PP.Point(bgSwatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
+            rgn._lastInline = bgSwatch
+            EllesmereUI.RegisterWidgetRefresh(bgUpdateSwatch)
+        end
     end
 
     -- Split rows are built ONLY while the split is enabled, so the page is byte-identical for
@@ -396,7 +468,7 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
               p.general.frameStrata = v; SmoothRefresh()
           end }
     );  y = y - h
-    if not EllesmereUI._prebuilding then
+    do
         local function BarTextureRow(label, barKey)
             local v, o = CopyTexDD()
             v.__match = "Match Main Texture"
@@ -458,6 +530,16 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                           })
                       end
                   end },
+                { type = "toggle", label = "Continuous Texture for Pip Resources",
+                  tooltip = "Spreads the texture across all pips instead of restarting it on each one. Useful for gradient textures.",
+                  get = function()
+                      local p = DB(); return (p and p.secondary.useContinuousTexture) or false
+                  end,
+                  set = function(v)
+                      local p = DB(); if not p then return end
+                      p.secondary.useContinuousTexture = v
+                      RebuildClass()
+                  end },
                 TexBgRowCfg("bars", SmoothRefresh),
             },
         })
@@ -505,9 +587,7 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                   end
                   Refresh()
                   -- The size-match pads follow the shared scale.
-                  if EllesmereUI.ReapplyMatchPads then
-                      for i = 1, #CLASSIC_MATCH_KEYS do EllesmereUI.ReapplyMatchPads(CLASSIC_MATCH_KEYS[i]) end
-                  end
+                  for i = 1, #CLASSIC_MATCH_KEYS do EllesmereUI.ReapplyMatchPads(CLASSIC_MATCH_KEYS[i]) end
                   EllesmereUI:RefreshPage()
               end }
     end
@@ -549,13 +629,12 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     );  y = y - h
     -- Inline scale cog on "Blizzard Class Resource Art". Greyed while the
     -- toggle is off (its setter refreshes the page).
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = blizzArtRow._leftRegion
         local function artOff()
             local p = DB(); return not (p and p.secondary.blizzardClassArt)
         end
         EllesmereUI.BuildInlineCog(rgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             disabled = artOff, disabledTooltip = "Blizzard Class Resource Art",
             title = "Blizzard Class Resource Art",
             rows = {
@@ -575,7 +654,7 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     -- Inline cog on "Border Around All" (stock styles only): the separator
     -- line between the grouped bars. Greyed while the toggle is off (its
     -- setter refreshes the page).
-    if borderAllOn and not EllesmereUI._prebuilding then
+    if borderAllOn then
         local rgn = blizzArtRow._rightRegion
         local function groupOff()
             local p = DB(); return not (p and p.general.classicBorderAll)
@@ -690,12 +769,12 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     -- Inline reposition cog on "Expand Power Bar if No Resource": Extra Y Offset.
     -- Greyed whenever the expand cannot apply (the toggle off, the Power Bar
     -- off, or the bar Height Matched), with the toggle's own reasons.
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = shiftRow._leftRegion
         local function heightMatched()
             return EllesmereUI.GetHeightMatchTarget and EllesmereUI.GetHeightMatchTarget("ERB_Power")
         end
-        EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+        EllesmereUI.BuildInlineCog(rgn, {
             disabled = function()
                 local p = DB()
                 if not (p and p.primary.enabled and p.primary.expandIfNoResource) then return true end
@@ -722,9 +801,9 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
         })
     end
     -- Inline reposition cog on "Shift Elements if No Resource": Extra Y Offset
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = shiftRow._rightRegion
-        EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+        EllesmereUI.BuildInlineCog(rgn, {
             title = "Shift Offset",
             rows = {
                 { type = "slider", pixel = true, label = "Extra Y Offset", min = -50, max = 50, step = 1,
@@ -762,7 +841,7 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
           end },
         { type = "toggle", text = "Hide Power Bar if Resource",
           tooltip = "Hides the power bar whenever the class resource bar is showing.",
-          disabled = function() local p = DB(); return not (p and p.secondary.enabled) end,
+          disabled = function() local p = DB(); return EllesmereUI.ForeverDruidLacksCat() or not (p and p.secondary.enabled) end,
           disabledTooltip = "Class Resource",
           getValue = function() local p = DB(); return (p and p.secondary.hidePowerIfResource) and true or false end,
           setValue = function(v)
@@ -772,9 +851,9 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
           end }
     );  y = y - h
     -- Inline reposition cog on "Shift Elements if No Power": Extra Y Offset
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = shiftRow2._leftRegion
-        EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+        EllesmereUI.BuildInlineCog(rgn, {
             title = "Shift Offset",
             rows = {
                 { type = "slider", pixel = true, label = "Extra Y Offset", min = -50, max = 50, step = 1,
@@ -797,13 +876,14 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     _, h = W:Spacer(parent, y, 16);  y = y - h
 
     -- CLASS RESOURCE BAR (header + Row 1 etc. now via the shared builder)
-    local classSection, classEnableRow, classResourceTextRow
-    y, classSection, classEnableRow, classResourceTextRow = ns.ERB_BuildClassResourceSection(parent, y, {
+    local classSection, classEnableRow, classResourceTextRow, classJump
+    y, classSection, classEnableRow, classResourceTextRow, classJump = ns.ERB_BuildClassResourceSection(parent, y, {
         cfg = function() return DB().secondary end, advanced = false, syncRows = _syncRows,
     })
+    AddPreviewEye(classSection, "CLASS RESOURCE BAR", "classResource", classJump)
 
     -- Row: Anchor to Cursor | Cursor Position (cog: X + Y). Appended outside the shared section builder, so it carries its own hidden-while-disabled gate (the builder's toggle rebuilds on flips)
-    if DB().secondary.enabled then
+    if DB().secondary.enabled and not EllesmereUI.ForeverDruidLacksCat() then
         local _, cursorH = EllesmereUI.BuildCursorAnchorRow({
             W = W, parent = parent, y = y,
             getData = function() local p = DB(); return p and p.secondary or {} end,
@@ -815,9 +895,11 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     _, h = W:Spacer(parent, y, 16);  y = y - h
 
     -- POWER BAR (section header + Row 1 now via the shared builder)
-    y = ns.ERB_BuildPowerSection(parent, y, {
+    local powerSection, powerEnableRow, powerJump
+    y, powerSection, powerEnableRow, powerJump = ns.ERB_BuildPowerSection(parent, y, {
         cfg = function() return DB().primary end, advanced = false, syncRows = _syncRows,
     })
+    AddPreviewEye(powerSection, "POWER BAR", "power", powerJump)
 
     -- Row: Anchor to Cursor | Cursor Position (cog: X + Y). Appended outside the shared section builder, so it carries its own hidden-while-disabled gate (the builder's toggle rebuilds on flips)
     if DB().primary.enabled then
@@ -832,8 +914,12 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     -- Row 7: Power Type override (spec-dependent, like UF Power Type dropdown). Hidden with the rest of the Power section while the bar is off.
     if DB().primary.enabled then
         local _, playerClass = UnitClass("player")
+        -- A spec's third label is an extra choice ("always": Balance's Mana in
+        -- every form); tip = the row's tooltip for the class.
         local SPEC_POWER_ALTS = {
-            DRUID  = { [1] = { "Mana", "Astral Power" }, [2] = { "Energy", "Mana" }, [3] = { "Rage", "Mana" } },
+            DRUID  = { [1] = { "Match Form", "Astral Power", "Mana" },
+                       [2] = { "Match Form", "Mana" }, [3] = { "Match Form", "Mana" }, [4] = { "Match Form", "Mana" },
+                       tip = "The first choice follows your form: Energy in Cat Form, Rage in Bear Form and Mana in the others. The other choices keep their power in every form." },
             PRIEST = { [3] = { "Mana", "Insanity" } },
             SHAMAN = { [1] = { "Mana", "Maelstrom" } },
             EVOKER = { [3] = { "Ebon Might", "Mana" } },
@@ -844,11 +930,12 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
             local spec = GetSpecialization and GetSpecialization()
             local data = spec and classAlts[spec]
             if data then
-                local ptValues = { ["default"] = data[1], ["alt"] = data[2] }
+                local ptValues = { ["default"] = data[1], ["alt"] = data[2], ["always"] = data[3] }
                 local ptOrder  = { "default", "alt" }
+                if data[3] then ptOrder[3] = "always" end
                 local powerTypeRow
                 powerTypeRow, h = W:DualRow(parent, y,
-                    { type="dropdown", text="Power Type",
+                    { type="dropdown", text="Power Type", tooltip = classAlts.tip,
                       values = ptValues, order = ptOrder,
                       -- Stored by SPEC ID, not the GetSpecialization() index:
                       -- one profile holds one set, so an index key collides
@@ -863,6 +950,7 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                           if not sid then return "default" end
                           local p = DB(); if not p then return "default" end
                           local ov = p.primary.powerTypeOverride
+                          if ov and ov[sid] == "mana" then return "always" end
                           if ov and ov[sid] then return "alt" end
                           return "default"
                       end,
@@ -876,6 +964,9 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                           if v == "alt" then
                               if not p.primary.powerTypeOverride then p.primary.powerTypeOverride = {} end
                               p.primary.powerTypeOverride[sid] = true
+                          elseif v == "always" then
+                              if not p.primary.powerTypeOverride then p.primary.powerTypeOverride = {} end
+                              p.primary.powerTypeOverride[sid] = "mana"
                           else
                               if p.primary.powerTypeOverride then p.primary.powerTypeOverride[sid] = nil end
                           end
@@ -1023,18 +1114,19 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                       disabled = FdmOff,
                       disabledTooltip = FdmOffTip,
                       values = { none = "None", smart = "Smart Text", curpp = "Power Value", curmaxpp = "Power Value / Max", perpp = "Power %", both = "Power Value | Power %" },
-                      order = { "none", "smart", "curpp", "curmaxpp", "perpp", "both" },
+                      -- WoW Forever lists no Smart Text (EllesmereUI.PowerTextFormat).
+                      order = EllesmereUI.PowerTextFormatOrder({ "none", "smart", "curpp", "curmaxpp", "perpp", "both" }),
                       getValue = function()
-                          local t = FdmCfg(); return t and t.textFormat or "none"
+                          local t = FdmCfg(); return EllesmereUI.PowerTextFormat(t and t.textFormat or "none")
                       end,
                       setValue = function(v)
                           local t = FdmCfg(); if not t then return end
                           t.textFormat = v
                           RefreshFDM(); EllesmereUI:RefreshPage()
                       end }); y = y - h
-                if not EllesmereUI._prebuilding then
+                do
                     -- Placement cog: position, gap, height, offsets
-                    EllesmereUI.BuildInlineCog(fdmRow._leftRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+                    EllesmereUI.BuildInlineCog(fdmRow._leftRegion, {
                         disabled = FdmOff,
                         disabledTooltip = FdmOffTip,
                         title = "Mana Bar",
@@ -1078,54 +1170,8 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                               end },
                         },
                     })
-                    -- Text colour, left of the Mana Bar Text dropdown: custom colour
-                    -- or the mana colour, like the Power Text swatches. The text cog
-                    -- below chains left of them.
-                    EllesmereUI.BuildInlineSwatches(fdmRow._rightRegion, {
-                        { tooltip = "Custom Colored",
-                          hasAlpha = true,
-                          getValue = function()
-                              local t = FdmCfg()
-                              if not t then return 1, 1, 1, 1 end
-                              return t.textFillR or 1, t.textFillG or 1, t.textFillB or 1, t.textFillA or 1
-                          end,
-                          setValue = function(r, g, b, a)
-                              local t = FdmCfg(); if not t then return end
-                              t.textFillR, t.textFillG, t.textFillB, t.textFillA = r, g, b, a
-                              RefreshFDM()
-                          end,
-                          onClick = function(self)
-                              local t = FdmCfg(); if not t then return end
-                              if t.textCustomColored == false then
-                                  t.textCustomColored = true; RefreshFDM()
-                                  EllesmereUI:RefreshPage()
-                                  return
-                              end
-                              if self._eabOrigClick then self._eabOrigClick(self) end
-                          end,
-                          refreshAlpha = function()
-                              local t = FdmCfg()
-                              return (t and t.textCustomColored == false) and 0.3 or 1
-                          end },
-                        { tooltip = "Mana Colored",
-                          getValue = function()
-                              local pc = _G._ERB_PowerColors and _G._ERB_PowerColors.MANA
-                              if pc then return pc[1], pc[2], pc[3], 1 end
-                              return 0x23/255, 0x8F/255, 0xE7/255, 1
-                          end,
-                          setValue = function() end,
-                          onClick = function()
-                              local t = FdmCfg(); if not t then return end
-                              t.textCustomColored = false; RefreshFDM()
-                              EllesmereUI:RefreshPage()
-                          end,
-                          refreshAlpha = function()
-                              local t = FdmCfg()
-                              return (t and t.textCustomColored == false) and 1 or 0.3
-                          end },
-                    }, { disabled = FdmTextDis, disabledTooltip = FdmTextDisTip, size = 20 })
                     -- Text cog: the Power Text cog's options plus Text Size
-                    EllesmereUI.BuildInlineCog(fdmRow._rightRegion, { icon = EllesmereUI.DIRECTIONS_ICON,
+                    EllesmereUI.BuildInlineCog(fdmRow._rightRegion, {
                         disabled = FdmTextDis,
                         disabledTooltip = FdmTextDisTip,
                         title = "Mana Bar Text",
@@ -1165,6 +1211,53 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
                               end },
                         },
                     })
+                    if not EllesmereUI._prebuilding then
+                        -- Text colour, left of the text cog: custom colour or the
+                        -- mana colour, like the Power Text swatches.
+                        EllesmereUI.BuildInlineSwatches(fdmRow._rightRegion, {
+                            { tooltip = "Custom Colored",
+                              hasAlpha = true,
+                              getValue = function()
+                                  local t = FdmCfg()
+                                  if not t then return 1, 1, 1, 1 end
+                                  return t.textFillR or 1, t.textFillG or 1, t.textFillB or 1, t.textFillA or 1
+                              end,
+                              setValue = function(r, g, b, a)
+                                  local t = FdmCfg(); if not t then return end
+                                  t.textFillR, t.textFillG, t.textFillB, t.textFillA = r, g, b, a
+                                  RefreshFDM()
+                              end,
+                              onClick = function(self)
+                                  local t = FdmCfg(); if not t then return end
+                                  if t.textCustomColored == false then
+                                      t.textCustomColored = true; RefreshFDM()
+                                      EllesmereUI:RefreshPage()
+                                      return
+                                  end
+                                  if self._eabOrigClick then self._eabOrigClick(self) end
+                              end,
+                              refreshAlpha = function()
+                                  local t = FdmCfg()
+                                  return (t and t.textCustomColored == false) and 0.3 or 1
+                              end },
+                            { tooltip = "Mana Colored",
+                              getValue = function()
+                                  local pc = _G._ERB_PowerColors and _G._ERB_PowerColors.MANA
+                                  if pc then return pc[1], pc[2], pc[3], 1 end
+                                  return 0x23/255, 0x8F/255, 0xE7/255, 1
+                              end,
+                              setValue = function() end,
+                              onClick = function()
+                                  local t = FdmCfg(); if not t then return end
+                                  t.textCustomColored = false; RefreshFDM()
+                                  EllesmereUI:RefreshPage()
+                              end,
+                              refreshAlpha = function()
+                                  local t = FdmCfg()
+                                  return (t and t.textCustomColored == false) and 1 or 0.3
+                              end },
+                        }, { disabled = FdmTextDis, disabledTooltip = FdmTextDisTip, size = 20 })
+                    end
                 end
                 if SCP then
                     local costRow
@@ -1186,9 +1279,11 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     _, h = W:Spacer(parent, y, 16);  y = y - h
 
     -- HEALTH BAR (section header + Row 1 now via the shared builder)
-    y = ns.ERB_BuildHealthSection(parent, y, {
+    local healthSection, healthEnableRow, healthJump
+    y, healthSection, healthEnableRow, healthJump = ns.ERB_BuildHealthSection(parent, y, {
         cfg = function() return DB().health end, advanced = false, syncRows = _syncRows,
     })
+    AddPreviewEye(healthSection, "HEALTH BAR", "health", healthJump)
 
     -- Row: Anchor to Cursor | Cursor Position (cog: X + Y). Appended outside the shared section builder, so it carries its own hidden-while-disabled gate (the builder's toggle rebuilds on flips)
     if DB().health.enabled then
@@ -1205,21 +1300,26 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
     -- ARCANE SOUL (SUNFURY)
     -- Mage-only: the section is absent entirely for every other class rather
     -- than built and disabled, since nothing in it can ever apply to them.
+    -- Absent on WoW Forever too, which has no Arcane spec or Sunfury.
     -- The spec/hero-tree gate itself lives in the module (it changes at
     -- runtime); this only decides whether the controls exist at all.
-    if select(2, UnitClass("player")) == "MAGE" then
+    local asSection, asEnableRow
+    if select(2, UnitClass("player")) == "MAGE" and not EllesmereUI.IS_FOREVER then
         -- Straight to the module: this display is not part of the bar build,
         -- so a full ApplyAll would rebuild every bar to retint one string.
+        -- The preview header shows the same sample, so it follows too.
         local function RefreshAS()
             if ns.AS_Apply then ns.AS_Apply() end
+            env.UpdatePreviewHeader()
         end
         local asOff = function() local p = DB(); return p and not p.arcaneSoul.enabled end
         local AS_TIP = "Arcane Soul Helper"
 
-        _, h = W:SectionHeader(parent, "ARCANE SOUL (SUNFURY)", y);  y = y - h
+        asSection, h = W:SectionHeader(parent, "ARCANE SOUL (SUNFURY)", y);  y = y - h
+        local asJump = EllesmereUI.BuildSectionUnlockJump(asSection, { key = "EUI_ArcaneSoul", disabled = asOff, disabledTooltip = AS_TIP })
+        AddPreviewEye(asSection, "ARCANE SOUL (SUNFURY)", "arcaneSoul", asJump)
 
         -- Row: Enable Arcane Soul Helper (+ position cog) | Show Threshold
-        local asEnableRow
         asEnableRow, h = W:DualRow(parent, y,
             { type = "toggle", text = "Enable Arcane Soul Helper",
               tooltip = "Shows a countdown to the Arcane Soul window over the last seconds of Arcane Surge, then the time left inside it. Sunfury Arcane Mages only.",
@@ -1236,9 +1336,9 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
         );  y = y - h
 
         -- Inline position cog (X/Y + unlock) on Enable, as on the GCD Bar page
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = asEnableRow._leftRegion
-            EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+            EllesmereUI.BuildInlineCog(rgn, {
                 disabled = function() local p = DB(); return p and not p.arcaneSoul.enabled end,
                 disabledTooltip = AS_TIP,
                 title = "Arcane Soul Position",
@@ -1392,6 +1492,9 @@ function ns.ERB_BuildBarDisplayPage(pageName, parent, yOffset)
         _clickMappings.classResource = { section = classSection, target = classEnableRow }
         -- The Resource Text row lives inside the shared class-resource section builder, so it must be returned from there -- naming a local from that scope here silently resolves to nil and the count-text click does nothing.
         _clickMappings.countText = { section = classSection, target = classResourceTextRow, slotSide = "left" }
+        _clickMappings.power = { section = powerSection, target = powerEnableRow }
+        _clickMappings.health = { section = healthSection, target = healthEnableRow }
+        if asSection then _clickMappings.arcaneSoul = { section = asSection, target = asEnableRow } end
     end
 
     return math.abs(y)

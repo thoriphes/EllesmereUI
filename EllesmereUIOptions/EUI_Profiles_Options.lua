@@ -123,12 +123,13 @@ local function BuildAddonListRow(scrollChild, i, item, totalW, o)
     chkBg:SetColorTexture(0.114, 0.106, 0.099, 1)
     if chkBg.SetSnapToPixelGrid then chkBg:SetSnapToPixelGrid(false); chkBg:SetTexelSnappingBias(0) end
 
-    local chkBrd = EllesmereUI.MakeBorder(chkFrame, 0.224, 0.215, 0.207, 0.6, PP)
+    local chkBrd = EllesmereUI.MakeRoundedBorder(chkFrame, 0.224, 0.215, 0.207, 0.6, chkBg)
 
     local chkMark = chkFrame:CreateTexture(nil, "ARTWORK")
     chkMark:SetPoint("TOPLEFT", chkFrame, "TOPLEFT", 3, -3)
     chkMark:SetPoint("BOTTOMRIGHT", chkFrame, "BOTTOMRIGHT", -3, 3)
     chkMark:SetColorTexture(EG.r, EG.g, EG.b, 1)
+    EllesmereUI.RoundBody(chkFrame, chkMark, 1)
     if chkMark.SetSnapToPixelGrid then chkMark:SetSnapToPixelGrid(false); chkMark:SetTexelSnappingBias(0) end
 
     local function ApplyRowVisual()
@@ -355,7 +356,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         local bg = btn:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-        local brd = EllesmereUI.MakeBorder(btn, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+        local brd = EllesmereUI.MakeRoundedBorder(btn, 1, 1, 1, EllesmereUI.DD_BRD_A, bg)
         -- The resting alpha is the text colour's, the channel the hover
         -- colours below write, so a hover and leave land back on it.
         local lbl = EllesmereUI.MakeFont(btn, 13, nil, 1, 1, 1, EllesmereUI.DD_TXT_A)
@@ -394,7 +395,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         local bg = menuFrame:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, 0.98)
-        EllesmereUI.MakeBorder(menuFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+        EllesmereUI.MakeRoundedBorder(menuFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, bg, nil, true)
         menuFrame:SetScript("OnShow", function(self)
             local s = anchor:GetEffectiveScale() / UIParent:GetEffectiveScale()
             self:SetScale(s)
@@ -457,7 +458,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             local popBg = popup:CreateTexture(nil, "BACKGROUND")
             popBg:SetAllPoints()
             popBg:SetColorTexture(0.077, 0.068, 0.058, 0.97)
-            EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.20, PP)
+            EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.20, popBg)
 
             local title = EllesmereUI.MakeFont(popup, 14, nil, 1, 1, 1)
             title:SetPoint("TOP", popup, "TOP", 0, -14)
@@ -479,6 +480,12 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             -- kbBtn's own OnHide cancels a capture in progress.
             popup:SetScript("OnHide", function()
                 if popup._dimmer then popup._dimmer:Hide() end
+            end)
+            -- It sits on UIParent, so it closes with the panel, which closes as
+            -- combat starts: a screen-wide dimmer and an armed key capture never
+            -- stay up into combat.
+            EllesmereUI:RegisterOnHide(function()
+                if dimmer:IsShown() then dimmer:Hide() end
             end)
 
             EllesmereUI.PopupTakeKeys(popup, dimmer)
@@ -580,7 +587,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             EllesmereUIUnitFrames        = "Simple unit frames with a modern visual style.",
             EllesmereUICooldownManager   = "A CDM replacement focused on performance, customizations and alerts.",
             EllesmereUIResourceBars      = "Custom Resource Bars with thresholds, hash lines and more.",
-            EllesmereUIRaidFrames        = "Incredibly light performance, modern raid frames with endless flexibility.",
+            EllesmereUIRaidFrames        = "Incredibly light performance, modern raid and party frames with endless flexibility.",
             EllesmereUIAuraBuffReminders = "Simple raid buff, auras, consumables and talent reminders.",
             EllesmereUIQoL               = "Lightweight quality of life tools and enhancements.",
             EllesmereUIDragonRiding      = "Skyriding HUD with speed, vigor and second wind tracking.",
@@ -606,7 +613,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         local backBg = backBtn:CreateTexture(nil, "BACKGROUND")
         backBg:SetAllPoints()
         backBg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-        local backBrd = EllesmereUI.MakeBorder(backBtn, 1, 1, 1, 0.12, PP)
+        local backBrd = EllesmereUI.MakeRoundedBorder(backBtn, 1, 1, 1, 0.12, backBg)
 
         local backIcon = backBtn:CreateTexture(nil, "ARTWORK")
         backIcon:SetSize(14, 14)
@@ -672,7 +679,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             local iBg = inputFrame:CreateTexture(nil, "BACKGROUND")
             iBg:SetAllPoints()
             iBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
-            local inputBrd = EllesmereUI.MakeBorder(inputFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+            local inputBrd = EllesmereUI.MakeRoundedBorder(inputFrame, 1, 1, 1, EllesmereUI.DD_BRD_A, iBg)
             importPage._nameFlash = BuildErrorFlash(inputFrame, inputBrd)
 
             editBox = CreateFrame("EditBox", nil, inputFrame)
@@ -726,7 +733,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         local stringHasBlizzSkin = (payload and payload.data
             and type(payload.data.blizzSkinGlobals) == "table") or false
         local includeWindowSkinsImport = false
-        -- "Global Settings": the exporter's global appearance (fonts, custom colours, dark mode, accent) and UI scale. Presence = deliberate
+        -- "Global Settings": the exporter's global appearance (fonts, custom colours, dark mode, accent, number format) and UI scale. Presence = deliberate
         -- include; this toggle is the recipient's opt-out. ON when carried, inert when the string has none.
         local stringHasGlobals = false
         do
@@ -734,6 +741,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             if d then
                 stringHasGlobals = d.fonts ~= nil or d.customColors ~= nil
                     or d.darkMode ~= nil or d.euiAccent ~= nil or d.uiScale ~= nil
+                    or d.numberFormat ~= nil
             end
         end
         local includeGlobalsImport = stringHasGlobals
@@ -811,10 +819,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         PP.Size(sectionBg, totalW, SECTION_H)
         PP.Point(sectionBg, "TOPLEFT", importPage, "TOPLEFT", PAD, iy)
         sectionBg:EnableMouse(false)
-        local sBgTex = sectionBg:CreateTexture(nil, "BACKGROUND")
-        sBgTex:SetAllPoints()
-        sBgTex:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-        EllesmereUI.MakeBorder(sectionBg, 1, 1, 1, 0.10, PP)
+        local sBgTex = EllesmereUI.MakeRoundedCard(sectionBg, 0.10, 0.50).bg
 
         local hdrFrame = CreateFrame("Frame", nil, importPage)
         PP.Size(hdrFrame, totalW, HDR_H)
@@ -1015,11 +1020,12 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             box:SetPoint("LEFT", aaBtn, "LEFT", 0, 0)
             local bg = box:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints()
             bg:SetColorTexture(0.114, 0.106, 0.099, 1)
-            EllesmereUI.MakeBorder(box, 0.224, 0.215, 0.207, 0.6, PP)
+            EllesmereUI.MakeRoundedBorder(box, 0.224, 0.215, 0.207, 0.6, bg)
             local mark = box:CreateTexture(nil, "ARTWORK")
             mark:SetPoint("TOPLEFT", box, "TOPLEFT", 3, -3)
             mark:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -3, 3)
             mark:SetColorTexture(EG.r, EG.g, EG.b, 1)
+            EllesmereUI.RoundBody(box, mark, 1)
             local lbl = EllesmereUI.MakeFont(aaBtn, 12, nil, 1, 1, 1, 0.6)
             lbl:SetPoint("LEFT", box, "RIGHT", 6, 0)
             lbl:SetText(EllesmereUI.L("Auto Assign to Specs"))
@@ -1040,9 +1046,9 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         importBtn:SetFrameLevel(footerFrame:GetFrameLevel() + 2)
 
         local DB = EllesmereUI.DARK_BG
-        local impBrd = EllesmereUI.MakeBorder(importBtn, EG.r, EG.g, EG.b, 0.7, PP)
         local impBg = EllesmereUI.SolidTex(importBtn, "BACKGROUND", DB.r, DB.g, DB.b, 0.92)
         impBg:SetAllPoints()
+        local impBrd = EllesmereUI.MakeRoundedBorder(importBtn, EG.r, EG.g, EG.b, 0.7, impBg)
         local impLbl = EllesmereUI.MakeFont(importBtn, 12, nil, EG.r, EG.g, EG.b)
         impLbl:SetAlpha(0.7)
         impLbl:SetPoint("CENTER")
@@ -1140,11 +1146,12 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 box:SetPoint("LEFT", row, "LEFT", 6, 0)
                 local bbg = box:CreateTexture(nil, "BACKGROUND"); bbg:SetAllPoints()
                 bbg:SetColorTexture(0.114, 0.106, 0.099, 1)
-                EllesmereUI.MakeBorder(box, 0.224, 0.215, 0.207, 0.6, PP)
+                EllesmereUI.MakeRoundedBorder(box, 0.224, 0.215, 0.207, 0.6, bbg)
                 local mark = box:CreateTexture(nil, "ARTWORK")
                 mark:SetPoint("TOPLEFT", box, "TOPLEFT", 3, -3)
                 mark:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -3, 3)
                 mark:SetColorTexture(EG.r, EG.g, EG.b, 1)
+                EllesmereUI.RoundBody(box, mark, 1)
                 marks[i] = mark
                 local lbl = EllesmereUI.MakeFont(row, 12, nil, 1, 1, 1, 0.7)
                 lbl:SetPoint("LEFT", box, "RIGHT", 8, 0)
@@ -1256,13 +1263,14 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 -- Meta is transient -- never overlay/persist it into the profile.
                 filteredPayload.data.unlockLayoutMeta = nil
             end
-            -- Global appearance (fonts, customColors, darkMode, euiAccent) and scale ride the Include dropdown's "Global Settings" row (on
+            -- Global appearance (fonts, customColors, darkMode, euiAccent, numberFormat) and scale ride the Include dropdown's "Global Settings" row (on
             -- by default when carried): unchecked strips them all so the merge keeps the recipient's look. Module deselection alone never
             -- strips them -- the store merge takes each key only when present.
             if filteredPayload and filteredPayload.data and not includeGlobalsImport then
                 filteredPayload.data.fonts        = nil
                 filteredPayload.data.customColors = nil
                 filteredPayload.data.darkMode     = nil
+                filteredPayload.data.numberFormat = nil
                 filteredPayload.data.euiAccent    = nil
                 filteredPayload.data.uiScale      = nil
                 filteredPayload.data.applyUIScale = nil
@@ -1404,7 +1412,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         local backBg = backBtn:CreateTexture(nil, "BACKGROUND")
         backBg:SetAllPoints()
         backBg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-        local backBrd = EllesmereUI.MakeBorder(backBtn, 1, 1, 1, 0.12, PP)
+        local backBrd = EllesmereUI.MakeRoundedBorder(backBtn, 1, 1, 1, 0.12, backBg)
 
         local backIcon = backBtn:CreateTexture(nil, "ARTWORK")
         backIcon:SetSize(14, 14)
@@ -1450,7 +1458,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         local panelBg = panelFrame:CreateTexture(nil, "BACKGROUND")
         panelBg:SetAllPoints()
         panelBg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-        EllesmereUI.MakeBorder(panelFrame, 1, 1, 1, 0.10, PP)
+        EllesmereUI.MakeRoundedBorder(panelFrame, 1, 1, 1, 0.10, panelBg)
 
         local pasteSF = CreateFrame("ScrollFrame", nil, panelFrame)
         pasteSF:SetPoint("TOPLEFT", 16, -12)
@@ -1508,9 +1516,9 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         contBtn:SetFrameLevel(pastePage:GetFrameLevel() + 2)
 
         local cDB = EllesmereUI.DARK_BG
-        local contBrd = EllesmereUI.MakeBorder(contBtn, EG.r, EG.g, EG.b, 0.7, PP)
         local contBg = EllesmereUI.SolidTex(contBtn, "BACKGROUND", cDB.r, cDB.g, cDB.b, 0.92)
         contBg:SetAllPoints()
+        local contBrd = EllesmereUI.MakeRoundedBorder(contBtn, EG.r, EG.g, EG.b, 0.7, contBg)
         local contLbl = EllesmereUI.MakeFont(contBtn, 13, nil, EG.r, EG.g, EG.b)
         contLbl:SetAlpha(0.7)
         contLbl:SetPoint("CENTER")
@@ -1552,7 +1560,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                         pastePage:Hide()
                         EllesmereUI:ShowConfirmPopup({
                             title = EllesmereUI.L("Import Full Account Data"),
-                            message = EllesmereUI.L("This string is a FULL ACCOUNT export. It replaces your account-wide settings with the sender's, including Quality of Life, HoverCast bindings, Cooldown Manager spell setups, unlock anchors, UI scale, and profile keybinds -- not just a profile. Your other profiles are kept, but a profile with the same name is replaced.")
+                            message = EllesmereUI.L("This string is a FULL ACCOUNT export. It replaces your account-wide settings with the sender's, including Quality of Life, HoverCast bindings, Cooldown Manager spell setups, unlock anchors, UI scale, and spec assignments -- not just a profile. Your other profiles keep their own settings, but a profile with the same name is replaced.")
                                 .. ((EllesmereUI.PayloadFromOtherClient(payload) and type(payload.data) == "table"
                                     and payload.data.spellAssignments ~= nil)
                                     and ("\n\n" .. EllesmereUI.L("Its Cooldown Manager spells come from the other game client and will not be imported.")) or ""),
@@ -1629,10 +1637,8 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         PP.Point(rowFrame, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y)
 
         -- Background panel
-        local rowBg = rowFrame:CreateTexture(nil, "BACKGROUND")
-        rowBg:SetAllPoints()
-        rowBg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-        local rowBrd = EllesmereUI.MakeBorder(rowFrame, 1, 1, 1, 0.10, PP)
+        local rowBrd = EllesmereUI.MakeRoundedCard(rowFrame, 0.10, 0.50)
+        local rowBg = rowBrd.bg
 
         -- "Active Profile" label
         local profLabel = EllesmereUI.MakeFont(rowFrame, 12, nil, EG.r, EG.g, EG.b, 0.7)
@@ -1951,18 +1957,19 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             else ActiveApplyNormal() end
         end)
 
-        -- "Assign to Spec" label
+        -- "Assign to Spec" label ("Assign to Class" on WoW Forever, which has no
+        -- specs: the popup lists one row per class there)
         local specLabel = EllesmereUI.MakeFont(rowFrame, 12, nil, 1, 1, 1, 0.45)
         PP.Point(specLabel, "LEFT", profLabel, "LEFT", DD_W + GAP, 0)
-        specLabel:SetText(EllesmereUI.L("Assign to Spec"))
+        specLabel:SetText(EllesmereUI.IS_FOREVER and EllesmereUI.L("Assign to Class") or EllesmereUI.L("Assign to Spec"))
         specLabel:SetJustifyH("LEFT")
 
-        -- Assign to Spec button
+        -- Assign to Spec (Class) button
         local assignBtn = CreateFrame("Button", nil, rowFrame)
         PP.Size(assignBtn, BTN_W, CTRL_H)
         PP.Point(assignBtn, "TOPLEFT", specLabel, "BOTTOMLEFT", 0, -6)
         assignBtn:SetFrameLevel(rowFrame:GetFrameLevel() + 2)
-        EllesmereUI.MakeStyledButton(assignBtn, "Assign to Spec", 11, PROF_BTN_COLOURS, function()
+        EllesmereUI.MakeStyledButton(assignBtn, EllesmereUI.IS_FOREVER and "Assign to Class" or "Assign to Spec", 11, PROF_BTN_COLOURS, function()
             local db = EllesmereUIDB or {}
             if not db.specProfiles then db.specProfiles = {} end
             local tempDB = { _profileSpecs = {} }
@@ -2016,7 +2023,8 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 confirmText = EllesmereUI.L("Save"),
                 cancelText  = EllesmereUI.L("Cancel"),
                 onConfirm   = function(name)
-                    if not name or name == "" then return end
+                    name = name and strtrim(name) or ""
+                    if name == "" then return end
                     local _, profiles = EllesmereUI.GetProfileList()
                     if profiles and profiles[name] then
                         EllesmereUI:ShowConfirmPopup({
@@ -2060,7 +2068,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             EllesmereUIUnitFrames        = "Simple unit frames with a modern visual style.",
             EllesmereUICooldownManager   = "A CDM replacement focused on performance, customizations and alerts.",
             EllesmereUIResourceBars      = "Custom Resource Bars with thresholds, hash lines and more.",
-            EllesmereUIRaidFrames        = "Incredibly light performance, modern raid frames with endless flexibility.",
+            EllesmereUIRaidFrames        = "Incredibly light performance, modern raid and party frames with endless flexibility.",
             EllesmereUIAuraBuffReminders = "Simple raid buff, auras, consumables and talent reminders.",
             EllesmereUIQoL               = "Lightweight quality of life tools and enhancements.",
             EllesmereUIDragonRiding      = "Skyriding HUD with speed, vigor and second wind tracking.",
@@ -2086,10 +2094,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         PP.Size(sectionBg, totalW, SECTION_H)
         PP.Point(sectionBg, "TOPLEFT", parent, "TOPLEFT", PAD, y)
         sectionBg:EnableMouse(false)
-        local sBg = sectionBg:CreateTexture(nil, "BACKGROUND")
-        sBg:SetAllPoints()
-        sBg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-        EllesmereUI.MakeBorder(sectionBg, 1, 1, 1, 0.10, PP)
+        local sBg = EllesmereUI.MakeRoundedCard(sectionBg, 0.10, 0.50).bg
 
         local hdrFrame = CreateFrame("Frame", nil, parent)
         PP.Size(hdrFrame, totalW, HDR_H)
@@ -2343,9 +2348,9 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
 
         -- Styled to match the Done button: green border + text, dark bg, fade hover
         local DB = EllesmereUI.DARK_BG
-        local eaBrd = EllesmereUI.MakeBorder(exportSelBtn, EG.r, EG.g, EG.b, 0.7, PP)
         local eaBg = EllesmereUI.SolidTex(exportSelBtn, "BACKGROUND", DB.r, DB.g, DB.b, 0.92)
         eaBg:SetAllPoints()
+        local eaBrd = EllesmereUI.MakeRoundedBorder(exportSelBtn, EG.r, EG.g, EG.b, 0.7, eaBg)
         local eaLbl = EllesmereUI.MakeFont(exportSelBtn, 12, nil, EG.r, EG.g, EG.b)
         eaLbl:SetAlpha(0.7)
         eaLbl:SetPoint("CENTER")
@@ -2429,11 +2434,12 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
                 box:SetPoint("LEFT", row, "LEFT", 6, 0)
                 local bbg = box:CreateTexture(nil, "BACKGROUND"); bbg:SetAllPoints()
                 bbg:SetColorTexture(0.114, 0.106, 0.099, 1)
-                EllesmereUI.MakeBorder(box, 0.224, 0.215, 0.207, 0.6, PP)
+                EllesmereUI.MakeRoundedBorder(box, 0.224, 0.215, 0.207, 0.6, bbg)
                 local mark = box:CreateTexture(nil, "ARTWORK")
                 mark:SetPoint("TOPLEFT", box, "TOPLEFT", 3, -3)
                 mark:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -3, 3)
                 mark:SetColorTexture(EG.r, EG.g, EG.b, 1)
+                EllesmereUI.RoundBody(box, mark, 1)
                 marks[i] = mark
                 local lbl = EllesmereUI.MakeFont(row, 12, nil, 1, 1, 1, 0.7)
                 lbl:SetPoint("LEFT", box, "RIGHT", 8, 0)

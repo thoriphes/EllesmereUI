@@ -14,7 +14,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  shared with Cursor/BattleRes/Bloodlust: each NewDB merges its own defaults
 --  into the SAME profile table, repointed by the profile system on swap.
 -------------------------------------------------------------------------------
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.SetFramePlacer) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Shifter's loot windows use the parent's frame placer)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.SetFramePlacer and EllesmereUI.RAID_PREP_IDS and EllesmereUI.SetFontFamily and EllesmereUI.CharData and EllesmereUI.IsZeroValue and EllesmereUI.PlainString and EllesmereUI.IsSecret) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Shifter's loot windows use the parent's frame placer; Raid Buff Check reads the parent's buff lists; the group death alert, /keys and Raid Buff Check names take the parent's font families; its per-character data is in the parent's roster: CharData; Self Combat Text's power gains read the parent's secret helpers: IsZeroValue, PlainString, IsSecret)
 local ns = select(2, ...)
 EllesmereUI._ModuleNS["EllesmereUIQoL"] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
@@ -72,8 +72,14 @@ qolFrame:SetScript("OnEvent", function(self)
     -- Environment Ping keybind (EllesmereUI._applyEnvPing, further down):
     -- nothing is built unless a key is saved.
     if EllesmereUIDB.envPingKey then EllesmereUI._applyEnvPing() end
+    -- Transparent World Map Sidebars (EllesmereUI._applyMapSidebars, further down;
+    -- not on WoW Forever): nothing is built while off.
+    if EllesmereUIDB.mapSidebarsClear and EllesmereUI._applyMapSidebars then EllesmereUI._applyMapSidebars() end
     -- Self Combat Text (EllesmereUIQoL_SelfCombatText.lua): nothing is built while off.
     ns.SCT_Refresh()
+    if EllesmereUI._applyUpgradeTooltips then EllesmereUI._applyUpgradeTooltips() end
+    -- Dialog Keys (EllesmereUIQoL_DialogKeys.lua): nothing is built while off.
+    if EllesmereUIDB.dialogKeys and EllesmereUI._applyDialogKeys then EllesmereUI._applyDialogKeys() end
 
     ---------------------------------------------------------------------------
     -- Bonus roll confirmation. Addon-owned overlays intercept Roll/Pass clicks;
@@ -120,8 +126,18 @@ qolFrame:SetScript("OnEvent", function(self)
                 and (not request.isRoll or request.specID == LootSpec())
         end
 
-        local function Click(isRoll, button, mouseButton, down)
+        -- The confirm's secure click does nothing in combat (Blizzard's
+        -- template skips it there): say so instead of opening, or silently
+        -- closing, a prompt that cannot act. The roll stays for after combat.
+        local function CombatRefused()
+            if not InCombatLockdown() then return false end
+            EllesmereUI.PrintError(EllesmereUI.L("A bonus roll can only be confirmed out of combat."))
+            return true
+        end
+
+        local function Click(isRoll, button)
             if not active or not Enabled() then return end
+            if CombatRefused() then return end
             Invalidate()
             local frame = BonusRollFrame
             if not frame then return end
@@ -144,11 +160,15 @@ qolFrame:SetScript("OnEvent", function(self)
                 confirmText = isRoll and ROLL or PASS,
                 cancelText = CANCEL,
                 onCancel = request.cancel,
+                -- Blizzard's button is clicked by the popup's secure overlay:
+                -- a Click() from here taints AcceptSpellConfirmationPrompt.
+                confirmClick = button,
+                confirmGate = function()
+                    return pending == request and IsCurrent(request)
+                end,
                 onConfirm = function()
-                    if pending ~= request then return end
-                    local valid = IsCurrent(request)
                     Invalidate()
-                    if valid then button:Click(mouseButton, down) end
+                    CombatRefused()
                 end,
             })
         end
@@ -166,8 +186,8 @@ qolFrame:SetScript("OnEvent", function(self)
             overlay:SetAllPoints(button)
             overlay:SetFrameLevel(button:GetFrameLevel() + 1)
             overlay:RegisterForClicks("LeftButtonUp")
-            overlay:SetScript("OnClick", function(_, mouseButton, down)
-                Click(isRoll, button, mouseButton, down)
+            overlay:SetScript("OnClick", function()
+                Click(isRoll, button)
             end)
             overlay:SetScript("OnEnter", function(self)
                 EllesmereUI.ShowWidgetTooltip(self, isRoll and ROLL or PASS)
@@ -245,27 +265,19 @@ qolFrame:SetScript("OnEvent", function(self)
     do
         local busy = false
 
-        -- Clears pending mount fanfare: narrows the journal filter to
-        -- collected-only for the sweep, then restores the snapshot.
+        -- Walks all mount IDs so journal filters cannot hide a pending mount.
         local function AckMountAlerts()
             if not C_MountJournal then return false end
             local pending = C_MountJournal.GetNumMountsNeedingFanfare
                 and C_MountJournal.GetNumMountsNeedingFanfare()
             if not pending or pending <= 0 then return false end
 
-            local snapshot = {}
-            for i = LE_MOUNT_JOURNAL_FILTER_COLLECTED, LE_MOUNT_JOURNAL_FILTER_UNUSABLE do
-                snapshot[i] = C_MountJournal.GetCollectedFilterSetting(i) and true or false
-                C_MountJournal.SetCollectedFilterSetting(i, i == LE_MOUNT_JOURNAL_FILTER_COLLECTED)
-            end
-            for i = 1, C_MountJournal.GetNumDisplayedMounts() do
-                local id = C_MountJournal.GetDisplayedMountID(i)
-                if id and C_MountJournal.NeedsFanfare(id) then
+            for _, id in ipairs(C_MountJournal.GetMountIDs()) do
+                if C_MountJournal.NeedsFanfare(id) then
                     C_MountJournal.ClearFanfare(id)
+                    pending = pending - 1
+                    if pending == 0 then break end
                 end
-            end
-            for i = LE_MOUNT_JOURNAL_FILTER_COLLECTED, LE_MOUNT_JOURNAL_FILTER_UNUSABLE do
-                C_MountJournal.SetCollectedFilterSetting(i, snapshot[i])
             end
             return true
         end
@@ -311,21 +323,22 @@ qolFrame:SetScript("OnEvent", function(self)
             if not (EllesmereUIDB and EllesmereUIDB.autoUnwrapCollections) then return end
             if busy then return end
             busy = true
+            -- Fanfare only: calling the micro button alert functions from here
+            -- taints them and blocks SetAvatarTexture in the Communities list.
             C_Timer.After(0.2, function()
                 busy = false
-                local changed = AckMountAlerts() or AckPetAlerts() or AckToyAlerts()
-                if changed then
-                    if CollectionsMicroButton and MainMenuMicroButton_HideAlert then
-                        MainMenuMicroButton_HideAlert(CollectionsMicroButton)
-                    end
-                    if CollectionsMicroButton_SetAlertShown then
-                        CollectionsMicroButton_SetAlertShown(false)
-                    end
-                end
+                local mounts = AckMountAlerts()
+                local pets = AckPetAlerts()
+                if not (mounts or pets) then AckToyAlerts() end
             end)
         end
 
-        EllesmereUI._applyAutoUnwrap = function() end
+        -- Runs during PLAYER_LOGIN, before Blizzard's PLAYER_ENTERING_WORLD
+        -- check, so the Collections button does not raise the unopened alert.
+        if EllesmereUIDB and EllesmereUIDB.autoUnwrapCollections then
+            AckMountAlerts()
+            AckPetAlerts()
+        end
 
         hooksecurefunc("MainMenuMicroButton_ShowAlert", function(_, text)
             if not (EllesmereUIDB and EllesmereUIDB.autoUnwrapCollections) then return end
@@ -334,11 +347,26 @@ qolFrame:SetScript("OnEvent", function(self)
             end
         end)
 
+        -- The collection events are registered only while the option is on.
         local f = CreateFrame("Frame")
-        f:RegisterEvent("PLAYER_LOGIN")
-        f:RegisterEvent("NEW_MOUNT_ADDED")
-        f:RegisterEvent("NEW_PET_ADDED")
-        f:RegisterEvent("NEW_TOY_ADDED")
+        local function SyncUnwrapEvents()
+            local on = EllesmereUIDB and EllesmereUIDB.autoUnwrapCollections
+            if on then
+                f:RegisterEvent("NEW_MOUNT_ADDED")
+                f:RegisterEvent("NEW_PET_ADDED")
+                f:RegisterEvent("NEW_TOY_ADDED")
+            else
+                f:UnregisterEvent("NEW_MOUNT_ADDED")
+                f:UnregisterEvent("NEW_PET_ADDED")
+                f:UnregisterEvent("NEW_TOY_ADDED")
+            end
+            return on
+        end
+        -- The options toggle: switching on also unwraps what is already pending.
+        EllesmereUI._applyAutoUnwrap = function()
+            if SyncUnwrapEvents() then DismissCollectionAlerts() end
+        end
+        if SyncUnwrapEvents() then f:RegisterEvent("PLAYER_LOGIN") end
         f:SetScript("OnEvent", function(self, event)
             if event == "PLAYER_LOGIN" then
                 self:UnregisterEvent("PLAYER_LOGIN")
@@ -425,8 +453,10 @@ qolFrame:SetScript("OnEvent", function(self)
         local function BankOpen()
             if not (C_PlayerInteractionManager and C_PlayerInteractionManager.IsInteractingWithNpcOfType) then return false end
             -- Both bank types: character banker and the warband (account) bank.
-            return (C_PlayerInteractionManager.IsInteractingWithNpcOfType(Enum.PlayerInteractionType.Banker)
-                or C_PlayerInteractionManager.IsInteractingWithNpcOfType(Enum.PlayerInteractionType.AccountBanker)) and true or false
+            local PIT, IsAt = Enum.PlayerInteractionType, C_PlayerInteractionManager.IsInteractingWithNpcOfType
+            -- some bankers open the character bank as CharacterBanker
+            return (IsAt(PIT.Banker) or (PIT.CharacterBanker and IsAt(PIT.CharacterBanker))
+                or IsAt(PIT.AccountBanker)) and true or false
         end
         -- "Exclude Warbound Containers": checks the item's own bind type
         -- instead of asking the bank if it would accept a deposit right now --
@@ -817,6 +847,7 @@ qolFrame:SetScript("OnEvent", function(self)
                     -- The event that actually fires on retail; mail's own delivery can still unlock slots just after close, so settle first like LOOT_CLOSED.
                     C_Timer.After(0.5, function() ScanAndOpen(false, true, false) end)
                 elseif interactionType == Enum.PlayerInteractionType.Banker
+                    or interactionType == Enum.PlayerInteractionType.CharacterBanker
                     or interactionType == Enum.PlayerInteractionType.AccountBanker then
                     -- AccountBanker: the warband bank signals its own type, and
                     -- BankOpen() gates both (same BankFrame).
@@ -897,9 +928,15 @@ qolFrame:SetScript("OnEvent", function(self)
             return n, gold
         end
 
+        -- Forever pet trainer (Beast Training): purchase is protected for addons.
+        local function IsPetTrainer()
+            return C_Trainer and C_Trainer.GetTrainerType and Enum.TrainerType
+                and C_Trainer.GetTrainerType() == Enum.TrainerType.Pet
+        end
+
         local function RefreshButton()
             if not trainBtn then return end
-            if not (EllesmereUIDB and EllesmereUIDB.trainAllButton) then
+            if not (EllesmereUIDB and EllesmereUIDB.trainAllButton) or IsPetTrainer() then
                 trainBtn:Hide(); return
             end
             local n = TrainableSummary()
@@ -919,6 +956,7 @@ qolFrame:SetScript("OnEvent", function(self)
             trainBtn:SetPoint("RIGHT", ClassTrainerTrainButton, "LEFT", -2, 0)
 
             trainBtn:SetScript("OnClick", function()
+                if IsPetTrainer() then return end
                 local wallet = GetMoney and GetMoney() or 0
                 local slots  = FreeProfessionSlots()
                 -- Descending: a purchase reindexes the list, so only already-
@@ -1366,6 +1404,8 @@ qolFrame:SetScript("OnEvent", function(self)
                     lootFrame = CreateFrame("Frame")
                     lootFrame:SetScript("OnEvent", function()
                         if IsShiftKeyDown() then return end
+                        -- Nothing to take: no slot empties, so the window would never close by itself.
+                        if GetNumLootItems() == 0 then CloseLoot() return end
                         for i = 1, GetNumLootItems() do
                             local index = i
                             C_Timer.After(0.05 * index, function()
@@ -2158,6 +2198,51 @@ do
 end
 
 -------------------------------------------------------------------------------
+--  Auto-Accept Resurrection
+--  Accepts res requests automatically. A res from a caster in combat (a
+--  battle res) is left to the player unless the combat option is on.
+-------------------------------------------------------------------------------
+do
+    local IsSecret = EllesmereUI.IsSecret
+    local frame
+
+    -- A secret or unreadable answer counts as in combat.
+    local function CasterInCombat(caster)
+        if not caster then return false end
+        local ok, v = pcall(UnitAffectingCombat, caster)
+        if not ok or IsSecret(v) then return true end
+        return v and true or false
+    end
+
+    local function OnEvent(_, _, caster)
+        if not EllesmereUIDB.autoAcceptResCombat and CasterInCombat(caster) then return end
+        AcceptResurrect()
+    end
+
+    local function ApplyAutoAcceptRes()
+        local on = EllesmereUIDB and EllesmereUIDB.autoAcceptRes
+        if on and not frame then
+            frame = CreateFrame("Frame")
+            frame:SetScript("OnEvent", OnEvent)
+        end
+        if not frame then return end
+        if on then
+            frame:RegisterEvent("RESURRECT_REQUEST")
+        else
+            frame:UnregisterEvent("RESURRECT_REQUEST")
+        end
+    end
+    EllesmereUI._applyAutoAcceptRes = ApplyAutoAcceptRes
+
+    local f = CreateFrame("Frame")
+    f:RegisterEvent("PLAYER_LOGIN")
+    f:SetScript("OnEvent", function(self)
+        self:UnregisterAllEvents()
+        if EllesmereUIDB and EllesmereUIDB.autoAcceptRes then ApplyAutoAcceptRes() end
+    end)
+end
+
+-------------------------------------------------------------------------------
 --  Secondary Stats Display
 --  On-screen overlay showing crit/haste/mastery/vers (+ optional tertiaries).
 -------------------------------------------------------------------------------
@@ -2315,6 +2400,7 @@ do
     function UpdateSecondaryStats()
         if not statsFrame or not statsFrame:IsShown() then return end
         statUnreadable = false
+        if FV then FV.missing = nil end
         if not statsFrame._classHex then
             -- Cache ONLY a resolved class color: caching the white fallback
             -- here left class-colored labels white for the whole session
@@ -2556,7 +2642,7 @@ do
         -- anySecret deliberately does NOT arm it: that clears on
         -- PLAYER_REGEN_ENABLED, and spending the budget on a whole fight would
         -- leave none for the settle that actually needs it.
-        if statUnreadable or staleSize then
+        if statUnreadable or staleSize or (FV and FV.missing) then
             ArmSecretHeal()
         else
             statsFrame._secretHeals = nil
@@ -3095,6 +3181,7 @@ end
 
 -------------------------------------------------------------------------------
 --  Durability Warning
+--  Its settings are per profile (EllesmereUI.QoLExtrasGet / QoLExtrasSet).
 -------------------------------------------------------------------------------
 do
     local durWarnOverlay
@@ -3116,20 +3203,20 @@ do
 
         local function ApplySettings()
             durWarnOverlay:ClearAllPoints()
-            local pos = EllesmereUIDB and EllesmereUIDB.durWarnPos
+            local pos = EllesmereUI.QoLExtrasGet("durWarnPos")
             if pos and pos.point then
                 durWarnOverlay:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 250)
             else
-                local yOff = EllesmereUIDB and EllesmereUIDB.durWarnYOffset or 250
+                local yOff = EllesmereUI.QoLExtrasGet("durWarnYOffset") or 250
                 durWarnOverlay:SetPoint("CENTER", UIParent, "CENTER", 0, yOff)
             end
             durWarnOverlay:SetScale(1)
 
             local fontPath = EllesmereUI.GetFontPath("extras")
-            local durSz = (EllesmereUIDB and EllesmereUIDB.durWarnTextSize) or 30
+            local durSz = EllesmereUI.QoLExtrasGet("durWarnTextSize") or 30
             fs:SetFont(fontPath, durSz, EllesmereUI.GetFontOutlineFlag("extras"))
 
-            local c = EllesmereUIDB and EllesmereUIDB.durWarnColor
+            local c = EllesmereUI.QoLExtrasGet("durWarnColor")
             if c then
                 fs:SetTextColor(c.r, c.g, c.b, 1)
             else
@@ -3185,22 +3272,37 @@ do
 
     local function CheckDurabilityAndShow()
         if not EllesmereUIDB then return end
-        if EllesmereUIDB.repairWarning == false then
+        if EllesmereUI.QoLExtrasGet("repairWarning") == false then
             if durWarnOverlay then durWarnOverlay:Hide() end
             return
         end
         if InCombatLockdown() then return end
 
+        -- WoW Forever: each throw spends one point of a thrown weapon's
+        -- durability, so it counts remaining throws rather than wear.
+        -- Skipped unless the player turned Ignore Thrown Weapons off.
+        local thrownSlot
+        if EllesmereUI.IS_FOREVER and EllesmereUI.QoLExtrasGet("durWarnIgnoreThrown") ~= false then
+            local rangedSlot = GetInventorySlotInfo("RangedSlot")
+            local itemID = rangedSlot and GetInventoryItemID("player", rangedSlot)
+            if itemID then
+                local _, _, _, _, _, classID, subclassID = C_Item.GetItemInfoInstant(itemID)
+                if classID == Enum.ItemClass.Weapon and subclassID == Enum.ItemWeaponSubclass.Thrown then
+                    thrownSlot = rangedSlot
+                end
+            end
+        end
+
         local lowestDur = 100
         for slot = 1, 18 do
             local cur, mx = GetInventoryItemDurability(slot)
-            if cur and mx and mx > 0 then
+            if cur and mx and mx > 0 and slot ~= thrownSlot then
                 local pct = (cur / mx) * 100
                 if pct < lowestDur then lowestDur = pct end
             end
         end
 
-        if lowestDur < (EllesmereUIDB.durWarnThreshold or 40) then
+        if lowestDur < (EllesmereUI.QoLExtrasGet("durWarnThreshold") or 40) then
             CreateDurabilityWarning()
             durWarnOverlay._show(lowestDur)
         elseif durWarnOverlay then
@@ -3228,7 +3330,7 @@ do
 
     -- Events registered only while enabled; toggle re-syncs live, and one immediate check on enable surfaces an already-low item.
     EllesmereUI._syncDurWarnEvents = function()
-        if EllesmereUIDB and EllesmereUIDB.repairWarning == false then
+        if EllesmereUI.QoLExtrasGet("repairWarning") == false then
             repairWarnFrame:UnregisterAllEvents()
             if durWarnOverlay then durWarnOverlay:Hide() end
         else
@@ -3241,7 +3343,14 @@ do
             CheckDurabilityAndShow()
         end
     end
-    EllesmereUI._syncDurWarnEvents()
+    -- At login, once the profile is readable: the switch follows profiles.
+    local boot = CreateFrame("Frame")
+    boot:RegisterEvent("PLAYER_LOGIN")
+    boot:SetScript("OnEvent", function(self)
+        self:UnregisterAllEvents()
+        self:SetScript("OnEvent", nil)
+        EllesmereUI._syncDurWarnEvents()
+    end)
 end
 
 -------------------------------------------------------------------------------
@@ -3837,6 +3946,60 @@ do
 end
 
 -------------------------------------------------------------------------------
+--  Transparent World Map Sidebars: the black beside the maximized world map goes
+--  to the chosen opacity (clear by default) and, with Click Through on
+--  (mapSidebarsClickThrough, on by default), lets the mouse through to the
+--  world. Blizzard only shows and hides BlackoutFrame, so the change holds
+--  until turned off. Not offered on WoW Forever: Forever Essentials has its
+--  own map background option there.
+-------------------------------------------------------------------------------
+if not EllesmereUI.IS_FOREVER then
+    local loader
+    local applied = false
+    local mouseHeld = false
+    local mouseWas
+
+    function EllesmereUI._applyMapSidebars()
+        local on = EllesmereUIDB and EllesmereUIDB.mapSidebarsClear == true
+        if not (on or applied or mouseHeld or loader) then return end
+        -- The world map loads on demand.
+        if not C_AddOns.IsAddOnLoaded("Blizzard_WorldMap") then
+            if on and not loader then
+                loader = CreateFrame("Frame")
+                loader:SetScript("OnEvent", function(self, _, name)
+                    if name ~= "Blizzard_WorldMap" then return end
+                    self:UnregisterEvent("ADDON_LOADED")
+                    EllesmereUI._applyMapSidebars()
+                end)
+            end
+            if on then loader:RegisterEvent("ADDON_LOADED") else loader:UnregisterEvent("ADDON_LOADED") end
+            return
+        end
+        if not (on or applied or mouseHeld) then return end
+        local b = WorldMapFrame.BlackoutFrame
+        if not (b and b.Blackout) then return end
+        -- The opacity applies at once, in combat too.
+        b.Blackout:SetAlpha(on and (EllesmereUIDB.mapSidebarsOpacity or 0) / 100 or 1)
+        applied = on
+        local through = (on and EllesmereUIDB.mapSidebarsClickThrough ~= false) or false
+        if through == mouseHeld then return end
+        -- The frame's mouse changes hands out of combat only. The wheel already
+        -- passes through: the frame never takes it.
+        if InCombatLockdown() then
+            ns.CombatQueue.Defer("MapSidebars", EllesmereUI._applyMapSidebars)
+            return
+        end
+        if through then
+            mouseWas = b:IsMouseEnabled()
+            b:EnableMouse(false)
+        else
+            b:EnableMouse(mouseWas)
+        end
+        mouseHeld = through
+    end
+end
+
+-------------------------------------------------------------------------------
 --  Hide Error Messages -- hides red error lines ("Not enough rage", etc.)
 --  while a keep list of useful errors stays up. Hidden message types go into
 --  UIErrorsFrame's own per-type switch (SetMessageTypeEnabled), which Blizzard
@@ -4188,6 +4351,7 @@ end
 --  Group Death Announcer -- shows a center-screen "<name> DIED!" alert on a
 --  party/raid death. Midnight has no combat log, so deaths are detected by polling
 --  group units for an alive->dead transition (feign/own death excluded). No ticker runs while off or solo.
+--  Its settings and spot are per profile (EllesmereUI.QoLExtrasGet / QoLExtrasSet).
 -------------------------------------------------------------------------------
 do
     local POLL_INTERVAL = 0.35
@@ -4209,13 +4373,14 @@ do
         if not outline:find("OUTLINE") then
             outline = (outline == "") and "OUTLINE" or (outline .. ", OUTLINE")
         end
-        local size = (EllesmereUIDB and EllesmereUIDB.groupDeathTextSize) or DEFAULT_TEXT_SIZE
-        alertOverlay._text:SetFont(fontPath, size, outline)
+        local size = EllesmereUI.QoLExtrasGet("groupDeathTextSize") or DEFAULT_TEXT_SIZE
+        -- A font family: the alert shows a group member's name, in any script
+        EllesmereUI.SetFontFamily(alertOverlay._text, fontPath, size, outline, false)
         -- Keep the frame (and unlock-mode mover) sized to the alert text, not a fixed wide box.
         alertOverlay:SetSize(size * 7, size + 14)
 
         alertOverlay:ClearAllPoints()
-        local pos = EllesmereUIDB and EllesmereUIDB.groupDeathAlertPos
+        local pos = EllesmereUI.QoLExtrasGet("groupDeathAlertPos")
         if pos and pos.point then
             alertOverlay:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
         else
@@ -4285,7 +4450,7 @@ do
     EllesmereUI._groupDeathSoundOrder = GROUP_DEATH_SOUND_ORDER
 
     local function PlayDeathSound()
-        local key = EllesmereUIDB and EllesmereUIDB.groupDeathSoundKey
+        local key = EllesmereUI.QoLExtrasGet("groupDeathSoundKey")
         if not key or key == "none" then return end
         local path = GROUP_DEATH_SOUND_PATHS[key]
         if path then PlaySoundFile(path, "Master") end
@@ -4322,7 +4487,7 @@ do
     end
 
     local function Poll()
-        if not (EllesmereUIDB and EllesmereUIDB.announceGroupDeaths) then return end
+        if not EllesmereUI.QoLExtrasGet("announceGroupDeaths") then return end
         local seen = {}
         local newlyDeadName, newlyDeadClass, newlyDeadCount
         ForEachGroupUnit(function(u)
@@ -4365,7 +4530,7 @@ do
     end
 
     local function UpdateActive()
-        if EllesmereUIDB and EllesmereUIDB.announceGroupDeaths and IsInGroup() then
+        if EllesmereUI.QoLExtrasGet("announceGroupDeaths") and IsInGroup() then
             StartTicker()
         else
             StopTicker()
@@ -4373,7 +4538,7 @@ do
     end
 
     local function ApplyAnnounceGroupDeaths()
-        local on = EllesmereUIDB and EllesmereUIDB.announceGroupDeaths
+        local on = EllesmereUI.QoLExtrasGet("announceGroupDeaths")
         if on and not installed then
             watcher:RegisterEvent("GROUP_ROSTER_UPDATE")
             watcher:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -4401,11 +4566,9 @@ do
 
     EllesmereUI._groupDeathPlaySound = PlayDeathSound
 
-    -- Re-apply font size/position (called from the Text Size slider and from unlock mode on saved-position change).
-    EllesmereUI._applyGroupDeathAlert = function()
-        CreateAlertOverlay()
-        ApplyOverlaySettings()
-    end
+    -- Re-apply font size and position to an alert that has been built (the Text Size sliders, a
+    -- profile switch). One never shown is not built here: it takes its settings as it first shows.
+    EllesmereUI._applyGroupDeathAlert = ApplyOverlaySettings
 
     -- Register the alert with Unlock Mode so its position can be dragged.
     C_Timer.After(2, function()
@@ -4420,31 +4583,30 @@ do
                 order    = 720,
                 noResize = true,
                 isHidden = function()
-                    return not (EllesmereUIDB and EllesmereUIDB.announceGroupDeaths)
+                    return not EllesmereUI.QoLExtrasGet("announceGroupDeaths")
                 end,
                 getFrame = function()
                     CreateAlertOverlay()
                     return alertOverlay
                 end,
                 getSize = function()
-                    local size = (EllesmereUIDB and EllesmereUIDB.groupDeathTextSize) or DEFAULT_TEXT_SIZE
+                    local size = EllesmereUI.QoLExtrasGet("groupDeathTextSize") or DEFAULT_TEXT_SIZE
                     return size * 7, size + 14
                 end,
                 savePos = function(_, point, relPoint, x, y)
                     if not point then return end
-                    if not EllesmereUIDB then EllesmereUIDB = {} end
-                    EllesmereUIDB.groupDeathAlertPos = { point = point, relPoint = relPoint, x = x, y = y }
+                    EllesmereUI.QoLExtrasSet("groupDeathAlertPos", { point = point, relPoint = relPoint, x = x, y = y })
                     if alertOverlay and not EllesmereUI._unlockActive then
                         ApplyOverlaySettings()
                     end
                 end,
                 loadPos = function()
-                    local pos = EllesmereUIDB and EllesmereUIDB.groupDeathAlertPos
+                    local pos = EllesmereUI.QoLExtrasGet("groupDeathAlertPos")
                     if pos and pos.point then return pos end
                     return { point = "CENTER", relPoint = "CENTER", x = 0, y = 180 }
                 end,
                 clearPos = function()
-                    if EllesmereUIDB then EllesmereUIDB.groupDeathAlertPos = nil end
+                    EllesmereUI.QoLExtrasSet("groupDeathAlertPos", false)
                     if alertOverlay then ApplyOverlaySettings() end
                 end,
                 applyPos = function()
@@ -4467,7 +4629,7 @@ do
         -- already present; the tables are the same ones options and PlayDeathSound read.
         EllesmereUI.AppendSharedMediaSounds(
             GROUP_DEATH_SOUND_PATHS, GROUP_DEATH_SOUND_NAMES, GROUP_DEATH_SOUND_ORDER)
-        if EllesmereUIDB and EllesmereUIDB.announceGroupDeaths then
+        if EllesmereUI.QoLExtrasGet("announceGroupDeaths") then
             ApplyAnnounceGroupDeaths()
         end
     end)
@@ -4478,7 +4640,8 @@ end
 --  transition has its own text/color (custom or class color); one Text Size
 --  applies to both. "Show On" selects enter/leave/both. The text is drawn by
 --  the shared alert anchor (EllesmereUIQoL_Alerts.lua), which also owns the
---  Unlock Mode position. No events registered unless enabled.
+--  Unlock Mode position. No events registered unless enabled. Its settings are
+--  per profile (EllesmereUI.QoLExtrasGet / QoLExtrasSet), as every alert's are.
 -------------------------------------------------------------------------------
 do
     local watcher
@@ -4493,24 +4656,23 @@ do
 
     -- Effective color for a transition: player's class color when the class-color toggle is on, else the stored custom color.
     local function ResolveColor(which)
-        local db = EllesmereUIDB
-        local useClass = db and db[which == "leave" and "combatAlertLeaveUseClassColor" or "combatAlertEnterUseClassColor"]
+        local Get = EllesmereUI.QoLExtrasGet
+        local useClass = Get(which == "leave" and "combatAlertLeaveUseClassColor" or "combatAlertEnterUseClassColor")
         if useClass then
             local _, classToken = UnitClass("player")
             local c = classToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classToken]
             if c then return c.r, c.g, c.b end
         end
-        local c = (db and db[which == "leave" and "combatAlertLeaveColor" or "combatAlertEnterColor"])
+        local c = Get(which == "leave" and "combatAlertLeaveColor" or "combatAlertEnterColor")
             or (which == "leave" and DEFAULTS.leaveColor or DEFAULTS.enterColor)
         return c.r, c.g, c.b
     end
 
     local function AlertText(which)
-        local db = EllesmereUIDB
         if which == "leave" then
-            return (db and db.combatAlertLeaveText) or DEFAULTS.leaveText
+            return EllesmereUI.QoLExtrasGet("combatAlertLeaveText") or DEFAULTS.leaveText
         end
-        return (db and db.combatAlertEnterText) or DEFAULTS.enterText
+        return EllesmereUI.QoLExtrasGet("combatAlertEnterText") or DEFAULTS.enterText
     end
 
     local function ShowAlert(which, preview)
@@ -4519,9 +4681,8 @@ do
     end
 
     local function OnCombatEvent(_, event)
-        local db = EllesmereUIDB
-        if not (db and db.combatAlertEnabled) then return end
-        local mode = db.combatAlertMode or "both"
+        if not EllesmereUI.QoLExtrasGet("combatAlertEnabled") then return end
+        local mode = EllesmereUI.QoLExtrasGet("combatAlertMode") or "both"
         if event == "PLAYER_REGEN_DISABLED" then
             if mode ~= "leave" then ShowAlert("enter") end
         elseif event == "PLAYER_REGEN_ENABLED" then
@@ -4530,7 +4691,7 @@ do
     end
 
     local function ApplyCombatAlert()
-        local on = EllesmereUIDB and EllesmereUIDB.combatAlertEnabled
+        local on = EllesmereUI.QoLExtrasGet("combatAlertEnabled")
         if on and not installed then
             watcher:RegisterEvent("PLAYER_REGEN_DISABLED")
             watcher:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -4557,7 +4718,7 @@ do
     boot:RegisterEvent("PLAYER_LOGIN")
     boot:SetScript("OnEvent", function(self)
         self:UnregisterAllEvents()
-        if EllesmereUIDB and EllesmereUIDB.combatAlertEnabled then
+        if EllesmereUI.QoLExtrasGet("combatAlertEnabled") then
             ApplyCombatAlert()
         end
     end)
@@ -4568,8 +4729,12 @@ end
 --  Unlock Mode. Default format is the item-ladder bracket ("30-35"); optional
 --  "30+" (spell-ladder lower bound) or "30" (minimum yards). Answers come from
 --  the shared engine (EllesmereUI_Range.lua), activated only while enabled. Color by yard bracket. Off by default.
+--  Its settings (the switch, format, alignment, size, strata and position) are per profile,
+--  through the extras store the FPS counter and Secondary Stats use: a profile that never
+--  set a key reads the account-wide value saved before the text followed profiles.
 -------------------------------------------------------------------------------
 do
+    local Get, Set = EllesmereUI.QoLExtrasGet, EllesmereUI.QoLExtrasSet
     local distFrame
     local drv
     local evt
@@ -4581,13 +4746,13 @@ do
     local DEFAULT_POS = { point = "CENTER", relPoint = "CENTER", x = 0, y = 120 }
 
     local function GetFormat()
-        local f = EllesmereUIDB and EllesmereUIDB.targetDistanceFormat
+        local f = Get("targetDistanceFormat")
         if f == "plus" or f == "min" or f == "range" then return f end
         return DEFAULT_FORMAT
     end
 
     local function GetAlign()
-        local a = EllesmereUIDB and EllesmereUIDB.targetDistanceAlign
+        local a = Get("targetDistanceAlign")
         if a == "LEFT" or a == "CENTER" or a == "RIGHT" then return a end
         return DEFAULT_ALIGN
     end
@@ -4660,10 +4825,10 @@ do
         if not outline:find("OUTLINE") then
             outline = (outline == "") and "OUTLINE" or (outline .. ", OUTLINE")
         end
-        local size = (EllesmereUIDB and EllesmereUIDB.targetDistanceTextSize) or DEFAULT_TEXT_SIZE
+        local size = Get("targetDistanceTextSize") or DEFAULT_TEXT_SIZE
         -- HIGH = the pre-setting strata, so existing installs keep their look; the
         -- setting is the opt-in to sit lower (e.g. under the bank window).
-        local strata = (EllesmereUIDB and EllesmereUIDB.targetDistanceStrata) or "HIGH"
+        local strata = Get("targetDistanceStrata") or "HIGH"
         local align = GetAlign()
         distFrame._text:SetFont(fontPath, size, outline)
         distFrame._text:SetJustifyH(align)
@@ -4679,7 +4844,7 @@ do
         end
 
         distFrame:ClearAllPoints()
-        local pos = EllesmereUIDB and EllesmereUIDB.targetDistancePos
+        local pos = Get("targetDistancePos")
         if pos and pos.point then
             distFrame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
         else
@@ -4712,8 +4877,15 @@ do
         distFrame:Show()
     end
 
+    -- The switch as last read (ReadEnabled: login, the options, a profile switch, the
+    -- module reset), so the driver's per-frame gate never asks the settings store.
+    local enabled = false
+    local function ReadEnabled()
+        enabled = Get("targetDistanceEnabled") and true or false
+        return enabled
+    end
     local function IsEnabled()
-        return EllesmereUIDB and EllesmereUIDB.targetDistanceEnabled
+        return enabled
     end
 
     local Tick -- forward decl for StartDriver closures
@@ -4779,7 +4951,7 @@ do
     end
 
     local function ApplyTargetDistance()
-        if IsEnabled() then
+        if ReadEnabled() then
             if not installed then StartDriver() end
             Tick()
             if distFrame then ApplyFrameSettings() end
@@ -4817,24 +4989,24 @@ do
                     return distFrame
                 end,
                 getSize = function()
-                    local size = (EllesmereUIDB and EllesmereUIDB.targetDistanceTextSize) or DEFAULT_TEXT_SIZE
+                    local size = Get("targetDistanceTextSize") or DEFAULT_TEXT_SIZE
                     return size * 5, size + 10
                 end,
                 savePos = function(_, point, relPoint, x, y)
                     if not point then return end
-                    if not EllesmereUIDB then EllesmereUIDB = {} end
-                    EllesmereUIDB.targetDistancePos = { point = point, relPoint = relPoint, x = x, y = y }
+                    Set("targetDistancePos", { point = point, relPoint = relPoint, x = x, y = y })
                     if distFrame and not EllesmereUI._unlockActive then
                         ApplyFrameSettings()
                     end
                 end,
                 loadPos = function()
-                    local pos = EllesmereUIDB and EllesmereUIDB.targetDistancePos
+                    local pos = Get("targetDistancePos")
                     if pos and pos.point then return pos end
                     return { point = DEFAULT_POS.point, relPoint = DEFAULT_POS.relPoint, x = DEFAULT_POS.x, y = DEFAULT_POS.y }
                 end,
                 clearPos = function()
-                    if EllesmereUIDB then EllesmereUIDB.targetDistancePos = nil end
+                    -- false, not nil: an unset key would read the old account-wide spot.
+                    Set("targetDistancePos", false)
                     if distFrame then ApplyFrameSettings() end
                 end,
                 applyPos = function()
@@ -4853,7 +5025,7 @@ do
     boot:SetScript("OnEvent", function(self)
         self:UnregisterAllEvents()
         self:SetScript("OnEvent", nil)
-        if IsEnabled() then ApplyTargetDistance() end
+        if ReadEnabled() then ApplyTargetDistance() end
     end)
 end
 

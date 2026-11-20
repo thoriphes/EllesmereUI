@@ -27,7 +27,7 @@ local WriteDefaultValues, GetBmStore = I.WriteDefaultValues, I.GetBmStore
 local GetCondBmStore, GetCondDmStore = I.GetCondBmStore, I.GetCondDmStore
 local GetDmStore, IsTBBChildKey, LayerSkipsKey = I.GetDmStore, I.IsTBBChildKey, I.LayerSkipsKey
 local Cond, EXCLUDED_CONTEXTS, RequestGoldWalk = I.Cond, I.EXCLUDED_CONTEXTS, I.RequestGoldWalk
-local EnterGroupEdit = I.EnterGroupEdit
+local EnterGroupEdit, BuildEntryCrumb = I.EnterGroupEdit, I.BuildEntryCrumb
 
 -- This file's copies of shared names; Set<Name> keeps every copy current
 -- (the lists are built at the end of EllesmereUI_SpecOverrides.lua).
@@ -48,6 +48,7 @@ local function TitleCase(s)
 end
 
 local function BuildListRow(parent, y, entry)
+    if EllesmereUI._prebuilding then return nil, 38 end -- rows hold no searchable settings
     -- Options page pool (EllesmereUI_FramePool.lua): on a pool host these rows
     -- are reset and dressed again by the next build (the list builders below).
     local CreateFrame = EllesmereUI._Pool.CreateFrame
@@ -62,14 +63,21 @@ local function BuildListRow(parent, y, entry)
 
     local crumb = EllesmereUI.MakeFont(row, 11, nil, 1, 1, 1, 0.3)
     crumb:SetPoint("LEFT", name, "RIGHT", 10, 0)
-    crumb:SetText(entry.crumb and TitleCase(entry.crumb) or "")
+    -- Built from the entry's fields when it has a page, so a renamed module or
+    -- tab label (or a client language switch) shows current names, not the
+    -- baked crumb. An entry whose row is on another page (EUI_NS.EntryPage) shows
+    -- that page, and no section: its own is not one of that page's.
+    local rowPage, moved = EUI_NS.EntryPage(entry.module, entry.page, entry.section, entry.slotLabel or entry.label)
+    local crumbText = entry.page and BuildEntryCrumb(entry.module, entry.element, rowPage, not moved and entry.section or nil)
+        or entry.crumb
+    crumb:SetText(crumbText and TitleCase(crumbText) or "")
 
     local function MakeBtn(text, xOff, w)
         local b = CreateFrame("Button", nil, row)
         b:SetSize(w or 110, 22)
         b:SetPoint("RIGHT", row, "RIGHT", xOff, 0)
         EllesmereUI.SolidTex(b, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
-        local brd = EllesmereUI.MakeBorder(b, 1, 1, 1, 0.22)
+        local brd = EllesmereUI.MakeRoundedBorder(b, 1, 1, 1, 0.22)
         local lbl = EllesmereUI.MakeFont(b, 11, nil, 1, 1, 1, 0.8)
         lbl:SetPoint("CENTER")
         lbl:SetText(L(text))
@@ -153,8 +161,8 @@ local function BuildListRow(parent, y, entry)
         end
         if mod and EllesmereUI:GetModuleTitle(mod) then
             EllesmereUI:SelectModule(mod)
-            if entry.page and EllesmereUI.SelectPage then
-                EllesmereUI:SelectPage(entry.page)
+            if rowPage and EllesmereUI.SelectPage then
+                EllesmereUI:SelectPage(rowPage)
             end
         end
     end)
@@ -167,6 +175,7 @@ end
 -- spec to the shared default. Removal is the only possible action -- no editing
 -- session can reach them.
 local function BuildStrandedRow(parent, y, entry, specID)
+    if EllesmereUI._prebuilding then return nil, 38 end -- rows hold no searchable settings
     local CreateFrame = EllesmereUI._Pool.CreateFrame
     local CONTENT_PAD = EllesmereUI.CONTENT_PAD or 40
     local row = CreateFrame("Frame", nil, parent)
@@ -187,7 +196,7 @@ local function BuildStrandedRow(parent, y, entry, specID)
     rm:SetSize(116, 22)
     rm:SetPoint("RIGHT", row, "RIGHT", -20, 0)
     EllesmereUI.SolidTex(rm, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
-    local rmBrd = EllesmereUI.MakeBorder(rm, 1, 1, 1, 0.22)
+    local rmBrd = EllesmereUI.MakeRoundedBorder(rm, 1, 1, 1, 0.22)
     local rmLbl = EllesmereUI.MakeFont(rm, 11, nil, 1, 1, 1, 0.8)
     rmLbl:SetPoint("CENTER")
     rmLbl:SetText(L("Remove Override"))
@@ -340,6 +349,7 @@ end
 --- popup). opts: crumb, title, message ('%s' = group name), removeFn. Defaults
 --- describe the unlock-layout fork.
 local function BuildUnlockLayoutRow(parent, y, g, opts)
+    if EllesmereUI._prebuilding then return nil, 38 end -- rows hold no searchable settings
     opts = opts or {}
     local crumbText = opts.crumb or "Custom Unlock Mode"
     local titleText = opts.title or "Delete Custom Unlock Mode"
@@ -365,7 +375,7 @@ local function BuildUnlockLayoutRow(parent, y, g, opts)
     b:SetSize(116, 22)
     b:SetPoint("RIGHT", row, "RIGHT", -20, 0)
     EllesmereUI.SolidTex(b, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
-    local brd = EllesmereUI.MakeBorder(b, 1, 1, 1, 0.22)
+    local brd = EllesmereUI.MakeRoundedBorder(b, 1, 1, 1, 0.22)
     local lbl = EllesmereUI.MakeFont(b, 11, nil, 1, 1, 1, 0.8)
     lbl:SetPoint("CENTER")
     lbl:SetText(L("Delete"))
@@ -393,7 +403,7 @@ local function BuildUnlockLayoutRow(parent, y, g, opts)
         e:SetSize(116, 22)
         e:SetPoint("RIGHT", b, "LEFT", -8, 0)
         EllesmereUI.SolidTex(e, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
-        local ebrd = EllesmereUI.MakeBorder(e, 1, 1, 1, 0.22)
+        local ebrd = EllesmereUI.MakeRoundedBorder(e, 1, 1, 1, 0.22)
         local elbl = EllesmereUI.MakeFont(e, 11, nil, 1, 1, 1, 0.8)
         elbl:SetPoint("CENTER")
         elbl:SetText(L("Edit"))
@@ -835,9 +845,9 @@ function EllesmereUI.SpecOverrides_BuildListPage(parent, startY)
         btn:SetPoint("TOP", parent, "TOP", 0, y)
         btn:SetFrameLevel(parent:GetFrameLevel() + 5)
         btn:SetAlpha(0.85)
-        local brd = EllesmereUI.MakeBorder(btn, 0.8, 0.2, 0.2, 0.5, EllesmereUI.PanelPP)
         local bg = EllesmereUI.SolidTex(btn, "BACKGROUND", DARK_BG.r, DARK_BG.g, DARK_BG.b, 0.92)
         bg:SetAllPoints()
+        local brd = EllesmereUI.MakeRoundedBorder(btn, 0.8, 0.2, 0.2, 0.5, bg)
         local lbl = EllesmereUI.MakeFont(btn, 13, nil, 0.9, 0.3, 0.3)
         lbl:SetAlpha(0.7)
         lbl:SetPoint("CENTER")
@@ -989,7 +999,7 @@ function EllesmereUI.Conditions_BuildListPage(parent, startY)
             b:SetSize(116, 22)
             b:SetPoint("RIGHT", row, "RIGHT", -20, 0)
             EllesmereUI.SolidTex(b, "BACKGROUND", 0.10, 0.10, 0.11, 0.9)
-            local brd = EllesmereUI.MakeBorder(b, 1, 1, 1, 0.22)
+            local brd = EllesmereUI.MakeRoundedBorder(b, 1, 1, 1, 0.22)
             local lbl = EllesmereUI.MakeFont(b, 11, nil, 1, 1, 1, 0.8)
             lbl:SetPoint("CENTER")
             lbl:SetText(L("Delete"))

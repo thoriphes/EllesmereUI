@@ -142,10 +142,19 @@ do
         "classPowerClassColors", "classPowerCustomColor", "classPowerGap",
         "classPowerShape", "classPowerBorder", "classPowerBorderColor", "classPowerBorderSize",
         "textSlotTop", "textSlotRight", "textSlotLeft", "textSlotCenter",
-        "textSlotBottomLeft", "textSlotBottomRight",
+        "textSlotBottomLeft", "textSlotBottomRight", "textSlotTopLeft", "textSlotTopRight",
         "nameYOffset",
         "healthBarHeight", "healthBarWidth", "castBarHeight",
     }
+    -- The energy bar beside the combo pips exists on WoW Forever alone.
+    if EllesmereUI.IS_FOREVER == true then
+        local keys = ns._displayPresetKeys
+        for _, k in ipairs({ "classPowerEnergyBar", "classPowerEnergyHeight", "classPowerEnergyWidth",
+            "classPowerEnergyAnchor", "classPowerEnergyXOffset", "classPowerEnergyYOffset",
+            "classPowerEnergyHideFull" }) do
+            keys[#keys + 1] = k
+        end
+    end
     ns._appendDisplayPresetKeys(ns._displayPresetKeys)
 
     -- Also handle spec changes that happen before the UI is ever opened
@@ -179,6 +188,7 @@ function npAddon:OnInitialize()
     -- Non-Target Opacity: derive the cached value at login (no plates exist yet,
     -- so the apply loop no-ops; SetUnit fades new plates as they spawn).
     if ns.NT_RefreshSetting then ns.NT_RefreshSetting() end
+    if ns.NP_RefreshTypeScaleSetting then ns.NP_RefreshTypeScaleSetting() end
     -- Append SharedMedia textures to runtime tables so SM texture keys resolve at runtime
     EllesmereUI.AppendSharedMediaTextures(
         ns.healthBarTextureNames,
@@ -187,6 +197,7 @@ function npAddon:OnInitialize()
         ns.healthBarTextures
     )
 end
+
 function npAddon:OnEnable()
     -- Re-read profile: PreSeedSpecProfile may have re-pointed db.profile between OnInitialize and OnEnable.
     SetProfile(ENP.db.profile)
@@ -245,6 +256,8 @@ function npAddon:OnEnable()
     ns.NP_RefreshSlotClassFlags()
     ns.NP_RefreshThreatPctFlag()
     ns.NP_RefreshThreatColorFlag()
+    -- PreSeedSpecProfile / the spec preset above may have changed the type scales.
+    if ns.NP_RefreshTypeScaleSetting then ns.NP_RefreshTypeScaleSetting() end
     if ns.RangeText_Apply then ns.RangeText_Apply() end
     -- Debuff coloring last: it reads the final profile, and Color Border reads
     -- the plate style, which latches for the session on its first read.
@@ -277,6 +290,8 @@ do
             anchorTo = plate.levelText
         elseif rightEl == "targetOfTarget" then
             anchorTo = plate.totText
+        elseif rightEl == "custom" then
+            anchorTo = plate.customRight
         elseif rightEl and rightEl ~= "none" then
             local ca = plate._cachedHealthSlots
             if ca then

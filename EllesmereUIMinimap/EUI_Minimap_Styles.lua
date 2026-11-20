@@ -171,6 +171,82 @@ EBS._MapCrop = function(p, mapSize)
     return 0
 end
 
+-- Other addons' map pins place edge icons on the full square canvas, so a crop
+-- (Rectangular, or a WoW Forever square with its title bar) hides the top and
+-- bottom ones. While a crop is on, every unprotected child of the map gets a
+-- SetPoint post-hook that pulls a single CENTER-to-map-centre point lying past
+-- 0.45 x map size - crop (the inset edge pins keep from the sides) onto that
+-- line, radially; a pin within that inset of the shown edge moves onto it too.
+-- Blizzard's zoom hover area is never hooked, a frame protected by then is
+-- never moved, and nothing moves on a map another addon has resized (a
+-- farming HUD), whose pins are not on the canvas the crop was worked out for.
+do
+    local half, edgeY = 0, nil   -- edgeY nil = no crop, hooks idle
+    local hooked, busy, lastCount = {}, false, -1
+    local evFrame
+
+    local Scan
+
+    local function Clamp(pin)
+        if not edgeY or busy then return end
+        -- A pin made since the last scan gets picked up on its siblings' next move.
+        if Minimap:GetNumChildren() ~= lastCount then Scan() end
+        local pt, rel, relPt, x, y = pin:GetPoint(1)
+        if pt ~= "CENTER" or rel ~= Minimap or relPt ~= "CENTER" or pin:GetNumPoints() ~= 1 then return end
+        if type(x) ~= "number" or type(y) ~= "number" then return end
+        -- Offsets are in the pin's own scale; compare them in map units.
+        local s = pin:GetEffectiveScale() / Minimap:GetEffectiveScale()
+        local ay = math.abs(y) * s
+        -- Points outside the canvas (ring buttons) or inside the inset line stay.
+        if ay <= edgeY or ay > half or math.abs(x) * s > half then return end
+        if math.abs(Minimap:GetHeight() - 2 * half) > 1 or pin:IsProtected() then return end
+        local k = edgeY / ay
+        busy = true
+        pin:SetPoint("CENTER", Minimap, "CENTER", x * k, y * k)
+        busy = false
+    end
+
+    Scan = function()
+        local n = Minimap:GetNumChildren()
+        if n == lastCount then return end
+        lastCount = n
+        local zoomArea = Minimap.ZoomHitArea
+        for _, child in ipairs({ Minimap:GetChildren() }) do
+            if not hooked[child] and child ~= zoomArea and not child:IsProtected() then
+                hooked[child] = true
+                hooksecurefunc(child, "SetPoint", Clamp)
+                Clamp(child)
+            end
+        end
+    end
+
+    local SCAN_EVENTS = {
+        "PLAYER_ENTERING_WORLD", "ZONE_CHANGED", "ZONE_CHANGED_INDOORS",
+        "ZONE_CHANGED_NEW_AREA", "QUEST_LOG_UPDATE", "PLAYER_STARTED_MOVING",
+        "MINIMAP_UPDATE_ZOOM",
+    }
+
+    -- Called every apply pass with the map size and its crop.
+    EBS._ApplyPinCrop = function(mapSize, crop)
+        if crop and crop > 0 then
+            half = mapSize / 2
+            -- Same inset from the shown edge as the pins keep from the sides.
+            edgeY = mapSize * 0.45 - crop
+            if not evFrame then
+                evFrame = CreateFrame("Frame")
+                evFrame:SetScript("OnEvent", Scan)
+            end
+            for _, ev in ipairs(SCAN_EVENTS) do evFrame:RegisterEvent(ev) end
+            lastCount = -1
+            Scan()
+            for child in pairs(hooked) do Clamp(child) end
+        elseif edgeY then
+            edgeY = nil
+            evFrame:UnregisterAllEvents()
+        end
+    end
+end
+
 -- The mask that crops rectangular mode's square canvas covers the terrain only -- the
 -- engine keeps drawing unit blips across the whole canvas, and the one thing that
 -- confines the native render is the minimap's PARENT rect (ordinary child frames and
@@ -216,18 +292,23 @@ EBS._MinimapStyle = function()
         -- exists): the EllesmereUI look's square map in that frame, so the
         -- module renders "eui" and every stock site stands down, the
         -- variant's ring pieces with them. Forever Circle ("circle") is the
-        -- variant as it is; anything else is Forever Square, the default.
-        EBS._fvSquare = fv and m.foreverBorder ~= "circle" and EllesmereUI.ForeverHeavyOK() or false
+        -- variant as it is, Slim Square ("slim") the slim square below;
+        -- anything else is Forever Square, the default.
+        local fvSlim = fv and m.foreverBorder == "slim"
+        EBS._fvSquare = fv and not fvSlim and m.foreverBorder ~= "circle" and EllesmereUI.ForeverHeavyOK() or false
         -- Plain Blizzard Style on the Forever client has a Border Style of
         -- its own (blizzBorder): Square, the default there, is the same
         -- square map in the slim bronze line (EBS._sqSlim) instead of the
         -- heavy frame; "circle" is the variant's Forever Circle exactly
         -- (EBS._bzCircle: the variant's pieces render, while the published
         -- getters still name Blizzard Style). EBS._fvSquare reads true under
-        -- either square.
-        EBS._sqSlim = v == "blizzard" and not fv and EllesmereUI.IS_FOREVER == true
-            and m.blizzBorder ~= "circle" and EllesmereUI.ForeverBorderOK() or false
+        -- either square. The variant's own Slim Square is that slim square.
+        EBS._sqSlim = (fvSlim or (v == "blizzard" and not fv and EllesmereUI.IS_FOREVER == true
+            and m.blizzBorder ~= "circle")) and EllesmereUI.ForeverBorderOK() or false
         EBS._bzCircle = v == "blizzard" and not fv and EllesmereUI.IS_FOREVER == true and not EBS._sqSlim
+        -- The look the profile's flags name (published MinimapForever), before
+        -- a square renders it as the EllesmereUI layout.
+        EBS._fvLook = fv
         if EBS._bzCircle then fv = true end
         if EBS._sqSlim then EBS._fvSquare = true end
         if EBS._fvSquare then v, fv = "eui", false end
@@ -280,7 +361,8 @@ EllesmereUI._ModuleNS[ADDON_NAME].MinimapStyle = function()
     return v
 end
 EllesmereUI._ModuleNS[ADDON_NAME].MinimapForever = function()
-    return (EBS._MinimapForever() and not EBS._bzCircle) or (EBS._MinimapFvSquare() and not EBS._sqSlim)
+    if EBS._styleLatch == nil then EBS._MinimapStyle() end
+    return EBS._fvLook == true
 end
 -- The options page: a square frame renders this session, and the shape the
 -- map renders.
@@ -298,7 +380,11 @@ EllesmereUI._ModuleNS[ADDON_NAME].MinimapFvBorderChanged = function(m)
     if type(m) == "table" and not m.useClassicStyle and m.useBlizzardStyle
        and EllesmereUI.IS_FOREVER == true then
         if m.useForeverStyle == true then
-            if m.foreverBorder ~= "circle" and EllesmereUI.ForeverHeavyOK() then sq = "heavy" end
+            if m.foreverBorder == "slim" then
+                if EllesmereUI.ForeverBorderOK() then sq = "slim" end
+            elseif m.foreverBorder ~= "circle" and EllesmereUI.ForeverHeavyOK() then
+                sq = "heavy"
+            end
         elseif m.blizzBorder ~= "circle" and EllesmereUI.ForeverBorderOK() then
             sq = "slim"
         end
@@ -469,8 +555,9 @@ end
 -- ForeverHeavy at the window scale, as the chat and Damage Meters windows
 -- wear it) in place of the EllesmereUI border. The rim's outer edge sits
 -- EBS.FV_SQUARE_OUT past the map's edge, so the map's square corners lie
--- inside the rim's corner cuts; the map keeps its footprint (unlock mode)
--- and the elements inside it step in past the rim (EBS._FvInsideXY). While
+-- inside the rim's corner cuts; unlock mode's mover outlines the frame
+-- (MoverInsets in EUI_Minimap_Lifecycle.lua) and the elements inside the
+-- map step in past the rim (EBS._FvInsideXY). While
 -- the zone text shows, the frame keeps the windows' title bar over the map
 -- (the rim's outer edge EBS.FV_SQUARE_TITLE above the map's top, the bar's
 -- divider on that edge) and the zone text rides the bar's band (fvTitleSlot,
@@ -484,7 +571,8 @@ end
 -- piece mouse-transparent. Built once; re-anchored every pass, as the border
 -- host is (the map's deferred reparent). A queue eye Action Bars parks off
 -- the frame's corner follows a resize.
--- Blizzard Style's Square on the Forever client (EBS._sqSlim) is the same
+-- Blizzard Style's Square on the Forever client, and the WoW Forever look's
+-- Slim Square (EBS._sqSlim), is the same
 -- map and layout in the slim bronze line (EllesmereUI.ForeverBorder, the
 -- shipped art): the line's outer edge EBS.FV_SLIM_OUT past the map's sides
 -- and bottom, so the map's square corners lie under the line's corner cuts,

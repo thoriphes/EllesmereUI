@@ -419,6 +419,10 @@ function ECME:OnInitialize()
     -- the first PLAYER_ENTERING_WORLD and only works because nil is falsy.
     ns.RefreshGlowCombatGate()
     _G._ECME_Apply = function()
+        -- Settings the buff ticker draws (Desaturate Off CD) take one ticker pass
+        -- now and one after the placement this apply queues, which can run later
+        -- and show placeholders the first pass did not see.
+        ns._btDirtyOnPlace = true
         ns.RefreshRotationAssistIcon()
         -- Profile switches land here, so the cached glow gate is re-read before
         -- the rebuild restarts any glow under the new profile's setting.
@@ -446,6 +450,8 @@ function ECME:OnInitialize()
         -- profile suppressed: the edge-driven ones (proc, cd ready) have no
         -- ticker to bring them back on their own.
         ns.CDMGlowCombatSync()
+        ns._btDirty = true
+        if ns.ArmBuffTicker then ns.ArmBuffTicker() end
     end
 
     -- Append SharedMedia textures to TBB runtime tables
@@ -528,6 +534,12 @@ function ECME:OnEnable()
                 -- Blizzard's data actually becomes ready on a slow login and never try
                 -- again. Catch up now.
                 if ns.QueueReanchor then ns.QueueReanchor() end
+                -- A queued repopulate that reached its settled pass before the
+                -- layouts loaded runs now, a frame on, once every viewer shows them.
+                if ns._repopAwaitsLayouts then
+                    ns._repopAwaitsLayouts = nil
+                    C_Timer.After(0, ns.RunQueuedRepopulate)
+                end
             end
         end)
     end
@@ -631,10 +643,9 @@ function ECME:CDMFinishSetup()
         local p = ECME.db and ECME.db.profile
         if p and p.cdmBars and p.cdmBars.enabled and EllesmereUIDB then
 
-            local charKey = ns.GetCharKey()
             local specKey = ns.GetActiveSpecKey()
-            local cache = EllesmereUIDB.cdmCachedBarSizes
-            local counts = cache and cache[charKey] and cache[charKey][specKey]
+            local cache = EllesmereUI.CharData("cdmBarSizes")
+            local counts = cache and cache[specKey]
             if counts then
                 for i, barData in ipairs(p.cdmBars.bars) do
                     if barData.enabled then

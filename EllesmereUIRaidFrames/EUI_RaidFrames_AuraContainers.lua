@@ -319,6 +319,59 @@ local function CK(c)
     return string.format("%.3f,%.3f,%.3f", r, g, b)
 end
 
+-- Shared by buff icons, debuff grids and their previews. Unset styles keep the
+-- original PP border path; explicit styles use AuraKit's unit-frame border inputs.
+-- into: a table to fill instead of a new one, for a caller that applies it at once
+-- (the previews' tickers); a style keeps its own.
+function ns.RFC_AuraBorder(s, prefix, into)
+    local size = s[prefix .. "Size"] or 1
+    if size <= 0 then return nil end
+    local color = s[prefix .. "Color"]
+    local r, g, b = ColorParts(color, 0, 0, 0)
+    local tex = s[prefix .. "Texture"]
+    local t = into or {}
+    t[1], t[2], t[3], t[4] = r, g, b, color and color.a or 1
+    t.size, t.texture = size, tex
+    t.edgePx = EllesmereUI.BorderPx(s[prefix .. "SizePx"], size, tex or "solid")
+    t.offsetX, t.offsetY = s[prefix .. "TextureOffset"], s[prefix .. "TextureOffsetY"]
+    t.shiftX, t.shiftY = s[prefix .. "TextureShiftX"], s[prefix .. "TextureShiftY"]
+    return t
+end
+
+function ns.RFC_AuraBorderFP(s, prefix)
+    if not s[prefix .. "Texture"] and not s[prefix .. "SizePx"]
+        and not (s[prefix .. "Color"] and s[prefix .. "Color"].a) then return false end
+    return FP(s[prefix .. "Texture"], s[prefix .. "SizePx"],
+        s[prefix .. "TextureOffset"], s[prefix .. "TextureOffsetY"],
+        s[prefix .. "TextureShiftX"], s[prefix .. "TextureShiftY"],
+        s[prefix .. "DispelTextured"],
+        s[prefix .. "Color"] and s[prefix .. "Color"].a)
+end
+
+-- Owned hosts only (bare buff squares and previews); normal icons use AuraKit.
+function ns.RFC_ApplyAuraBorder(host, state, border, cooldownLevel)
+    if not host then return end
+    if not border then
+        EllesmereUI.ApplySecretSafeBorderStyle(host, state, 0, 0, 0, 0, 0, "solid")
+        host:Hide()
+        return
+    end
+    if border.texture or border.edgePx then
+        host:SetFrameLevel(cooldownLevel + 1)
+    end
+    EllesmereUI.ApplySecretSafeBorderStyle(host, state, border.size,
+        border[1], border[2], border[3], border[4], border.texture or "solid",
+        border.offsetX, border.offsetY, border.shiftX, border.shiftY,
+        "unitframes", border.size, nil, border.edgePx)
+    host:Show()
+end
+
+local pvBorder = {}  -- reused by every preview border (applied at once)
+function ns.RFC_PreviewAuraBorder(icon, host, s, prefix)
+    ns.RFC_ApplyAuraBorder(host, host, ns.RFC_AuraBorder(s, prefix, pvBorder),
+        (icon._cooldown or icon):GetFrameLevel())
+end
+
 -- A Class-mode glow draws the palette's class colour, so that colour is an
 -- input of every glow print (a Colors page edit must restyle); "" for every
 -- other mode. The colour last printed feeds the colours-changed hook below
@@ -355,13 +408,13 @@ end
 -- sizeOverride: the dispellable-location styles reuse the whole debuff
 -- style with only the physical size swapped (see DispLocSize).
 local function BuildDebuffStyle(s, sizeOverride)
-    local br, bg, bb = ColorParts(s.debuffBorderColor, 0, 0, 0)
+    local border = ns.RFC_AuraBorder(s, "debuffBorder")
     local size = sizeOverride and ns.RFC_SnapSize(sizeOverride) or ns.RFC_DebuffSize(s)
     -- Engine dispel-border extras: ring thickness in PHYSICAL pixels + the user
     -- palette as the engine tint map (AuraKit registers both; helper resolved at
     -- call time, declared below). -1 = follow icon's own Border thickness, 0 = recolor off.
     local dpx = s.dispelIconBorderSize or 2
-    if dpx == -1 then dpx = s.debuffBorderSize or 1 end
+    if dpx == -1 then dpx = border and (border.edgePx or border.size) or 0 end
     local dcMap, dcFP
     if ns.RFC_DispelBorderColorMap then dcMap, dcFP = ns.RFC_DispelBorderColorMap(s) end
     return {
@@ -369,10 +422,12 @@ local function BuildDebuffStyle(s, sizeOverride)
         height = size,
         iconCrop = true,
         iconZoom = s.debuffIconZoom or 0.08,
-        border = (s.debuffBorderSize or 1) > 0 and { br, bg, bb, 1, size = s.debuffBorderSize or 1 } or nil,
+        border = border,
         -- Dispellable debuffs get the engine dispel-type border over the
         -- static one (dispelName is secret in 12.1; see AuraKit).
         dispelBorder = true,
+        dispelBorderTexture = s.debuffBorderDispelTextured == true and border
+            and border.texture ~= "solid" and border.texture ~= "" and border.texture or nil,
         dispelBorderPx = dpx,
         dispelColorMap = dcMap,
         dispelColorFP = dcFP,
@@ -662,14 +717,21 @@ local function ApplyRFDispelSlot(button, dd, style)
     tex:ClearAllPoints()
     if style.mode == "none" then
         tex:Hide()
-    elseif style.mode == "gradient" or style.mode == "gradient_sharp" then
+    elseif style.mode == "gradient" or style.mode == "gradient_sharp" or style.mode == "gradient_reverse" then
         tex:Show()
         tex:SetAllPoints(health)
-        tex:SetTexture(style.mode == "gradient_sharp" and GRADIENT_SHARP_TEXTURE or GRADIENT_TEXTURE)
+        tex:SetTexture(style.mode == "gradient" and GRADIENT_TEXTURE or GRADIENT_SHARP_TEXTURE)
+        -- Gradient Sharp Reverse: the sharp texture flipped vertically (bottom-up).
+        if style.mode == "gradient_reverse" then
+            tex:SetTexCoord(0, 1, 1, 0)
+        else
+            tex:SetTexCoord(0, 1, 0, 1)
+        end
         tex:SetVertexColor(r, g, b, alpha)
     elseif style.mode == "full" then
         tex:Show()
         tex:SetAllPoints(health)
+        tex:SetTexCoord(0, 1, 0, 1)
         tex:SetColorTexture(r, g, b, alpha)
         tex:SetVertexColor(1, 1, 1, 1)
     else -- "fill"
@@ -680,22 +742,37 @@ local function ApplyRFDispelSlot(button, dd, style)
         -- Inverted Fill the rest of the bar up to the fill's HP edge, so a unit at
         -- full health still shows the wash.
         ns.RF_AnchorCurHealth(tex, health, fillTex, style.fillVert, style.fillInvert)
+        tex:SetTexCoord(0, 1, 0, 1)
         tex:SetColorTexture(r, g, b, alpha)
         tex:SetVertexColor(1, 1, 1, 1)
     end
 
-    -- Type-colored border around the health bar.
+    -- Type-colored border around the health bar. One shared level for every type
+    -- (unit button + LVL_RAISE - 1, strips + 10): over the base border strips (+9),
+    -- under the hover/target/aggro raise (strips +11) and the text band (LVL_TEXT).
+    -- The Magic > Curse > ... priority rides the strips' OVERLAY sublevel
+    -- (2 + def.level), like the overlay's ARTWORK sublevel above.
     if (style.borderSize or 0) > 0 and PP then
         if not dd.borderHost then
             dd.borderHost = CreateFrame("Frame", nil, button)
             dd.borderHost:SetAllPoints(health)
         end
-        dd.borderHost:SetFrameLevel(health:GetFrameLevel() + 6 + def.level)
+        local ub = dd.rfUnitBtn
+        local bLvl = (ub and ub:GetFrameLevel() or health:GetFrameLevel() - 2) + ns.LVL_RAISE - 1
+        -- Change-guarded, stamped after the writes, like dd.lvl above.
+        local relevel = dd.bLvl ~= bLvl
+        if relevel then dd.borderHost:SetFrameLevel(bLvl) end
         if dd.borderMade then
             PP.UpdateBorder(dd.borderHost, style.borderSize, r, g, b, typeA)
         else
-            PP.CreateBorder(dd.borderHost, r, g, b, typeA, style.borderSize, "OVERLAY", 7)
+            PP.CreateBorder(dd.borderHost, r, g, b, typeA, style.borderSize, "OVERLAY", 2 + def.level)
             dd.borderMade = true
+        end
+        if relevel then
+            -- The strips' PP container keeps the level it was created at.
+            local ppC = PP.GetBorders(dd.borderHost)
+            if ppC then ppC:SetFrameLevel(bLvl + 1) end
+            dd.bLvl = bLvl
         end
         dd.borderHost:Show()
     elseif dd.borderHost then
@@ -837,6 +914,7 @@ local classFP = {}
 
 local function DebuffStyleFP(s, font)
     return FP(font, s.debuffSize, ns.RFC_DebuffSize(s), s.debuffIconZoom, s.debuffBorderSize, CK(s.debuffBorderColor),
+        ns.RFC_AuraBorderFP(s, "debuffBorder"),
         s.debuffShowSwipe, s.debuffShowDurText, s.debuffDurTextSize, CK(s.debuffDurTextColor),
         s.debuffDurTextOffsetX, s.debuffDurTextOffsetY, s.debuffShowStacks, s.debuffStacksTextSize,
         CK(s.debuffStacksTextColor), s.debuffStacksOffsetX, s.debuffStacksOffsetY, s.debuffHideTooltips,
@@ -1067,7 +1145,7 @@ local function BmIndicators(d)
     return ns.BM2_SpecIndicators(d and (d._isParty and "party" or "raid") or nil)
 end
 
-local function BmIncludeMap(spellID)
+local function BmIncludeMap(spellID, exact)
     local map = { [spellID] = true }
     if ns.BM_PrimaryByAlt then
         for alt, prim in pairs(ns.BM_PrimaryByAlt) do
@@ -1076,7 +1154,9 @@ local function BmIncludeMap(spellID)
     end
     -- v2 curated alternates (same buff under talent/rank ids): resolution keeps ONE
     -- entry per buff family, so the family's alt ids must all match the primary's slot.
-    if ns.BM2_PresetAlts then
+    -- An exact id (the view's exactSpells) matches its own aura alone, so a
+    -- same-named family member stays with the indicator that names it.
+    if ns.BM2_PresetAlts and not exact then
         local alts = ns.BM2_PresetAlts[spellID]
         if alts then
             for i = 1, #alts do map[alts[i]] = true end
@@ -1169,8 +1249,18 @@ local function BmSignature(inds, specKey, mode)
             if cmode == "g" then
                 ownTag = BmEffOwnOnly(ind) and ":o" or ":a"
             end
+            -- Exact ids narrow the include maps, which slots take at
+            -- creation, so they are structural too.
+            local exTag = ""
+            local ex = ind.exactSpells
+            if ex then
+                local sp = ind.spells or {}
+                for k = 1, #sp do
+                    if ex[sp[k]] then exTag = exTag .. ":x" .. sp[k] end
+                end
+            end
             parts[#parts + 1] = tostring(ind.id or ("x" .. i)) .. ":" .. (ind.type or "icon")
-                .. ":" .. table.concat(ind.spells or {}, "-")
+                .. ":" .. table.concat(ind.spells or {}, "-") .. exTag
                 .. ":" .. tostring(ind.showWhen or "present")
                 .. ":" .. cmode .. ownTag
                 .. (ind.showOwnAllSpecs and ":s" or "")
@@ -1195,12 +1285,14 @@ end
 -- PLAYER filter token instead.
 local function BuildBmCand(ind, spells, spellID)
     local include
+    local ex = ind.exactSpells
     if spellID then
-        include = BmIncludeMap(spellID)
+        include = BmIncludeMap(spellID, ex and ex[spellID])
     else
         include = {}
         for k = 1, #(spells or {}) do
-            for id in pairs(BmIncludeMap(spells[k])) do include[id] = true end
+            local sid = spells[k]
+            for id in pairs(BmIncludeMap(sid, ex and ex[sid])) do include[id] = true end
         end
     end
     return { includeSpellIDs = include }
@@ -1387,9 +1479,34 @@ local function ApplyBmPandemicBorder(button, dd, style)
     local width = style.bmPandemicWidth or 2
     local r, g, b = BmColor(style.bmPandemicColor, 1, 0.2, 0.2)
     local alpha = style.bmPandemicEnabled and not style.hideIcon and 1 or 0
+    local border = style.bmPandemicEnabled and style.bmPandemicTextured and style.border
+    if border and (not border.texture or border.texture == "solid" or border.texture == ""
+        or not EllesmereUI.ResolveBorderTexture(border.texture)) then border = nil end
+    if border then
+        local ring = dd.bmPandemicRing
+        if not ring then
+            ring = CreateFrame("Frame", nil, holder)
+            ring:SetPoint("CENTER", holder, "CENTER")
+            ring:EnableMouse(false)
+            dd.bmPandemicRing = ring
+        end
+        ring:SetFrameLevel(holder:GetFrameLevel())
+        if dd.bmPandemicW ~= style.width or dd.bmPandemicH ~= style.height then
+            ring:SetSize(style.width, style.height)
+            dd.bmPandemicW, dd.bmPandemicH = style.width, style.height
+        end
+        -- The engine owns the holder's visibility; only draw on its child.
+        EllesmereUI.ApplySecretSafeBorderStyle(ring, ring, border.size, r, g, b, alpha,
+            border.texture, border.offsetX, border.offsetY, border.shiftX, border.shiftY,
+            "unitframes", border.size, nil, border.edgePx)
+    elseif dd.bmPandemicRing then
+        EllesmereUI.ApplySecretSafeBorderStyle(dd.bmPandemicRing, dd.bmPandemicRing,
+            0, 0, 0, 0, 0, "solid")
+        dd.bmPandemicRing:Hide()
+    end
     for i, edge in ipairs(dd.bmPandemicEdges) do
         if i <= 2 then edge:SetHeight(width) else edge:SetWidth(width) end
-        edge:SetColorTexture(r, g, b, alpha)
+        edge:SetColorTexture(r, g, b, border and 0 or alpha)
     end
     if not dd.bmPandemicBound then
         button:AddPandemicRegion(holder)
@@ -1469,7 +1586,6 @@ local function BmTipsOff()
 end
 
 local function BuildBmIconStyle(ind, iscale, size)
-    local br, bg, bb = BmColor(ind.indBorderColor, 0, 0, 0)
     local hideIcon = ind.hideIcon == true
     return {
         width = size,
@@ -1477,8 +1593,7 @@ local function BuildBmIconStyle(ind, iscale, size)
         iconCrop = true,
         iconZoom = (ns.db and ns.db.profile and ns.db.profile.bmIconZoom) or 0.08,
         hideIcon = hideIcon,
-        border = (not hideIcon and (ind.indBorderSize or 1) > 0)
-            and { br, bg, bb, 1, size = ind.indBorderSize or 1 } or nil,
+        border = not hideIcon and ns.RFC_AuraBorder(ind, "indBorder") or nil,
         cooldownReverse = true,
         hideSwipe = hideIcon or (ind.showDuration == false),
         noDefaultFonts = true,
@@ -1500,6 +1615,7 @@ local function BuildBmIconStyle(ind, iscale, size)
         tooltipAnchor = (BmTipMode() == "cursor") and "cursor" or nil,
         bmGlowInd = ind,
         bmPandemicEnabled = BmPandemicOn(ind),
+        bmPandemicTextured = ind.pandemicBorderTextured == true,
         bmPandemicColor = ind.pandemicBorderColor,
         bmPandemicWidth = ind.pandemicBorderWidth or 2,
         applyExtra = ApplyBmIconExtra,
@@ -1545,8 +1661,6 @@ local function BmApplySquare(button, dd, style)
             if dd.cooldown.SetDrawSwipe then dd.cooldown:SetDrawSwipe(not hideSwipe) end
         end
     end
-    local br, bg2, bb = BmColor(ind.indBorderColor, 0, 0, 0)
-    BmUpdateBorder(dd, dd.borderHost, ind.indBorderSize or 1, br, bg2, bb, 1)
     ApplyRFDebuffText(button, dd, style)
     -- Cached base + change-guarded level: see ApplyBmIconExtra.
     local base = dd.bmBase
@@ -1558,6 +1672,23 @@ local function BmApplySquare(button, dd, style)
     if dd.bmLvl ~= lvl then
         button:SetFrameLevel(lvl)
         dd.bmLvl = lvl
+    end
+    -- Once the host was re-anchored for an explicit size (rfBorderSize) it stays on
+    -- this path, which keeps that size current; the legacy path below never resizes it.
+    if ind.indBorderTexture or ind.indBorderSizePx or dd._secretBorderEdges or dd.rfBorderSize then
+        if dd.rfBorderSize ~= style.width then
+            if not dd.rfBorderSize then
+                dd.borderHost:ClearAllPoints()
+                dd.borderHost:SetPoint("CENTER", button, "CENTER")
+            end
+            dd.borderHost:SetSize(style.width, style.height)
+            dd.rfBorderSize = style.width
+        end
+        ns.RFC_ApplyAuraBorder(dd.borderHost, dd, style.bmBorder, dd.cooldown:GetFrameLevel())
+    else
+        local br, bg2, bb = BmColor(ind.indBorderColor, 0, 0, 0)
+        BmUpdateBorder(dd, dd.borderHost, ind.indBorderSize or 1, br, bg2, bb,
+            ind.indBorderColor and ind.indBorderColor.a or 1)
     end
     if dd.stackCarrier then dd.stackCarrier:SetFrameLevel(base + BM_FRAMELVL_TEXT) end
     BmRebindDurationCurve(button, dd, style)
@@ -1604,6 +1735,15 @@ local function BmApplyBar(button, dd, style)
     end
 end
 
+-- Textured Background on a Background Color effect: the class's background texture
+-- (style.texBgPath, set with the style) under the effect's tint; its style key
+-- carries it, so a change restyles.
+function ns.RFC_BmTexBg(style, s)
+    style.texBgPath, style.texBgVert = ns.RF_TexBgPath(s), ns.RF_IsVerticalFill(s)
+end
+function ns.RFC_BmTexBgKey(s)
+    return "|" .. tostring(ns.RF_TexBgPath(s)) .. (ns.RF_IsVerticalFill(s) and "v" or "")
+end
 local function BmApplyEffect(button, dd, style)
     local ind = style.ind
     if ind.type == "healthcolor" or ind.type == "bgcolor" then
@@ -1615,6 +1755,7 @@ local function BmApplyEffect(button, dd, style)
             if ind.type == "healthcolor" then
                 ns.RF_TintOverBarFill(dd.tex, dd.bmHealthBar, r, g, b, a)
             else
+                ns.RF_TexBgTint(dd.tex, style.texBgPath, style.texBgVert)
                 dd.tex:SetColorTexture(r, g, b, a)
             end
         end
@@ -1728,8 +1869,8 @@ local function BmEffectInit(button, dd, style, ind, health)
         local unitButton = button:GetParent() and button:GetParent():GetParent()
         if unitButton then
             -- Slot button sits AT the unit button's level: legacy renderer
-            -- (BM_ApplyEffectBorder) levels the host at parent+11 (static)/+14
-            -- (sweep) -- exact live parity.
+            -- (BM_ApplyEffectBorder) levels the host at parent + LVL_RAISE - 1,
+            -- under the hover raise and the text band -- exact live parity.
             button:SetFrameLevel(unitButton:GetFrameLevel())
             dd.borderHost = CreateFrame("Frame", nil, button)
             -- The Party Frames kit outlines the visible party frame (our
@@ -1765,6 +1906,7 @@ local function BuildBmStyleFor(kind, ind, iscale, size, spellID)
             height = size,
             noRegions = true,
             ind = ind,
+            bmBorder = ns.RFC_AuraBorder(ind, "indBorder"),
             sqColor = BmSquareColor(ind, spellID),
             noDefaultFonts = true,
             bmGlowInd = ind,
@@ -1930,6 +2072,7 @@ local function BuildBmSlots(inds, d, health, iscale, styleBase)
                 local slotKey = "bm" .. tostring(ind.id or ("x" .. i)) .. "_fx"
                 local styleKey = styleBase .. ":" .. tostring(ind.id or ("x" .. i)) .. ":fx"
                 AK.styles[styleKey] = BuildBmStyleFor(kind, ind, iscale, 1)
+                if kind == "bgcolor" then ns.RFC_BmTexBg(AK.styles[styleKey], ProxyFor(d)) end
                 local mm = { key = slotKey, styleKey = styleKey, ind = ind, kind = kind, spells = spells }
                 slots[#slots + 1] = {
                     key = slotKey,
@@ -2157,7 +2300,9 @@ local function BmVisualKey(kind, ind, size, font, spellID)
     if kind == "icon" then
         return FP(font, size, (ns.db and ns.db.profile and ns.db.profile.bmIconZoom) or 0.08,
             ind.iconOpacity, ind.hideIcon, ind.indBorderSize, CK(ind.indBorderColor),
+            ns.RFC_AuraBorderFP(ind, "indBorder"),
             ind.pandemicBorderEnabled, CK(ind.pandemicBorderColor), ind.pandemicBorderWidth,
+            ind.pandemicBorderTextured,
             ind.showDuration, ind.showDurationText, ind.durationTextSize, CK(ind.durationTextColor),
             ind.durationTextOffsetX, ind.durationTextOffsetY, ind.thresholdEnabled, ind.threshold,
             CK(ind.thresholdColor), ind.showStacks, ind.stacksTextSize, CK(ind.stacksTextColor),
@@ -2171,6 +2316,7 @@ local function BmVisualKey(kind, ind, size, font, spellID)
     end
     if kind == "square" then
         return FP(font, size, CK(BmSquareColor(ind, spellID)), ind.showDuration, ind.indBorderSize,
+            ns.RFC_AuraBorderFP(ind, "indBorder"),
             CK(ind.indBorderColor), ind.frameLevel, ind.showDurationText, ind.durationTextSize,
             CK(ind.durationTextColor), ind.durationTextOffsetX, ind.durationTextOffsetY,
             ind.thresholdEnabled, ind.threshold, CK(ind.thresholdColor), ind.showStacks,
@@ -2584,6 +2730,9 @@ local function CreateBmContainer(button, health, d, unit)
         local m = meta[i]
         if m.styleKey then
             bmStyleFP[m.styleKey] = BmVisualKey(m.kind, m.ind, m.size, font, m.spellID)
+            if m.kind == "bgcolor" then
+                bmStyleFP[m.styleKey] = bmStyleFP[m.styleKey] .. ns.RFC_BmTexBgKey(ProxyFor(d))
+            end
         end
     end
     bmOwnFP[StyleKeyFor(d)] = BmOwnKey(meta)
@@ -2676,6 +2825,7 @@ local function BmClassPass(d)
     cls.sig = BmSignature(cls.inds, cls.specKey, cls.mode)
     cls.iscale = BmScaleFor(d)
     cls.styleKey = StyleKeyFor(d)
+    cls.s = ProxyFor(d)
     return cls
 end
 
@@ -2689,10 +2839,12 @@ local function BmCheckStyles(cls, meta)
         local m = meta[i]
         if m.styleKey then
             local vk = BmVisualKey(m.kind, m.ind, m.size, font, m.spellID)
+            if m.kind == "bgcolor" then vk = vk .. ns.RFC_BmTexBgKey(cls.s) end
             if bmStyleFP[m.styleKey] ~= vk then
                 bmStyleFP[m.styleKey] = vk
                 local previousStyle = AK.styles[m.styleKey]
                 AK.styles[m.styleKey] = BuildBmStyleFor(m.kind, m.ind, cls.iscale, m.size, m.spellID)
+                if m.kind == "bgcolor" then ns.RFC_BmTexBg(AK.styles[m.styleKey], cls.s) end
                 -- Pool registration applies to every member, including disabled ones.
                 AK.styles[m.styleKey].bmPandemicRegister = previousStyle and previousStyle.bmPandemicRegister
                 AK.RestyleSoon(m.styleKey)

@@ -89,9 +89,11 @@ function ns.BuildTrackedBuffBars()
     local anyEnabled = false
     local anyLust = false  -- any enabled bloodlust bar -> needs the Sated listener
     local lastBarByGroup = {}  -- gid -> previous enabled member frame (chain tail)
+    -- WoW Forever has no pandemic window (ns.CDM_NO_PANDEMIC): no bar draws the glow there.
+    local panOK = not ns.CDM_NO_PANDEMIC
     for i, cfg in ipairs(bars) do
         -- Update gating flags
-        if cfg.pandemicGlow                             then _anyPandemic  = true end
+        if panOK and cfg.pandemicGlow                   then _anyPandemic  = true end
         if cfg.stackThresholdEnabled                    then _anyThreshold = true; _anyStacks = true end
         if (cfg.stacksPosition or "center") ~= "none"  then _anyStacks    = true end
         if cfg.stackBasedBar and cfg.trackType ~= "cooldown"
@@ -142,10 +144,12 @@ function ns.BuildTrackedBuffBars()
             -- Name text
             local namePos2 = cfg.namePosition or ((cfg.showName ~= false) and "left" or "none")
             if namePos2 ~= "none" and bar._nameText then
-                local displayName = cfg.name
-                -- Preset bars take the live label the same way the icon does above:
-                -- the copy saved at pick time can name the other faction's lust.
-                if cfg.popularKey then
+                local customName = ns.TBBCustomName(cfg)
+                local displayName = customName or cfg.name
+                -- Preset bars take the live label the same way the icon does above
+                -- (the copy saved at pick time can name the other faction's lust),
+                -- unless the bar has a name of its own.
+                if cfg.popularKey and not customName then
                     for _, pe in ipairs(TBB_POPULAR_BUFFS) do
                         if pe.key == cfg.popularKey then
                             displayName = pe.name or displayName

@@ -30,6 +30,7 @@ local ApplyButtonBorders, ApplyShapeToButton = I.ApplyButtonBorders, I.ApplyShap
 local SafeEnableMouse, SafeEnableMouseMotionOnly = I.SafeEnableMouse, I.SafeEnableMouseMotionOnly
 local ShouldQuickKeybindSurfaceBar = I.ShouldQuickKeybindSurfaceBar
 local SHOWGRID, SetShowGridInsecure = I.SHOWGRID, I.SetShowGridInsecure
+local GetButtonActionSlot = I.GetButtonActionSlot
 
 -------------------------------------------------------------------------------
 --  EAB Methods Apply functions called by the options UI
@@ -277,6 +278,28 @@ function EAB.PlaceButtonText(fs, parent, anchor, ox, oy)
     return true
 end
 
+-- Out-of-range keybind text. Blizzard paints a button's keybind red while its action is out
+-- of range (ActionButton_UpdateRangeIndicator) and repaints it only when that state changes,
+-- so a color write of ours has to put the red back. hkOut[btn] is Blizzard's last answer for
+-- a button, noted by a post-hook Blizzard calls per button on a range change only: the
+-- color-only pass reads it and asks the game nothing. The hook goes in with the first bar
+-- that has a custom keybind color, the one case that pass repaints.
+local hkOut = setmetatable({}, { __mode = "k" })
+local function NoteHotkeyRange(btn, checksRange, inRange)
+    if buttonToBar[btn] then
+        hkOut[btn] = (checksRange and not inRange) or nil
+    end
+end
+-- The game's own answer for a button with an action slot (it also seeds the note once the
+-- hook is in); a button without one (stance, pet) has only the note.
+local function HotkeyOutOfRange(btn)
+    local slot = GetButtonActionSlot(btn)
+    if not slot then return hkOut[btn] end
+    local out = (C_ActionBar.IsActionInRange(slot) == false) or nil
+    if EAB._hkRangeHooked then hkOut[btn] = out end
+    return out
+end
+
 function EAB:ApplyFontsForBar(barKey)
     local s = self.db.profile.bars[barKey]
     if not s then return end
@@ -306,6 +329,12 @@ function EAB:ApplyFontsForBar(barKey)
     local macroOY = s.macroOffsetY or 0
     local macroAnchor = s.macroAnchor
     local RANGE_INDICATOR = RANGE_INDICATOR or "\226\128\162"
+    -- A custom keybind color is what the color-only pass repaints: it needs the range notes.
+    if not hideKB and not EAB._hkRangeHooked and ActionButton_UpdateRangeIndicator
+       and (kbColor.r ~= 1 or kbColor.g ~= 1 or kbColor.b ~= 1) then
+        EAB._hkRangeHooked = true
+        hooksecurefunc("ActionButton_UpdateRangeIndicator", NoteHotkeyRange)
+    end
 
     for i = 1, #buttons do
         local btn = buttons[i]
@@ -342,7 +371,11 @@ function EAB:ApplyFontsForBar(barKey)
                 hk:SetText(text)
                 hk:Show()
                 EllesmereUI.ApplyIconTextFont(hk, fontPath, kbSize, "actionBars")
-                hk:SetTextColor(kbColor.r, kbColor.g, kbColor.b)
+                if HotkeyOutOfRange(btn) then
+                    hk:SetTextColor(RED_FONT_COLOR:GetRGB())
+                else
+                    hk:SetTextColor(kbColor.r, kbColor.g, kbColor.b)
+                end
                 -- Anchor unset (the default) = the stock placement below; the
                 -- nil test is the whole cost of the feature while it is off.
                 if not (kbAnchor and EAB.PlaceButtonText(hk, btn, kbAnchor, kbOX, kbOY)) then
@@ -399,7 +432,8 @@ end
 -- text color, reverting a custom color to white on target change, combat
 -- transitions, drag-and-drop, and usability flips until the next full
 -- ApplyFonts. Re-applies ONLY the color -- no fonts, no anchors -- and does no
--- button work at all for bars on the default white.
+-- button work at all for bars on the default white. A button Blizzard last
+-- reported out of range (hkOut) keeps its red.
 function EAB:ReapplyHotkeyColors()
     local bars = self.db and self.db.profile and self.db.profile.bars
     if not bars then return end
@@ -407,9 +441,13 @@ function EAB:ReapplyHotkeyColors()
         local s = bars[barKey]
         local c = s and not s.hideKeybind and s.keybindFontColor
         if c and (c.r ~= 1 or c.g ~= 1 or c.b ~= 1) then
+            local rr, rg, rb = RED_FONT_COLOR:GetRGB()
             for i = 1, #buttons do
-                local hk = buttons[i] and buttons[i].HotKey
-                if hk then hk:SetTextColor(c.r, c.g, c.b) end
+                local btn = buttons[i]
+                local hk = btn and btn.HotKey
+                if hk then
+                    if hkOut[btn] then hk:SetTextColor(rr, rg, rb) else hk:SetTextColor(c.r, c.g, c.b) end
+                end
             end
         end
     end
@@ -541,7 +579,7 @@ function EAB:ApplyCooldownFonts()
     end
 end
 
--- Show Equipped Item Color, live: every square button's Border takes the look
+-- Equipped Item Color, live: every square button's Border takes the look
 -- (and shows on an equipped item's button, in its rarity color) or hides
 -- again. The Blizzard and Classic styles keep their own equipped border, so
 -- EllesmereUI style only. changedOnly (ApplyAll: profile / spec switches,
@@ -571,20 +609,25 @@ function EAB:ApplyEquippedBorder(changedOnly)
     end
 end
 
--- Immediate re-apply of the Hide Count at 0 alpha on every button, so the options
--- toggle applies on click instead of waiting for the next count event. Alpha only --
--- the count TEXT stays whatever its owners last wrote. Cold path: options clicks only.
-function EAB:RefreshAllCounts()
+-- Immediate re-apply of the count alpha (a bar's Charge Numbers and Hide Count
+-- at 0) on one bar's buttons, or every bar's with no key, so an options change
+-- applies on click instead of waiting for the next count event. Alpha only --
+-- the count TEXT stays whatever its owners last wrote. Cold path: options
+-- clicks only.
+function EAB:RefreshCountVisibility(barKey)
     if not (C_ActionBar and C_ActionBar.GetActionDisplayCount) then return end
     for _, info in ipairs(BAR_CONFIG) do
-        if not info.isStance and not info.isPetBar then
+        if not info.isStance and not info.isPetBar and (barKey == nil or info.key == barKey) then
             local btns = barButtons[info.key]
             if btns then
                 for _, btn in ipairs(btns) do
                     if btn.Count then
                         local action = btn:GetAttribute("action")
                         if action and HasAction(action) then
-                            ns._EABZeroCountAlpha(EFD(btn), btn.Count,
+                            -- The count alpha finds the bar by this key.
+                            local fd = EFD(btn)
+                            fd.barKey = info.key
+                            ns._EABZeroCountAlpha(fd, btn.Count,
                                 C_ActionBar.GetActionDisplayCount(action), action)
                         end
                     end
@@ -594,7 +637,11 @@ function EAB:RefreshAllCounts()
     end
 end
 
--- Re-apply "Alpha when on CD" across every action button: on setting change (immediate
+function EAB:RefreshAllCounts()
+    self:RefreshCountVisibility()
+end
+
+-- Re-apply "Alpha on Cooldown" across every action button: on setting change (immediate
 -- feedback plus a clean restore to full alpha at 100) and on the main apply. Same
 -- secret-safe curve detection as the live ACTIONBAR_UPDATE_COOLDOWN handler.
 function EAB:ApplyCDAlphaAll()

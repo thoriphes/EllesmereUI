@@ -16,6 +16,7 @@ local wipe         = wipe
 local UnitClass             = UnitClass
 local UnitExists            = UnitExists
 local UnitIsDeadOrGhost     = UnitIsDeadOrGhost
+local UnitIsConnected       = UnitIsConnected
 local UnitIsUnit            = UnitIsUnit
 local IsInRaid              = IsInRaid
 local InCombatLockdown      = InCombatLockdown
@@ -24,10 +25,9 @@ local C_Timer               = C_Timer
 local issecretvalue         = issecretvalue
 local CreateFrame           = CreateFrame
 
-local ApplyFont, GetFFD, PixelSnap = I.ApplyFont, I.GetFFD, I.PixelSnap
+local GetFFD, PixelSnap = I.GetFFD, I.PixelSnap
 local ResolveHealthTexture, separatedHdrs = I.ResolveHealthTexture, I.separatedHdrs
-local GetHealthTextColor, GetNameColor = I.GetHealthTextColor, I.GetNameColor
-local GetSafeHealthPercent, ResolveDisplayName = I.GetSafeHealthPercent, I.ResolveDisplayName
+local GetSafeHealthPercent = I.GetSafeHealthPercent
 
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
@@ -153,6 +153,8 @@ end
 FB.ShouldBeActive = function()
     local fb = FB.Settings()
     if not fb then return false end
+    -- Arena never has friendly bosses; an empty group there only takes room beside the party frames.
+    if ns._InArena() then return false end
     if fb.display == "always" then return true end
     if fb.display == "healers" then
         -- WoW Forever: a class that can heal counts as its healing spec.
@@ -165,43 +167,6 @@ FB.ShouldBeActive = function()
         return role == "HEALER"
     end
     return false
-end
-
--- Anchor a FontString using the same position vocabulary as AnchorNameText/AnchorHealthText.
-FB.AnchorText = function(fs, health, pos, ox, oy)
-    fs:ClearAllPoints()
-    if pos == "topleft" then
-        fs:SetPoint("TOPLEFT", health, "TOPLEFT", 2 + ox, -2 + oy)
-        fs:SetJustifyH("LEFT"); fs:SetJustifyV("TOP")
-    elseif pos == "top" then
-        fs:SetPoint("TOP", health, "TOP", ox, -2 + oy)
-        fs:SetJustifyH("CENTER"); fs:SetJustifyV("TOP")
-    elseif pos == "topright" then
-        fs:SetPoint("TOPRIGHT", health, "TOPRIGHT", -2 + ox, -2 + oy)
-        fs:SetJustifyH("RIGHT"); fs:SetJustifyV("TOP")
-    elseif pos == "left" then
-        fs:SetPoint("LEFT", health, "LEFT", 2 + ox, oy)
-        fs:SetJustifyH("LEFT"); fs:SetJustifyV("MIDDLE")
-    elseif pos == "right" then
-        fs:SetPoint("RIGHT", health, "RIGHT", -2 + ox, oy)
-        fs:SetJustifyH("RIGHT"); fs:SetJustifyV("MIDDLE")
-    elseif pos == "bottomleft" then
-        fs:SetPoint("BOTTOMLEFT", health, "BOTTOMLEFT", 2 + ox, 2 + oy)
-        fs:SetJustifyH("LEFT"); fs:SetJustifyV("BOTTOM")
-    elseif pos == "bottom" then
-        fs:SetPoint("BOTTOM", health, "BOTTOM", ox, 2 + oy)
-        fs:SetJustifyH("CENTER"); fs:SetJustifyV("BOTTOM")
-    elseif pos == "bottomright" then
-        fs:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", -2 + ox, 2 + oy)
-        fs:SetJustifyH("RIGHT"); fs:SetJustifyV("BOTTOM")
-    else -- "center"
-        fs:SetPoint("CENTER", health, "CENTER", ox, oy)
-        fs:SetJustifyH("CENTER"); fs:SetJustifyV("MIDDLE")
-    end
-    -- Force re-render after a JustifyH change
-    local txt = fs:GetText()
-    fs:SetText("")
-    fs:SetText(txt or "")
 end
 
 -- Recolor the border for the current state. Mirrors the raid buttons' single recolored border:
@@ -312,29 +277,108 @@ FB.StyleBorder = function(b)
     end
 end
 
--- Bar colour: the owner's own colour setting (default #17AC31). The raid color modes mislead here:
--- gradient modes read as damage states, and many NPCs carry real class tokens (a friendly add can
--- come out yellow).
-FB.PaintBarColor = function(b, owner, s)
+-- Whether the boss group draws in Dark Mode: the raid frames' Fill Color is Dark Mode and the
+-- group's own Follow Dark Mode is on (opt-in: unset, the group keeps Boss Health Color). Every
+-- owner of these buttons answers the same question as owner.Dark(s), s being the settings its
+-- buttons are styled from.
+FB.Dark = function(s)
+    if s.healthColorMode ~= "dark" then return false end
+    local fb = FB.Settings()
+    return (fb and fb.followDarkMode == true) or false
+end
+
+-- The Dark Mode background of a button: the styler writes it, and the paint again once the palette
+-- changed (a colour edit repaints without a restyle). FB.dbg: button -> the palette generation its
+-- dark background was written at (nil while it shows the frames' own background).
+FB.dbg = setmetatable({}, { __mode = "k" })
+FB.PaintDarkBg = function(b)
+    local EllesmereUI = ns.EllesmereUI
+    local gen = EllesmereUI._dmGen
+    if FB.dbg[b] == gen then return end
+    FB.dbg[b] = gen
+    b._bg:SetColorTexture(EllesmereUI.GetDarkModeBg())
+end
+
+-- The background's extent. In Dark Mode it covers only the part of the bar the fill does not paint,
+-- as on the raid frames, so a see-through Dark Mode Fill shows the world and not the background;
+-- otherwise, and under Textured Background (a texture that never moves), the whole button. Read
+-- off the bar (its fill texture, axis and direction) and anchored again only when one of them or
+-- the mode changed: the styler asks after it turned the bar, every paint asks with one compare.
+FB.AnchorBg = function(b, dark)
+    local bg, health = b._bg, b._health
+    local tex = (dark and not bg._rfTexBgPath) and health:GetStatusBarTexture() or false
+    local vert = tex and health:GetOrientation() == "VERTICAL" or false
+    local inv = tex and health:GetReverseFill() or false
+    if bg._fbTex == tex and bg._fbVert == vert and bg._fbInv == inv then return end
+    bg._fbTex, bg._fbVert, bg._fbInv = tex, vert, inv
+    bg:ClearAllPoints()
+    if not tex then
+        bg:SetAllPoints()
+    elseif vert then
+        if inv then
+            bg:SetPoint("TOPLEFT", tex, "BOTTOMLEFT", 0, 0)
+            bg:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", 0, 0)
+        else
+            bg:SetPoint("TOPLEFT", health, "TOPLEFT", 0, 0)
+            bg:SetPoint("BOTTOMRIGHT", tex, "TOPRIGHT", 0, 0)
+        end
+    elseif inv then
+        bg:SetPoint("TOPLEFT", health, "TOPLEFT", 0, 0)
+        bg:SetPoint("BOTTOMRIGHT", tex, "BOTTOMLEFT", 0, 0)
+    else
+        bg:SetPoint("TOPLEFT", tex, "TOPRIGHT", 0, 0)
+        bg:SetPoint("BOTTOMRIGHT", health, "BOTTOMRIGHT", 0, 0)
+    end
+end
+
+-- Bar colour. An owner drawing in Dark Mode (owner.Dark(s)) takes the palette's fill at the Dark
+-- Mode Fill Opacity, on the palette's background, as the frames beside it do: the colour first and
+-- the fill's alpha last (the two are one slot, so the last write stands). Otherwise the fill is
+-- the owner's own at the frames' Fill Opacity: owner.Fill(b, s, opacity, pv) where the owner has
+-- colour modes of its own (the pet frames' Fill Color), else its colour setting (Boss Health
+-- Color, default #17AC31). The raid color modes mislead on the boss frames: gradient modes read as
+-- damage states, and many NPCs carry real class tokens (a friendly add can come out yellow).
+-- pv: a preview frame's made-up health (0 to 1), handed on to owner.Fill.
+FB.PaintBarColor = function(b, owner, s, pv)
     local health = b._health
-    local fbc = (owner.ColorSettings or owner.Settings)()
-    fbc = fbc and fbc.healthColor
     local fillTex = health:GetStatusBarTexture()
+    if owner.Dark(s) then
+        local r, g, bl, a = ns.EllesmereUI.GetDarkModeFill()
+        health:SetStatusBarColor(r, g, bl, 1)
+        if fillTex then fillTex:SetAlpha(a) end
+        FB.PaintDarkBg(b)
+        FB.AnchorBg(b, true)
+        return
+    end
+    FB.AnchorBg(b, false)
     if fillTex then fillTex:SetAlpha(1) end
+    local opacity = (s.healthBarOpacity or 100) / 100
+    if owner.Fill then
+        owner.Fill(b, s, opacity, pv)
+        return
+    end
+    local fbc = owner.Settings()
+    fbc = fbc and fbc.healthColor
     health:SetStatusBarColor(fbc and fbc.r or 23/255, fbc and fbc.g or 172/255,
-        fbc and fbc.b or 49/255, (s.healthBarOpacity or 100) / 100)
+        fbc and fbc.b or 49/255, opacity)
 end
 
+-- Text state of a button built with its texts (FB.BuildVisuals): the FontStrings, the
+-- plan and the settings they were last painted with, kept off the (possibly header-made) button.
+FB.txs = setmetatable({}, { __mode = "k" })
+
+-- Name texts only (name events).
 FB.PaintName = function(b, unit, s)
-    local fs = b._nameText
-    if not fs then return end
-    fs:SetText(ResolveDisplayName(unit, true, s))
-    local nr, ng, nb = GetNameColor(unit, s)
-    fs:SetTextColor(nr, ng, nb)
+    local st = FB.txs[b]
+    if not st then return end
+    ns._RFTextReady(st, s)
+    ns.RF_TextNames(st, unit)
 end
 
--- Health value, health text and heal absorb text. A text set to None is blank: the full paint (full)
--- clears it, and the health events after it skip it.
+-- Health value and the texts. full: the full paint (every text); otherwise a health event,
+-- which repaints Health and Heal Absorb Text and every Custom text: these trackers carry health
+-- and name events only, so Custom's power, absorb, group and target tags refresh here, not on
+-- their own events. No level and no Power Text here (no power bar).
 FB.PaintHealth = function(b, unit, s, full)
     local health = b._health
     local pct = GetSafeHealthPercent(unit)
@@ -348,32 +392,15 @@ FB.PaintHealth = function(b, unit, s, full)
     if health._euiInv then barPct = GetSafeHealthPercent(unit, true) end
     if smooth then health:SetValue(barPct, smooth) else health:SetValue(barPct) end
 
-    local ht, hat = b._healthText, b._healAbsorbText
-    local mode = s.healthTextMode or "none"
-    if ht and mode == "none" then
-        if full then ht:SetText("") end
-        ht = nil
+    local st = FB.txs[b]
+    if not st then return end
+    if full then
+        ns.RF_TextFull(st, s, unit)
+        return
     end
-    if hat and (s.healAbsorbTextMode or "none") == "none" then
-        if full then hat:SetText("") end
-        hat = nil
-    end
-    if not (ht or hat) then return end
-    local dead = UnitIsDeadOrGhost(unit)
-
-    if ht then
-        if dead then
-            ht:SetText("")
-        else
-            ns.RF_HealthTextInto(ht, mode, pct, unit)
-        end
-        local htr, htg, htb = GetHealthTextColor(unit, s)
-        ht:SetTextColor(htr, htg, htb, 0.9)
-    end
-
-    if hat then
-        if dead then hat:SetText("")
-        else ns.SetHealAbsorbText(hat, unit, s) end
+    local p = st._txP
+    if p and (p.tick or p.custom) then
+        ns.RF_TextHealth(st, unit, pct, UnitIsDeadOrGhost(unit) or not UnitIsConnected(unit), true)
     end
 end
 
@@ -390,18 +417,18 @@ FB.Update = function(b, owner)
     end
     local s = FB.Source(b)
     FB.PaintBarColor(b, owner or FB, s)
-    FB.PaintName(b, unit, s)
     FB.PaintHealth(b, unit, s, true)
     FB.ApplyBorderColor(b)
     return true
 end
 
--- Background, health bar, the three texts and the border frame of one button, kept on the button
--- itself with the stock styles' edge and highlight state. Shared with the pet frames and their
--- preview. The pet header's buttons are made by the pet header, not by us: these keys on them are
--- the one known exception to keeping state off header buttons (the rest lives in weak tables and
--- GetFFD).
-FB.BuildVisuals = function(b)
+-- Background, health bar, the texts and the border frame of one button, kept on the button itself
+-- with the stock styles' edge and highlight state. Shared with the pet frames, their preview and
+-- the party target frames. texts: the texts (FB.txs); without, the one name text the
+-- party target frames draw (they style it themselves). The pet header's buttons are made by the
+-- pet header, not by us: these keys on them are the one known exception to keeping state off
+-- header buttons (the rest lives in weak tables and GetFFD).
+FB.BuildVisuals = function(b, texts)
     local bg = b:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     if PP then PP.DisablePixelSnap(bg) end
@@ -419,15 +446,13 @@ FB.BuildVisuals = function(b)
     local carrier = CreateFrame("Frame", nil, b)
     carrier:SetAllPoints(health)
     carrier:SetFrameLevel(b:GetFrameLevel() + ns.LVL_TEXT)
-    local nameFS = carrier:CreateFontString(nil, "OVERLAY")
-    nameFS:SetWordWrap(false)
-    b._nameText = nameFS
-    local healthFS = carrier:CreateFontString(nil, "OVERLAY")
-    healthFS:SetWordWrap(false)
-    b._healthText = healthFS
-    local healAbsorbFS = carrier:CreateFontString(nil, "OVERLAY")
-    healAbsorbFS:SetWordWrap(false)
-    b._healAbsorbText = healAbsorbFS
+    if texts then
+        FB.txs[b] = { textCarrier = carrier, _txHost = health, _txFB = true }
+    else
+        local nameFS = carrier:CreateFontString(nil, "OVERLAY")
+        nameFS:SetWordWrap(false)
+        b._nameText = nameFS
+    end
 
     -- Border frame (same construction as the raid buttons; styled from the shared raid border settings in FB.StyleBorder)
     local bdr = CreateFrame("Frame", nil, b)
@@ -452,7 +477,7 @@ FB.EnsureBuilt = function()
         local b = CreateFrame("Button", "ERFFriendlyBoss" .. i, container, "SecureUnitButtonTemplate")
         b._fbUnit = "boss" .. i
         b:SetAttribute("unit", b._fbUnit)
-        b:SetAttribute("*type1", "target")
+        ns.EllesmereUI.SetLeftClickTarget(b)
         b:RegisterForClicks("AnyUp")
         -- The engine gates SecureUnitButton's togglemenu; route right-click through a SecureActionButton proxy so the menu works without taint.
         if EllesmereUI.AttachSecureUnitMenu then
@@ -461,7 +486,7 @@ FB.EnsureBuilt = function()
             b:SetAttribute("*type2", "togglemenu")
         end
         b:Hide()
-        FB.BuildVisuals(b)
+        FB.BuildVisuals(b, true)
 
         -- Refresh as soon as the driver shows the button; visible-count drives the ticker lifecycle.
         b:HookScript("OnShow", function(self)
@@ -585,12 +610,15 @@ FB.Pitch = function(fbset, s)
         local party = (not IsInRaid() or ns._PartyInRaid()) and fbset.showInDungeons == true
         if ns.RF_CompactOn(db.profile, party) then return ns.RF_OnePixel(party) end
     end
-    return s.cellSpacing or -1
+    -- Same grid as FB.FreePin: the boss container's own scale.
+    local c = FB.container
+    return EllesmereUI.PP.SnapForES(s.cellSpacing or -1,
+        (c or UIParent):GetEffectiveScale())
 end
 
 -- Re-apply all setting-derived properties (size, slots, texture, fonts, text anchors). OOC only;
 -- callers gate. The owner parameter lets the Extra Frames duplicates (ns._XF) share this verbatim:
--- an owner carries buttons/container/Settings and defaults to FB itself.
+-- an owner carries buttons/container/Settings/Dark and defaults to FB itself.
 FB.ApplyStyle = function(owner)
     owner = owner or FB
     if not owner.built then return end
@@ -611,6 +639,7 @@ FB.ApplyStyle = function(owner)
     end
     local texPath = ResolveHealthTexture()
     local bgc = s.customBgColor or { r = 17/255, g = 17/255, b = 17/255 }
+    local dark = owner.Dark(s)
 
     local stepW, stepH = 0, 0
     if grow == "DOWN" or grow == "UP" then
@@ -635,54 +664,47 @@ FB.ApplyStyle = function(owner)
             b:SetPoint("TOPLEFT", owner.container, "TOPLEFT", 0, -off * stepH)
         end
 
-        FB.StyleVisuals(b, s, w, h, texPath, bgc)
+        FB.StyleVisuals(b, s, w, h, texPath, bgc, dark)
     end
 end
 
 -- The size-dependent part of FB.StyleVisuals (the health bar's height, the text widths): all a
--- resize of an already styled button needs.
-FB.SizeVisuals = function(b, w, h)
+-- resize of an already styled button needs. s: the settings of a full restyle; a resize keeps the
+-- settings the texts were laid out with.
+FB.SizeVisuals = function(b, w, h, s)
     -- No power bar / top name bar here: health fills the button.
     b._health:SetHeight(h)
-    b._nameText:SetWidth(w * ns.RF_NAME_WIDTH_FRACTION)
-    b._healthText:SetWidth(w * 0.75)
-    if b._healAbsorbText then b._healAbsorbText:SetWidth(w * 0.75) end
+    local st = FB.txs[b]
+    if st then
+        st._txW = w
+        if s or st._txL then ns.RF_TextLayout(st, s or st._txS) end
+    end
 end
 
 -- Texture, fonts, text anchors and border of one button at w x h. Shared with the pet frames.
-FB.StyleVisuals = function(b, s, w, h, texPath, bgc)
-    b._bg:SetColorTexture(bgc.r, bgc.g, bgc.b, (s.bgDarkness or 50) / 100)
+-- dark: the owner draws in Dark Mode (owner.Dark(s)), so the background is the palette's. The
+-- styler always writes the background: the texture swap before it leaves that to the next paint.
+FB.StyleVisuals = function(b, s, w, h, texPath, bgc, dark)
+    ns.RF_TexBgTint(b._bg, ns.RF_TexBgPath(s), ns.RF_IsVerticalFill(s))
+    FB.dbg[b] = nil
+    if dark then
+        FB.PaintDarkBg(b)
+    else
+        b._bg:SetColorTexture(bgc.r, bgc.g, bgc.b, (s.bgDarkness or 50) / 100)
+    end
     b._health:SetStatusBarTexture(texPath)
     local ft = b._health:GetStatusBarTexture()
     if ft then ft:SetHorizTile(false) end
-    -- Fill axis follows the raid Health Bar setting. The bg is a full-button texture (not fill-tracking), so nothing else re-anchors.
+    -- Fill axis follows the raid Health Bar setting. The background follows the bar it was just
+    -- given: the whole button, or in Dark Mode the part the fill does not paint (FB.AnchorBg).
     ns.RF_ApplyHealthOrientation(b._health, s)
+    FB.AnchorBg(b, dark)
     -- These carry aura containers (RFC_SetupButton below) and so can carry
     -- Health Bar Color overlays, but they have no absorb cluster and never
     -- build ReanchorAbsorbToFill, where every other frame picks the swap up.
     b._health._euiFillOpacity = (s.healthBarOpacity or 100) / 100
     ns.RF_RefreshBarTints(b._health)
-    FB.SizeVisuals(b, w, h)
-
-    ApplyFont(b._nameText, s.nameSize or 10)
-    ApplyFont(b._healthText, s.healthTextSize or 9)
-    b._nameText:SetHeight(0)
-    b._healthText:SetHeight(0)
-    local namePos = s.namePosition or "center"
-    if namePos == "none" then
-        b._nameText:Hide()
-    else
-        b._nameText:Show()
-        FB.AnchorText(b._nameText, b._health, namePos, s.nameOffsetX or 0, s.nameOffsetY or 0)
-    end
-    FB.AnchorText(b._healthText, b._health, s.healthTextPosition or "center",
-        s.healthTextOffsetX or 0, s.healthTextOffsetY or 0)
-    if b._healAbsorbText then
-        ApplyFont(b._healAbsorbText, s.healAbsorbTextSize or 9)
-        b._healAbsorbText:SetHeight(0)
-        FB.AnchorText(b._healAbsorbText, b._health, s.healAbsorbTextPosition or "center",
-            s.healAbsorbTextOffsetX or 0, s.healAbsorbTextOffsetY or 0)
-    end
+    FB.SizeVisuals(b, w, h, s)
     FB.StyleBorder(b)
 end
 
@@ -700,6 +722,30 @@ FB.Pin = function(c, point, rel, relPoint, x, y)
     end
     c:ClearAllPoints()
     c:SetPoint(point, rel, relPoint, x, y)
+end
+
+-- Free Move pin off UIParent's centre. The saved offsets are raw mover geometry and the centre
+-- itself can sit on a half pixel (odd physical size), so snap the pinned point's absolute
+-- position at the container's own scale, or every border inside it blurs. A CENTER pin snaps
+-- with the container's size so odd-pixel dimensions still put both edges on whole pixels.
+FB.FreePin = function(c, point, x, y)
+    local P = EllesmereUI.PP
+    local ux, uy = UIParent:GetCenter()
+    if ux then
+        local es = c:GetEffectiveScale()
+        if point == "CENTER" then
+            -- A secret size falls back to the even (whole-pixel) centre.
+            local w, h = c:GetWidth(), c:GetHeight()
+            if issecretvalue(w) then w = nil end
+            if issecretvalue(h) then h = nil end
+            x = P.SnapCenterForDim(ux + x, w, es) - ux
+            y = P.SnapCenterForDim(uy + y, h, es) - uy
+        else
+            x = P.SnapForES(ux + x, es) - ux
+            y = P.SnapForES(uy + y, es) - uy
+        end
+    end
+    FB.Pin(c, point, UIParent, "CENTER", x, y)
 end
 
 -- Position the container per the position setting. The container inherits protection from its
@@ -875,7 +921,7 @@ FB.Anchor = function(owner)
     -- Owner-specific free anchoring (Extra Frames pins the grid's growth corner so the group grows away from it); CENTER pin otherwise.
     if owner.FreeAnchor and owner.FreeAnchor(c, fb) then return end
     local p = fb.freePos or {}
-    FB.Pin(c, "CENTER", UIParent, "CENTER", p.x or 100, p.y or 0)
+    FB.FreePin(c, "CENTER", p.x or 100, p.y or 0)
 end
 
 -- Re-anchor only (no restyle): the party visibility pass calls this on the party container's
@@ -913,6 +959,7 @@ function ns.FB_Apply()
         if FB.mover then FB.mover:Hide() end
         FB.rangeSpell = nil
         FB.UpdateRangeTicker()
+        FB.SyncGroupEvents(false)
         return
     end
 
@@ -920,6 +967,7 @@ function ns.FB_Apply()
     FB.ApplyStyle()
     FB.Anchor()
     FB.container:Show()
+    FB.SyncGroupEvents(true)
     -- Drivers feed the slot controller, which assigns bosses to the first slots in bossN order and shows/hides buttons securely.
     -- Group gate: raid only by default; raid OR party with Show in Dungeons on (the cog on
     -- Add Friendly Boss Group -- opt-in, so existing users keep raid-only behavior). Dungeon
@@ -1072,7 +1120,7 @@ FB.SetMoverShown = function(owner, show, frameName, labelText)
             owner.mover:SetPoint("CENTER", owner.container, "CENTER")
         else
             local p = oset.freePos or {}
-            owner.mover:SetPoint("CENTER", UIParent, "CENTER", p.x or 100, p.y or 0)
+            FB.FreePin(owner.mover, "CENTER", p.x or 100, p.y or 0)
         end
     end
     owner.mover:Show()
@@ -1083,17 +1131,37 @@ function ns.FB_SetMoverShown(show)
 end
 
 -- Standing event frame: exists even while inactive so a spec change can activate display="healers" without a /reload.
+-- The engage, target and roster listeners run only while the group is up (FB.SyncGroupEvents, from FB_Apply).
 do
     local ev = ns.TakeShell()
     ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
     ev:RegisterEvent("PLAYER_REGEN_ENABLED")
-    ev:RegisterEvent("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
-    ev:RegisterEvent("GROUP_ROSTER_UPDATE")
-    ev:RegisterEvent("PLAYER_TARGET_CHANGED")
+    ev:RegisterEvent("PLAYER_ENTERING_WORLD")
+    FB.SyncGroupEvents = function(on)
+        if FB.groupEv == on then return end
+        FB.groupEv = on
+        if on then
+            ev:RegisterEvent("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
+            ev:RegisterEvent("GROUP_ROSTER_UPDATE")
+            ev:RegisterEvent("PLAYER_TARGET_CHANGED")
+        else
+            ev:UnregisterEvent("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
+            ev:UnregisterEvent("GROUP_ROSTER_UPDATE")
+            ev:UnregisterEvent("PLAYER_TARGET_CHANGED")
+        end
+    end
     ev:SetScript("OnEvent", function(_, event)
         if not db then return end
         if event == "PLAYER_SPECIALIZATION_CHANGED" then
             ns.FB_Apply()
+        elseif event == "PLAYER_ENTERING_WORLD" then
+            -- Entering or leaving an arena flips FB.ShouldBeActive; the raid frames' zone-in pass
+            -- re-applies only while they are on screen, which they never are in arena.
+            local arena = ns._InArena()
+            if arena ~= (FB.inArena == true) then
+                FB.inArena = arena
+                ns.FB_Apply()
+            end
         elseif event == "PLAYER_REGEN_ENABLED" then
             if FB.applyDirty then FB.applyDirty = nil; ns.FB_Apply() end
             if FB.anchorDirty then FB.anchorDirty = nil; FB.Anchor() end

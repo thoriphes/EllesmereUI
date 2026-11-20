@@ -32,11 +32,13 @@ local SHAMAN_SHIELDS, WARLOCK_PETS = I.SHAMAN_SHIELDS, I.WARLOCK_PETS
 local WEAPON_ENCHANT_CHOICES = I.WEAPON_ENCHANT_CHOICES
 local WEAPON_ENCHANT_ITEMS, _dismissedUntilLoad = I.WEAPON_ENCHANT_ITEMS, I._dismissedUntilLoad
 local defaults, GLOW_VIEW, combatIconPool = I.defaults, I.GLOW_VIEW, I.combatIconPool
+local receiverIconPool = I.receiverIconPool
 local GetStrata, HideCombatIcons = I.GetStrata, I.HideCombatIcons
 local HideCursorIcons, ICON_SIZE, iconPool = I.HideCursorIcons, I.ICON_SIZE, I.iconPool
 local HideAllIcons, RequestRefresh = I.HideAllIcons, I.RequestRefresh
 local ApplyUnlockPos, RegisterUnlockElements = I.ApplyUnlockPos, I.RegisterUnlockElements
 local BeaconInit, BeaconRefresh, TrackItemUse = I.BeaconInit, I.BeaconRefresh, I.TrackItemUse
+local BeaconCombatEdge, CursorAttachActive = I.BeaconCombatEdge, I.CursorAttachActive
 local SetDB, SetIconAnchor, SetCombatAnchor = I.SetDB, I.SetIconAnchor, I.SetCombatAnchor
 local SetCursorAnchor, SetPanelOpen = I.SetCursorAnchor, I.SetPanelOpen
 local SetInCombat, SetHuntersMarkNeeded = I.SetInCombat, I.SetHuntersMarkNeeded
@@ -186,6 +188,9 @@ function EABR:OnEnable()
     _G._EABR_PALADIN_RITES = PALADIN_RITES
     _G._EABR_SHAMAN_IMBUES = SHAMAN_IMBUES
     _G._EABR_SHAMAN_SHIELDS = SHAMAN_SHIELDS
+    _G._EABR_SPECIALS = EABR.SPECIALS
+    _G._EABR_SpecialsWhere = EABR.SpecialsWhere
+    _G._EABR_SpecialsSound = EABR.SpecialsSound
     _G._EABR_WARLOCK_PETS = WARLOCK_PETS
     _G._EABR_WEAPON_ENCHANT_ITEMS = WEAPON_ENCHANT_ITEMS
     _G._EABR_Tex = Tex
@@ -194,6 +199,9 @@ function EABR:OnEnable()
     _G._EABR_FLASK_ITEMS = FLASK_ITEMS
     _G._EABR_FOOD_ITEMS = FOOD_ITEMS
     _G._EABR_WEAPON_ENCHANT_CHOICES = WEAPON_ENCHANT_CHOICES
+    _G._EABR_FV_WEAPON_BUFFS = EABR.FV_WEAPON_BUFFS
+    _G._EABR_FvClassBuffs = EABR.FvClassBuffs
+    _G._EABR_FvClassBuffOn = EABR.FvClassBuffs and EABR.FvClassBuffOn
     -- _EABR_TALENT_REMINDER_ZONES set by EllesmereUIABR_TalentReminders.lua
 
     local STRATA_VALUES = EllesmereUI.FRAME_STRATA_LABELS
@@ -261,6 +269,7 @@ function EABR:OnEnable()
         combatAnchor:SetFrameStrata(strata)
         for _, btn in pairs(iconPool) do btn:SetFrameStrata(strata) end
         for _, f in pairs(combatIconPool) do f:SetFrameStrata(strata) end
+        for _, f in pairs(receiverIconPool) do f:SetFrameStrata(strata) end
         if EABR._providerCastBtn and not InCombatLockdown() then
             EABR._providerCastBtn:SetFrameStrata(strata)
         end
@@ -507,16 +516,56 @@ function EABR:OnEnable()
     _rebuildRangeTracking()
 end
 
+-- Combat start with the buffs on the cursor (Only on Cursor in Combat turns
+-- that on here): the buff you provide moves from its secure button to the
+-- cursor, so the button parks now, while moving it and its mouse is still
+-- allowed. In combat it could only fade, and would stay clickable where it sat.
+local function ParkProviderForCursor()
+    if db and CursorAttachActive(db.profile.display) then EABR.ParkProviderCastButton() end
+end
+
 -------------------------------------------------------------------------------
 --  MAIN EVENT HANDLER (OnEvent script for runtime events)
 -------------------------------------------------------------------------------
+function EABR.ClearSleepProgress()
+    EABR._fvSleepStartedAt, EABR._fvSleepProgressEnd, EABR._fvSleepStacks = nil, nil, nil
+    EABR._fvSleepProfile, EABR._fvSleepAuraInstance, EABR._fvSleepReloaded = nil, nil, nil
+    mainFrame:UnregisterEvent("PLAYER_LOGOUT")
+end
+
+function EABR.StartSleepProgress(instanceID)
+    EABR._fvSleepProfile = db.profile
+    EABR._fvSleepAuraInstance = instanceID
+    EABR._fvSleepStartedAt = GetTime()
+    EABR._fvSleepProgressEnd, EABR._fvSleepStacks = nil, nil
+    mainFrame:RegisterEvent("PLAYER_LOGOUT")
+end
+
 mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
+    if e == "PLAYER_LOGOUT" then
+        local startedAt = EABR._fvSleepStartedAt
+        if startedAt and db and EABR._fvSleepProfile == db.profile
+            and db.profile.forever.sleepingBagShowProgress ~= false then
+            local saved = EllesmereUI.CharData("sleepingBagProgress", true)
+            if saved then
+                saved.startedAt = startedAt
+                saved.endsAt = EABR._fvSleepProgressEnd
+                saved.stacks = EABR._fvSleepStacks
+            end
+        end
+        return
+    end
+    if EABR._fvSleepStartedAt and (e == "PLAYER_ENTERING_WORLD" or e == "ZONE_CHANGED_NEW_AREA") then
+        EABR.ClearSleepProgress()
+    end
     if e == "ENCOUNTER_START" then
         SnapshotPlayerAuras()
         if _isEvokerOwnOnRaid then SnapshotOwnOnRaidBuffs() end
         _encounterSnapshotTime = GetTime()
         -- Marks combat immediately: ENCOUNTER_START fires before InCombatLockdown() returns true but aura APIs are already restricted; without this, non-whitelisted buffs flash "missing" for ~1s.
         SetInCombat(true)
+        ParkProviderForCursor()
+        BeaconCombatEdge()
         RequestRefresh()
         return
     end
@@ -550,6 +599,8 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
         end
         SetInCombat(true)
         _encounterSnapshotTime = nil
+        ParkProviderForCursor()
+        BeaconCombatEdge()
         RequestRefresh()
         return
     end
@@ -564,6 +615,7 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
         SetHuntersMarkNeeded(false)
         HideCombatIcons()
         HideCursorIcons()
+        BeaconCombatEdge()
         pendingOOCRefresh = false
         EABR.RescanOwnOtherAuras()
         RequestRefresh()
@@ -579,6 +631,11 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
             -- Cast success is an immediate fallback; UNIT_AURA will subsequently
             -- attach the concrete target GUID/auraInstanceID via HELPFUL|PLAYER.
             EABR.SetOwnOtherAuraState(369459, true)
+        elseif arg3 == 360827 and _isEvokerOwnOnRaid then
+            -- Blistering Scales is secret in a key, so the aura lookups miss it;
+            -- our own successful cast is the only proof it went out.
+            _preCombatOwnOnRaidCache[360827] = true
+            RequestRefresh()
         end
         return
     end
@@ -600,6 +657,36 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
                 CacheInstanceInfo()
                 EABR.ReevaluateOwnOtherAuraTracking()
             end)
+        else
+            -- The minimap's trackers, the Sleeping Bag and the Arcane Censer
+            -- are read afresh after a loading screen.
+            EABR._fvTrackDirty = true
+            if EABR._fvHunterTrackingEvents then EABR._fvHunterMatchMask = nil end
+            EABR._fvSleepBag, EABR._fvCenser = nil, nil
+            local guid = EllesmereUI.CharGUID()
+            local saved = guid and EllesmereUI.CharData("sleepingBagProgress")
+            if saved then
+                EllesmereUI.ForgetCharField(guid, "sleepingBagProgress")
+                local fo = db and db.profile.forever
+                -- Resume only a confirmed session from a UI reload. A fresh login discards it.
+                if arg2 and fo and fo.sleepingBag == true and fo.sleepingBagShowProgress ~= false
+                    and db.profile.display.remindersEnabled ~= false and not InCombat()
+                    and type(saved) == "table" and type(saved.startedAt) == "number"
+                    and saved.startedAt >= 0 and saved.startedAt <= GetTime()
+                    and (saved.endsAt == nil or saved.endsAt == false
+                        or (type(saved.endsAt) == "number" and saved.endsAt >= saved.startedAt and saved.endsAt < math.huge))
+                    and (saved.stacks == nil or (type(saved.stacks) == "number" and saved.stacks >= 0
+                        and saved.stacks <= EABR.SLEEPING_BAG_STACKS and saved.stacks % 1 == 0)) then
+                    local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, EABR.SLEEPING_BAG_TRACKING)
+                    if ok and not I.isSecret(aura) and aura then
+                        EABR._fvSleepStartedAt, EABR._fvSleepProgressEnd, EABR._fvSleepStacks =
+                            saved.startedAt, saved.endsAt, saved.stacks
+                        EABR._fvSleepProfile = db.profile
+                        mainFrame:RegisterEvent("PLAYER_LOGOUT")
+                        EABR._fvSleepReloaded = true
+                    end
+                end
+            end
         end
         EABR.ScanEatingState()
         if not InCombatLockdown() then EABR.SyncProviderCastSpell() end
@@ -670,6 +757,7 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
     -- is intentionally NOT registered: it fires ~1/sec from cooldown ticks, changes nothing reminder-relevant, and would refresh every second and bust the resolved-item cache.
     if e == "BAG_UPDATE_DELAYED" or e == "BAG_UPDATE" then
         InvalidateItemCountCache()
+        EABR._fvSleepBag, EABR._fvCenser = nil, nil
     end
 
     -- Equipped-weapon changes alter weapon-enchant resolution (weapon type -> which enchant item/slots show). Item counts are unchanged, so only the resolved cache needs rebuilding.
@@ -693,9 +781,24 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
         EABR.ReevaluateOwnOtherAuraTracking()
     end
 
-    -- WoW Forever (its only registration): a new rank joins the custom spells'
-    -- rank families on the next pass (EABR.ForeverFamily).
-    if e == "LEARNED_SPELL_IN_SKILL_LINE" then EABR._fvFamDirty = true end
+    -- WoW Forever (its only registrations): a new rank joins the custom spells'
+    -- rank families on the next pass (EABR.ForeverFamily) and the minimap's
+    -- trackers are read again (EABR.FvTrackingState); a spellbook change the
+    -- Action Picker listens to (a respec can take a spell away) rebuilds the
+    -- families and the class buff choices; a gear change outside the two
+    -- weapon slots is ignored.
+    if e == "LEARNED_SPELL_IN_SKILL_LINE" or (EABR.FOREVER and e == "SPELLS_CHANGED") then
+        EABR._fvFamDirty = true
+        EABR._fvClassPickerGroups = nil
+        if EABR._fvHunterTrackingEvents then EABR._fvHunterMatchMask = nil end
+        if e == "LEARNED_SPELL_IN_SKILL_LINE" then EABR._fvTrackDirty = true end
+    elseif e == "MINIMAP_UPDATE_TRACKING" then
+        EABR._fvTrackDirty = true
+        if EABR._fvHunterTrackingEvents then EABR._fvHunterMatchMask = nil end
+    elseif e == "PLAYER_EQUIPMENT_CHANGED" and arg1 ~= 16 and arg1 ~= 17 then
+        -- Weapon Buffs (its only registration): only a weapon slot matters.
+        return
+    end
 
     -- All other events: just refresh
     RequestRefresh()
@@ -740,7 +843,10 @@ if EABR.FOREVER then
     -- the player's own aura changes, vehicles, the death states, the rested
     -- state's edges and newly learned spells (a rank joins the custom spells'
     -- families, a raid buff becomes castable). Raid Buffs adds its group
-    -- events itself (EABR.FvSyncGroupWatch).
+    -- events itself (EABR.FvSyncGroupWatch), the two trackers their minimap
+    -- event (EABR.FvSyncTrackingEvent), the Action Picker its spellbook event
+    -- (EABR.FvSyncPickerSpellEvents), Hunter tracking its target events
+    -- (EABR.FvSyncHunterTrackingEvents).
     mainFrame:RegisterEvent("PLAYER_UPDATE_RESTING")
     mainFrame:RegisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
     mainFrame:RegisterEvent("ENCOUNTER_START")
@@ -755,6 +861,109 @@ if EABR.FOREVER then
     mainFrame:RegisterEvent("PLAYER_DEAD")
     mainFrame:RegisterEvent("PLAYER_ALIVE")
     mainFrame:RegisterEvent("PLAYER_UNGHOST")
+    -- Class trackers and Find Treasure have no aura edge: their minimap event
+    -- is listened to only while a reminder that reads them can show
+    -- (EABR.CollectForever; EABR.FvStandDown turns it off).
+    function EABR.FvSyncTrackingEvent(want)
+        if want == (EABR._fvTrackEv or false) then return end
+        EABR._fvTrackEv = want
+        if want then
+            -- Nothing was heard while it was off: the minimap is read afresh.
+            EABR._fvTrackDirty = true
+            mainFrame:RegisterEvent("MINIMAP_UPDATE_TRACKING")
+        else
+            mainFrame:UnregisterEvent("MINIMAP_UPDATE_TRACKING")
+        end
+    end
+    function EABR.FvSyncHunterTrackingEvents(want)
+        if want == (EABR._fvHunterTrackingEvents or false) then return end
+        EABR._fvHunterTrackingEvents = want
+        EABR._fvHunterMatchMask = nil
+        if want then
+            mainFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+            mainFrame:RegisterUnitEvent("UNIT_FLAGS", "target")
+            mainFrame:RegisterUnitEvent("UNIT_FACTION", "target")
+        else
+            mainFrame:UnregisterEvent("PLAYER_TARGET_CHANGED")
+            mainFrame:UnregisterEvent("UNIT_FLAGS")
+            mainFrame:UnregisterEvent("UNIT_FACTION")
+        end
+    end
+    -- The Action Picker's choices follow the spellbook: SPELLS_CHANGED is
+    -- listened to only while the picker is on and a reminder can show
+    -- (EABR.CollectForever; EABR.FvStandDown turns it off).
+    function EABR.FvSyncPickerSpellEvents(want)
+        EABR._fvPickerSpellEvents = want
+        if want then
+            -- Talent changes may have happened while this listener was off.
+            EABR._fvFamDirty = true
+            EABR._fvClassPickerGroups = nil
+            mainFrame:RegisterEvent("SPELLS_CHANGED")
+        else
+            mainFrame:UnregisterEvent("SPELLS_CHANGED")
+        end
+    end
+    function EABR.FvSyncWeaponEvents(want)
+        if want == (EABR._fvWeaponEv or false) then return end
+        EABR._fvWeaponEv = want
+        if want then
+            mainFrame:RegisterEvent("WEAPON_ENCHANT_CHANGED")
+            mainFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+        else
+            mainFrame:UnregisterEvent("WEAPON_ENCHANT_CHANGED")
+            mainFrame:UnregisterEvent("PLAYER_EQUIPMENT_CHANGED")
+        end
+    end
+    function EABR.FvSyncBagEvent(want)
+        if want == (EABR._fvBagEv or false) then return end
+        EABR._fvBagEv = want
+        if want then
+            InvalidateItemCountCache()
+            mainFrame:RegisterEvent("BAG_UPDATE_DELAYED")
+        else
+            mainFrame:UnregisterEvent("BAG_UPDATE_DELAYED")
+        end
+    end
+    -- A Cozy Sleeping Bag or an Arcane Censer bought or looted while none is
+    -- owned and the shared bag listener above is off: one frame, one item
+    -- count per watched item per bag change until it shows up, which marks it
+    -- owned and wakes the reminder; that listener takes over from there
+    -- (EABR.FvSleepingBagOwned, EABR.FvCenserOwned).
+    local arrivalWatch
+    local function SyncArrivalWatch()
+        if EABR._fvSleepWatch or EABR._fvCenserWatch then
+            if not arrivalWatch then
+                arrivalWatch = CreateFrame("Frame")
+                arrivalWatch:SetScript("OnEvent", function()
+                    local came = false
+                    if EABR._fvSleepWatch and (C_Item.GetItemCount(EABR.SLEEPING_BAG_ITEM) or 0) > 0 then
+                        EABR._fvSleepBag, EABR._fvSleepWatch, came = true, false, true
+                    end
+                    local censer = EABR._fvCenserWatch and EABR.FvCenserInBags()
+                    if censer then
+                        EABR._fvCenser, EABR._fvCenserWatch, came = censer, false, true
+                    end
+                    if came then
+                        SyncArrivalWatch()
+                        RequestRefresh()
+                    end
+                end)
+            end
+            arrivalWatch:RegisterEvent("BAG_UPDATE_DELAYED")
+        elseif arrivalWatch then
+            arrivalWatch:UnregisterEvent("BAG_UPDATE_DELAYED")
+        end
+    end
+    function EABR.FvSyncSleepBagWatch(want)
+        if want == (EABR._fvSleepWatch or false) then return end
+        EABR._fvSleepWatch = want
+        SyncArrivalWatch()
+    end
+    function EABR.FvSyncCenserWatch(want)
+        if want == (EABR._fvCenserWatch or false) then return end
+        EABR._fvCenserWatch = want
+        SyncArrivalWatch()
+    end
 else
 mainFrame:RegisterEvent("ENCOUNTER_START")
 mainFrame:RegisterEvent("ENCOUNTER_END")
@@ -762,6 +971,7 @@ mainFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 mainFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 mainFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 mainFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+mainFrame:RegisterEvent("PLAYER_UPDATE_RESTING")
 mainFrame:RegisterEvent("SPELLS_CHANGED")
 mainFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
 mainFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")

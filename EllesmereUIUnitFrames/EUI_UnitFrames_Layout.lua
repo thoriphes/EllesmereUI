@@ -127,6 +127,25 @@ function ns.GetBossSimpleBuffOffset(s)
     return x, y
 end
 
+-- Boss Simple Buff / Debuff Display duration text X/Y: simple<Buff|Debuff>CooldownTextOffsetX/Y
+-- if set, else the regular buff / debuff duration offsets, the view the column offsets above
+-- use, so a duration offset saved for the regular display reads on in the simple one. The
+-- live auras (BuildStyle), the simple cogs' sliders and the boss previews all read this.
+function ns.GetBossSimpleCdTextOffset(s, isBuff)
+    if not s then return 0, 0 end
+    local x, y
+    if isBuff then
+        x, y = s.simpleBuffCooldownTextOffsetX, s.simpleBuffCooldownTextOffsetY
+        if x == nil then x = s.buffCooldownTextOffsetX or 0 end
+        if y == nil then y = s.buffCooldownTextOffsetY or 0 end
+    else
+        x, y = s.simpleDebuffCooldownTextOffsetX, s.simpleDebuffCooldownTextOffsetY
+        if x == nil then x = s.debuffCooldownTextOffsetX or 0 end
+        if y == nil then y = s.debuffCooldownTextOffsetY or 0 end
+    end
+    return x, y
+end
+
 -- Boss aura icon spacing, in PHYSICAL pixels. Simple modes use dedicated keys
 -- (simpleBuffSpacing/simpleDebuffSpacing); regular auras use buffSpacing/debuffSpacing.
 -- No legacy equivalent, so every variant defaults to 1 independently. Callers convert
@@ -175,14 +194,47 @@ local ufTextWidths = {
     absorb      = 38,  -- "12.3 K"
     level       = 24,  -- "80" / "??"
 }
-local function EstimateUFTextWidth(content)
+-- customFmt: the slot's <prefix>CustomFormat, read for content "custom" only,
+-- estimated from the schema widths. Names count 0 like the Name content, except
+-- on the right slot (isRight), whose estimate cuts the left text: there a name
+-- keeps the schema's width so a long target name is not overlapped.
+local function NoNameWidth(key)
+    if key == "name" or key == "target" then return 0 end
+end
+local function EstimateUFTextWidth(content, customFmt, isRight)
+    if content == "custom" then
+        local TT, cat = EllesmereUI.TextTags, ns.UF_TextTags
+        local parsed = TT.Parse(cat, customFmt)
+        if not parsed then return UF_TEXT_PADDING end
+        return TT.EstimateWidth(cat, parsed, not isRight and NoNameWidth or nil) + UF_TEXT_PADDING
+    end
     return (ufTextWidths[content] or 0) + UF_TEXT_PADDING
+end
+ns.UF_EstimateTextWidth = EstimateUFTextWidth
+
+-- Content that shows a power value, for the text bar's Power Colored mode: the
+-- power presets, or a custom format with a power tag (customFmt, read for
+-- "custom" only). The parse is cached, so the per-update call stays a lookup.
+function ns.UF_IsPowerContent(content, customFmt)
+    if content == "perpp" or content == "curpp" or content == "curmaxpp" or content == "curhp_curpp" or content == "perhp_perpp" then
+        return true
+    end
+    if content ~= "custom" then return false end
+    local parsed = EllesmereUI.TextTags.Parse(ns.UF_TextTags, customFmt)
+    return parsed ~= nil and parsed.reads.pp == true
 end
 
 -- Apply class color to a FontString based on the unit.
 local function ApplyClassColor(fs, unit, useClassColor, customR, customG, customB)
     if not fs then return end
     if useClassColor and unit then
+        if unit == "pet" then
+            local _, ct = UnitClass("player")
+            if ct and not issecretvalue(ct) then
+                local cc = EllesmereUI.GetClassColor(ct)
+                if cc then fs:SetTextColor(cc.r, cc.g, cc.b); return end
+            end
+        end
         -- Class color for players (and AI party members), reaction color for NPCs,
         -- matching the health bar and the custom Enemy Colors override. Shared
         -- with the eui-tgtname tag via ns.ResolveUnitNameColor.
@@ -237,6 +289,16 @@ function ns.UF_RecolorTexts(frame, unit, s)
         if btb.RightText then ApplyClassColor(btb.RightText, unit, s.btbRightClassColor, s.btbRightColorR, s.btbRightColorG, s.btbRightColorB) end
         if btb.CenterText then ApplyClassColor(btb.CenterText, unit, s.btbCenterClassColor, s.btbCenterColorR, s.btbCenterColorG, s.btbCenterColorB) end
         if btb._applyBTBPowerColors then btb._applyBTBPowerColors(s) end
+    end
+end
+
+-- Colors changed (EllesmereUI.ApplyColorsToOUF): texts are colored once when set,
+-- so the class-colored ones repaint here with the new palette.
+EllesmereUI._UFRecolorAllTexts = function()
+    local frames = I.frames
+    if not (frames and db) then return end
+    for unit in pairs(unitSettingsKey) do
+        if frames[unit] then ns.UF_RecolorTexts(frames[unit], unit) end
     end
 end
 
@@ -307,9 +369,9 @@ local function CreateBottomTextBar(frame, unit, settings, anchorFrame, xOffset, 
     -- continuously from the power element's PostUpdateColor, so the color survives
     -- tag updates and power-type changes. The per-slot early-out (no power-color
     -- flag) keeps it ~free when unused.
-    local function ApplyBTBPowerColor(fs, contentKey, usePowerColor)
+    local function ApplyBTBPowerColor(fs, contentKey, usePowerColor, customFmt)
         if not fs or not usePowerColor then return end
-        if contentKey == "perpp" or contentKey == "curpp" or contentKey == "curmaxpp" or contentKey == "curhp_curpp" or contentKey == "perhp_perpp" then
+        if ns.UF_IsPowerContent(contentKey, customFmt) then
             -- Secret-safe per-unit power color: player resolves via the clean
             -- string token; non-player units recover it from the clean integer
             -- power type instead of falling back to white.
@@ -319,9 +381,9 @@ local function CreateBottomTextBar(frame, unit, settings, anchorFrame, xOffset, 
         end
     end
     local function ApplyBTBPowerColors(s)
-        ApplyBTBPowerColor(leftFS, s.btbLeftContent or "none", s.btbLeftPowerColor)
-        ApplyBTBPowerColor(rightFS, s.btbRightContent or "none", s.btbRightPowerColor)
-        ApplyBTBPowerColor(centerFS, s.btbCenterContent or "none", s.btbCenterPowerColor)
+        ApplyBTBPowerColor(leftFS, s.btbLeftContent or "none", s.btbLeftPowerColor, s.btbLeftCustomFormat)
+        ApplyBTBPowerColor(rightFS, s.btbRightContent or "none", s.btbRightPowerColor, s.btbRightCustomFormat)
+        ApplyBTBPowerColor(centerFS, s.btbCenterContent or "none", s.btbCenterPowerColor, s.btbCenterCustomFormat)
     end
 
     local function ApplyBTBTextPositions(s)
@@ -379,7 +441,8 @@ local function CreateBottomTextBar(frame, unit, settings, anchorFrame, xOffset, 
     btb._applyBTBPowerColors = ApplyBTBPowerColors
 
     -- Class icon overlay on a high-level frame so it renders above the border.
-    local classIconHolder = CreateFrame("Frame", nil, frame)
+    -- A child of the bar, so it hides with it (Text Bar off, stock looks).
+    local classIconHolder = CreateFrame("Frame", nil, btb)
     classIconHolder:SetAllPoints(textOvr)
     classIconHolder:SetFrameLevel(frame:GetFrameLevel() + 12)
     local classIconTex = classIconHolder:CreateTexture(nil, "ARTWORK")
@@ -390,6 +453,11 @@ local function CreateBottomTextBar(frame, unit, settings, anchorFrame, xOffset, 
     local function ApplyBTBClassIcon(s)
         local style = s.btbClassIcon or "none"
         if style == "none" then classIconTex:Hide(); return end
+        -- Players and AI party members only: UnitClass reports most NPCs as
+        -- warriors (the class colour rule of ApplyClassColor).
+        if not (UnitIsPlayer(unit) or (UnitInPartyIsAI and UnitInPartyIsAI(unit))) then
+            classIconTex:Hide(); return
+        end
         local _, classToken = UnitClass(unit)
         if issecretvalue(classToken) or not classToken then classIconTex:Hide(); return end
         if not ApplyClassIconTexture(classIconTex, classToken, style) then classIconTex:Hide(); return end
@@ -761,9 +829,16 @@ local function GetFrameDimensions(unit, settingsOnly)
         local w = (showPortrait and isAttached) and (adjPH + settings.frameWidth) or settings.frameWidth
         return snap(w), snap(barH + btbExtra)
     elseif unit == "pet" or unit == "targettarget" or unit == "focustarget" then
-        -- A WoW Forever pet stacks its attached power bar with the health bar.
+        -- A WoW Forever pet stacks its attached power bar with the health bar,
+        -- and a shown portrait squares that stack off beside the bar
+        -- (StyleSimpleFrame), so it is part of the width here as on the other
+        -- frames: the unlock setter subtracts the same square, and a size this
+        -- reports must come back as itself through it (an override layer
+        -- banks it and hands it to the setter on every apply).
         local miniPowerH = (unit == "pet" and ns.UF_PetHasPower) and powerExtra or 0
-        return snap(settings.frameWidth), snap(settings.healthHeight + miniPowerH)
+        local barH = settings.healthHeight + miniPowerH
+        local w = showPortrait and (barH + settings.frameWidth) or settings.frameWidth
+        return snap(w), snap(barH)
     elseif unit:match("^boss") then
         local pH = powerIsAtt and (settings.powerHeight or 6) or 0
         local barH = settings.healthHeight + pH

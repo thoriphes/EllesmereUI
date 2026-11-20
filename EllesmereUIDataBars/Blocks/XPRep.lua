@@ -46,18 +46,7 @@ ns.BlockFactories.xprep = function(blockCfg, slot, content, barCtx)
     local function D() return blockCfg.settings or {} end
     local function BC() return barCtx.cfg end
 
-    -- Max-level check with layered fallbacks, matching the Action Bars XP bar's:
-    -- the Is* helpers are nil-guarded, so client API churn can silently disable
-    -- them -- a plain numeric compare against the expansion max level backstops
-    -- the check so XP mode can never show for a max-level character.
-    local function XPAtMaxLevel()
-        local level = UnitLevel("player") or 0
-        if IsPlayerAtEffectiveMaxLevel and IsPlayerAtEffectiveMaxLevel() then return true end
-        if IsLevelAtEffectiveMaxLevel and IsLevelAtEffectiveMaxLevel(level) then return true end
-        local maxLevel = (GetMaxLevelForPlayerExpansion and GetMaxLevelForPlayerExpansion())
-            or (GetMaxPlayerLevel and GetMaxPlayerLevel())
-        return (maxLevel and level >= maxLevel) or false
-    end
+    local XPAtMaxLevel = K.AtMaxLevel
 
     local function UpdateMode()
         local d = D()
@@ -147,9 +136,11 @@ ns.BlockFactories.xprep = function(blockCfg, slot, content, barCtx)
             local xpOff = IsXPUserDisabled and IsXPUserDisabled()
             if atMax or xpOff then
                 if D().mode ~= "xp" then return nil end
+                -- Bar text goes straight through SetText, which does not route through
+                -- the locale like the Tip_* helpers do, so translate by hand.
                 return {
-                    label = xpOff and "XP Off (Right-Click: Rep)"
-                                   or "Max Level (Right-Click: Rep)",
+                    label = xpOff and EllesmereUI.L("XP Off (Right-Click: Rep)")
+                                   or EllesmereUI.L("Max Level (Right-Click: Rep)"),
                     minV = 0, maxV = 1, curV = 0,
                     r = 0.5, g = 0.5, b = 0.5, rested = 0,
                 }
@@ -180,7 +171,7 @@ ns.BlockFactories.xprep = function(blockCfg, slot, content, barCtx)
             -- block ate every later click.
             if D().mode ~= "rep" then return nil end
             return {
-                label = "No Rep Tracked",
+                label = EllesmereUI.L("No Rep Tracked"),
                 minV = 0, maxV = 1, curV = 0,
                 r = 0.5, g = 0.5, b = 0.5, rested = 0,
             }
@@ -310,6 +301,8 @@ ns.BlockFactories.xprep = function(blockCfg, slot, content, barCtx)
         end
 
         if not showText then
+            -- SetText on a never-fonted FontString hard-errors; text Off from load never fonts it.
+            ns.SetFont(nameText, textHeight, barCfg)
             nameText:SetText("")
             inst._xpExtend = 0
             local width = isSide and max(24, VSlotW(inst) - 8) or max(20, min(120, HBudget(inst, 300)))

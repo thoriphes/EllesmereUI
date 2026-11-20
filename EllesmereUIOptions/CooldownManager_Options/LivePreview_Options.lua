@@ -70,6 +70,143 @@ local function BuildCDMLivePreview(parent, yOff)
         return math.floor(val * s + 0.5) / s
     end
 
+    -- Sideways scroll for a row wider than the preview. The icons keep their real
+    -- size (no scale-to-fit), so a long row starts at its first icon and slides
+    -- under the viewport: everything in the icon grid hangs from pf._gridOrigin, a
+    -- point of pf that moves left by the scroll offset (pf's own units; the hint
+    -- text under the grid hangs from pf itself and stays where it is). While a row
+    -- overflows, the scroll frame is inset by a gutter on each side and an arrow
+    -- fills each gutter: a click or a wheel notch moves one icon, holding an arrow
+    -- keeps going, and a drag near an edge scrolls that way. The offset is kept per bar for the
+    -- session (optState), so a rebuilt preview comes back where it was.
+    do
+        local GUTTER = 24                             -- wrapper units, each side
+        local HOLD_DELAY, HOLD_RATE = 0.35, 0.09
+        local DRAG_EDGE, DRAG_ICONS_PER_SEC = 28, 7
+        local origin = CreateFrame("Frame", nil, pf)
+        origin:SetSize(1, 1)
+        origin:SetPoint("TOPLEFT", pf, "TOPLEFT", 0, 0)
+        pf._gridOrigin = origin
+        pf._hGutter = GUTTER
+        local arrows = {}
+        local function SyncArrows()
+            local max, off = pf._hMax or 0, pf._hOff or 0
+            for dir, b in pairs(arrows) do
+                if max > 0 then
+                    b._live = (dir < 0 and off > 0.5) or (dir > 0 and off < max - 0.5)
+                    b._tex:SetAlpha(b._live and (b._hover and 0.95 or 0.55) or 0.15)
+                    b:Show()
+                else
+                    b._live = false
+                    b:Hide()
+                end
+            end
+        end
+        local function SetHScroll(off)
+            local max = pf._hMax or 0
+            if off > max then off = max end
+            if off < 0 then off = 0 end
+            if pf._hKey then optState._cdmPvHKey, optState._cdmPvHOff = pf._hKey, off end
+            if off ~= pf._hOff or not pf._hPlaced then
+                pf._hOff, pf._hPlaced = off, true
+                origin:ClearAllPoints()
+                origin:SetPoint("TOPLEFT", pf, "TOPLEFT", -Snap(off), 0)
+            end
+            SyncArrows()
+        end
+        pf._SetHScroll = SetHScroll
+        local function StepHScroll(dir)
+            local step = pf._hStep or 38
+            SetHScroll((math.floor((pf._hOff or 0) / step + 0.5) + dir) * step)
+        end
+        -- The bar this preview shows changed: its own remembered offset, else the start.
+        pf._hSelect = function(key)
+            if pf._hKey == key then return end
+            pf._hKey = key
+            pf._hOff = (optState._cdmPvHKey == key and optState._cdmPvHOff) or 0
+            pf._hPlaced = nil
+        end
+        -- The scroll frame gives the arrows their gutters only while a row overflows.
+        pf._hSetViewport = function(over)
+            if pf._hOver == over then return end
+            pf._hOver = over
+            sf:ClearAllPoints()
+            if over then
+                sf:SetPoint("TOPLEFT", wrapper, "TOPLEFT", GUTTER, 0)
+                sf:SetPoint("BOTTOMRIGHT", wrapper, "BOTTOMRIGHT", -GUTTER, 0)
+            else
+                sf:SetAllPoints(wrapper)
+            end
+        end
+        -- The arrow glyphs sit level with the middle of the icon grid (y down from
+        -- the wrapper's top, wrapper units), or mid-height when the grid is taller.
+        pf._hPlaceArrows = function(y)
+            local h = wrapper:GetHeight()
+            if y > h - 8 then y = h / 2 end
+            for _, b in pairs(arrows) do
+                b._tex:ClearAllPoints()
+                b._tex:SetPoint("CENTER", b, "TOP", 0, -y)
+            end
+        end
+        -- While an icon is dragged: the cursor (cx, UIParent units) near an edge scrolls that way.
+        pf._DragAutoScroll = function(cx, dt)
+            if (pf._hMax or 0) <= 0 then return end
+            local l, r = sf:GetLeft(), sf:GetRight()
+            if not l then return end
+            local k = sf:GetEffectiveScale() / UIParent:GetEffectiveScale()
+            local dir = (cx < l * k + DRAG_EDGE and -1) or (cx > r * k - DRAG_EDGE and 1) or 0
+            if dir ~= 0 then
+                SetHScroll((pf._hOff or 0) + dir * (pf._hStep or 38) * DRAG_ICONS_PER_SEC * dt)
+            end
+        end
+        -- The wheel over the row scrolls it sideways while it overflows, one icon a
+        -- notch, up toward the start. Shift + wheel stays the panel's scale, and a row
+        -- that fits leaves the wheel to the preview's own vertical scroll.
+        local vWheel = sf:GetScript("OnMouseWheel")
+        local function HWheel(self, delta)
+            if EllesmereUI._ShiftWheelScale(delta) then return end
+            if (pf._hMax or 0) > 0 then
+                StepHScroll(delta > 0 and -1 or 1)
+            elseif self == sf and vWheel then
+                vWheel(self, delta)
+            end
+        end
+        sf:SetScript("OnMouseWheel", HWheel)
+        for _, dir in ipairs({ -1, 1 }) do
+            local b = CreateFrame("Button", nil, wrapper)
+            b:SetWidth(GUTTER)
+            b:EnableMouseWheel(true)
+            b:SetScript("OnMouseWheel", HWheel)
+            b:SetPoint(dir < 0 and "TOPLEFT" or "TOPRIGHT")
+            b:SetPoint(dir < 0 and "BOTTOMLEFT" or "BOTTOMRIGHT")
+            b:SetFrameLevel(wrapper:GetFrameLevel() + 3)
+            b._tex = b:CreateTexture(nil, "ARTWORK")
+            b._tex:SetTexture(dir < 0 and "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-left.png"
+                or "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-right.png")
+            b._tex:SetSize(16, 16)
+            b._tex:SetPoint("CENTER")
+            b:Hide()
+            b:SetScript("OnEnter", function(self) self._hover = true; SyncArrows() end)
+            b:SetScript("OnLeave", function(self) self._hover = nil; SyncArrows() end)
+            b:SetScript("OnMouseDown", function(self, button)
+                if button ~= "LeftButton" or not self._live then return end
+                StepHScroll(dir)
+                local wait = HOLD_DELAY
+                self:SetScript("OnUpdate", function(held, dt)
+                    if not held._live or not IsMouseButtonDown("LeftButton") then
+                        held:SetScript("OnUpdate", nil)
+                        return
+                    end
+                    wait = wait - dt
+                    if wait <= 0 then wait = HOLD_RATE; StepHScroll(dir) end
+                end)
+            end)
+            b:SetScript("OnMouseUp", function(self) self:SetScript("OnUpdate", nil) end)
+            b:SetScript("OnHide", function(self) self:SetScript("OnUpdate", nil) end)
+            arrows[dir] = b
+        end
+    end
+
     -- Bar background texture (shown when barBgEnabled)
     local pvBarBg = pf:CreateTexture(nil, "BACKGROUND", nil, -8)
     pvBarBg:SetColorTexture(0, 0, 0, 0.4)  -- default; updated in refresh
@@ -179,14 +316,21 @@ local function BuildCDMLivePreview(parent, yOff)
         return g
     end
 
-    -- Insertion line indicator (vertical accent line between icons)
+    -- Insertion line indicator (accent line between icons; horizontal on a vertical bar)
     local insertLine = pf:CreateTexture(nil, "OVERLAY", nil, 7)
     local eg = EllesmereUI.ELLESMERE_GREEN
     insertLine:SetColorTexture(eg.r, eg.g, eg.b, 0.9)
     insertLine:SetWidth(2)
     insertLine:Hide()
 
-    -- Animation: each slot has _targetOffX, _currentOffX; lerped inside drag OnUpdate
+    -- Two preview slots stacked in one column (a vertical bar: same X, one per row)
+    local function StackedSlots(a, b)
+        return a and b and a._baseX and b._baseX and a._baseY and b._baseY
+            and math.abs(a._baseX - b._baseX) < 1 and math.abs(a._baseY - b._baseY) >= 1
+    end
+
+    -- Animation: each slot has _targetOffX, _currentOffX (and _targetOffY, _currentOffY on a
+    -- vertical bar); lerped inside drag OnUpdate
     local ANIM_SPEED = 48
     local animRunning = false
 
@@ -211,9 +355,18 @@ local function BuildCDMLivePreview(parent, yOff)
                     s._currentOffX = s._currentOffX + diff * math.min(ANIM_SPEED * dt, 1)
                     allDone = false
                 end
+                local curY = s._currentOffY or 0
+                local diffY = (s._targetOffY or 0) - curY
+                if math.abs(diffY) < 0.3 then
+                    curY = s._targetOffY or 0
+                else
+                    curY = curY + diffY * math.min(ANIM_SPEED * dt, 1)
+                    allDone = false
+                end
+                s._currentOffY = curY
                 if s._baseX then
                     s:ClearAllPoints()
-                    PP.Point(s, "TOPLEFT", pf, "TOPLEFT", s._baseX + s._currentOffX, s._baseY)
+                    PP.Point(s, "TOPLEFT", pf._gridOrigin, "TOPLEFT", s._baseX + s._currentOffX, s._baseY + curY)
                 end
             end
         end
@@ -240,8 +393,10 @@ local function BuildCDMLivePreview(parent, yOff)
             if s and s._baseX then
                 s._targetOffX = 0
                 s._currentOffX = 0
+                s._targetOffY = nil
+                s._currentOffY = nil
                 s:ClearAllPoints()
-                PP.Point(s, "TOPLEFT", pf, "TOPLEFT", s._baseX, s._baseY)
+                PP.Point(s, "TOPLEFT", pf._gridOrigin, "TOPLEFT", s._baseX, s._baseY)
             end
         end
     end
@@ -260,15 +415,56 @@ local function BuildCDMLivePreview(parent, yOff)
         -- so drag logic must also use left-to-right ordering.
         local growLeft = false
 
-        -- Convert cursor from screen units to pf-local units
+        -- Convert cursor from screen units to grid-local units (pf's scale, from the grid's
+        -- origin, which is pf's corner moved by the sideways scroll)
         local pfES = pf:GetEffectiveScale()
         local uiES = UIParent:GetEffectiveScale()
         local rawCX = cx * uiES
         local rawCY = cy * uiES
-        local rawPfL = pf:GetLeft() * pfES
-        local rawPfT = pf:GetTop() * pfES
+        local rawPfL = pf._gridOrigin:GetLeft() * pfES
+        local rawPfT = pf._gridOrigin:GetTop() * pfES
         local localX = (rawCX - rawPfL) / pfES
         local localY = -((rawPfT - rawCY) / pfES)
+
+        -- A vertical bar stacks its icons in columns, so there the cursor's height
+        -- inside an icon picks the drop (top part above it, bottom part below it,
+        -- the middle swaps), in the column nearest the cursor. The preview lays each
+        -- column out top-down in index order.
+        if StackedSlots(previewSlots[1], previewSlots[2]) then
+            local colX, colDist
+            for i = 1, slotCount do
+                local s = previewSlots[i]
+                if s and s:IsShown() and s._baseX then
+                    local d = math.abs(localX - (s._baseX + iconSz / 2))
+                    if not colDist or d < colDist then colX, colDist = s._baseX, d end
+                end
+            end
+            if not colX or colDist > iconSz then return nil, nil end
+            -- Each icon's band reaches half the spacing past its edges (+1 so rounding
+            -- leaves no seam; an overlap resolves to the same insert either way).
+            local pad = spacing * 0.5 + 1
+            local firstIdx, lastIdx
+            for i = 1, slotCount do
+                local s = previewSlots[i]
+                if s and s:IsShown() and s._baseX and math.abs(s._baseX - colX) < 1 then
+                    firstIdx = firstIdx or i
+                    lastIdx = i
+                    local h = s:GetHeight()
+                    local top = s._baseY
+                    if localY <= top + pad and localY > top - h - pad then
+                        local midY = top - h / 2
+                        local isBlank = not s._icon or not s._icon:GetTexture()
+                        if i ~= fromIdx and math.abs(localY - midY) < h * (isBlank and 0.45 or 0.2) then
+                            return "swap", i
+                        end
+                        return "insert", (localY > midY) and i or (i + 1)
+                    end
+                end
+            end
+            if not firstIdx then return nil, nil end
+            if localY > previewSlots[firstIdx]._baseY then return "insert", firstIdx end
+            return "insert", lastIdx + 1
+        end
 
         -- Group slots into rows by _baseY
         local bestRowStart, bestRowEnd, bestRowDist = 1, slotCount, math.huge
@@ -379,6 +575,7 @@ local function BuildCDMLivePreview(parent, yOff)
                     if s and s._baseX then
                         s._targetOffX = 0
                         if not s._currentOffX then s._currentOffX = 0 end
+                        s._targetOffY = 0
                         if i ~= fromIdx then s:SetAlpha(1) end
                     end
                 end
@@ -464,6 +661,41 @@ local function BuildCDMLivePreview(parent, yOff)
                 end
             end
         end
+        -- A vertical bar stacks its icons (same X, one per row, so the row shift above
+        -- moves only the target): the gap opens up and down within its column instead.
+        local first, second = previewSlots[1], previewSlots[2]
+        if StackedSlots(first, second) then
+            -- Later slots sit further along the column (down, or up on a bar growing up).
+            local towardEndY = (second._baseY < first._baseY) and -nudge or nudge
+            -- The target's column; past the last slot, the last slot's (as the row code above).
+            local ts = previewSlots[(targetIdx <= slotCount) and targetIdx or (targetIdx - 1)]
+            local colX = ts and ts._baseX
+            local virtualInsert = targetIdx
+            if targetIdx > fromIdx then virtualInsert = targetIdx - 1 end
+            for i = 1, slotCount do
+                local s = previewSlots[i]
+                if s and s._baseX then
+                    s._targetOffX = 0
+                    if not s._currentOffX then s._currentOffX = 0 end
+                    if i == fromIdx then
+                        s:SetAlpha(0.3)
+                        s._targetOffY = 0
+                    else
+                        s:SetAlpha(1)
+                        if colX and math.abs(s._baseX - colX) < 1 then
+                            local virtualPos = i
+                            if i > fromIdx then virtualPos = i - 1 end
+                            s._targetOffY = (virtualPos >= virtualInsert) and towardEndY or -towardEndY
+                        else
+                            s._targetOffY = 0
+                        end
+                    end
+                elseif s then
+                    s:SetAlpha(i == fromIdx and 0.3 or 1)
+                end
+            end
+        end
+
         StartAnimTicker()
 
         -- Position the insertion line between the two logical neighbors
@@ -501,8 +733,32 @@ local function BuildCDMLivePreview(parent, yOff)
                 end
             end
 
+            -- A vertical bar stacks its icons in columns: there the line runs across the
+            -- gap between the neighbors instead of down through an icon. Between two
+            -- columns it sits above the next column's first icon, where that column opens.
+            local stacked = StackedSlots(previewSlots[1], previewSlots[2])
+
             local lineX, lineY
-            if leftSlot and leftSlot:IsShown() and leftSlot._baseX
+            if stacked then
+                local gap = math.floor(spacing / 2) + 1
+                if leftSlot and leftSlot:IsShown() and leftSlot._baseX
+                   and rightSlot and rightSlot:IsShown() and rightSlot._baseX
+                   and StackedSlots(leftSlot, rightSlot) then
+                    local upper, lower = leftSlot, rightSlot
+                    if lower._baseY > upper._baseY then upper, lower = lower, upper end
+                    -- Centered in the gap the icons are opening (their shifted positions; the
+                    -- drawn height, which a cropped icon shape makes shorter than the size).
+                    lineX = upper._baseX
+                    lineY = ((upper._baseY + (upper._targetOffY or 0) - upper:GetHeight())
+                        + (lower._baseY + (lower._targetOffY or 0))) / 2
+                elseif rightSlot and rightSlot:IsShown() and rightSlot._baseX then
+                    lineX = rightSlot._baseX
+                    lineY = rightSlot._baseY + (rightSlot._targetOffY or 0) + gap
+                elseif leftSlot and leftSlot:IsShown() and leftSlot._baseX then
+                    lineX = leftSlot._baseX
+                    lineY = leftSlot._baseY + (leftSlot._targetOffY or 0) - leftSlot:GetHeight() - gap
+                end
+            elseif leftSlot and leftSlot:IsShown() and leftSlot._baseX
                and rightSlot and rightSlot:IsShown() and rightSlot._baseX then
                 local leftRight = leftSlot._baseX + iconSz2 - nudge
                 local rightLeft = rightSlot._baseX + nudge
@@ -518,8 +774,18 @@ local function BuildCDMLivePreview(parent, yOff)
 
             if lineX and lineY then
                 insertLine:ClearAllPoints()
-                PP.Point(insertLine, "TOP", pf, "TOPLEFT", lineX, lineY)
-                PP.Point(insertLine, "BOTTOM", pf, "TOPLEFT", lineX, lineY - iconSz2)
+                if stacked then
+                    insertLine:SetHeight(2)
+                    PP.Point(insertLine, "LEFT", pf._gridOrigin, "TOPLEFT", lineX, lineY)
+                    PP.Point(insertLine, "RIGHT", pf._gridOrigin, "TOPLEFT", lineX + iconSz2, lineY)
+                else
+                    -- As tall as the icons are drawn (a cropped shape is shorter than the size).
+                    local ref = rightSlot or leftSlot
+                    local lineH = (ref and ref:GetHeight()) or iconSz2
+                    insertLine:SetWidth(2)
+                    PP.Point(insertLine, "TOP", pf._gridOrigin, "TOPLEFT", lineX, lineY)
+                    PP.Point(insertLine, "BOTTOM", pf._gridOrigin, "TOPLEFT", lineX, lineY - lineH)
+                end
                 insertLine:Show()
             else
                 insertLine:Hide()
@@ -542,6 +808,11 @@ local function BuildCDMLivePreview(parent, yOff)
             name = C_Item.GetItemNameByID(slot._previewTipItemID)
         end
         if not name then return end
+        if slot._previewBlizzHidden then
+            name = name .. "\n" .. EllesmereUI.Lf("Blizzard's Cooldown Manager has this in %1$s, so it does not show in game. Open Blizzard CDM and move it to %2$s or %3$s.",
+                COOLDOWN_VIEWER_SETTINGS_CATEGORY_NOT_IN_BAR, COOLDOWN_VIEWER_SETTINGS_CATEGORY_ESSENTIAL,
+                COOLDOWN_VIEWER_SETTINGS_CATEGORY_UTILITY)
+        end
         local bd = SelectedCDMBar()
         if bd and bd.barType ~= "custom_buff"
            and not (bd.key == "buffs" and slot._previewItemID)
@@ -897,7 +1168,10 @@ local function BuildCDMLivePreview(parent, yOff)
 
                     for i = 1, MAX_PREVIEW_ICONS do
                         local s = previewSlots[i]
-                        if s then s._targetOffX = nil; s._currentOffX = nil end
+                        if s then
+                            s._targetOffX = nil; s._currentOffX = nil
+                            s._targetOffY = nil; s._currentOffY = nil
+                        end
                     end
                     animRunning = false
 
@@ -1010,6 +1284,7 @@ local function BuildCDMLivePreview(parent, yOff)
                 local gs = dragGhost:GetScale() or 1
                 dragGhost:ClearAllPoints()
                 dragGhost:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cx / gs, cy / gs)
+                pf._DragAutoScroll(cx, dt)
                 TickAnimation(dt)
                 local tBd = SelectedCDMBar()
                 local tCount = 0
@@ -1249,8 +1524,11 @@ local function BuildCDMLivePreview(parent, yOff)
         local bd = SelectedCDMBar()
         if not bd then
             for i = 1, MAX_PREVIEW_ICONS do previewSlots[i]:Hide() end
-            addBtn:Hide(); buffAddBtn:Hide(); self:SetHeight(1); return
+            addBtn:Hide(); buffAddBtn:Hide(); self:SetHeight(1)
+            self._hMax = 0; self._hSetViewport(false); self._SetHScroll(0)
+            return
         end
+        self._hSelect(bd.key)
 
         local iconSize = bd.iconSize or 36
         -- Width-matched bars derive their real icon size from the matched target, so
@@ -1363,11 +1641,15 @@ local function BuildCDMLivePreview(parent, yOff)
         local unlearnedSet
         -- Talent Conditions (same CD/utility gate): assigned id -> "on" (conditions
         -- hold) / "off" (not met: renders dimmed like an unlearned spell, so it can
-        -- still be right-clicked). nil for non-users and on WoW Forever (no menu row there).
+        -- still be right-clicked). nil for non-users.
         local tcSet
+        -- WoW Forever: a learned assigned spell Blizzard's Cooldown Manager keeps
+        -- in Not Displayed by default (ns.CDMDefaultHiddenSet) draws nothing in
+        -- game until shown there; it renders dimmed and its tooltip says why.
+        local blizzHiddenSet
         if bd.key ~= "buffs" and not isBuffBar and not isCustomBuffBar
            and not isFocusKick and IsPlayerSpell then
-            if ns._cdmAnyTalentCond and not EllesmereUI.IS_FOREVER then
+            if ns._cdmAnyTalentCond then
                 tcSet = ns.TalentCondPreviewSet(bd.key, tracked)
             end
             local sdUn = ns.GetBarSpellData(bd.key)
@@ -1376,6 +1658,7 @@ local function BuildCDMLivePreview(parent, yOff)
             local sdursUn   = sdUn and sdUn.spellDurations
             local groupsUn  = sdUn and sdUn.customSpellGroups
             local racialsUn = ns._myRacialsSet
+            local dh
             for _, id in ipairs(tracked) do
                 if type(id) == "number" and id > 0
                    and not (customUn and customUn[id])
@@ -1383,11 +1666,19 @@ local function BuildCDMLivePreview(parent, yOff)
                    and not (cdursUn and cdursUn[id])
                    and not (sdursUn and sdursUn[id])
                    and not (groupsUn and groupsUn[id])
-                   and not (IsPlayerSpell(id)
+                   and not (ns.CDM_AuraIconKeeps and ns.CDM_AuraIconKeeps(id)) then
+                    if not (IsPlayerSpell(id)
                         or IsPlayerSpell(NormalizeToBase(id))
                         or IsPlayerSpell(ResolveToLive(id))) then
-                    unlearnedSet = unlearnedSet or {}
-                    unlearnedSet[id] = true
+                        unlearnedSet = unlearnedSet or {}
+                        unlearnedSet[id] = true
+                    else
+                        if dh == nil then dh = ns.CDMDefaultHiddenSet() or false end
+                        if dh and ns.CDMIsDefaultHidden(dh, id) then
+                            blizzHiddenSet = blizzHiddenSet or {}
+                            blizzHiddenSet[id] = true
+                        end
+                    end
                 end
             end
         end
@@ -1417,7 +1708,8 @@ local function BuildCDMLivePreview(parent, yOff)
                    and not (racialsFv and racialsFv[id])
                    and not (cdursFv and cdursFv[id])
                    and not (sdursFv and sdursFv[id])
-                   and not (groupsFv and groupsFv[id]) then
+                   and not (groupsFv and groupsFv[id])
+                   and not (ns.CDM_AuraIconKeeps and ns.CDM_AuraIconKeeps(id)) then
                     local base, live = NormalizeToBase(id), ResolveToLive(id)
                     if not (known(id) or known(base) or known(live)) then
                         if listedFv == nil then listedFv = ns.CDMForeverListedSet() or false end
@@ -1503,13 +1795,20 @@ local function BuildCDMLivePreview(parent, yOff)
             totalH = (numRows * iconH) + ((numRows - 1) * spacing)
         end
 
-        -- CDM preview: no scale-to-fit -- SetClipsChildren on the content
-        -- header clips any overflow so icon scale remains accurate.
+        -- CDM preview: no scale-to-fit, so icon scale remains accurate. A row that
+        -- fits is centered; a wider one starts at its first icon and scrolls sideways
+        -- between the two arrows, whose gutters come off the visible width.
         local curParentW = (parent:GetWidth() - PAD * 2) / previewScale
+        self._hMax = 0
+        if curParentW > 0 and totalW > curParentW then
+            curParentW = curParentW - 2 * self._hGutter / previewScale
+            self._hMax = totalW - curParentW
+        end
         if curParentW > 0 then
             self:SetWidth(curParentW)
         end
-        local startX = math.floor((curParentW - totalW) / 2)
+        self._hSetViewport(self._hMax > 0)
+        local startX = self._hMax > 0 and 0 or math.floor((curParentW - totalW) / 2)
         local startY = -5
 
         -- Position helper: places frame at grid position (col, row).
@@ -1527,7 +1826,7 @@ local function BuildCDMLivePreview(parent, yOff)
                 end
                 local px = startX + vRow * (iconSize + spacing)
                 local py = startY - col * (iconH + spacing) - rowOffset
-                PP.Point(frame, "TOPLEFT", self, "TOPLEFT", px, py)
+                PP.Point(frame, "TOPLEFT", self._gridOrigin, "TOPLEFT", px, py)
                 frame._baseX = px
                 frame._baseY = py
             else
@@ -1536,7 +1835,7 @@ local function BuildCDMLivePreview(parent, yOff)
                 end
                 local px = startX + col * (iconSize + spacing) + rowOffset
                 local py = startY - vRow * (iconH + spacing)
-                PP.Point(frame, "TOPLEFT", self, "TOPLEFT", px, py)
+                PP.Point(frame, "TOPLEFT", self._gridOrigin, "TOPLEFT", px, py)
                 frame._baseX = px
                 frame._baseY = py
             end
@@ -1587,6 +1886,7 @@ local function BuildCDMLivePreview(parent, yOff)
                 -- What the hover tooltip names: the spell whose art shows, or the item.
                 slot._previewArtID = nil
                 slot._previewTipItemID = nil
+                slot._previewBlizzHidden = nil
                 if id then
                     local tex
                     local cdClaim = ns.CdClaimMarkerToCdID and ns.CdClaimMarkerToCdID(id)
@@ -1656,10 +1956,13 @@ local function BuildCDMLivePreview(parent, yOff)
                         -- Empty Slot: blank placeholder, no icon/tooltip identity.
                         slot._previewIsEmptySlot = true
                     elseif id <= -100 then
-                        -- On-use bag item: negated itemID
-                        tex = C_Item.GetItemIconByID(-id)
+                        -- On-use bag item: negated itemID. The art and the item the
+                        -- live icon shows (a resolved potion variant, or Blizzard's
+                        -- own row's art), so the preview matches the bar in game.
+                        local dispID
+                        tex, dispID = ns.ItemEntryPreview(bd.key, id)
                         slot._previewItemID = -id
-                        slot._previewTipItemID = -id
+                        slot._previewTipItemID = dispID or -id
                     elseif id < 0 then
                         -- Trinket slot: get icon from equipped item
                         local itemID = GetInventoryItemID("player", -id)
@@ -1674,12 +1977,14 @@ local function BuildCDMLivePreview(parent, yOff)
                         end
                         slot._previewSpellID = id
                         slot._previewArtID = displayID
+                        slot._previewBlizzHidden = blizzHiddenSet and blizzHiddenSet[id] or nil
                     end
                     if tex then
                         slot._icon:SetTexture(tex)
                         slot._icon:SetTexCoord(zoom, 1 - zoom, zoom, 1 - zoom)
                         local pvUnlearned = (unlearnedSet and unlearnedSet[id])
-                            or (tcSet and tcSet[id] == "off") or false
+                            or (tcSet and tcSet[id] == "off")
+                            or (blizzHiddenSet and blizzHiddenSet[id]) or false
                         slot._icon:SetDesaturated(pvUnlearned)
                         slot._icon:SetAlpha(pvUnlearned and 0.55 or 1)
                     else slot._icon:SetTexture(nil) end
@@ -1688,6 +1993,7 @@ local function BuildCDMLivePreview(parent, yOff)
                 -- Blank slot (empty grid filler)
                 slot._icon:SetTexture(nil)
                 slot._previewSpellID = nil
+                slot._previewBlizzHidden = nil
                 slot._previewCdID = nil
                 slot._previewItemID = nil
                 slot._previewHostedBuff = nil
@@ -1786,7 +2092,16 @@ local function BuildCDMLivePreview(parent, yOff)
                     local sid = slot._previewSpellID
                     local chargeInfo = sid and C_Spell.GetSpellCharges and C_Spell.GetSpellCharges(sid)
                     local maxC = chargeInfo and chargeInfo.maxCharges
-                    if (bd.showCharges ~= false) and maxC and maxC > 1 then
+                    -- A custom CD/utility spell EUI draws itself has no Blizzard charge
+                    -- frame: the live icon shows a count only with its Show Charges
+                    -- opt-in, so match it. A Blizzard-tracked one draws Blizzard's frame.
+                    local sdSc = sid and not isBuffBar and not isCustomBuffBar and ns.GetBarSpellData(bd.key)
+                    local showC = bd.showCharges ~= false
+                    if sdSc and sdSc.customSpellIDs and sdSc.customSpellIDs[sid]
+                       and not ns.IsCDMTrackedCooldown(sid) then
+                        showC = (sdSc.customSpellForceCount and sdSc.customSpellForceCount[sid]) or false
+                    end
+                    if showC and maxC and maxC > 1 then
                         slot._stackText:SetText(tostring(maxC))
                         slot._stackText:Show()
                     elseif slot._previewItemID and (bd.showItemCount ~= false) then
@@ -1849,7 +2164,7 @@ local function BuildCDMLivePreview(parent, yOff)
             addPy = startY - lastRow * (iconH + spacing)
         end
         PP.Size(addBtn, iconSize, iconH); addBtn:ClearAllPoints()
-        PP.Point(addBtn, "TOPLEFT", self, "TOPLEFT", addPx, addPy)
+        PP.Point(addBtn, "TOPLEFT", self._gridOrigin, "TOPLEFT", addPx, addPy)
         if PP.GetBorders(addBtn) then PP.SetBorderSize(addBtn, 1) end
         local ar, ag, ab = EllesmereUI.GetAccentColor()
 
@@ -1859,7 +2174,7 @@ local function BuildCDMLivePreview(parent, yOff)
         -- Second "+" (buff) button sits one slot right of the standard "+", on CD/utility bars only (buff-family/custom_buff/focuskick bars track buffs their own way).
         if not isBuffBar and not isCustomBuffBar and not isFocusKick then
             PP.Size(buffAddBtn, iconSize, iconH); buffAddBtn:ClearAllPoints()
-            PP.Point(buffAddBtn, "TOPLEFT", self, "TOPLEFT", addPx + iconSize + spacing, addPy)
+            PP.Point(buffAddBtn, "TOPLEFT", self._gridOrigin, "TOPLEFT", addPx + iconSize + spacing, addPy)
             if PP.GetBorders(buffAddBtn) then PP.SetBorderSize(buffAddBtn, 1) end
             buffAddBtn:Show()
         else
@@ -1877,8 +2192,8 @@ local function BuildCDMLivePreview(parent, yOff)
         end
         if bd.barBgEnabled then
             pvBarBg:ClearAllPoints()
-            pvBarBg:SetPoint("TOPLEFT", startX, startY)
-            pvBarBg:SetPoint("BOTTOMRIGHT", pf, "TOPLEFT", startX + spellW, startY - spellH)
+            pvBarBg:SetPoint("TOPLEFT", pf._gridOrigin, "TOPLEFT", startX, startY)
+            pvBarBg:SetPoint("BOTTOMRIGHT", pf._gridOrigin, "TOPLEFT", startX + spellW, startY - spellH)
             pvBarBg:SetColorTexture(bd.barBgR or 0, bd.barBgG or 0, bd.barBgB or 0, bd.barBgA or 0.5)
             if pvBarBg.SetSnapToPixelGrid then pvBarBg:SetSnapToPixelGrid(false); pvBarBg:SetTexelSnappingBias(0) end
             pvBarBg:Show()
@@ -1945,11 +2260,16 @@ local function BuildCDMLivePreview(parent, yOff)
             end
             local fkFS = self._focusKickInfoText
             -- Wording must track the "Show on Target" toggle -- otherwise this text keeps promising focus-tracking even when the bar is configured to follow the current target instead.
+            local fkMain
             if bd.focusKickUseTarget then
-                fkFS:SetText(EllesmereUI.L("This bar will always be attached to your current target's nameplate"))
+                fkMain = EllesmereUI.L("This bar will always be attached to your current target's nameplate")
             else
-                fkFS:SetText(EllesmereUI.L("This bar will always be attached to your focus target's nameplate"))
+                fkMain = EllesmereUI.L("This bar will always be attached to your focus target's nameplate")
             end
+            -- Second, dimmer line: points sound-only users at the setup that needs no icon.
+            fkFS:SetText(fkMain .. "\n" .. EllesmereUI.COLOR_CODES.DIM
+                .. EllesmereUI.L("Want only the cast sound? Leave this bar empty and set Interrupt Spell below.")
+                .. "|r")
             fkFS:ClearAllPoints()
             fkFS:SetPoint("TOP", self, "TOPLEFT", self:GetWidth() / 2, -(totalH + 14))
             fkFS:SetWidth(self:GetWidth() - 20)
@@ -1988,6 +2308,10 @@ local function BuildCDMLivePreview(parent, yOff)
             if self._scrollFrame then self._scrollFrame:SetVerticalScroll(0) end
         end
         if self._updatePVThumb then self._updatePVThumb() end
+        -- Sideways scroll: one arrow click is one icon; the offset is clamped to this layout.
+        self._hStep = iconSize + spacing
+        self._hPlaceArrows((5 + totalH / 2) * self._previewScale)
+        self._SetHScroll(self._hOff or 0)
 
         -- Restart active state preview on first icon if toggled on
         if _cdmActivePreviewOn then

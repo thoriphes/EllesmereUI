@@ -21,6 +21,7 @@ local barFrames, blizzMovableHolders, dataBarFrames = I.barFrames, I.blizzMovabl
 local extraBarHolders, SecureSetupHandler_PrepareRefs = I.extraBarHolders, I.SecureSetupHandler_PrepareRefs
 local LayoutBar = I.LayoutBar
 local SetSecureRefsReady = I.SetSecureRefsReady
+local AttachHoverHooks, _quickKeybindState = I.AttachHoverHooks, I._quickKeybindState
 -- Written by ApplyAll (EUI_ActionBars_ApplyAll.lua);
 -- SetIsApplyingAll hands the value to this copy.
 local _isApplyingAll = false
@@ -227,7 +228,7 @@ function EAB:ApplyExtraBarVisibility()
                 else
                 local key = info.key
                 local s = EAB.db and EAB.db.profile.bars[key]
-                if s and not s.alwaysHidden then
+                if s and not EAB.VisibilityCompat.IsNever(s) then
                     local frame
                     if EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info) then
                         frame = EAB_VTABLE.ExtraBars.GetManagedNonSecureFrame(info)
@@ -274,7 +275,7 @@ function EAB:ApplyCombatVisibility()
             local frame = barFrames[key] or (info.isDataBar and dataBarFrames[key]) or (info.isBlizzardMovable and blizzMovableHolders[key]) or (extraBarHolders[key]) or (info.visibilityOnly and _G[info.frameName])
             if frame and not info.visibilityOnly then
                 local newStr
-                if s.alwaysHidden then
+                if EAB.VisibilityCompat.IsNever(s) then
                     newStr = "hide"
                 -- Under Any the compiled driver already carries both halves (Show lanes as
                 -- disjuncts, Hide lanes as leading gates, the Lua-only ones resolved at
@@ -367,6 +368,11 @@ end
 -- buttonless until the next reload. Returns true when anything was built. The
 -- CALLER owns the binding rebuild: one caller is UpdateKeybinds itself. On ns:
 -- not a file local.
+-- Never status is asked of ns.IsNeverBar, the predicate the load-time skip
+-- used, not the ns._eabBarNever map: the map fills on the first
+-- RefreshRuntimeVisibility, and the login keybind build runs before it, so
+-- reading the empty map there built every skipped bar one frame after load
+-- (plus a second full apply).
 ns._eabBuildSkippedBars = function()
     if not next(ns._eabBarNoButtons) or InCombatLockdown() then return false end
     local built = false
@@ -374,9 +380,10 @@ ns._eabBuildSkippedBars = function()
         local key = info.key
         local frame = barFrames[key]
         if frame and ns._eabBarNoButtons[key]
-           and (not ns._eabBarNever[key] or ns.BarHasBoundKeys(info)) then
+           and (not ns.IsNeverBar(info) or ns.BarHasBoundKeys(info)) then
             ns.BuildBarButtons(info, frame, false)
             LayoutBar(key)
+            AttachHoverHooks(key)
             -- Still hidden (keybind case, or a reveal whose driver has not
             -- shown the frame yet): the hide edge already passed with no
             -- buttons, so park the new mixin event lists the way it would
@@ -392,6 +399,12 @@ ns._eabBuildSkippedBars = function()
         -- The refs pass already ran without these buttons in it.
         SetSecureRefsReady(false)
         SecureSetupHandler_PrepareRefs()
+        -- Quick Keybind's button pass ran without these buttons. It keeps a
+        -- mark per button, so its next run (the next open, or now while it
+        -- is open) hooks only the new ones. The cooldown edge hooks come
+        -- with the full apply below.
+        _quickKeybindState.buttonsInit = nil
+        if _quickKeybindState.open then _quickKeybindState.InitButtons() end
         -- Everything cosmetic (borders, shapes, fonts, backgrounds, button
         -- art, cooldown visuals, range colouring) converges through the
         -- full apply. Next frame, not inline: ApplyAll calls back into

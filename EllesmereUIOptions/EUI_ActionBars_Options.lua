@@ -49,10 +49,10 @@ local PAGE_DISPLAY        = "Bar Display"
 local PAGE_XPBAR          = "XP Bar"
 local PAGE_MENUBAGSREP    = "Menu, Bags & Rep Bars"
 local PAGE_ANIMATIONS     = "Bar Animations"
-local SECTION_ICON_APPEARANCE = "ICONS"
+local SECTION_ICON_APPEARANCE = "APPEARANCE"
 local SECTION_LAYOUT      = "LAYOUT"
 local SECTION_TEXT        = "TEXT"
-local SECTION_VISIBILITY  = "VISIBILITY"
+local SECTION_VISIBILITY  = "VISIBILITY & FADING"
 
 -- EllesmereUI is created by another addon in the suite; wait for it.
 local initFrame = CreateFrame("Frame")
@@ -467,40 +467,41 @@ initFrame:SetScript("OnEvent", function(self)
         -- The checklist in `rgn` (a DualRow half built from C.Cfg), its cog
         -- and its Apply to All link.
         function C.Build(rgn)
-            if EllesmereUI._prebuilding then return end
-            if rgn._control then rgn._control:Hide() end
-            local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-                rgn, 170, rgn:GetFrameLevel() + 2,
-                { { key = "L", label = "Left Endcap" }, { key = "R", label = "Right Endcap" } },
-                function(k)
-                    local l, r = ns.AB_CapsSides(o.key())
-                    if k == "L" then return l end
-                    return r
-                end,
-                function(k, v)
-                    -- Both sides are written, the untouched one as the bar
-                    -- shows it now: a written side never reads a default.
-                    local s = o.store()
-                    local l, r = ns.AB_CapsSides(o.key())
-                    if k == "L" then l = v and true or false else r = v and true or false end
-                    s.endCapLeft, s.endCapRight = l, r
-                    o.write()
-                end, nil, nil, nil, nil, nil,
-                -- Spec Overrides see each click as it happens (the slot's capture).
-                { notifyWrites = true })
-            PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
-            rgn._control = cbDD
-            rgn._lastInline = nil
-            EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-            -- The checklist has no disabled state of its own: grey it and
-            -- block clicks on a vertical bar (the row label explains).
-            local function ApplyCapsDisabled()
-                local off = C.Vertical()
-                cbDD:SetAlpha(off and 0.3 or 1)
-                cbDD:EnableMouse(not off)
+            if not EllesmereUI._prebuilding then
+                if rgn._control then rgn._control:Hide() end
+                local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    rgn, 170, rgn:GetFrameLevel() + 2,
+                    { { key = "L", label = "Left Endcap" }, { key = "R", label = "Right Endcap" } },
+                    function(k)
+                        local l, r = ns.AB_CapsSides(o.key())
+                        if k == "L" then return l end
+                        return r
+                    end,
+                    function(k, v)
+                        -- Both sides are written, the untouched one as the bar
+                        -- shows it now: a written side never reads a default.
+                        local s = o.store()
+                        local l, r = ns.AB_CapsSides(o.key())
+                        if k == "L" then l = v and true or false else r = v and true or false end
+                        s.endCapLeft, s.endCapRight = l, r
+                        o.write()
+                    end, nil, nil, nil, nil, nil,
+                    -- Spec Overrides see each click as it happens (the slot's capture).
+                    { notifyWrites = true })
+                PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+                rgn._control = cbDD
+                rgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
+                -- The checklist has no disabled state of its own: grey it and
+                -- block clicks on a vertical bar (the row label explains).
+                local function ApplyCapsDisabled()
+                    local off = C.Vertical()
+                    cbDD:SetAlpha(off and 0.3 or 1)
+                    cbDD:EnableMouse(not off)
+                end
+                ApplyCapsDisabled()
+                EllesmereUI.RegisterWidgetRefresh(ApplyCapsDisabled)
             end
-            ApplyCapsDisabled()
-            EllesmereUI.RegisterWidgetRefresh(ApplyCapsDisabled)
 
             local rows = {}
             if not C.stock then
@@ -531,7 +532,6 @@ initFrame:SetScript("OnEvent", function(self)
               set=function(v) o.write("endCapOffsetY", v) end }
             EllesmereUI.BuildInlineCog(rgn, {
                 title = "End Cap Settings",
-                icon = C.stock and EllesmereUI.RESIZE_ICON or nil,
                 disabled = function()
                     return C.Vertical() or C.Off()
                 end,
@@ -542,6 +542,7 @@ initFrame:SetScript("OnEvent", function(self)
                 rawTooltip = true,
                 rows = rows,
             })
+            if EllesmereUI._prebuilding then return end
 
             if o.syncKeys then
                 EllesmereUI.BuildSyncIcon({
@@ -633,9 +634,9 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- The sections live in ActionBars_Options\BarVisibilityLayout_Options.lua
-        -- (Bar 10 caution, VISIBILITY, LAYOUT) and BarAppearance_Options.lua (BAR
-        -- BACKGROUND, ICON APPEARANCE, ICON EFFECTS, PAGING, TEXT); the second
-        -- returns the rows the click navigation below maps to.
+        -- (Bar 10 caution, VISIBILITY & FADING, LAYOUT) and BarAppearance_Options.lua
+        -- (APPEARANCE, EFFECTS, BEHAVIOR & PAGING, TEXT); the second returns the
+        -- rows the click navigation below maps to.
         local ctx = {
             BgDisabled = BgDisabled, SDB = SDB, SGet = SGet, SSeedTextOffsets = SSeedTextOffsets,
             SSet = SSet, SSetColor = SSetColor, SUpdatePreview = SUpdatePreview,
@@ -657,7 +658,7 @@ initFrame:SetScript("OnEvent", function(self)
             local clickMappings = {
                 icon       = { section = iconsSectionHeader, target = classColorBorderRow },
                 keybind    = { section = textSectionHeader,  target = keybindRow, slotSide = "right" },
-                charges    = { section = textSectionHeader,  target = chargesRow, slotSide = "left" },
+                charges    = { section = textSectionHeader,  target = chargesRow, slotSide = "right" },
             }
 
             local function NavigateToSetting(key)
@@ -924,6 +925,8 @@ initFrame:SetScript("OnEvent", function(self)
         getHeaderBuilder = function(pageName)
             if pageName == PAGE_DISPLAY then
                 return _barsHeaderBuilder
+            elseif pageName == PAGE_XPBAR then
+                return ns.ABO_XPHeaderBuilder()
             end
             return nil
         end,
@@ -959,6 +962,7 @@ initFrame:SetScript("OnEvent", function(self)
                 end
             else
                 HideEditOverlay()
+                if pageName == PAGE_XPBAR then ns.ABO_XPPreviewRefresh() end
             end
         end,
         onReset     = function()

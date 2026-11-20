@@ -360,6 +360,12 @@ function ns.GetTrackedBuffBars()
     return tbb
 end
 
+-- The name the player gave a bar (Name Text Settings), or nil when it has none.
+function ns.TBBCustomName(cfg)
+    local n = cfg.customName
+    if n and n ~= "" then return n end
+end
+
 function ns.GetTBBPositions()
     -- Spec-specific, stored alongside trackedBuffBars in the active profile's per-spec bucket.
     local specKey = ns.GetActiveSpecKey and ns.GetActiveSpecKey()
@@ -376,7 +382,7 @@ end
 -- that value keeps its own copy and adds a setter; a place that assigns it
 -- calls Set<Name> (built below), which runs them all. ECME is set this way
 -- during BuildTrackedBuffBars (ECME.db is not ready at file load).
-ns._NewInternals("_buffBarInternals", {
+EllesmereUI.NewInternals(ns, "_buffBarInternals", {
     _blizzBarFS = _blizzBarFS, _classB = _classB, _classG = _classG, _classR = _classR,
     _pandemicState = _pandemicState, BBFS = BBFS, FormatTime = FormatTime,
     LifebloomPandemic = LifebloomPandemic, SetFont = SetFont, SetTBBTextColor = SetTBBTextColor,
@@ -385,16 +391,10 @@ ns._NewInternals("_buffBarInternals", {
     ecmeSetters = {}, anyPandemicSetters = {}, anyThresholdSetters = {}, anyStacksSetters = {},
     anyVisCondSetters = {}, tickFrameSetters = {}, rebuildPendingSetters = {},
     assignDirtySetters = {}, reflowDirtySetters = {}, restoreNormalFillSetters = {},
-})
-for setter, listName in pairs({
+}, {
     SetECME = "ecmeSetters", SetAnyPandemic = "anyPandemicSetters",
     SetAnyThreshold = "anyThresholdSetters", SetAnyStacks = "anyStacksSetters",
     SetAnyVisCond = "anyVisCondSetters", SetTickFrame = "tickFrameSetters",
     SetRebuildPending = "rebuildPendingSetters", SetAssignDirty = "assignDirtySetters",
     SetReflowDirty = "reflowDirtySetters", SetRestoreNormalFill = "restoreNormalFillSetters",
-}) do
-    local list = ns._buffBarInternals[listName]
-    ns._buffBarInternals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
-end
+})

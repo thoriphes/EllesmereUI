@@ -2,8 +2,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 --  EUI_CDM_BuffBarStore.lua
 --
---  Per-spec unlock-link views and the bar list: add, remove and broadcast a
---  tracking bar across specs.
+--  Per-spec unlock-link views and the bar list: add, remove, reorder within a
+--  group and broadcast a tracking bar across specs.
 --  Reads the earlier Tracking Bars files through ns and ns._buffBarInternals.
 -------------------------------------------------------------------------------
 local _, ns = ...
@@ -227,6 +227,9 @@ do
     -- stores wholesale from an unlockLayout snapshot: the snapshot's TBB entries are stale
     -- copies of whichever spec last saved unlock mode, so the active spec's own entries are re-asserted here.
     EllesmereUI._TBBRestoreUnlockLinks = function()
+        -- Mid-apply, the active-store cache still holds the outgoing profile's
+        -- store, and on WoW Forever the spec key resolves against that store.
+        ns._cachedSpecProfiles = nil
         ns.SyncTBBUnlockLinks(true)
     end
 
@@ -366,6 +369,43 @@ function ns.RemoveTrackedBuffBar(idx)
     ns.BuildTrackedBuffBars()
 end
 
+-- Move a grouped bar to place `pos` among its group's members (1 = first). The
+-- members trade the slots they already hold, so bars outside the group keep
+-- their indices and positions / unlock links stay with their slot: the group
+-- stays put and whatever is anchored to it stays anchored. Style is untouched.
+-- Returns the bar's new index.
+function ns.MoveTrackedBuffBarInGroup(idx, pos)
+    local tbb = ns.GetTrackedBuffBars()
+    local bars = tbb.bars
+    local cfg = bars[idx]
+    local gid = ns.TBBBarGroupID(cfg)
+    if gid == 0 then return idx end
+    local slots, members, from = {}, {}, nil
+    for j, c in ipairs(bars) do
+        if ns.TBBBarGroupID(c) == gid then
+            slots[#slots + 1] = j
+            members[#members + 1] = c
+            if j == idx then from = #slots end
+        end
+    end
+    pos = max(1, math.min(pos, #slots))
+    if pos == from then return idx end
+    local oldAnchor = ns.TBBGroupAnchorIndex(gid)
+    table.remove(members, from)
+    table.insert(members, pos, cfg)
+    for k, j in ipairs(slots) do bars[j] = members[k] end
+    -- A disabled member can hand the anchor role to another slot: carry the
+    -- group origin there, as the group mover's save does for every member.
+    local newAnchor = ns.TBBGroupAnchorIndex(gid)
+    local posDB = ns.GetTBBPositions()
+    local origin = oldAnchor and posDB[tostring(oldAnchor)]
+    if newAnchor and newAnchor ~= oldAnchor and origin then
+        posDB[tostring(newAnchor)] = { point = origin.point, relPoint = origin.relPoint, x = origin.x, y = origin.y }
+    end
+    ns.BuildTrackedBuffBars()
+    return slots[pos]
+end
+
 -- Stable identity for the broadcast toggle and the single source of truth for whether a
 -- bar can broadcast across specs: only when it targets a spec-agnostic buff -- a preset
 -- (popularKey, keyed "p:<key>") or a custom buff ID (keyed "s:<spellID>"). A Blizzard
@@ -414,6 +454,10 @@ function ns.AddBarToAllSpecs(srcIdx)
     local sp = ns.GetActiveSpecProfiles and ns.GetActiveSpecProfiles()
     if not sp then return 0 end
 
+    -- Wider than RemoveBarFromAllSpecs' match on purpose: a custom bar is not copied into a spec
+    -- that already tracks its spell from Blizzard's list (that spec would show two bars for one
+    -- buff), while Remove takes only bars carrying this bar's broadcast key, so that spec's own
+    -- bar survives a later Remove.
     local function HasSameBar(bars)
         for _, b in ipairs(bars) do
             -- A cooldown-tracking bar is never the same bar as a buff bar for the same spell: track types must match first.
@@ -501,12 +545,8 @@ function ns.RemoveBarFromAllSpecs(srcIdx)
         if (b.trackType or "buff") ~= (srcBar.trackType or "buff") then
             return false
         end
-        if srcBar.popularKey and srcBar.popularKey ~= "" then
-            return b.popularKey == srcBar.popularKey
-        else
-            return (not b.popularKey or b.popularKey == "")
-                   and b.spellID and b.spellID == srcBar.spellID
-        end
+        -- Same broadcast identity only: another spec's Blizzard CDM bar for this spell must survive.
+        return ns.TBBBroadcastKey(b) == broadcastKey
     end
 
     local removed = 0

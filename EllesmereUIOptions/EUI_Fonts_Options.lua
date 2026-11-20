@@ -204,6 +204,9 @@ local function TileNameplates(parent, y, W, tile)
         size("Left Text Size", "textSlotLeftSize", 6, 30, 10),
         size("Right Text Size", "textSlotRightSize", 6, 30, 10));  y = y - h
     _, h = W:DualRow(parent, y,
+        size("Top Left Text Size", "textSlotTopLeftSize", 6, 30, 10),
+        size("Top Right Text Size", "textSlotTopRightSize", 6, 30, 10));  y = y - h
+    _, h = W:DualRow(parent, y,
         size("Bottom Left Text Size", "textSlotBottomLeftSize", 6, 30, 10),
         size("Bottom Right Text Size", "textSlotBottomRightSize", 6, 30, 10));  y = y - h
     _, h = W:DualRow(parent, y,
@@ -462,6 +465,17 @@ local function TileQoL(parent, y, W, tile)
                 if fn then fn() end
             end }
     end
+    -- Quality of Life keys that follow profiles (EllesmereUI.QoLExtrasGet / QoLExtrasSet,
+    -- defined by that module, which is loaded here: the tile is a note while it is off).
+    local function psize(label, key, minV, maxV, def, applyName)
+        return { type = "slider", text = label, min = minV, max = maxV, step = 1,
+            getValue = function() return EllesmereUI.QoLExtrasGet(key) or def end,
+            setValue = function(v)
+                EllesmereUI.QoLExtrasSet(key, v)
+                local fn = EllesmereUI[applyName]
+                if fn then fn() end
+            end }
+    end
     local function brDB()
         local d = _G._EUI_BattleRes_DB and _G._EUI_BattleRes_DB()
         return d and d.profile and d.profile.battleRes
@@ -505,8 +519,8 @@ local function TileQoL(parent, y, W, tile)
     local function add(cfg) slots[#slots + 1] = cfg end
     add(ModuleOutlineCfg(tile.folder, tile.display))
     add(gsize("Map Coordinates Text Size", "mapCoordsTextSize", 8, 24, 12, "_applyMapCoords"))
-    add(gsize("Group Death Alert Text Size", "groupDeathTextSize", 14, 64, 34, "_applyGroupDeathAlert"))
-    add(gsize("Combat Alert Text Size", "combatAlertTextSize", 14, 64, 22, "_applyCombatAlertFrame"))
+    add(psize("Group Death Alert Text Size", "groupDeathTextSize", 14, 64, 34, "_applyGroupDeathAlert"))
+    add(psize("Combat Alert Text Size", "combatAlertTextSize", 14, 64, 22, "_applyCombatAlertFrame"))
     add({ type = "slider", text = "FPS Counter Text Size", min = 8, max = 30, step = 1,
           getValue = function()
               if EllesmereUI.QoLExtrasGet then
@@ -518,8 +532,8 @@ local function TileQoL(parent, y, W, tile)
               if EllesmereUI.QoLExtrasSet then EllesmereUI.QoLExtrasSet("fpsTextSize", v) end
               if EllesmereUI._applyFPSDisplay then EllesmereUI._applyFPSDisplay() end
           end })
-    add(gsize("Durability Warning Text Size", "durWarnTextSize", 10, 50, 30, "_durWarnApplySettings"))
-    add(gsize("Target Distance Text Size", "targetDistanceTextSize", 10, 48, 18, "_applyTargetDistanceFrame"))
+    add(psize("Durability Warning Text Size", "durWarnTextSize", 10, 50, 30, "_durWarnApplySettings"))
+    add(psize("Target Distance Text Size", "targetDistanceTextSize", 10, 48, 18, "_applyTargetDistanceFrame"))
     if not FOREVER then
         add({ type = "slider", text = "Keystone Popup Text Size", min = 8, max = 16, step = 1,
               getValue = function()
@@ -728,7 +742,7 @@ local function TileMythicTimer(parent, y, W, tile)
         return NoteRow(parent, y, EllesmereUI.Lf("Enable %1$s to edit its text settings.", EllesmereUI.L(tile.display)))
     end
     local function db() return _G._EMT_AceDB and _G._EMT_AceDB.profile end
-    local function MTApply() if _G._EMT_Apply then _G._EMT_Apply() end end
+    local function MTApply() if _G._EMT_ApplyTimer then _G._EMT_ApplyTimer() end end
     local function size(label, key, minV, maxV, def, fallbackKey)
         return { type = "slider", text = label, min = minV, max = maxV, step = 1,
             getValue = function()
@@ -758,6 +772,7 @@ local function TileMythicTimer(parent, y, W, tile)
     local function tsb() local p = db(); return p and p.tsb end
     local function tfbT() local p = db(); return p and p.tfb and p.tfb.target end
     local function tfbF() local p = db(); return p and p.tfb and p.tfb.focus end
+    local function kt() local p = db(); return p and p.kickTracker end
     local fontValues, fontOrder = EllesmereUI.BuildFontDropdownData()
     _, h = W:DualRow(parent, y, ModuleOutlineCfg(tile.folder, tile.display),
         { type = "dropdown", text = "Timer Font",
@@ -785,10 +800,10 @@ local function TileMythicTimer(parent, y, W, tile)
         size("+1 Threshold Text Size", "thresholdPlusOneSize", 6, 20, 12, "thresholdSize"),
         size("Enemy Forces Text Size", "enemyForcesTextSize", 8, 24, 12, "objectivesSize"));  y = y - h
     _, h = W:DualRow(parent, y,
-        subSize("Targeted Bars Name Size", tsb, 6, 20, 10, "nameSize", "TSB_Refresh"),
-        subSize("Targeted Bars Timer Size", tsb, 6, 20, 10, "timerSize", "TSB_Refresh"));  y = y - h
+        subSize("Cast Bars Name Size", tsb, 6, 20, 10, "nameSize", "TSB_Refresh"),
+        subSize("Cast Bars Timer Size", tsb, 6, 20, 10, "timerSize", "TSB_Refresh"));  y = y - h
     _, h = W:DualRow(parent, y,
-        subSize("Targeted Bars Target Size", tsb, 6, 20, 10, "targetSize", "TSB_Refresh"),
+        subSize("Cast Bars Target Size", tsb, 6, 20, 10, "targetSize", "TSB_Refresh"),
         subSize("Target Cast Bar Name Size", tfbT, 6, 22, 11, "nameSize", "TFB_Refresh"));  y = y - h
     _, h = W:DualRow(parent, y,
         subSize("Target Cast Bar Timer Size", tfbT, 6, 22, 11, "timerSize", "TFB_Refresh"),
@@ -797,7 +812,11 @@ local function TileMythicTimer(parent, y, W, tile)
         subSize("Focus Cast Bar Name Size", tfbF, 6, 22, 11, "nameSize", "TFB_Refresh"),
         subSize("Focus Cast Bar Timer Size", tfbF, 6, 22, 11, "timerSize", "TFB_Refresh"));  y = y - h
     _, h = W:DualRow(parent, y,
-        subSize("Focus Cast Bar Target Size", tfbF, 6, 20, 10, "targetSize", "TFB_Refresh"), BLANK());  y = y - h
+        subSize("Focus Cast Bar Target Size", tfbF, 6, 20, 10, "targetSize", "TFB_Refresh"),
+        subSize("Kick Tracker Timer Size", kt, 6, 24, 11, "timerSize", "KT_Refresh"));  y = y - h
+    _, h = W:DualRow(parent, y,
+        subSize("Kick Tracker Bar Name Size", kt, 6, 24, 11, "barNameSize", "KT_Refresh"),
+        subSize("Kick Tracker Bar Timer Size", kt, 6, 24, 11, "barTimerSize", "KT_Refresh"));  y = y - h
     return y
 end
 
@@ -1005,13 +1024,25 @@ local function TileQuestTracker(parent, y, W, tile)
           setValue = function(v)
               local p = db(); if not p then return end
               p.font = v
+              -- The custom tracker (WoW Forever) restyles live.
+              if ns.UseCustomTracker and ns.UseCustomTracker() then
+                  EllesmereUI.InvalidateFontCache()
+                  QTApply()
+                  return
+              end
               FontReload()
           end });  y = y - h
     _, h = W:DualRow(parent, y,
         size("Header Font Size", "headerFontSize", 13),
         size("Title Font Size", "titleFontSize", 12));  y = y - h
-    _, h = W:DualRow(parent, y,
-        size("Objective Font Size", "objectiveFontSize", 10), BLANK());  y = y - h
+    if ns.UseCustomTracker and ns.UseCustomTracker() then
+        _, h = W:DualRow(parent, y,
+            size("Objective Font Size", "objectiveFontSize", 10),
+            size("Zone Header Font Size", "customZoneFontSize", 13));  y = y - h
+    else
+        _, h = W:DualRow(parent, y,
+            size("Objective Font Size", "objectiveFontSize", 10), BLANK());  y = y - h
+    end
     return y
 end
 
@@ -1133,6 +1164,7 @@ local TILE_BUILDERS = {
     EllesmereUIBags              = { TileBags,             "Item count, item level, category and label text" },
     EllesmereUIDataBars          = { TileDataBars,         "Per-bar text scale" },
     EllesmereUIQuickdraw         = { TileFontOnly,         "Font face and outline only" },
+    EllesmereUISimpleLootCouncil = { TileFontOnly,         "Font face and outline only" },
 }
 
 local function BuildTileList()
@@ -1221,6 +1253,10 @@ end
 do
     local origNav = EllesmereUI.NavigateToElementSettings
     function EllesmereUI:NavigateToElementSettings(moduleName, pageName, sectionName, preSelectFn, highlightText)
+        -- The original refuses in combat: no page state changes then.
+        if InCombatLockdown() then
+            return origNav(self, moduleName, pageName, sectionName, preSelectFn, highlightText)
+        end
         if moduleName == GLOBAL_KEY and pageName == PAGE_FONTS and (sectionName or highlightText) then
             local changed = false
             for _, tile in ipairs(BuildTileList()) do
@@ -1309,8 +1345,11 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
         -- glyph-restricted branch above skips it (its "System Default" entry
         -- already is the client's own font).
         fontDropValues[EllesmereUI.BLIZZARD_FONT_KEY] = { text = "Blizzard Default",
-            font = _G.STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF" }
+            font = EllesmereUI.GetBlizzardFontPath() }
         fontDropOrder[#fontDropOrder + 1] = EllesmereUI.BLIZZARD_FONT_KEY
+        fontDropValues[EllesmereUI.BLIZZARD_CHAT_FONT_KEY] = { text = "Blizzard Chat",
+            font = EllesmereUI.GetBlizzardChatFontPath() }
+        fontDropOrder[#fontDropOrder + 1] = EllesmereUI.BLIZZARD_CHAT_FONT_KEY
         fontDropOrder[#fontDropOrder + 1] = "---"
         local FONT_DIR_GLOBAL = EllesmereUI.MEDIA_PATH .. "fonts\\"
         for _, name in ipairs(EllesmereUI.FONT_ORDER) do
@@ -1369,7 +1408,7 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
               if rl then for i2 = 1, #rl do rl[i2]() end end
               FontReload()
           end });  y = y - h
-    if not EllesmereUI._prebuilding then
+    do
         EllesmereUI.BuildInlineCog(globalFontRow._leftRegion, {
             title = "Global Font",
             rows = {
@@ -1410,7 +1449,7 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
             { key = "actionBars", label = "Action Bars Icons" },
             { key = "unitFrames", label = "Unit Frames Icons" },
             { key = "cdm",        label = "CDM Icons" },
-            { key = "raidFrames", label = "Raid Frames Icons" },
+            { key = "raidFrames", label = "Raid & Party Frames Icons" },
             { key = "bags",       label = "Bags Icons" },
         }
         local rgn = oitRow._leftRegion
@@ -1453,13 +1492,19 @@ function _G._EUI_BuildFontsPage(pageName, parent, yOffset)
         -- Same faces as Global Font (SharedMedia included) but a private copy: prepending a default entry to the shared tables would leak into the Global Font list too.
         nameFontValues[NAME_FONT_DEFAULT] = { text = "Blizzard Default", font = "Fonts\\FRIZQT__.TTF" }
         nameFontOrder[1] = NAME_FONT_DEFAULT
-        nameFontOrder[2] = "---"
+        -- Blizzard Chat sits with Blizzard Default above the divider, as in Global Font.
+        local chatKey = EllesmereUI.BLIZZARD_CHAT_FONT_KEY
+        if fontDropValues[chatKey] then
+            nameFontOrder[2] = chatKey
+            nameFontValues[chatKey] = fontDropValues[chatKey]
+        end
+        nameFontOrder[#nameFontOrder + 1] = "---"
         for _, k in ipairs(fontDropOrder) do
             -- Skip the Blizzard Default sentinel: this list's own "__default"
             -- entry means "leave the engine's name font untouched", which is
             -- the same visual result with the correct do-nothing semantics.
             -- Collapse the separator that followed it so no doubled divider.
-            if k ~= EllesmereUI.BLIZZARD_FONT_KEY then
+            if k ~= EllesmereUI.BLIZZARD_FONT_KEY and k ~= chatKey then
                 if k ~= "---" or nameFontOrder[#nameFontOrder] ~= "---" then
                     nameFontOrder[#nameFontOrder + 1] = k
                 end

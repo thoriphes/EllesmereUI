@@ -40,31 +40,11 @@ ns._PV_NAMES = {
     "Ashvane", "Tormund", "Ravynne", "Zulkhar", "Brightwing",
     "Fenwick", "Dawnforge", "Nighthollow", "Stormhelm", "Embertide",
 }
--- EUI LEGENDS event roster (PERMANENT): the event winners + team members who
--- earned a spot on the raid preview, with class-balancing filler names.
--- Preview slot 1 is always the player; entries 1-19 fill slots 2-20. Name,
--- class and role travel together through the role sort (ns._pvNames).
-ns._PV_ROSTER = {
-    { name = "Xeno",          class = "MONK",        role = "TANK" },
-    { name = "Grimjaw",       class = "WARRIOR",     role = "TANK" },
-    { name = "Stickymittens", class = "PALADIN",     role = "HEALER", hpal = true },
-    { name = "Toxik",         class = "MONK",        role = "HEALER" },
-    { name = "Delasteve",     class = "PALADIN",     role = "HEALER", hpal = true },
-    { name = "Burne",         class = "DRUID",       role = "HEALER" },
-    { name = "Lily",          class = "PALADIN",     role = "HEALER", hpal = true },
-    { name = "Kulia",         class = "PALADIN",     role = "HEALER", hpal = true },
-    { name = "Thiaspriest",   class = "PRIEST",      role = "DAMAGER" },
-    { name = "Pelleas",       class = "SHAMAN",      role = "DAMAGER" },
-    { name = "Khardi",        class = "HUNTER",      role = "DAMAGER" },
-    { name = "Morgath",       class = "DEATHKNIGHT", role = "DAMAGER" },
-    { name = "Drakmoor",      class = "DEMONHUNTER", role = "DAMAGER" },
-    { name = "Embertide",     class = "EVOKER",      role = "DAMAGER" },
-    { name = "Elyndra",       class = "MAGE",        role = "DAMAGER" },
-    { name = "Fenwick",       class = "ROGUE",       role = "DAMAGER" },
-    { name = "Zulkhar",       class = "WARLOCK",     role = "DAMAGER" },
-    { name = "Luneth",        class = "DRUID",       role = "DAMAGER" },
-    { name = "Stormhelm",     class = "SHAMAN",      role = "DAMAGER" },
-}
+-- EUI LEGENDS event roster (the parent's EllesmereUI.PREVIEW_ROSTER, shared with
+-- Group Finder's settings preview). Preview slot 1 is always the player; entries
+-- 1-19 fill slots 2-20. Name, class and role travel together through the role
+-- sort (ns._pvNames).
+ns._PV_ROSTER = EllesmereUI.PREVIEW_ROSTER
 ns._PV_DISPEL_DB_ICONS = {
     Magic = 135735, Curse = 132291, Disease = 237535, Poison = 132106, [""] = 4547635,
 }
@@ -78,25 +58,19 @@ ns._pvActiveAuras = {}
 -- which runs them all.
 -- broken: true while an EUI_RaidFrames_Preview*.lua file loads; a file that
 -- fails leaves it set, and the files behind it return at their first lines.
-ns._previewInternals = {
+EllesmereUI.NewInternals(ns, "_previewInternals", {
     -- Created here: files that load ahead of CreatePreviewFrame and
     -- BuildPreviewRoles read them too.
     previewFrames = {},
     previewClassTokens = {}, -- [1..20] class token per slot
     previewActiveSetters = {}, previewContainerSetters = {},
-    broken = false,
-}
--- Set<Name> hands a new value to every copy registered in <name>Setters.
-for setter, listName in pairs({
+}, {
     SetPreviewActive = "previewActiveSetters", SetPreviewContainer = "previewContainerSetters",
-}) do
-    local list = ns._previewInternals[listName]
-    ns._previewInternals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
+})
+-- The main chain's visibility passes read the raid preview's state as this plain
+-- field (as the party preview's ns._partyPvActive), never a preview function: a
+-- preview file that fails to load must not leave them a nil call.
+do
+    local list = ns._previewInternals.previewActiveSetters
+    list[#list + 1] = function(v) ns._raidPvActive = v end
 end
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._previewInternals, { __index = function(_, k)
-    error("ns._previewInternals has no entry " .. tostring(k), 2)
-end })

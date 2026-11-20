@@ -15,7 +15,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --    - Copy Chat button + session history (own message store)
 -------------------------------------------------------------------------------
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.PadGamepadUI) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 local EUI = _G.EllesmereUI
@@ -136,6 +136,7 @@ local CHAT_DEFAULTS = {
             idleFadeDelay = 15,
             idleFadeStrength = 40,
             idleFadeEnabled = true,
+            idleFadeWake = {},  -- extra wake groups by key (IDLE_WAKE_GROUPS); empty = player chat only
             inputOnTop = false,
             -- Style page (reload-gated): Blizzard Style / Classic WoW UI
             useBlizzardStyle = false,
@@ -149,6 +150,7 @@ local CHAT_DEFAULTS = {
             abbreviateChannels = true,  -- same key as live: saved settings carry over
             abbreviateChannelLetters = false,  -- world channels as letters (Ge, T, LD, WD, LFG) instead of their numbers
             classColorNames = true,
+            classColorChatter = true,  -- the sender's name keeps the game's class colors (read ~= false)
             hideSidebarBg = false,
             sidebarIconScale = 1.0,
             sidebarIconSpacing = 10,
@@ -773,8 +775,32 @@ end
 -- module never writes the per-type storage (SetChatColorNameByClass) in
 -- either direction.
 function ECHAT.ApplyClassColorNames(on)
+    ECHAT._ccnApplied = on == true
     if ECHAT.EngineSetClassColorNames then
         ECHAT.EngineSetClassColorNames(on == true)
+    end
+end
+
+-- Class-colored SENDER names (Name of Chatter, classColorChatter, on unless
+-- false). On, the game's own class coloring stands, untouched. Off holds the
+-- game's chatClassColorOverride at "1" (never class colored, whatever the
+-- per-chat-type settings say), and on again hands back the value it found,
+-- kept account-wide like the CVar (EllesmereUIDB.chatClassColorWas; the
+-- recorder in EllesmereUI_Uninstall.lua puts it back with the module off or
+-- at Uninstall). The game reads the CVar per line, so only new lines change.
+local CHATTER_CVAR = "chatClassColorOverride"
+function ECHAT.ApplyChatterClassColor()
+    local db = EllesmereUIDB
+    if not db then return end
+    local cfg = ECHAT.DB()
+    local cur = C_CVar.GetCVar(CHATTER_CVAR)
+    if cfg and cfg.classColorChatter == false then
+        if db.chatClassColorWas == nil then db.chatClassColorWas = cur or false end
+        if cur and cur ~= "1" then EllesmereUI.HoldCVar(CHATTER_CVAR, "1", "EllesmereUIChat") end
+    elseif db.chatClassColorWas ~= nil then
+        local was = db.chatClassColorWas
+        db.chatClassColorWas = nil
+        if was and cur ~= was then EllesmereUI.ReleaseCVar(CHATTER_CVAR, was, "EllesmereUIChat") end
     end
 end
 
@@ -972,6 +998,20 @@ function ECHAT._PositionChatPanelNow(cf)
         -- the user dropped it. Costs nothing when healthy -- this branch is
         -- the existing nil-rect early-out.
         if cf ~= _G.ChatFrame1 and not cf.isDocked and cf:IsShown()
+            and cf:GetNumPoints() == 0 and not d._cfWasDocked and d._cfL
+            and _G.MOVING_CHATFRAME ~= cf then
+            -- Resize grip drag (never sets MOVING_CHATFRAME) strips points every frame:
+            -- pin the last top-left so the window grows instead of jumping.
+            local l0, t0 = d._cfL, d._cfT
+            pcall(cf.SetPoint, cf, "TOPLEFT", UIParent, "BOTTOMLEFT", l0, t0)
+            -- The grip strips that pin again next frame; size stays readable,
+            -- so place the panel from the pinned corner plus the live size.
+            local w, h = cf:GetWidth(), cf:GetHeight()
+            local issec = _G.issecretvalue
+            if w and h and not (issec and (issec(w) or issec(h))) then
+                l, t, r, cb = l0, t0, l0 + w, t0 - h
+            end
+        elseif cf ~= _G.ChatFrame1 and not cf.isDocked and cf:IsShown()
             and cf:GetNumPoints() == 0 then
             local cx, cy = GetCursorPosition()
             local es = cf:GetEffectiveScale()
@@ -987,7 +1027,7 @@ function ECHAT._PositionChatPanelNow(cf)
                 end)
             end
         end
-        return
+        if not (l and t and r and cb) then return end
     end
     -- Secret-gated like every other per-tick rect read (grip doctrine): a
     -- mid-drag or restricted-content rect must never reach the arithmetic
@@ -1269,15 +1309,18 @@ function ECHAT.SyncChatFrameState()
                 and (math.abs(w - sz.w) > 1.5 or math.abs(h - sz.h) > 1.5) then
                 drift = true
             end
-            -- Position drift too (canonical BOTTOMLEFT saves): Edit Mode's
-            -- late writes move the rect as well as resizing it.
-            if not drift and pos.point == "BOTTOMLEFT" and pos.x and pos.y then
+            -- Position drift too: Edit Mode's late writes move the rect as
+            -- well as resizing it.
+            local tx, ty
+            if not drift and ns.ChatSavedLeftBottom then
+                tx, ty = ns.ChatSavedLeftBottom(pos, sz.w, sz.h, cf1s)
+            end
+            if tx then
                 local l, b = cf1s:GetLeft(), cf1s:GetBottom()
                 -- Stock styles clamp against their art's reserve: compare with
                 -- the spot the clamp lets the frame reach, or a position saved
                 -- nearer an edge (the EllesmereUI look clamps at zero) would
                 -- read as drift on every pass and never converge.
-                local tx, ty = pos.x, pos.y
                 if ns.ChatStock() then
                     local il, ir, it, ib = cf1s:GetClampRectInsets()
                     local sw, sh = UIParent:GetWidth(), UIParent:GetHeight()
@@ -1458,7 +1501,11 @@ do
         -- land while the mouse has been in the menu far past the linger, and
         -- the shown/selection watches above must see their results.
         local menuOpen = Menu and Menu.GetManager and Menu.GetManager():IsAnyMenuOpen()
-        if hoverCount == 0 and not editMode and not unlockHold and not menuOpen and GetTime() >= lingerUntil then
+        -- New Window opens a name popup and creates the window on Accept, long
+        -- after the menu closed: stay armed while it is up.
+        local namePopup = StaticPopup_Visible and StaticPopup_Visible("NAME_CHAT")
+        if hoverCount == 0 and not editMode and not unlockHold and not menuOpen and not namePopup
+            and GetTime() >= lingerUntil then
             ECHAT.PositionChatPanelsNow()
             follower:Hide()
         end
@@ -1469,6 +1516,11 @@ do
     -- leak across dock rebuilds.
     function ECHAT.FollowArm()
         hoverCount = hoverCount + 1
+        follower:Show()
+    end
+    -- One-shot wake with the standard linger; an open menu then holds it.
+    function ECHAT.FollowKick()
+        lingerUntil = max(lingerUntil, GetTime() + 4)
         follower:Show()
     end
     function ECHAT.FollowRelease()
@@ -1500,7 +1552,7 @@ end
 -- the copies to start from.
 -- broken: true while an EUI_Chat_*.lua file loads; a file that fails leaves
 -- it set, and the files behind it return at their first lines.
-ns._internals = {
+EllesmereUI.NewInternals(ns, "_internals", {
     _chatAlphaCurrent = _chatAlphaCurrent, _chatFadeFrame = _chatFadeFrame,
     _sidebarFadeAlpha = _sidebarFadeAlpha, _sidebarFadeTarget = _sidebarFadeTarget,
     _sidebarMouseoverLayoutVisible = _sidebarMouseoverLayoutVisible, BG_A = BG_A, BG_B = BG_B,
@@ -1523,10 +1575,7 @@ ns._internals = {
     sidebarFadeFrameSetters = { function(v) _sidebarFadeFrame = v end },
     chatAlphaCurrentSetters = { function(v) _chatAlphaCurrent = v end },
     visChatVisibleSetters = {}, idleFadeActiveSetters = {},
-    broken = false,
-}
--- Set<Name> hands a new value to every copy registered in <name>Setters.
-for setter, listName in pairs({
+}, {
     SetBgR = "bgRSetters", SetBgG = "bgGSetters", SetBgB = "bgBSetters", SetBgA = "bgASetters",
     SetSidebarLayoutVisible = "sidebarLayoutVisibleSetters",
     SetSidebarFadeTarget = "sidebarFadeTargetSetters",
@@ -1534,12 +1583,7 @@ for setter, listName in pairs({
     SetSidebarFadeFrame = "sidebarFadeFrameSetters",
     SetChatAlphaCurrent = "chatAlphaCurrentSetters",
     SetVisChatVisible = "visChatVisibleSetters", SetIdleFadeActive = "idleFadeActiveSetters",
-}) do
-    local list = ns._internals[listName]
-    ns._internals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
-end
+})
 -- The Set<Name> functions this file calls itself (declared above BG_R).
 do
     local I = ns._internals
@@ -1547,8 +1591,3 @@ do
     SetSidebarLayoutVisible, SetSidebarFadeFrame = I.SetSidebarLayoutVisible, I.SetSidebarFadeFrame
     SetSidebarFadeTarget, SetSidebarFadeAlpha = I.SetSidebarFadeTarget, I.SetSidebarFadeAlpha
 end
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._internals, { __index = function(_, k)
-    error("ns._internals has no entry " .. tostring(k), 2)
-end })

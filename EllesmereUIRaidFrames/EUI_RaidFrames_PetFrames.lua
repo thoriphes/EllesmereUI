@@ -24,6 +24,7 @@ local issecretvalue         = issecretvalue
 local CreateFrame           = CreateFrame
 
 local GetFFD, PixelSnap, ResolveHealthTexture = I.GetFFD, I.PixelSnap, I.ResolveHealthTexture
+local GetClassicHealthCurve = I.GetClassicHealthCurve
 
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
@@ -55,7 +56,13 @@ PF.EVENTS = { "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_NAME_UPDATE" }
 PF.PET_OF = { player = "pet" }
 for i = 1, 4 do PF.PET_OF["party" .. i] = "partypet" .. i end
 for i = 1, 40 do PF.PET_OF["raid" .. i] = "raidpet" .. i end
+-- A pet's token -> its owner's.
+PF.OWNER_OF = { pet = "player" }
+for i = 1, 4 do PF.OWNER_OF["partypet" .. i] = "party" .. i end
+for i = 1, 40 do PF.OWNER_OF["raidpet" .. i] = "raid" .. i end
 PF.DEFAULT_BG = { r = 17/255, g = 17/255, b = 17/255 }
+PF.DEF_FILL   = { r = 23/255, g = 172/255, b = 49/255 }
+
 -- Beside Owner pet -> the party frame it sits beside (your own pet has none); header button -> the
 -- style generation it was last styled at; Beside Owner pet -> its preview mouse blocker.
 PF.ownerOf = setmetatable({}, { __mode = "k" })
@@ -65,8 +72,98 @@ PF.pvBlock = setmetatable({}, { __mode = "k" })
 PF.Raw = function()
     return db and db.profile and db.profile.petFrames
 end
--- The painter's Pet Health Color read (one setting for both tabs, off the per-tab view).
-PF.ColorSettings = PF.Raw
+-- The pets' colour settings are one set for both tabs, read off the saved table (never the per-tab
+-- view): Fill Color (healthColorMode, nothing saved until a pick differs from what following the
+-- frames gives), its Custom Color (healthColor), the three gradient stops, and Text Color.
+
+-- The pets draw in Dark Mode while their Fill Color is Dark Mode: picked, or, with nothing picked,
+-- followed from the frames they are styled from (s: those frames' settings).
+PF.Dark = function(s)
+    local raw = PF.Raw()
+    local pick = raw and raw.healthColorMode
+    if pick then return pick == "dark" end
+    return s.healthColorMode == "dark"
+end
+
+-- The Fill Color unpicked pets take beside ctx's frames ("party" or "raid"): Dark Mode with them,
+-- else the pets' own colour. The options show it, and save a pick only where it differs.
+function ns.PF_FollowMode(ctx)
+    local s
+    if ctx == "party" then s = PF.PartySource() else s = ns._scaledProfile or db.profile end
+    return (s and s.healthColorMode == "dark") and "dark" or "custom"
+end
+
+-- The owner's class colour for pet token u (a preview pet, no token, is yours). Plain numbers;
+-- nothing while the class cannot be read.
+PF.OwnerRGB = function(u)
+    local _, ct = UnitClass(u and PF.OWNER_OF[u] or "player")
+    if ct and not issecretvalue(ct) then
+        local cc = ns.EllesmereUI.GetClassColor(ct)
+        if cc then return cc.r, cc.g, cc.b end
+    end
+end
+
+-- Text Color, the pet's name only (the text engine asks through the button's _txName): the owner's
+-- class colour or the custom colour. Nothing while neither is set: the name keeps the Name Color of
+-- the frames the pets are styled from.
+PF.NameRGB = function(u)
+    local raw = PF.Raw()
+    if not raw then return end
+    if raw.textClassColored then return PF.OwnerRGB(u) end
+    local c = raw.customTextColor
+    if c then return c.r, c.g, c.b end
+end
+
+-- The gradient Fill Colors at the unit's current health (the engine evaluates the curve, secret-safe),
+-- at the frames' Fill Opacity a: the full paint and every health tick. The pets keep a curve of
+-- their own (PF.stops), so their stops never rebuild the raid frames' curve.
+PF.stops = {}
+PF.PaintCurve = function(health, u, mode, raw, a)
+    local curve
+    if mode == "classic" then
+        curve = GetClassicHealthCurve()
+    else
+        curve = ns.RF_StopsCurve(PF.stops, raw.dynamicColor0, raw.dynamicColor50, raw.dynamicColor100)
+    end
+    local c = UnitHealthPercent(u, true, curve)
+    if c and c.GetRGB then
+        local r, g, bl = c:GetRGB()
+        health:SetStatusBarColor(r, g, bl, a)
+    end
+end
+
+-- The pets' own fill (FB.PaintBarColor calls it once it has ruled Dark Mode out and reset the fill's
+-- alpha): the picked Fill Color at the frames' Fill Opacity a; nothing picked is the pets' own
+-- colour. Class Color is the owner's. pv: a preview pet's made-up health (0 to 1), which stands in
+-- for the unit.
+PF.Fill = function(b, s, a, pv)
+    local health = b._health
+    local raw = PF.Raw()
+    local mode = raw and raw.healthColorMode
+    if mode == "classic" or mode == "customDynamic" then
+        if not pv then
+            PF.PaintCurve(health, FB.UnitOf(b), mode, raw, a)
+            return
+        end
+        local r, g, bl
+        if mode == "classic" then
+            r, g, bl = ns.RF_ClassicColorAt(pv)
+        else
+            r, g, bl = ns.RF_StopsColorAt(raw.dynamicColor0, raw.dynamicColor50, raw.dynamicColor100, pv)
+        end
+        health:SetStatusBarColor(r, g, bl, a)
+        return
+    end
+    if mode == "class" then
+        local r, g, bl = PF.OwnerRGB(not pv and FB.UnitOf(b) or nil)
+        if r then
+            health:SetStatusBarColor(r, g, bl, a)
+            return
+        end
+    end
+    local c = raw and raw.healthColor or PF.DEF_FILL
+    health:SetStatusBarColor(c.r, c.g, c.b, a)
+end
 
 -- The Party and Raid tabs each keep their own Position, Extra Width/Height, Free Move spot and Free
 -- Move Growth Direction. A tab reads the shared key until it sets its own: a view over the saved
@@ -364,10 +461,11 @@ end
 -- map: the unit -> button map the button keeps itself in (none for your own Beside Owner pet).
 PF.StyleButton = function(b, map)
     b:RegisterForClicks("AnyUp")
-    b:SetAttribute("*type1", "target")
+    ns.EllesmereUI.SetLeftClickTarget(b)
     -- The engine gates SecureUnitButton's togglemenu; route right-click through a SecureActionButton proxy so the menu works without taint.
     EllesmereUI.AttachSecureUnitMenu(b)
-    FB.BuildVisuals(b)
+    FB.BuildVisuals(b, true)
+    FB.txs[b]._txName = PF.NameRGB
 
     b:HookScript("OnShow", function(self)
         PF.visCount = (PF.visCount or 0) + 1
@@ -435,7 +533,7 @@ end
 PF.StyleHeaderButton = function(b)
     if not PF.w then return end
     local s = PF.StyleSource()
-    FB.StyleVisuals(b, s, PF.w, PF.h, ResolveHealthTexture(s), s.customBgColor or PF.DEFAULT_BG)
+    FB.StyleVisuals(b, s, PF.w, PF.h, ResolveHealthTexture(s), s.customBgColor or PF.DEFAULT_BG, PF.Dark(s))
     PF.styledGen[b] = PF.styleGen
 end
 
@@ -443,7 +541,7 @@ end
 -- its own), plus the UI scale its pixel-sized borders follow, gathered into a reused list, so a
 -- reload that changed none of them leaves the pets' fonts, textures and borders alone. The hover and
 -- target borders are painted, not styled.
-PF.STYLE_N = 37
+PF.STYLE_N = 27 + ns.RF_TEXT_STYLE_N
 PF.fp = {}
 PF.fpNew = {}
 PF.StyleInputs = function(t, s, texPath)
@@ -452,17 +550,17 @@ PF.StyleInputs = function(t, s, texPath)
     t[1], t[2], t[3], t[4], t[5] = bgc.r, bgc.g, bgc.b, s.bgDarkness, texPath
     t[6], t[7] = s.healthVerticalFill, s.healthBarOpacity
     t[8], t[9] = EllesmereUI.GetFontPath("raidFrames"), EllesmereUI.GetFontOutlineFlag("raidFrames")
-    t[10], t[11], t[12] = s.nameSize, s.healthTextSize, s.healAbsorbTextSize
-    t[13], t[14], t[15] = s.namePosition, s.nameOffsetX, s.nameOffsetY
-    t[16], t[17], t[18] = s.healthTextPosition, s.healthTextOffsetX, s.healthTextOffsetY
-    t[19], t[20], t[21] = s.healAbsorbTextPosition, s.healAbsorbTextOffsetX, s.healAbsorbTextOffsetY
-    t[22], t[23], t[24], t[25], t[26] = s.borderSize, bc and bc.r, bc and bc.g, bc and bc.b, s.borderAlpha
-    t[27], t[28], t[29] = s.borderTexture, s.borderSizePx, s.borderBehind
-    t[30], t[31] = s.borderTextureOffset, s.borderTextureOffsetY
-    t[32], t[33] = s.borderTextureShiftX, s.borderTextureShiftY
-    t[34] = UIParent:GetEffectiveScale()
-    t[35] = s.healthInvertFill
-    t[36], t[37] = s.cornerRadius, s.cornerMask
+    t[10], t[11], t[12], t[13], t[14] = s.borderSize, bc and bc.r, bc and bc.g, bc and bc.b, s.borderAlpha
+    t[15], t[16], t[17] = s.borderTexture, s.borderSizePx, s.borderBehind
+    t[18], t[19] = s.borderTextureOffset, s.borderTextureOffsetY
+    t[20], t[21] = s.borderTextureShiftX, s.borderTextureShiftY
+    t[22] = UIParent:GetEffectiveScale()
+    t[23] = s.healthInvertFill
+    t[24], t[25] = s.cornerRadius, s.cornerMask
+    -- The texts: the plan signature, then offsets and size of each (t[26] on).
+    ns.RF_TextStyleInputs(t, 25, s)
+    t[PF.STYLE_N - 1] = s.textureBg  -- Textured Background
+    t[PF.STYLE_N] = PF.Dark(s)  -- Dark Mode background
 end
 
 -- True when the inputs differ from the ones last styled under key ("hdr": the header, "owner": the
@@ -525,7 +623,7 @@ PF.EnsureBuilt = function()
         hdr:SetAttribute("columnAnchorPoint", "LEFT")
         PF.container = hdr
         -- Switched on with a preview up: dim it like the other real frames.
-        if ns.previewActive() or ns._partyPvActive then ns._SetRealFramesPreviewHidden(true) end
+        if ns._raidPvActive or ns._partyPvActive then ns._SetRealFramesPreviewHidden(true) end
     end
     if not hdr[cap] then
         local hider = PF.hider
@@ -560,7 +658,16 @@ end
 -- Per-event slices of the full paint (PF.Refresh): health events repaint the health value and texts,
 -- name events the name, range updates the range fade.
 PF.PaintHealth = function(b, u)
-    if UnitExists(u) then FB.PaintHealth(b, u, FB.Source(b)) end
+    if not UnitExists(u) then return end
+    local s = FB.Source(b)
+    FB.PaintHealth(b, u, s)
+    -- The gradient Fill Colors follow the health, so every tick recolours them (a picked mode, so
+    -- the pets are not drawing dark).
+    local raw = PF.Raw()
+    local mode = raw and raw.healthColorMode
+    if mode == "classic" or mode == "customDynamic" then
+        PF.PaintCurve(b._health, u, mode, raw, (s.healthBarOpacity or 100) / 100)
+    end
 end
 PF.PaintName = function(b, u)
     if UnitExists(u) then FB.PaintName(b, u, FB.Source(b)) end
@@ -758,6 +865,8 @@ PF.Geometry = function(ctx)
     end
     w = PixelSnap(math.max(10, w + (v.extraWidth or 0)))
     h = PixelSnap(math.max(10, h + (v.extraHeight or 0)))
+    -- Same grid as FB.FreePin: the pet header's own scale.
+    sp = EllesmereUI.PP.SnapForES(sp, (PF.container or UIParent):GetEffectiveScale())
     return w, h, sp, unitGrowth, groupGrowth
 end
 
@@ -824,9 +933,10 @@ PF.OwnerLayout = function(restyle)
     end
     if restyled then
         local bgc = s.customBgColor or PF.DEFAULT_BG
+        local dark = PF.Dark(s)
         for _, b in ipairs(PF.ownerButtons) do
             b:SetSize(w, h)
-            FB.StyleVisuals(b, s, w, h, texPath, bgc)
+            FB.StyleVisuals(b, s, w, h, texPath, bgc, dark)
         end
     elseif resized then
         for _, b in ipairs(PF.ownerButtons) do
@@ -1106,7 +1216,7 @@ end
 
 PF.FreeAnchor = function(c, set)
     local corner, x, y = PF.FreeCorner(set, PF.Ctx())
-    FB.Pin(c, corner, UIParent, "CENTER", x, y)
+    FB.FreePin(c, corner, x, y)
     return true
 end
 
@@ -1126,7 +1236,7 @@ end
 PF.PlaceMover = function(m, set)
     local corner, x, y, w, h = PF.FreeCorner(set, PF.moverCtx or PF.Ctx())
     m:SetSize(w, h)
-    m:SetPoint(corner, UIParent, "CENTER", x, y)
+    FB.FreePin(m, corner, x, y)
 end
 
 PF.SaveFreeRect = function(mover)
@@ -1172,24 +1282,15 @@ PF.PvStyle = function()
     return PF.pvStyle
 end
 
--- One preview pass's shared paint values (reused table). Pets have no class: a class colour mode
--- reads white.
+-- One preview pass's shared paint values (reused table). The texts are the frame's texts (no
+-- class for pets: a class colour mode reads white).
 PF.pvc = {}
 PF.PvColors = function(s)
     local c = PF.pvc
     PF.pvStyle = s
     c.texPath = ResolveHealthTexture(s)
     c.bgc = s.customBgColor or PF.DEFAULT_BG
-    local raw = PF.Raw()
-    c.hc = raw and raw.healthColor
-    c.opacity = (s.healthBarOpacity or 100) / 100
-    c.nr, c.ng, c.nb = ns.RF_PreviewTextColor(s.nameColorMode or "class", s.nameCustomColor, nil, 1, 1, 1)
-    c.tr, c.tg, c.tb = ns.RF_PreviewTextColor(s.healthTextColorMode or "custom",
-        s.healthTextCustomColor, nil, 1, 1, 1)
-    c.ar, c.ag, c.ab = ns.RF_PreviewTextColor(s.healAbsorbTextColorMode or "custom",
-        s.healAbsorbTextCustomColor, nil, 1, 0.3, 0.3)
-    c.mode = s.healthTextMode or "none"
-    c.haMode = s.healAbsorbTextMode or "none"
+    c.dark = PF.Dark(s)
     return c
 end
 
@@ -1198,7 +1299,7 @@ PF.PvFrame = function(i, parent, s, w, h, c, grouped)
     local f = PF.pv[i]
     if not f then
         f = CreateFrame("Frame", nil, parent)
-        FB.BuildVisuals(f)
+        FB.BuildVisuals(f, true)
         FB.src[f] = PF.PvStyle
         PF.pv[i] = f
     elseif f:GetParent() ~= parent then
@@ -1211,24 +1312,24 @@ PF.PvFrame = function(i, parent, s, w, h, c, grouped)
         d = GetFFD(f)
         d._petGroupedPreview, d._petPreviewParty = true, ns._partyPvActive == true
     elseif d then d._petGroupedPreview = nil end
-    FB.StyleVisuals(f, s, w, h, c.texPath, c.bgc)
+    FB.StyleVisuals(f, s, w, h, c.texPath, c.bgc, c.dark)
 
     local pet = PF.PV_PETS[i]
     local pct = pet.hp
-    local hc = c.hc
     f._health:SetMinMaxValues(0, 100)
     -- pet.hp is a made-up plain number (PF.PV_PETS), so it is flipped here for an
     -- inverted fill (the _euiInv stamp FB.StyleVisuals just left).
     f._health:SetValue(f._health._euiInv and (100 - pct) or pct)
-    f._health:SetStatusBarColor(hc and hc.r or 23/255, hc and hc.g or 172/255, hc and hc.b or 49/255, c.opacity)
-    f._nameText:SetText(pet.name)
-    f._nameText:SetTextColor(c.nr, c.ng, c.nb)
-    -- Made-up health (3000 per percent) and a heal absorb of a quarter of it, in the raid preview's
-    -- proportions.
-    ns.RF_HealthTextInto(f._healthText, c.mode, pct, nil, 3000)
-    f._healthText:SetTextColor(c.tr, c.tg, c.tb, 0.9)
-    ns.FormatHealAbsorbInto(f._healAbsorbText, pct * 750, c.haMode)
-    f._healAbsorbText:SetTextColor(c.ar, c.ag, c.ab, 0.9)
+    -- The fill as the real pets paint it (the Dark Mode palette, or their Fill Color at this health).
+    FB.PaintBarColor(f, PF, s, pct / 100)
+    -- The texts with the boss/pet rules: made-up health (3000 per percent) and a heal absorb
+    -- of a quarter of it, in the raid preview's proportions.
+    local st = FB.txs[f]
+    local pv = st._txPv or {}
+    pv.hpPct, pv.hpPer, pv.ha, pv.name = pct, 3000, pct * 750, ns.CapName(pet.name, s)
+    -- The name in the pets' Text Color, as on the real pets (a preview pet is yours).
+    pv.nr, pv.ng, pv.nb = PF.NameRGB()
+    ns.RF_TextPreview(st, s, pv)
     f:Show()
     return f
 end

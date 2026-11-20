@@ -225,14 +225,18 @@ local function ShowCopyPopup(text)
             if not popup:IsMouseOver() then dimmer:Hide() end
         end)
 
-        -- SetPropagateKeyboardInput is protected in combat: always pcall it.
-        popup:EnableKeyboard(true)
+        -- SetPropagateKeyboardInput is blocked in combat on every frame (a pcall
+        -- does not stop the block): the shared popup keyboard takes the keys out
+        -- of combat only, and in combat the popup stands aside (its focused edit
+        -- box still closes it on Escape).
+        EUI.PopupTakeKeys(popup, dimmer)
         popup:SetScript("OnKeyDown", function(self, key)
+            if InCombatLockdown() then return end
             if key == "ESCAPE" then
-                pcall(self.SetPropagateKeyboardInput, self, false)
+                self:SetPropagateKeyboardInput(false)
                 dimmer:Hide()
             else
-                pcall(self.SetPropagateKeyboardInput, self, true)
+                self:SetPropagateKeyboardInput(true)
             end
         end)
 
@@ -341,7 +345,7 @@ local function ShowUrlPopup(url)
         hint:SetFont(GetFont(), 8, "")
         hint:SetTextColor(1, 1, 1, 0.5)
         hint:SetPoint("TOP", urlPopup, "TOP", 0, -6)
-        hint:SetText("Ctrl+C to copy, Escape to close")
+        hint:SetText(EllesmereUI.L("Ctrl+C to copy, Escape to close"))
 
         local eb = CreateFrame("EditBox", nil, urlPopup)
         eb:SetSize(300, 16)

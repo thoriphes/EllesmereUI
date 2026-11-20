@@ -2,7 +2,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 --  EllesmereUIBags.lua -- Enhanced Bags System for EllesmereUI (Midnight): sidebar category filter + flat item grid layout.
 -------------------------------------------------------------------------------
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue and EllesmereUI.CreateQuantityDialog) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the stack splitter is the parent's quantity window)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.CreateQuantityDialog and EllesmereUI.ReleaseStaleHold and EllesmereUI.ForeverLookMajority and EllesmereUI.ForeverHeavyOK and EllesmereUI.ForeverHeavy and EllesmereUI.ForeverHeavySeat and EllesmereUI.ForeverHeavyTitle and EllesmereUI.ForeverBorder and EllesmereUI.ForeverBorderSeat and EllesmereUI.ForeverBorderPaint and EllesmereUI.CharData and EllesmereUI.CharGUID and EllesmereUI.ShowIconPicker) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the stack splitter is the parent's quantity window; ReleaseStaleHold / DropHold, the sort's sound effects mute; the WoW Forever style draws the parent's Forever frames and follows its look majority; its per-character data is in the parent's roster: CharData, CharGUID; Change Icon opens the parent's icon picker: ShowIconPicker)
 local ns = select(2, ...)
 EllesmereUI._ModuleNS["EllesmereUIBags"] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
@@ -11,7 +11,7 @@ EUI_Bags = CreateFrame("Frame", "EUI_MainBagFrame", UIParent)
 EUI_Bags:SetToplevel(true)
 EUI_Bags:Hide()
 -- Auto-size state: reset on close (next open sizes from its first/active tab);
--- while open it only grows, never shrinks.
+-- while open it only grows, and shrinks too with Auto-Size's Shrink on.
 EUI_Bags:HookScript("OnHide", function(self)
     -- WoW Forever and the Compact display size every open to its content: a hidden UI (Alt-Z) is not a close, keep the size.
     if (EllesmereUI.IS_FOREVER or EUI_Bags.IsCompactMode()) and self:IsShown() then return end
@@ -34,7 +34,7 @@ local IsEquippableItem = C_Item.IsEquippableItem
 
 -- Red-tint usability test (shared with the bank module via EUI). Tooltip must come from
 -- the real item, never GetItemByID: scaling gear's bonus IDs lower its required level, but
--- GetItemByID shows the unscaled base item's level (reads red). Prefer bag slot > link > ID; cache by link, wipe on level-up.
+-- GetItemByID shows the unscaled base item's level (reads red). Prefer bag slot > link > ID; cache by link, cleared on a level-up or a skill change.
 local _canUseCache = {}
 local ITEM_CLASS_RECIPE = Enum.ItemClass.Recipe
 local function BagsItemUnusable(bagID, slot, itemLink, itemID)
@@ -100,14 +100,29 @@ do
     local f = CreateFrame("Frame")
     f:RegisterEvent("PLAYER_LEVEL_UP")
     f:RegisterEvent("PLAYER_LEVEL_CHANGED")
-    f:SetScript("OnEvent", function() wipe(_canUseCache) end)
+    -- A skill rank gates recipes and some items without a level change.
+    f:RegisterEvent("SKILL_LINES_CHANGED")
+    f:SetScript("OnEvent", function(_, event)
+        if event == "SKILL_LINES_CHANGED" and InCombatLockdown() then
+            -- A rank gained in a fight (weapon and defense skill, by the dozen while
+            -- leveling) can only make an item usable: the unusable answers alone go.
+            for item, unusable in pairs(_canUseCache) do
+                if unusable then _canUseCache[item] = nil end
+            end
+            return
+        end
+        wipe(_canUseCache)
+    end)
 end
 -- WoW Forever: the player's bags (1-4) that hold one kind of item only --
 -- quivers, ammo pouches, soul, herb and enchanting bags, by their non-zero bag
 -- family. Like the reagent bag they get their own category and sections and
 -- stay out of Main Bags, the header count, OneBag's sort, Auto Split and drop
 -- placement. nil on retail or with none equipped; the next call reuses the
--- set, so read it right away.
+-- set, so read it right away. A bag in the fifth slot (bag 5) is not in the
+-- set: it keeps the reagent bag's section, sort and split paths, and the
+-- header count leaves out only a quiver, ammo pouch or soul bag there
+-- (families 1, 2, 4; EUI_Bags:RefreshInventory).
 do
     local special = {}
     function ns.SpecialBags()
@@ -119,6 +134,16 @@ do
             if family and family ~= 0 then special[bag] = true; any = true end
         end
         return any and special or nil
+    end
+
+    -- WoW Forever: the bag family of the fifth slot's bag, the one read the
+    -- header count and OneBag's reagent routing share; each applies its own
+    -- rule (the count keeps families 1, 2, 4 out, the routing skips any
+    -- non-zero family). nil on retail.
+    function ns.FifthSlotFamily()
+        if not EllesmereUI.IS_FOREVER then return nil end
+        local _, family = C_Container.GetContainerNumFreeSlots(5)
+        return family
     end
 
     -- Auto Split's target bags for a stack in bag, in order: the reagent bag
@@ -154,6 +179,36 @@ EUI.OnUninstall(function()
     end
 end)
 
+-- Windows of the Auto Open / Auto Close Bags dropdowns. frame: Blizzard's name.
+do
+    local windows = {
+        { key = "merchant", label = "Merchant", frame = "MerchantFrame" },
+        { key = "mail", label = "Mailbox", frame = "MailFrame" },
+        { key = "bank", label = "Bank", frame = "BankFrame" },
+        { key = "auction", label = "Auction House", frame = "AuctionHouseFrame" },
+    }
+    if not EUI.IS_FOREVER then
+        windows[#windows + 1] = { key = "scrapper", label = "Scrapper", frame = "ScrappingMachineFrame" }
+        windows[#windows + 1] = { key = "itemInteraction", label = "Item Interaction", frame = "ItemInteractionFrame" }
+        windows[#windows + 1] = { key = "azerite", label = "Azerite Essences", frame = "AzeriteEssenceUI" }
+    end
+    ns.BAG_AUTO_WINDOWS = windows
+
+    local keyByName = {}
+    for _, w in ipairs(windows) do keyByName[w.frame] = w.key end
+    -- nil for a window not listed
+    function ns.BagAutoWindowKey(frame)
+        local name = frame and frame:GetName()
+        return name and keyByName[name]
+    end
+    -- setting: bagAutoOpenWindows or bagAutoCloseWindows, which hold false for an
+    -- unselected window. A window not listed is always on.
+    function ns.BagAutoWindowOn(setting, key)
+        local t = BP()[setting]
+        return not (key and t and t[key] == false)
+    end
+end
+
 -- Frame Strata: the layer of the bags and the bank. Unset reads the retired
 -- Allow Windows Over Bags toggle (off = High), so its choice carries over.
 function ns.BagFrameStrata()
@@ -182,63 +237,122 @@ function EUI_Bags:ApplyWindowLayering()
     end
     local bank = _G.EUI_BankFrame
     if bank and bank.ApplyWindowLayering then bank:ApplyWindowLayering() end
+    self:RepinIconLevels()
+end
+
+-- Item buttons hold fixed levels (ns.PinItemButton): re-pin them after anything that
+-- can move a window's level, the layering above and every Raise
+function EUI_Bags:RepinIconLevels()
+    local I = ns._bagsInternals
+    ns.PinItemPool(I.itemSlots, self, "_slotPinLevel")
+    ns.PinItemPool(I.reagentSlots, EUI_BagsReagent, "_slotPinLevel")
+    ns.ResyncListRowLevels()
 end
 layerUpdateFrame:SetScript("OnEvent", function() EUI_Bags:ApplyWindowLayering() end)
 
 -- Tracked currencies are PER CHARACTER: their input feed (Blizzard's currency
 -- tab via the TokenFrame.OnTokenWatchChanged sync below) is per-character, so
--- a shared store can only bleed across characters. Stored at the EllesmereUIDB
--- ROOT beside the module's other per-character data (goldLedger,
--- bagPinnedItems, bagItemAssignments), NEVER in the bag profile:
+-- a shared store can only bleed across characters. Stored in the character
+-- roster (EllesmereUI.CharData "bagCurrency"), NEVER in the bag profile:
 -- ApplyProfileData wipes db.profile wholesale on import (would erase every
 -- character's currencies), and profile exports must not ship a character
 -- roster (the PRIVATE_ADDON_KEYS leak class).
-local _bagsCharKey  -- session-constant; UpdateCurrencyDisplays is a render path
-local function BagsCharKey()
-    if not _bagsCharKey then
-        local n, r = UnitName("player"), GetRealmName()
-        if not n or not r then return nil end  -- too early; do not cache a stub
-        _bagsCharKey = n .. " - " .. r
-    end
-    return _bagsCharKey
-end
 
 -- The per-character order table, seeded on this character's first use.
 -- Returns nil only when the DB or the player identity is not up yet (callers
 -- already handle that).
 local function CurrencyOrder()
     if not EllesmereUIDB then return nil end
-    local key = BagsCharKey()
-    if not key then return nil end
-    local byChar = EllesmereUIDB.bagCurrencyByChar
-    if type(byChar) ~= "table" then byChar = {}; EllesmereUIDB.bagCurrencyByChar = byChar end
-    local t = byChar[key]
-    if type(t) ~= "table" then
-        t = {}
-        -- Seed once per character from the legacy shared profile table. The
-        -- legacy table is deliberately never deleted: a per-character
-        -- migration is never a one-shot (a character that has not logged in
-        -- yet still seeds from it later), and nothing writes it any more.
-        local legacy = BP().currencyOrder
-        if type(legacy) == "table" then
-            for cID, order in pairs(legacy) do
-                if type(order) == "number" then t[cID] = order end
-            end
+    local t = EllesmereUI.CharData("bagCurrency")
+    if t then return t end
+    t = EllesmereUI.CharData("bagCurrency", true)
+    if not t then return nil end
+    -- Seed once per character from the legacy shared profile table. The
+    -- legacy table is deliberately never deleted: a per-character
+    -- migration is never a one-shot (a character that has not logged in
+    -- yet still seeds from it later), and nothing writes it any more.
+    local legacy = BP().currencyOrder
+    if type(legacy) == "table" then
+        for cID, order in pairs(legacy) do
+            if type(order) == "number" then t[cID] = order end
         end
-        byChar[key] = t
     end
     return t
 end
 EUI._BagsCurrencyOrder = CurrencyOrder
 
--- Default bag-type view ("all"|"onebag"|"multibag"), falling back to legacy
--- bagDefaultOneBag bool (imports converted in ApplyProfileData before DeepMergeDefaults masks it); exposed on EUI so bank file matches.
+-- The pin table in use. Each character has its own (Pins per Character, on
+-- unless EllesmereUIDB.bagPinsPerCharacter is false): EllesmereUI.CharData
+-- "bagPinned". A character reads the shared
+-- pins (bagPinnedItems) until its first pin or unpin, which copies them into
+-- its own table; after that the shared pins are neither read nor written for
+-- it. With the option off every character reads and writes the shared pins,
+-- and the copies stay as they are for when it is turned on again.
+-- create: a pin action is about to write. nil then means there is no table
+-- to write (the character's identity is not readable yet): callers skip.
+local function PinnedItems(create)
+    local db = EllesmereUIDB
+    if not db then return nil end
+    if db.bagPinsPerCharacter == false then
+        if create and not db.bagPinnedItems then db.bagPinnedItems = {} end
+        return db.bagPinnedItems
+    end
+    local own = EllesmereUI.CharData("bagPinned")
+    if own then return own end
+    if not create then return db.bagPinnedItems end
+    own = EllesmereUI.CharData("bagPinned", true)
+    if not own then return nil end
+    local shared = db.bagPinnedItems
+    if type(shared) == "table" then
+        for k, v in pairs(shared) do own[k] = v end
+    end
+    return own
+end
+ns.PinnedItems = PinnedItems
+
+-- The three bag views at the top of the sidebar, in their order, and the
+-- selection index of each (selectedCategoryIndex while no group is open).
+local BAG_VIEWS = { "all", "onebag", "multibag" }
+local BAG_VIEW_INDEX = { all = 0, onebag = -1, multibag = -2 }
+
+-- A view's sidebar row shows unless the sidebar's views menu hid it
+-- (bagHiddenViews: { all = true, onebag = true, multibag = true }, sparse, a
+-- shown view absent; in no defaults table). One of the three always shows: a
+-- profile that marks all three shows All Items.
+local function BagViewShown(key)
+    local hidden = BP().bagHiddenViews
+    if type(hidden) ~= "table" or hidden[key] ~= true then return true end
+    return key == "all" and hidden.onebag == true and hidden.multibag == true
+end
+-- The same by selection index: false only for a view whose row is hidden
+local function BagViewIndexShown(idx)
+    for i = 1, #BAG_VIEWS do
+        local key = BAG_VIEWS[i]
+        if BAG_VIEW_INDEX[key] == idx then return BagViewShown(key) end
+    end
+    return true
+end
+
+-- The view the bags open on ("all"|"onebag"|"multibag"): the Default Selected
+-- Bag (bagDefaultBagType, else the legacy bagDefaultOneBag bool, which imports
+-- convert in ApplyProfileData before DeepMergeDefaults masks it) while its
+-- sidebar row shows, else the first view that shows, in the order above. The
+-- setting itself is never written here. Exposed on EUI so the bank file matches.
 local function GetDefaultBagType()
-    local v = BP().bagDefaultBagType
-    if v == "all" or v == "onebag" or v == "multibag" then return v end
-    return BP().bagDefaultOneBag and "onebag" or "all"
+    local p = BP()
+    local v = p.bagDefaultBagType
+    if v ~= "all" and v ~= "onebag" and v ~= "multibag" then
+        v = p.bagDefaultOneBag and "onebag" or "all"
+    end
+    if p.bagHiddenViews == nil or BagViewShown(v) then return v end
+    for i = 1, #BAG_VIEWS do
+        if BagViewShown(BAG_VIEWS[i]) then return BAG_VIEWS[i] end
+    end
+    return "all"
 end
 EUI._GetBagDefaultType = GetDefaultBagType
+-- Its selection index: where the bags go when the open view or category goes
+function ns.OpenBagViewIndex() return BAG_VIEW_INDEX[GetDefaultBagType()] end
 
 -- Bag display mode ("grid" | "list" | "compact"), latched on the first read
 -- after the profile loads: switching needs a reload, so only one mode ever
@@ -264,12 +378,32 @@ end
 function EUI_Bags.AutoSizeOn()
     return BP().bagAutoSize == true and not EUI_Bags.IsListMode()
 end
+-- Auto-Size's height cap in the bag window's own scale: the Max Height share of
+-- the screen (Auto-Size cog, bagAutoSizeMaxPct), 95% when unset or screenOnly.
+-- The second return is true when the player's Max Height applies, so it also
+-- wins over the normal-size floor.
+function EUI_Bags.AutoSizeMaxH(screenOnly)
+    local sc = EUI_Bags:GetScale(); if not sc or sc <= 0 then sc = 1 end
+    local pct = not screenOnly and BP().bagAutoSizeMaxPct or nil
+    return (UIParent:GetHeight() / sc) * (pct or 95) / 100, pct ~= nil
+end
+-- Auto-Size's Shrink (its cog): the window follows the active tab down as well
+-- as up while open. Off: columns and height keep their running max until close.
+-- Takes the new size and the running max (nil before the first refresh). WoW
+-- Forever's content fit without Auto-Size stays grow-only.
+function EUI_Bags.AutoSizeNext(size, runningMax)
+    if not runningMax or (BP().bagAutoSizeShrink == true and EUI_Bags.AutoSizeOn()) then return size end
+    return math.max(runningMax, size)
+end
 
 local function ApplyBagScale()
     local s = BP().bagScale or 1
     if EUI_Bags then EUI_Bags:SetScale(s) end
     if EUI_BagsReagent then EUI_BagsReagent:SetScale(s) end
     if EUI_BagsWindow then EUI_BagsWindow:SetScale(s) end
+    -- WoW Forever's keyring popup, once it has been opened (EUI_Bags_Keyring.lua)
+    local keyring = EUI_Bags and EUI_Bags._keyringWin
+    if keyring then keyring:SetScale(s) end
 end
 
 -- Locale-safe gear detection: GetItemInfo type strings are localized ("Armor" only on enUS), so use GetItemInfoInstant's numeric classID.
@@ -391,32 +525,47 @@ end
 -- them all.
 -- broken: true while an EUI_Bags_*.lua file loads; a file that fails leaves
 -- it set, and the files behind it return at their first lines.
-ns._bagsInternals = {
+EllesmereUI.NewInternals(ns, "_bagsInternals", {
     _bankRouted = _bankRouted, AbbrevDungeon = AbbrevDungeon, ApplyBagScale = ApplyBagScale,
+    BAG_VIEW_INDEX = BAG_VIEW_INDEX, BAG_VIEWS = BAG_VIEWS, BagViewShown = BagViewShown,
+    BagViewIndexShown = BagViewIndexShown,
     BagsItemUnusable = BagsItemUnusable, BP = BP, CurrencyOrder = CurrencyOrder,
     GetAccentRGB = GetAccentRGB, GetCatTitleSize = GetCatTitleSize, GetColumns = GetColumns,
     GetDefaultBagType = GetDefaultBagType, GetFont = GetFont,
     GetItemLevelAtLocation = GetItemLevelAtLocation, IsGearItem = IsGearItem,
-    IsItemPinned = IsItemPinned, NormalizePinKey = NormalizePinKey, SetBagFont = SetBagFont,
-    SLOT_SIZE = SLOT_SIZE, SPACING = SPACING,
+    IsItemPinned = IsItemPinned, NormalizePinKey = NormalizePinKey, PinnedItems = PinnedItems,
+    SetBagFont = SetBagFont, SLOT_SIZE = SLOT_SIZE, SPACING = SPACING,
     categoryIndexSetters = {}, groupNameSetters = {}, gearCatSetSetters = {},
-    anyItemPanelOpenSetters = {}, paintedPanelOpenSetters = {},
-    broken = false,
-}
--- Set<Name> hands a new value to every copy registered in <name>Setters.
-for setter, listName in pairs({
+    anyItemPanelOpenSetters = {}, paintedPanelOpenSetters = {}, slotMetricSetters = {},
+}, {
     SetSelectedCategoryIndex = "categoryIndexSetters",
     SetSelectedGroupName = "groupNameSetters", SetGearCatSet = "gearCatSetSetters",
     SetAnyItemPanelOpen = "anyItemPanelOpenSetters",
     SetPaintedPanelOpen = "paintedPanelOpenSetters",
-}) do
-    local list = ns._bagsInternals[listName]
-    ns._bagsInternals[setter] = function(v)
-        for i = 1, #list do list[i](v) end
-    end
+    SetSlotMetrics = "slotMetricSetters",
+})
+
+-- slot size and spacing come from the profile. each file that lays out slots
+-- keeps its own copy (OnSlotMetrics gets { size, spacing }), and frames made
+-- through SizeSlot get resized on a change
+local slotFrames = setmetatable({}, { __mode = "k" })
+function ns.SizeSlot(f)
+    slotFrames[f] = true
+    f:SetSize(SLOT_SIZE, SLOT_SIZE)
 end
--- A re-import of a name this table lacks fails where the part file loads,
--- not later as a nil upvalue inside one of its functions.
-setmetatable(ns._bagsInternals, { __index = function(_, k)
-    error("ns._bagsInternals has no entry " .. tostring(k), 2)
-end })
+function ns.OnSlotMetrics(fn)
+    local list = ns._bagsInternals.slotMetricSetters
+    list[#list + 1] = fn
+end
+-- both refreshes call this first; a change made in combat waits for the next one
+function ns.ApplySlotMetrics()
+    local p = BP()
+    -- the sliders' ranges: a hand-edited or imported 0 would divide by zero
+    local size = math.min(math.max(tonumber(p.bagSlotSize) or 34, 24), 56)
+    local gap = math.min(math.max(tonumber(p.bagSlotSpacing) or 4, 0), 12)
+    if (size == SLOT_SIZE and gap == SPACING) or InCombatLockdown() then return end
+    SLOT_SIZE, SPACING = size, gap
+    ns.SLOT_SIZE, ns.SPACING = size, gap
+    for f in pairs(slotFrames) do f:SetSize(size, size) end
+    ns._bagsInternals.SetSlotMetrics({ size, gap })
+end

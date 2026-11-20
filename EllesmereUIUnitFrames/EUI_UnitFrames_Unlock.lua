@@ -34,6 +34,7 @@ local function RegisterUFUnlockElements()
             playerCastbar = "Player Frame Mini Cast Bar",
             targetCastbar = "Target Cast Bar",
             focusCastbar = "Focus Cast Bar",
+            petCastbar = "Pet Cast Bar",
         }
         local elements = {}
         local orderBase = 100
@@ -134,20 +135,34 @@ local function RegisterUFUnlockElements()
                     local s = GetSettingsForUnit(unit)
                     if not s then return end
                     local oldW = s.frameWidth
+                    -- The pet, ToT and FoT frames always attach their portrait.
+                    local miniUnit = unit == "pet" or unit == "targettarget" or unit == "focustarget"
                     local wPStyle = s.portraitStyle or db.profile.portraitStyle or "attached"
+                    if miniUnit and wPStyle == "detached" then wPStyle = "attached" end
                     local showPortrait = wPStyle ~= "none" and s.showPortrait ~= false
                     local isAttached = wPStyle == "attached"
                     if showPortrait and isAttached then
-                        local pSizeAdj = s.portraitSize or 0
-                        if not isAttached then pSizeAdj = pSizeAdj + 10 end
+                        -- The portrait's width, as GetFrameDimensions adds it:
+                        -- the one subtraction that gives a reported size back.
+                        local adjPH
                         local powerPos = s.powerPosition or "below"
                         local powerIsAtt = (powerPos == "below" or powerPos == "above")
-                        local ptH = s.healthHeight + (powerIsAtt and (s.powerHeight or 6) or 0)
-                        local adjPH = ptH + pSizeAdj
-                        if adjPH < 8 then adjPH = 8 end
-                        s.frameWidth = math.max(PP.Snap(w - adjPH), 50)
+                        if miniUnit then
+                            -- A mini portrait squares off the bar stack, which
+                            -- only a WoW Forever pet's attached power bar grows
+                            -- (StyleSimpleFrame); Size does not touch it.
+                            local petPowerH = (unit == "pet" and ns.UF_PetHasPower and powerIsAtt) and (s.powerHeight or 6) or 0
+                            adjPH = s.healthHeight + petPowerH
+                        else
+                            local pSizeAdj = s.portraitSize or 0
+                            local ptH = s.healthHeight + (powerIsAtt and (s.powerHeight or 6) or 0)
+                            adjPH = ptH + pSizeAdj
+                            if adjPH < 8 then adjPH = 8 end
+                        end
+                        s.frameWidth = math.max(PP.Snap(w - adjPH), s.healthVerticalFill and 20 or 50)
                     else
-                        s.frameWidth = math.max(PP.Snap(w), 50)
+                        -- Vertical Fill bars are tall and slim (the options' Bar Width goes to 20).
+                        s.frameWidth = math.max(PP.Snap(w), s.healthVerticalFill and 20 or 50)
                     end
                     -- A size match re-applied at the width the frame already has
                     -- (the settle pass re-runs every match after any anchored
@@ -357,6 +372,8 @@ local function RegisterUFUnlockElements()
                     if not s then return true end
                     if ns.VisEffective(s) == "never" then return true end
                     if unitKey == "player" then return not s.showPlayerCastbar end
+                    -- Pet: off by default, and no bar exists until built at login.
+                    if unitKey == "pet" then return s.showCastbar ~= true end
                     return s.showCastbar == false
                 end,
                 getSize = function()
@@ -477,6 +494,9 @@ local function RegisterUFUnlockElements()
         if ns.GetUnitFrameSource("focus") == "eui" then
             elements[#elements + 1] = MakeCastBarElement("focusCastbar", "focus", 12)
         end
+        if ns.GetUnitFrameSource("pet") == "eui" then
+            elements[#elements + 1] = MakeCastBarElement("petCastbar", "pet", 13)
+        end
 
         EllesmereUI:RegisterUnlockElements(elements, "EllesmereUIUnitFrames")
         -- First sighting of each frame's border pad: the login reload ran before
@@ -499,6 +519,7 @@ local function RegisterUFUnlockElements()
                 { cb = "playerCastbar", parent = "player" },
                 { cb = "targetCastbar", parent = "target" },
                 { cb = "focusCastbar",  parent = "focus" },
+                { cb = "petCastbar",    parent = "pet" },
             }
             local cbPositions = db and db.profile and db.profile.positions
             for _, def in ipairs(CB_DEFAULTS) do
