@@ -197,9 +197,11 @@ if EABR.FOREVER then
         camp = false,       -- Camp Benefits reminder; opt-in, it shows whenever the buff is missing
         sleepingBag = false, -- Sleeping Bag reminder; opt-in, below max level with a Cozy Sleeping Bag in the bags
         sleepingBagShowBelow = 0, -- minutes before Well-Rested runs out at which it also shows; 0 = off
+        sleepingBagShowProgress = true, -- Show Sleep Timer: the countdown to three stacks while asleep in the bag; read ~= false
         arcaneCenser = false, -- Arcane Censer reminder; opt-in, in dungeons while a censer is in the bags
         gather = false,     -- gathering tracking reminder; opt-in, it shows while no tracker is up
         gatherClassTrack = true,  -- an active class tracking also hides it
+        hunterTracking = false, -- Hunter: match creature tracking to the current hostile target in combat
         treasure = false,   -- Find Treasure reminder (Dwarf); opt-in, it shows while it is off
         wellFed = false,    -- Well Fed reminder; opt-in, matched by aura name (every food has its own spell ID)
         wellFedShowBelow = 0, -- minutes before the food buff runs out at which it also shows; 0 = off
@@ -282,7 +284,7 @@ function EABR.HandleAppearSounds(missing)
     local primed = EABR._soundPrimed
     for i = 1, #missing do
         local dk = missing[i].dismissKey
-        if dk and not _dismissedUntilLoad[dk] then
+        if dk and not missing[i].hunterTrackingStatus and not _dismissedUntilLoad[dk] then
             cur[dk] = true
             if primed and not prev[dk] then
                 local skey = EABR.ResolveReminderSound(dk)
