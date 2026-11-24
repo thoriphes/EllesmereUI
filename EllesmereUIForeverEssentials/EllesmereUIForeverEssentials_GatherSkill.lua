@@ -7,23 +7,26 @@ if not (EllesmereUI and EllesmereUI.IS_FOREVER) then return end
 --  needs ("Requires Mining (75)") and, when you can gather it, the color of
 --  your chance to raise your skill there, as recipes show it: orange, yellow,
 --  green, grey. The game's red stays when you cannot.
---  minimap (off by default, in the cog): a tracked node's name on the
---  minimap's mouseover tooltip gains its required skill in that color
---  ("Silverleaf (1)"), red when you cannot gather it.
+--  Skinning (off by default, in the toggle's cog): a skinnable corpse's
+--  "Skinnable" line gains the skill it needs, in the same colors, red when
+--  you cannot skin it yet. The need is worked out from the creature's level
+--  (Classic's rule), not read from game data.
 --
---  World object tooltips carry no object ID, so a node is known by its name:
---  a herb node bears its herb's name, read from the herb item in the client's
---  language; an ore node's name comes from the locale files (the game's own
---  names in each language, read through EllesmereUI.L: game data, so never
---  reworded). Required skills: the game's (Classic objects). Nodes WoW
---  Forever added are left as the game shows them until their skill is known.
+--  World object tooltips carry no object ID, so a node is known by its name,
+--  in the client's language whatever the options language. A herb node bears
+--  its herb's name, read from the herb item, except the few some languages
+--  name otherwise (HERB_NODES); those and the ore nodes come from the game
+--  names (EllesmereUI.GameName: game data, never reworded; the client
+--  language's file comes in with this module's TOC). Required skills: the
+--  game's (Classic objects). Nodes WoW Forever added are left as the game
+--  shows them until their skill is known.
 -------------------------------------------------------------------------------
 local _, module = ...
 
 -- Settings live in EllesmereUIDB.gatherSkill; unset keys read these.
-local F = module.Feature("gatherSkill", { enabled = false, minimap = false })
+local F = module.Feature("gatherSkill", { enabled = false, skinning = false })
 
-local HERBALISM, MINING = 182, 186          -- skill lines
+local HERBALISM, MINING, SKINNING = 182, 186, 393  -- skill lines
 local HERBALISM_SPELL, MINING_SPELL = 2366, 2575
 
 -- Herb item ID = the skill its node needs.
@@ -35,7 +38,7 @@ local HERBS = {
     [13466] = 285, [13467] = 290, [13468] = 300,
 }
 
--- Ore node name (English; the locale files hold the others) = the skill it needs.
+-- Ore node name (English; EllesmereUILocales/<code>_GameNames.lua hold the others) = the skill it needs.
 local ORES = {
     ["Copper Vein"] = 1, ["Tin Vein"] = 65, ["Incendicite Mineral Vein"] = 65,
     ["Silver Vein"] = 75, ["Ooze Covered Silver Vein"] = 75, ["Lesser Bloodstone Deposit"] = 75,
@@ -46,33 +49,41 @@ local ORES = {
     ["Ooze Covered Rich Thorium Vein"] = 275, ["Hakkari Thorium Vein"] = 275,
 }
 
--- Localized node name = { skill line, required skill }; built on first use,
--- a herb whose item is not loaded yet added when it loads.
-local nodes, hooked
+-- Herb nodes some languages name unlike their herb (English node name = herb
+-- item ID); their names come from EllesmereUI.GameName.
+local HERB_NODES = {
+    ["Silverleaf"] = 765, ["Mageroyal"] = 785, ["Grave Moss"] = 3369, ["Khadgar's Whisker"] = 3358,
+    ["Firebloom"] = 4625, ["Purple Lotus"] = 8831, ["Gromsblood"] = 8846,
+    ["Mountain Silversage"] = 13465, ["Plaguebloom"] = 13466,
+}
+
+-- Localized node name, as Key writes it = { skill line, required skill };
+-- built on first use, a herb whose item is not loaded yet added when it loads.
+local nodes, hooked, unitHooked
 local missing = {}  -- herb item ID = true while its name is not loaded
 local events = CreateFrame("Frame")
 
--- The minimap's mouseover tooltip is set again every frame the cursor is over
--- the minimap: each line's rewrite is remembered by its text (false: left as
--- is), forgotten when a skill, a herb name or the setting changes.
-local memo, memoN, MEMO_MAX = {}, 0, 500
-local function Forget()
-    wipe(memo)
-    memoN = 0
+-- A node name as the lookup keys it: the client writes some apostrophes
+-- typographic (U+2019) and some straight, and the case of a word can differ.
+local function Key(name)
+    return (name:gsub("\226\128\153", "'"):lower())
 end
 
 local function AddHerb(itemID)
     local name = C_Item.GetItemNameByID(itemID)
     if not name then return false end
-    nodes[name] = { HERBALISM, HERBS[itemID] }
+    nodes[Key(name)] = { HERBALISM, HERBS[itemID] }
     return true
 end
 
 local function Build()
     nodes = {}
     for name, lvl in pairs(ORES) do
-        nodes[EllesmereUI.L(name)] = { MINING, lvl }
-        nodes[name] = { MINING, lvl }
+        nodes[Key(EllesmereUI.GameName(name))] = { MINING, lvl }
+        nodes[Key(name)] = { MINING, lvl }
+    end
+    for name, itemID in pairs(HERB_NODES) do
+        nodes[Key(EllesmereUI.GameName(name))] = { HERBALISM, HERBS[itemID] }
     end
     for itemID in pairs(HERBS) do
         if not AddHerb(itemID) then
@@ -83,14 +94,11 @@ local function Build()
     if next(missing) then events:RegisterEvent("ITEM_DATA_LOAD_RESULT") end
 end
 
-events:SetScript("OnEvent", function(self, event, itemID, success)
-    if event == "SKILL_LINES_CHANGED" then
-        Forget()
-    elseif missing[itemID] then
+events:SetScript("OnEvent", function(self, _, itemID, success)
+    if missing[itemID] then
         -- A herb that failed to load stays as the game shows it.
         if success then AddHerb(itemID) end
         missing[itemID] = nil
-        Forget()
         if not next(missing) then self:UnregisterEvent("ITEM_DATA_LOAD_RESULT") end
     end
 end)
@@ -115,60 +123,13 @@ local function OddsColor(skill, need)
     return 0.5, 0.5, 0.5
 end
 
-local function Hex(r, g, b)
-    return ("|cff%02x%02x%02x"):format(r * 255, g * 255, b * 255)
-end
-
--- A minimap tooltip line rewritten: one name per line inside it (several
--- nodes under the cursor stack up), each known node's name followed by its
--- required skill. false when no name is known.
-local function MinimapLine(text)
-    local out, changed = {}, false
-    for part in (text .. "\n"):gmatch("(.-)\n") do
-        local name = part:gsub("|T.-|t", ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):match("^%s*(.-)%s*$")
-        local node = nodes[name]
-        if node then
-            local skill = Skill(node[1])
-            local color = (skill and skill >= node[2]) and Hex(OddsColor(skill, node[2])) or "|cffff2020"
-            part = ("%s %s(%d)|r"):format(part, color, node[2])
-            changed = true
-        end
-        out[#out + 1] = part
-    end
-    return changed and table.concat(out, "\n")
-end
-
-local function OnMinimapTooltip(tooltip)
-    if tooltip ~= GameTooltip or not (F.Enabled() and F.Get("minimap")) then return end
-    if not nodes then Build() end
-    local changed
-    for i = 1, tooltip:NumLines() do
-        local fs = _G["GameTooltipTextLeft" .. i]
-        local text = fs and fs:GetText()
-        if text and not issecretvalue(text) then
-            local new = memo[text]
-            if new == nil then
-                new = MinimapLine(text)
-                if memoN >= MEMO_MAX then Forget() end
-                memo[text] = new
-                memoN = memoN + 1
-            end
-            if new then
-                fs:SetText(new)
-                changed = true
-            end
-        end
-    end
-    if changed then tooltip:Show() end
-end
-
 local function OnObjectTooltip(tooltip, data)
     if tooltip ~= GameTooltip or not F.Enabled() then return end
     local lines = data and data.lines
     local title = lines and lines[1] and lines[1].leftText
     if not title or issecretvalue(title) then return end
     if not nodes then Build() end
-    local node = nodes[title]
+    local node = nodes[Key(title)]
     if not node then return end
     local skillName = C_Spell.GetSpellName(node[1] == MINING and MINING_SPELL or HERBALISM_SPELL)
     if not skillName then return end
@@ -179,24 +140,56 @@ local function OnObjectTooltip(tooltip, data)
             fs:SetText(("%s (%d)"):format(text, node[2]))
             local skill = Skill(node[1])
             if skill and skill >= node[2] then fs:SetTextColor(OddsColor(skill, node[2])) end
-            tooltip:Show()
+            -- No Show() here: Blizzard shows the tooltip right after its
+            -- post-calls, from its own secure call.
             return
         end
     end
 end
 
--- The tooltip hook goes in the first time the setting is on; off, it returns
--- at once and no event is registered.
+-- The skill a skinnable creature of that level needs.
+local function SkinningNeed(level)
+    if level <= 10 then return 1 end
+    if level <= 20 then return (level - 10) * 10 end
+    return level * 5
+end
+
+local function OnUnitTooltip(tooltip)
+    if tooltip ~= GameTooltip or not (F.Enabled() and F.Get("skinning")) then return end
+    local _, unit = tooltip:GetUnit()
+    if not unit or issecretvalue(unit) then return end
+    -- Only a corpse carries the line: a live unit stops here.
+    if not UnitIsDead(unit) then return end
+    local level = UnitLevel(unit)
+    if issecretvalue(level) or level < 1 then return end
+    for i = 2, tooltip:NumLines() do
+        local fs = _G["GameTooltipTextLeft" .. i]
+        local text = fs and fs:GetText()
+        if text and not issecretvalue(text) and text == UNIT_SKINNABLE_LEATHER then
+            local need = SkinningNeed(level)
+            fs:SetText(("%s (%d)"):format(text, need))
+            local skill = Skill(SKINNING)
+            if skill and skill >= need then
+                fs:SetTextColor(OddsColor(skill, need))
+            else
+                fs:SetTextColor(RED_FONT_COLOR:GetRGB())
+            end
+            return
+        end
+    end
+end
+
+-- The object tooltip hook goes in the first time the setting is on, the unit
+-- one the first time Skinning is on with it; off, each returns at once and no
+-- event is registered.
 local function Apply()
-    Forget()
     if not F.Enabled() then
         events:UnregisterAllEvents()
         return
     end
-    if F.Get("minimap") then
-        events:RegisterEvent("SKILL_LINES_CHANGED")
-    else
-        events:UnregisterEvent("SKILL_LINES_CHANGED")
+    if F.Get("skinning") and not unitHooked then
+        unitHooked = true
+        TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, OnUnitTooltip)
     end
     -- Herbs that loaded while it was off.
     if nodes and next(missing) then
@@ -207,8 +200,9 @@ local function Apply()
     end
     if hooked then return end
     hooked = true
+    -- Nothing to load where the names came in with the module's TOC.
+    EllesmereUI.LoadGameNames()
     TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Object, OnObjectTooltip)
-    TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.MinimapMouseover, OnMinimapTooltip)
 end
 
 -- Options-page entry points.

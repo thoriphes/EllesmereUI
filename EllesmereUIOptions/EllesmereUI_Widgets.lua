@@ -24,7 +24,6 @@ local isRussian = GetLocale() == "ruRU"
 -- Utility functions (used heavily)
 local SolidTex         = EllesmereUI.SolidTex
 local MakeFont         = EllesmereUI.MakeFont
-local MakeBorder       = EllesmereUI.MakeBorder
 local MakeRoundedBorder = EllesmereUI.MakeRoundedBorder
 local DisablePixelSnap = EllesmereUI.DisablePixelSnap
 local RowBg            = EllesmereUI.RowBg
@@ -183,7 +182,7 @@ local function BuildToggleControl(parent, frameLevel, getValue, setValue, opts)
     toggle:SetFrameLevel(frameLevel)
 
     -- The track (a pill) and the knob (a circle) are white art on a pixel
-    -- layer, coloured through their vertex colour: round edges crisp at every
+    -- layer, colored through their vertex color: round edges crisp at every
     -- Window Scale, the knob placed in whole pixels (PX.ToggleFit sizes them).
     local L = PX.Layer(toggle, PX.ToggleFit)
     local layer = L._frame
@@ -265,27 +264,30 @@ end
 
 -------------------------------------------------------------------------------
 
---  BuildCheckboxControl(parent, frameLevel) -- box + border + checkmark texture
+--  BuildCheckboxControl(parent, frameLevel[, pp]) -- box + border + checkmark texture
+--  pp: pixel grid, default PanelPP; frames outside the panel pass EllesmereUI.PP.
 --  Returns: box (Frame), check (Texture), boxBorder, applyVisual (fn)
 --  applyVisual(isOn, isHovering) updates colors/visibility.
 -------------------------------------------------------------------------------
-local function BuildCheckboxControl(parent, frameLevel)
-    local RealPP = EllesmereUI.PP
+local function BuildCheckboxControl(parent, frameLevel, pp)
+    pp = pp or PP
     local BOX_SZ  = 18
     local BOX_PAD = 2
 
     local box = CreateFrame("Frame", nil, parent)
-    RealPP.Size(box, BOX_SZ, BOX_SZ)
+    pp.Size(box, BOX_SZ, BOX_SZ)
     box:SetFrameLevel(frameLevel)
 
     local boxBg = SolidTex(box, "BACKGROUND", CB.BOX_R, CB.BOX_G, CB.BOX_B, 1)
     DisablePixelSnap(boxBg)
     boxBg:SetAllPoints()
-    local boxBorder = MakeBorder(box, BORDER_R, BORDER_G, BORDER_B, CB.BRD_A, PP)
+    local boxBorder = MakeRoundedBorder(box, BORDER_R, BORDER_G, BORDER_B, CB.BRD_A, boxBg)
 
     local check = SolidTex(box, "ARTWORK", ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 1)
     DisablePixelSnap(check)
-    RealPP.SetInside(check, box, BOX_PAD, BOX_PAD)
+    pp.SetInside(check, box, BOX_PAD, BOX_PAD)
+    -- The outline's radius less the inset, so the fill's corners follow it.
+    EllesmereUI.RoundBody(box, check, 2)
 
     local function ApplyVisual(isOn, isHovering)
         check:SetColorTexture(ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 1)
@@ -463,7 +465,7 @@ local function IsDividerKey(key)
     return type(key) == "string" and key:match("^%-%-%-") ~= nil
 end
 
--- Build a dropdown popup menu + item buttons; returns { menu, menuItems, refresh }. ddBtn = button the menu hangs off; menuW = menu pixel width; order = key array; values = { key = displayName } (displayName: string or { text=..., note=... }); ddLbl = label FontString updated on selection; style = "wide"/"regular" (WD_ vs RD_ colours).
+-- Build a dropdown popup menu + item buttons; returns { menu, menuItems, refresh }. ddBtn = button the menu hangs off; menuW = menu pixel width; order = key array; values = { key = displayName } (displayName: string or { text=..., note=... }); ddLbl = label FontString updated on selection; style = "wide"/"regular" (WD_ vs RD_ colors).
 local DD_MAX_HEIGHT = 200
 
 local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue, ddLbl, style, disabledValuesFn)
@@ -487,7 +489,7 @@ local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue
         if _noLoc or type(s) ~= 'string' then return s end
         return EllesmereUI.L(s)
     end
-    -- Menu bg/border: same colours for both styles (DD_BTN with menu-specific alpha)
+    -- Menu bg/border: same colors for both styles (DD_BTN with menu-specific alpha)
     local _menuOpts = values._menuOpts
     local _moIcon = _menuOpts and _menuOpts.icon
     local _moIconAtlas = _menuOpts and _menuOpts.iconAtlas
@@ -500,14 +502,16 @@ local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue
     local _moMaxTextPct = _menuOpts and _menuOpts.maxTextWidthPct
     local _moOnItemHover = _menuOpts and _menuOpts.onItemHover
     local _moOnItemLeave = _menuOpts and _menuOpts.onItemLeave
-    -- Caption font override ({ path, size, flags }) and native atlas icon colours, so a
+    -- Caption font override ({ path, size, flags }) and native atlas icon colors, so a
     -- menu can match the UI it opens from (e.g. the CDM options' own flyouts).
     local _moLabelFont = _menuOpts and _menuOpts.labelFont
     local _moIconNative = _menuOpts and _menuOpts.iconNativeColor
     -- Optional in-menu search box (_menuOpts.searchable): filter field hides non-matching items and repositions the rest. Flat lists only (no subnav, no dividers).
     local _moSearchable = _menuOpts and _menuOpts.searchable
     local SEARCH_H = 26
-    local searchPad = _moSearchable and (SEARCH_H + 8) or 0
+    -- The search field is the list's flush first row (inside the 1 unit border,
+    -- a divider as its last unit); the rows below keep their 4-unit top gap.
+    local searchPad = _moSearchable and (SEARCH_H + 4) or 0
     local searchEdit, searchPlaceholder
     local searchResetScroll  -- assigned inside the scrolling branch; nil otherwise
     local padInit, padStepSync, padReveal  -- controller helpers: padInit (scrolling branch only) builds the other two on first use
@@ -539,29 +543,32 @@ local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue
     menu:Hide()
     local menuBg = SolidTex(menu, "BACKGROUND", mBgR, mBgG, mBgB, mBgA)
     menuBg:SetAllPoints()
-    MakeRoundedBorder(menu, mBrR, mBrG, mBrB, mBrA, menuBg, nil, true)
+    menu._ddBrd = MakeRoundedBorder(menu, mBrR, mBrG, mBrB, mBrA, menuBg, nil, true)
 
     if _moSearchable then
         -- Options panel is Expressway-locked by design; EllesmereUI.EXPRESSWAY is locale-aware (CJK/Cyrillic get the system glyph font). The user's global font intentionally never restyles the settings UI.
         local fontPath = (_moLabelFont and _moLabelFont[1]) or EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF"
         searchEdit = CreateFrame("EditBox", nil, menu)
-        searchEdit:SetSize(menuW - 16, SEARCH_H)
-        searchEdit:SetPoint("TOP", menu, "TOP", 0, -4)
+        searchEdit:SetPoint("TOPLEFT", menu, "TOPLEFT", 1, -1)
+        searchEdit:SetPoint("TOPRIGHT", menu, "TOPRIGHT", -1, -1)
+        searchEdit:SetHeight(searchPad - 1)
         searchEdit:SetFrameLevel(menu:GetFrameLevel() + 4)
         searchEdit:SetFont(fontPath, 11, "")
         searchEdit:SetTextColor(1, 1, 1, 0.9)
         searchEdit:SetJustifyH("LEFT")
         searchEdit:SetAutoFocus(false)
         searchEdit:SetMaxLetters(30)
-        searchEdit:SetTextInsets(4, 4, 0, 0)
-        local sBg = searchEdit:CreateTexture(nil, "BACKGROUND")
-        sBg:SetAllPoints()
-        sBg:SetColorTexture(0, 0, 0, 0.4)
-        EllesmereUI.RoundBody(searchEdit, sBg)
+        -- Text at the row labels' x (rows sit 1 unit in, labels 10 into a row).
+        searchEdit:SetTextInsets(10, 10, 0, 0)
+        local sDiv = searchEdit:CreateTexture(nil, "ARTWORK")
+        sDiv:SetHeight(1)
+        sDiv:SetPoint("BOTTOMLEFT", searchEdit, "BOTTOMLEFT", 0, 0)
+        sDiv:SetPoint("BOTTOMRIGHT", searchEdit, "BOTTOMRIGHT", 0, 0)
+        sDiv:SetColorTexture(1, 1, 1, 0.10)
         searchPlaceholder = searchEdit:CreateFontString(nil, "OVERLAY")
         searchPlaceholder:SetFont(fontPath, 11, "")
         searchPlaceholder:SetTextColor(0.5, 0.5, 0.5, 0.6)
-        searchPlaceholder:SetPoint("LEFT", searchEdit, "LEFT", 4, 0)
+        searchPlaceholder:SetPoint("LEFT", searchEdit, "LEFT", 10, 0)
         searchPlaceholder:SetText(EllesmereUI.L("Search..."))
         searchEdit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     end
@@ -793,7 +800,7 @@ local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue
                     if tile then bgTex:SetHorizTile(true); bgTex:SetVertTile(true) end
                     bgTex:SetAlpha(0.45)
                     if bgLook and bgLook.tint then
-                        -- Alpha rides the colour write (one alpha channel per texture).
+                        -- Alpha rides the color write (one alpha channel per texture).
                         local t = bgLook.tint
                         bgTex:SetVertexColor(t[1], t[2], t[3], 0.45)
                     elseif _moBgVertexColor then
@@ -818,7 +825,7 @@ local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue
                 iLbl:SetTextColor(EG.r, EG.g, EG.b, 0.8)
                 item._isAction = true  -- Refresh keeps the accent across menu opens
             elseif _menuOpts and _menuOpts.labelColor then
-                -- Optional .labelColor(key) -> r, g, b[, a]: the label's idle colour;
+                -- Optional .labelColor(key) -> r, g, b[, a]: the label's idle color;
                 -- hover shows the same hue at full alpha, Refresh restores it.
                 local lr, lg, lb, la = _menuOpts.labelColor(key)
                 if lr then
@@ -860,8 +867,8 @@ local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue
                             iconBtn:SetPushedAtlas(pressedAtlas)
                         end
                         iconBtn:SetHighlightAtlas(_haveAtlas)
-                        -- Atlas icons carry an intrinsic colour; SetVertexColor only scales it, so desaturate first, then tint to #929292
-                        -- (skipped when the menu keeps native colours).
+                        -- Atlas icons carry an intrinsic color; SetVertexColor only scales it, so desaturate first, then tint to #929292
+                        -- (skipped when the menu keeps native colors).
                         local _nr, _ng, _nb = 0.573, 0.573, 0.573
                         local nrmTex = iconBtn:GetNormalTexture()
                         if nrmTex and not _moIconNative then
@@ -932,7 +939,7 @@ local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue
                     iLbl:SetPoint("RIGHT", ico, "LEFT", -4, 0)
                 end
             end
-            local iNote  -- annotation: smaller font, 75% alpha, same colour
+            local iNote  -- annotation: smaller font, 75% alpha, same color
             if noteText then
                 iNote = MakeFont(item, 11, nil, TEXT_DIM_R, TEXT_DIM_G, TEXT_DIM_B, TEXT_DIM_A)
                 iNote:SetAlpha(0.75)
@@ -1358,6 +1365,60 @@ local function BuildDropdownMenu(ddBtn, menuW, order, values, getValue, setValue
     return menu, menuItems, Refresh
 end
 
+-- EllesmereUI.SeatDropdownMenu(menu): a list hangs off its button, so a button
+-- on a half pixel (a centred header dropdown) put every row and caption on one
+-- too. Call after the list's scale is set: nudges its anchor so its top left
+-- corner lands on a whole screen pixel. The caller's own offsets stay the base,
+-- so repeated opens never drift.
+do
+    local floor, abs = math.floor, math.abs
+    function EllesmereUI.SeatDropdownMenu(menu)
+        if menu:GetNumPoints() ~= 1 then return end
+        local pt, rel, rpt, x, y = menu:GetPoint(1)
+        -- Not the offsets this function set (read back as floats): the caller
+        -- anchored the list again, so those are the new base.
+        local sx, sy = menu._seatedX, menu._seatedY
+        if not sx or abs(x - sx) > 0.01 or abs(y - sy) > 0.01 then
+            menu._seatX, menu._seatY = x, y
+        end
+        x, y = menu._seatX, menu._seatY
+        menu:SetPoint(pt, rel, rpt, x, y)
+        local l, t = menu:GetLeft(), menu:GetTop()
+        local k = menu:GetEffectiveScale() / EllesmereUI.PP.perfect
+        if l and t and k > 0 and not (issecretvalue(l) or issecretvalue(t)) then
+            l, t = l * k, t * k
+            x, y = x + (floor(l + 0.5) - l) / k, y + (floor(t + 0.5) - t) / k
+            menu:SetPoint(pt, rel, rpt, x, y)
+        end
+        menu._seatedX, menu._seatedY = x, y
+    end
+end
+
+-- A dropdown button's hover tooltip, asked on hover and when the list closes under the cursor:
+-- the button's own (_ttText with _ttOpts), and a value cut off with "..." (single-line label between
+-- the button's left edge and its arrow) in full, above the own tooltip when the button has both (the
+-- joined text is no catalog key, so L() leaves it alone).
+local function ShowDropdownTip(ddBtn, ddLbl)
+    local own = ddBtn._ttText
+    local cut = ddLbl:IsTruncated()
+    if issecretvalue(cut) or not cut then
+        if own then ShowWidgetTooltip(ddBtn, own, ddBtn._ttOpts) end
+        return
+    end
+    ddBtn._cutValueTip = true
+    if not own then
+        ShowWidgetTooltip(ddBtn, ddLbl:GetText())
+        return
+    end
+    if type(own) == "function" then own = own() end
+    ShowWidgetTooltip(ddBtn, (ddLbl:GetText() or "") .. "\n" .. EllesmereUI.L(own), ddBtn._ttOpts)
+end
+local function HideDropdownTip(ddBtn)
+    if not (ddBtn._ttText or ddBtn._cutValueTip) then return end
+    ddBtn._cutValueTip = nil
+    HideWidgetTooltip()
+end
+
 -- Wire OnEnter/OnLeave/OnClick/OnShow/OnHide for a dropdown button + menu. s = { bg_r..a, bg_hr..ha, brd_r..a, brd_hr..ha, txt_r..a, txt_hr..ha } (24 values)
 -- ddBtn._valueDimA, when set, holds the value text at that alpha in both states (a greyed-out current value stays greyed under the cursor).
 local function WireDropdownScripts(ddBtn, ddLbl, bg, brd, menu, refresh, s, keepClickHandler)
@@ -1373,14 +1434,12 @@ local function WireDropdownScripts(ddBtn, ddLbl, bg, brd, menu, refresh, s, keep
     end
     ddBtn:SetScript("OnEnter", function()
         ApplyHover()
-        if ddBtn._ttText and not menu:IsShown() then
-            ShowWidgetTooltip(ddBtn, ddBtn._ttText, ddBtn._ttOpts)
-        end
+        if not menu:IsShown() then ShowDropdownTip(ddBtn, ddLbl) end
     end)
     ddBtn:SetScript("OnLeave", function()
         if not menu:IsShown() then
             ApplyNormal()
-            if ddBtn._ttText then HideWidgetTooltip() end
+            HideDropdownTip(ddBtn)
         end
     end)
     -- keepClickHandler: caller owns OnClick/OnHide (BuildDropdownControl's lazy-menu path). Overwriting OnClick
@@ -1389,7 +1448,7 @@ local function WireDropdownScripts(ddBtn, ddLbl, bg, brd, menu, refresh, s, keep
     -- HookScripts callers attached to OnClick, since SetScript discards existing hooks.
     if not keepClickHandler then
         ddBtn:SetScript("OnClick", function()
-            if ddBtn._ttText then HideWidgetTooltip() end
+            HideDropdownTip(ddBtn)
             if menu:IsShown() then menu:Hide() else menu:Show() end
         end)
         ddBtn:HookScript("OnHide", function() menu:Hide() end)
@@ -1409,6 +1468,10 @@ local function WireDropdownScripts(ddBtn, ddLbl, bg, brd, menu, refresh, s, keep
             while f and f ~= UIParent do s = s * (f:GetScale() or 1); f = f:GetParent() end
             self:SetScale(s)
         end
+        -- Seat the list, then its outline: the outline's layer fit on its own
+        -- show, before this scale and seat.
+        EllesmereUI.SeatDropdownMenu(self)
+        if self._ddBrd then self._ddBrd:Fit() end
         -- Track the open menu globally so popups don't treat clicks on it (which can extend outside the popup/panel) as a dismissing outside click.
         EllesmereUI._openDropdownMenu = self
         ApplyHover()
@@ -1453,12 +1516,10 @@ local function WireDropdownScripts(ddBtn, ddLbl, bg, brd, menu, refresh, s, keep
         if self._flyouts then for _, fo in ipairs(self._flyouts) do fo:Hide() end end
         if ddBtn:IsMouseOver() then
             ApplyHover()
-            if ddBtn._ttText then
-                ShowWidgetTooltip(ddBtn, ddBtn._ttText, ddBtn._ttOpts)
-            end
+            ShowDropdownTip(ddBtn, ddLbl)
         else
             ApplyNormal()
-            if ddBtn._ttText then HideWidgetTooltip() end
+            HideDropdownTip(ddBtn)
         end
         -- Controller cursor: back onto the dropdown button (a no-op once that is hidden too).
         if EllesmereUI.PadCursorShown() then EllesmereUI.PadFocus(ddBtn) end
@@ -1467,7 +1528,7 @@ local function WireDropdownScripts(ddBtn, ddLbl, bg, brd, menu, refresh, s, keep
     EllesmereUI.TrackOverlay(menu)
 end
 
--- Pre-built colour arrays for the two dropdown styles
+-- Pre-built color arrays for the two dropdown styles
 local WD_DD_COLOURS = {
     DD_BG_R, DD_BG_G, DD_BG_B, DD_BG_A,  DD_BG_R, DD_BG_G, DD_BG_B, DD_BG_HA,
     1, 1, 1, DD_BRD_A,  1, 1, 1, DD_BRD_HA,
@@ -1579,7 +1640,7 @@ local function BuildSliderCore(parent, trackW, trackH, thumbSz, inputW, inputH, 
     local thumbBlocker = thumbBlockerFrame:CreateTexture(nil, "BACKGROUND")
     thumbBlocker:SetAllPoints()
     thumbBlocker:SetVertexColor(DARK_BG.r, DARK_BG.g, DARK_BG.b, 1)
-    -- The thumb and its blocker are circles (white art, vertex colour).
+    -- The thumb and its blocker are circles (white art, vertex color).
     local thumbTex = thumb:CreateTexture(nil, "ARTWORK")
     thumbTex:SetAllPoints()
     thumbTex:SetVertexColor(ELLESMERE_GREEN.r, ELLESMERE_GREEN.g, ELLESMERE_GREEN.b, 1)
@@ -1896,7 +1957,7 @@ local function BuildSliderCore(parent, trackW, trackH, thumbSz, inputW, inputH, 
         if button == "LeftButton" and isDragging then EndDrag() end
     end)
 
-    -- Re-read the getter, update the visual, and re-apply the accent colour (theme may have changed on another tab).
+    -- Re-read the getter, update the visual, and re-apply the accent color (theme may have changed on another tab).
     local function RefreshSlider()
         local v = getValue()
         if v then
@@ -2162,7 +2223,7 @@ end
 -- A dropdown button whose menu is built on its first click (BuildDropdownControl,
 -- W:WideDropdown): light hover scripts until then, and a click that builds the
 -- menu (build() -> menu, refresh) and wires it; WireDropdownScripts then replaces
--- the hover scripts and keeps this OnClick and OnHide. s = the button's colour
+-- the hover scripts and keeps this OnClick and OnHide. s = the button's color
 -- array (RD_DD_COLOURS / WD_DD_COLOURS). Returns drop(): forgets the built menu
 -- (hidden), so the next click builds it again; true when there was one.
 local function WireLazyDropdown(ddBtn, ddLbl, bg, brd, s, build)
@@ -2179,14 +2240,14 @@ local function WireLazyDropdown(ddBtn, ddLbl, bg, brd, s, build)
     end
     ddBtn:SetScript("OnEnter", function()
         ApplyHover()
-        if ddBtn._ttText then ShowWidgetTooltip(ddBtn, ddBtn._ttText, ddBtn._ttOpts) end
+        ShowDropdownTip(ddBtn, ddLbl)
     end)
     ddBtn:SetScript("OnLeave", function()
         if not (menu and menu:IsShown()) then ApplyNormal() end
-        if ddBtn._ttText then HideWidgetTooltip() end
+        HideDropdownTip(ddBtn)
     end)
     ddBtn:SetScript("OnClick", function()
-        if ddBtn._ttText then HideWidgetTooltip() end
+        HideDropdownTip(ddBtn)
         if not menu then
             local refresh
             menu, refresh = build()
@@ -2212,8 +2273,8 @@ local function BuildDropdownControl(parent, ddW, fLevel, values, order, getValue
     local ddBg = SolidTex(ddBtn, "BACKGROUND", DD_BG_R, DD_BG_G, DD_BG_B, DD_BG_A)
     ddBg:SetAllPoints()
     local ddBrd = MakeRoundedBorder(ddBtn, 1, 1, 1, DD_BRD_A, ddBg)
-    -- The value's resting alpha is the text colour's, the channel the hover
-    -- colours (RD_DD_COLOURS) write, so a hover and leave land back on it.
+    -- The value's resting alpha is the text color's, the channel the hover
+    -- colors (RD_DD_COLOURS) write, so a hover and leave land back on it.
     local ddLbl = MakeFont(ddBtn, 13, nil, 1, 1, 1, DD_TXT_A)
     ddLbl:SetJustifyH("LEFT")
     ddLbl:SetWordWrap(false)
@@ -2514,6 +2575,8 @@ EllesmereUI._widgetInternals = {
     QueueLabelClamp = QueueLabelClamp,
     LabelTooltipText = LabelTooltipText,
     WireLazyDropdown = WireLazyDropdown,
+    ShowDropdownTip = ShowDropdownTip,
+    HideDropdownTip = HideDropdownTip,
 }
 
 -------------------------------------------------------------------------------
@@ -2655,14 +2718,15 @@ EllesmereUI.CreatePreviewHitOverlay = function(element, navigate, key, isText, f
     local btn = CreateFrame("Button", nil, anchor)
     if isText then
         local minS, pad = tight and 1 or 4, tight and 2 or 4
+        local function Measure()
+            local w = element:GetStringWidth() or 0
+            local hh = element:GetStringHeight() or 0
+            if w < minS then w = minS end
+            if hh < minS then hh = minS end
+            return w, hh
+        end
         local function ResizeToText()
-            local ok, tw, th = pcall(function()
-                local w = element:GetStringWidth() or 0
-                local hh = element:GetStringHeight() or 0
-                if w < minS then w = minS end
-                if hh < minS then hh = minS end
-                return w, hh
-            end)
+            local ok, tw, th = pcall(Measure)
             if not ok then tw = 40; th = 12 end
             btn:SetSize(tw + pad, th + pad)
         end
@@ -2755,6 +2819,9 @@ EllesmereUI.BuildSliderCore     = BuildSliderCore
 EllesmereUI.BuildDropdownControl = BuildDropdownControl
 EllesmereUI.BuildToggleControl   = BuildToggleControl
 EllesmereUI.BuildCheckboxControl = BuildCheckboxControl
+-- The toggle's pixel-layer fit for hand-built pills: L.track, L.knob, L.pad
+-- (units), L.apply places the knob from L.padPx, L.wp and L.d.
+EllesmereUI.TogglePillFit        = PX.ToggleFit
 
 -------------------------------------------------------------------------------
 --  ShowPickMenu -- generic pick-one context menu (right-click "Add To" on

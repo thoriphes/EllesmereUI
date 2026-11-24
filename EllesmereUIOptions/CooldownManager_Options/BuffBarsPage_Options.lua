@@ -199,7 +199,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 local spInfo = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(cfg.spellID)
                 iconID = spInfo and spInfo.iconID
             end
-            wrap._icon._tex:SetTexture(iconID or 134400)
+            ns.SetTBBIconTexture(wrap._icon, iconID or 134400)
         end
         -- Unassigned: dim ALL bar content (fill/texts/icon/border) under a black overlay
         -- frame with a centered hint, above the bar's own layers so it draws over the fill/gradient stack.
@@ -626,7 +626,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             popup:EnableMouse(true)
             local popBg = popup:CreateTexture(nil, "BACKGROUND")
             popBg:SetAllPoints(); popBg:SetColorTexture(0.077, 0.068, 0.058, 1)
-            EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PP)
+            EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
 
             local title = popup:CreateFontString(nil, "OVERLAY")
             title:SetFont(FONT_PATH, 14, GetCDMOptOutline())
@@ -704,7 +704,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             addBtn:SetPoint("BOTTOMRIGHT", popup, "BOTTOM", -4, 16)
             local addBg = addBtn:CreateTexture(nil, "BACKGROUND")
             addBg:SetAllPoints(); addBg:SetColorTexture(ar, ag, ab, 0.15)
-            EllesmereUI.MakeBorder(addBtn, ar, ag, ab, 0.3, EllesmereUI.PP)
+            EllesmereUI.MakeRoundedBorder(addBtn, ar, ag, ab, 0.3, addBg)
             local addLbl = addBtn:CreateFontString(nil, "OVERLAY")
             addLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
             addLbl:SetPoint("CENTER"); addLbl:SetText(EllesmereUI.L("Add"))
@@ -718,7 +718,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             cancelBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", 4, 16)
             local cBg = cancelBtn:CreateTexture(nil, "BACKGROUND")
             cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
-            EllesmereUI.MakeBorder(cancelBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
+            EllesmereUI.MakeRoundedBorder(cancelBtn, 1, 1, 1, 0.10, cBg)
             local cLbl = cancelBtn:CreateFontString(nil, "OVERLAY")
             cLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
             cLbl:SetPoint("CENTER"); cLbl:SetText(EllesmereUI.L("Cancel"))
@@ -1333,7 +1333,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
         local bg = stPopup:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(0.077, 0.068, 0.058, 0.97)
-        PP.CreateBorder(stPopup, 1, 1, 1, 0.18, 1, "BORDER", 7)
+        stPopup._brd = EllesmereUI.MakeRoundedBorder(stPopup, 1, 1, 1, 0.18, bg)
 
         local clickCatcher = CreateFrame("Button", nil, stPopup)
         clickCatcher:SetFrameStrata("FULLSCREEN_DIALOG")
@@ -1403,7 +1403,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
         _stAddBtn:SetFrameLevel(stPopup:GetFrameLevel() + 3)
         local abg = EllesmereUI.SolidTex(_stAddBtn, "BACKGROUND", 0.069, 0.058, 0.047, 0.92)
         abg:SetAllPoints()
-        _stAddBtn._border = EllesmereUI.MakeBorder(_stAddBtn, 1, 1, 1, 0.4, PP)
+        _stAddBtn._border = EllesmereUI.MakeRoundedBorder(_stAddBtn, 1, 1, 1, 0.4, abg)
         _stAddLbl = EllesmereUI.MakeFont(_stAddBtn, 12, nil, 1, 1, 1)
         _stAddLbl:SetAlpha(0.5)
         _stAddLbl:SetPoint("CENTER")
@@ -1584,6 +1584,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
 
         local totalH = math.abs(curY) + ST_PAD
         PP.Size(stPopup, ST_POPUP_W, totalH)
+        stPopup._brd:Fit()
     end
 
     -- params = { getCfg, refreshFn, anchor }
@@ -1884,7 +1885,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 sm:SetSize(W, 8 + ITEM_H * 2)
                 local smBg = sm:CreateTexture(nil, "BACKGROUND")
                 smBg:SetAllPoints(); smBg:SetColorTexture(mBgR, mBgG, mBgB, mBgHA)
-                EllesmereUI.MakeBorder(sm, 1, 1, 1, mBrdA, EllesmereUI.PP)
+                EllesmereUI.MakeRoundedBorder(sm, 1, 1, 1, mBrdA, smBg, nil, true)
                 -- A fixed spot, as the CDM icon menu sits under its icon: beside the clicked
                 -- row, just outside the bar menu, so it covers no other bar.
                 sm:SetPoint("TOPLEFT", anchorRow, "TOPRIGHT", 4, 0)
@@ -1952,7 +1953,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                                 ns.FOCUSKICK_SOUND_PATHS, names, ns.FOCUSKICK_SOUND_ORDER)
                             values._menuOpts.anchor = "RIGHT"
                             -- Match the CDM icon menu's flyouts: the CDM options font at 11 and
-                            -- the speaker atlas in its own colour.
+                            -- the speaker atlas in its own color.
                             values._menuOpts.labelFont = { FONT_PATH, 11, GetCDMOptOutline() }
                             values._menuOpts.iconNativeColor = true
                             local refresh
@@ -2648,18 +2649,11 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 PP.Point(card, "TOPLEFT", cardRow, "TOPLEFT", xOff, 0)
                 card:SetFrameLevel(cardRow:GetFrameLevel() + 2)
 
-                local cbg = card:CreateTexture(nil, "BACKGROUND")
-                cbg:SetAllPoints()
-                cbg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-                local cbrd = EllesmereUI.MakeBorder(card, 1, 1, 1, 0.12, PP)
+                local cbrd = EllesmereUI.MakeRoundedCard(card, 0.12, 0.50, 2)
+                local cbg, accentLine = cbrd.bg, cbrd.accent
 
                 -- Accent top edge
-                local accentLine = card:CreateTexture(nil, "ARTWORK", nil, 7)
                 accentLine:SetColorTexture(EGc.r, EGc.g, EGc.b, 0.6)
-                PP.Point(accentLine, "TOPLEFT", card, "TOPLEFT", 1, -1)
-                PP.Point(accentLine, "TOPRIGHT", card, "TOPRIGHT", -1, -1)
-                accentLine:SetHeight(2)
-                if accentLine.SetSnapToPixelGrid then accentLine:SetSnapToPixelGrid(false); accentLine:SetTexelSnappingBias(0) end
 
                 local cIcon = card:CreateTexture(nil, "ARTWORK")
                 cIcon:SetSize(CARD_ICON, CARD_ICON)
@@ -2795,10 +2789,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             PP.Size(prRow, cardTotalW, PR_ROW_H)
             PP.Point(prRow, "TOPLEFT", parent, "TOPLEFT", PADc, y)
 
-            local prBg = prRow:CreateTexture(nil, "BACKGROUND")
-            prBg:SetAllPoints()
-            prBg:SetColorTexture(0.077, 0.068, 0.058, 0.50)
-            EllesmereUI.MakeBorder(prRow, 1, 1, 1, 0.10, PP)
+            local prBg = EllesmereUI.MakeRoundedCard(prRow, 0.10, 0.50).bg
 
             -- "Preset Style" label (accent, matching "Active Profile")
             local prLbl = EllesmereUI.MakeFont(prRow, 12, nil, EGc.r, EGc.g, EGc.b, 0.7)
@@ -2832,7 +2823,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             prDDBg:SetAllPoints()
             prDDBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
             local prDDBrd = EllesmereUI.MakeRoundedBorder(prDD, 1, 1, 1, EllesmereUI.DD_BRD_A, prDDBg)
-            -- Resting alpha on the text colour, the channel PrApplyNormal /
+            -- Resting alpha on the text color, the channel PrApplyNormal /
             -- PrApplyHover write, so a hover and leave land back on it.
             local prDDLbl = EllesmereUI.MakeFont(prDD, 13, nil, 1, 1, 1, EllesmereUI.DD_TXT_A)
             prDDLbl:SetJustifyH("LEFT")
@@ -3267,7 +3258,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             );  y = y - h
             -- Inline reposition cog on the shift dropdown: Extra Y Offset
             -- (ResourceBars "Shift Elements if No Resource" parity).
-            if not EllesmereUI._prebuilding then
+            do
                 local rgn = shiftRow._rightRegion
                 EllesmereUI.BuildInlineCog(rgn, {
                     title = "Shift Offset",
@@ -3532,9 +3523,10 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
 
         -- When a text element claims a position, evict any other text already there so
         -- labels never overlap. Compares EFFECTIVE (rendered) positions: name text never
-        -- renders on vertical bars, so its stored slot must not evict anything there.
+        -- renders on vertical bars, so its stored slot neither evicts nor is evicted there.
         local function EvictTBBTextConflicts(bd, changedKey, newPos)
             if newPos == "none" then return end
+            if changedKey == "namePosition" and bd.verticalOrientation then return end
             local function resolvePos(key)
                 if key == "namePosition" and bd.verticalOrientation then return "none" end
                 local v = bd[key]
@@ -3744,6 +3736,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                     local pos = bd.namePosition or ((bd.showName ~= false) and "left" or "none")
                     local tbb = ns.GetTrackedBuffBars()
                     for _, b in ipairs(tbb.bars or {}) do
+                        EvictTBBTextConflicts(b, "namePosition", pos)
                         b.namePosition = pos
                         b.showName = (pos ~= "none")
                     end
@@ -3829,6 +3822,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                     local pos = bd.timerPosition or (bd.showTimer and "right" or "none")
                     local tbb = ns.GetTrackedBuffBars()
                     for _, b in ipairs(tbb.bars or {}) do
+                        EvictTBBTextConflicts(b, "timerPosition", pos)
                         b.timerPosition = pos
                         b.showTimer = (pos ~= "none")
                     end
@@ -3918,7 +3912,10 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                     local bd = SelectedTBB(); if not bd then return end
                     local pos = bd.stacksPosition or "center"
                     local tbb = ns.GetTrackedBuffBars()
-                    for _, b in ipairs(tbb.bars or {}) do b.stacksPosition = pos end
+                    for _, b in ipairs(tbb.bars or {}) do
+                        EvictTBBTextConflicts(b, "stacksPosition", pos)
+                        b.stacksPosition = pos
+                    end
                     RefreshTBB(); EllesmereUI:RefreshPage()
                 end,
             })
@@ -4112,13 +4109,13 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
         --  DISPLAY
         -------------------------------------------------------------------
         local displayHeader
-        displayHeader, h = W:SectionHeader(parent, "Display", y);  y = y - h
+        displayHeader, h = W:SectionHeader(parent, "DISPLAY", y);  y = y - h
         y = EllesmereUI.BlizzStyle.Note(parent, y, "cdmbars")
 
         -- Visibility: one control, the shared axis list plus the TBB-only Hide When
         -- Inactive row (single-lane, so it rides in as an extraItem). No mouseover for
         -- CDM-family bars; "Only In Combat" is the In Combat axis.
-        local _, tbbVisH = EllesmereUI.BuildVisibilityRow(W, parent, y,
+        local tbbVisRow, tbbVisH = EllesmereUI.BuildVisibilityRow(W, parent, y,
             { getStore = SelectedTBB, legacyKey = "barVisibility",
               caps = { partyIncludesRaid = false, noMouseover = true, luaDragonriding = true },
               onChanged = function() RefreshTBB() end,
@@ -4145,8 +4142,29 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
               getValue = function() local bd = SelectedTBB(); return bd and bd.iconDisplay or "none" end,
               setValue = function(v)
                   local bd = SelectedTBB(); if not bd then return end
-                  bd.iconDisplay = v; RefreshTBB()
+                  bd.iconDisplay = v; RefreshTBB(); EllesmereUI:RefreshPage()
               end });  y = y - tbbVisH
+        EllesmereUI.BuildInlineCog(tbbVisRow._rightRegion, {
+            title = "Icon Settings", tip = "Icon Settings",
+            disabled = function()
+                local bd = SelectedTBB()
+                return EllesmereUI.BlizzStyle.Get("cdmbars") or not bd or (bd.iconDisplay or "none") == "none"
+            end,
+            disabledTooltip = function()
+                if EllesmereUI.BlizzStyle.Get("cdmbars") then return EllesmereUI.BlizzStyle.Label("cdmbars") end
+                return "This option requires an icon position to be selected."
+            end,
+            requireState = "disabled",
+            rows = {
+                { type = "toggle", label = "Show Icon Divider",
+                  tooltip = "Use the bar's border style, size and color between the icon and the fill.",
+                  get = function() local bd = SelectedTBB(); return bd and bd.showIconDivider == true end,
+                  set = function(v)
+                      local bd = SelectedTBB(); if not bd then return end
+                      bd.showIconDivider = v; RefreshTBB()
+                  end },
+            },
+        })
 
         -- Opacity | Background Color (moved up from its old trailing half-row below)
         local iconRow
@@ -4273,7 +4291,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             local function UpdateSwatchStates()
                 local bd = SelectedTBB()
                 local isAuto = false
-                -- Blizzard Style keeps the flat atlas fill, so the gradient end colour is inert there.
+                -- Blizzard Style keeps the flat atlas fill, so the gradient end color is inert there.
                 local noGrad = not bd or not bd.gradientEnabled or EllesmereUI.BlizzStyle.Get("cdmbars")
                 -- Fill swatch: disabled in auto mode
                 if isAuto then fillSwatch:SetAlpha(0.3); fillBlock:Show()
@@ -4346,6 +4364,24 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
             end
             -- Inline border color swatch on Border Size (right region); none
             -- under Classic WoW UI, whose slider sizes the vanilla frame.
+            EllesmereUI.BuildInlineCog(tbbBsRow._rightRegion, {
+                title = "Corner Radius", tip = "Corner Radius",
+                disabled = function()
+                    local bd = SelectedTBB()
+                    return EllesmereUI.BlizzStyle.Get("cdmbars") or not bd or not EllesmereUI.RoundedStyleOK(bd.borderTexture)
+                end,
+                disabledTooltip = function()
+                    if EllesmereUI.BlizzStyle.Get("cdmbars") then return EllesmereUI.BlizzStyle.Label("cdmbars") end
+                    return "This option requires the Solid, Glow or Shadow border style."
+                end,
+                requireState = "disabled",
+                rows = { EllesmereUI.AuraRadiusRow(
+                    function() local bd = SelectedTBB(); return bd and bd.borderCornerRadius or 0 end,
+                    function(v)
+                        local bd = SelectedTBB()
+                        if bd then bd.borderCornerRadius = v; RefreshTBB() end
+                    end) },
+            })
             if EllesmereUI.BlizzStyle.Active("cdmbars") ~= "classic" then
                 local rgn = tbbBsRow._rightRegion
                 local ctrl = rgn._control
@@ -4360,7 +4396,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                         bd.borderR, bd.borderG, bd.borderB = r, g, b; RefreshTBB()
                     end,
                     false, 20)
-                PP.Point(borderSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
+                PP.Point(borderSwatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
                 EllesmereUI.RegisterWidgetRefresh(function() updateBorderSwatch() end)
                 EllesmereUI.BlizzStyle.BlockInline("cdmbars", borderSwatch)
             end
@@ -4423,7 +4459,7 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
         -- Row 1: Pandemic Glow (dropdown + swatch + cog + sync) | Stack Based
         -- Bar (buff bars only; page rebuilds on selection change, so cd/utility
         -- bars get a blank slot). Stack Based Bar is inert until Max Stacks is
-        -- enabled below.
+        -- enabled below. WoW Forever (ns.CDM_NO_PANDEMIC): Stack Based Bar alone.
         do
             -- Shared glow controls over the bar's pandemic keys (the Glows page's
             -- Tracked Buff Bar descriptor, resolving the selected bar).
@@ -4444,30 +4480,33 @@ local function InitBuffBarsPage(PP, DB, Refresh, FONT_PATH, GetCDMOptOutline, Ga
                 rightSlot = { type = "label", text = "" }
             end
 
-            -- WoW Forever: the same row is the Anti-Clip Glow (EUI_CDM_ForeverAntiClip.lua).
-            local antiClip = ns.CDM_ANTI_CLIP
-            local tbbPanRow
-            tbbPanRow, h = W:DualRow(parent, y, GO.DropdownSpec(tbbDesc, antiClip and "Anti-Clip Glow" or "Pandemic Glow",
-                antiClip and "Show a glow on the bar when casting the spell next, after your current cast or global cooldown, won't clip it"
-                    or "Show a glow on the bar when the remaining duration is in the pandemic window (last 30%)"), rightSlot);  y = y - h
-            GO.AttachInline(tbbPanRow._leftRegion, tbbDesc)
+            if ns.CDM_NO_PANDEMIC then
+                -- WoW Forever has no pandemic window: Stack Based Bar alone, on buff bars.
+                if rightSlot.type ~= "label" then
+                    _, h = W:DualRow(parent, y, rightSlot, EllesmereUI.BlankRowCfg());  y = y - h
+                end
+            else
+                local tbbPanRow
+                tbbPanRow, h = W:DualRow(parent, y, GO.DropdownSpec(tbbDesc, "Pandemic Glow",
+                    "Show a glow on the bar when the remaining duration is in the pandemic window (last 30%)"), rightSlot);  y = y - h
+                GO.AttachInline(tbbPanRow._leftRegion, tbbDesc)
 
-            -- Apply All
-            if EllesmereUI.BuildSyncIcon and EllesmereUI.ApplyPandemicGlowToAll then
-                EllesmereUI.BuildSyncIcon({
-                    region = tbbPanRow._leftRegion,
-                    tooltip = antiClip and "Apply this glow's look to the Nameplates Pandemic Glow, all CDM bars, and other tracking bars. A surface that can't show a style uses its closest match."
-                        or "Apply this pandemic glow to Nameplates, all CDM bars, and other tracking bars. A surface that can't show a style uses its closest match.",
-                    isSynced = function()
-                        local src = SelectedTBB(); if not src then return true end
-                        return EllesmereUI.IsPandemicGlowSyncedToAll(EllesmereUI.PandemicPayloadFromRectBar(src), { skipTbbBar = src })
-                    end,
-                    onClick = function()
-                        local src = SelectedTBB(); if not src then return end
-                        EllesmereUI.ApplyPandemicGlowToAll(EllesmereUI.PandemicPayloadFromRectBar(src), { skipTbbBar = src })
-                        RefreshTBB()
-                    end,
-                })
+                -- Apply All
+                if EllesmereUI.BuildSyncIcon and EllesmereUI.ApplyPandemicGlowToAll then
+                    EllesmereUI.BuildSyncIcon({
+                        region = tbbPanRow._leftRegion,
+                        tooltip = "Apply this pandemic glow to Nameplates, all CDM bars, and other tracking bars. A surface that can't show a style uses its closest match.",
+                        isSynced = function()
+                            local src = SelectedTBB(); if not src then return true end
+                            return EllesmereUI.IsPandemicGlowSyncedToAll(EllesmereUI.PandemicPayloadFromRectBar(src), { skipTbbBar = src })
+                        end,
+                        onClick = function()
+                            local src = SelectedTBB(); if not src then return end
+                            EllesmereUI.ApplyPandemicGlowToAll(EllesmereUI.PandemicPayloadFromRectBar(src), { skipTbbBar = src })
+                            RefreshTBB()
+                        end,
+                    })
+                end
             end
         end
 

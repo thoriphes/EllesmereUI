@@ -235,6 +235,9 @@ local DISPELLABLE = AuraUtil and AuraUtil.AuraFilters and AuraUtil.AuraFilters.D
 -- "helpful auras that show on enemy nameplates even if non-stealable" -- the
 -- purpose-built enemy-buff curation token (source-verified 2026-08-16).
 local IMPORTANT = AuraUtil and AuraUtil.AuraFilters and AuraUtil.AuraFilters.Important
+-- "Dispellable By Me" (npEnemyBuffDispelByMe, retail, nil = off): Important
+-- and Only Dispellable narrow "dispellable" to the group's own dispels.
+local RAID_DISPELLABLE = AuraUtil and AuraUtil.AuraFilters and AuraUtil.AuraFilters.RaidPlayerDispellable
 
 -- Effective glow state: the Dispel Glow setting AND the player's offensive
 -- dispel capability (the option promises "you can dispel this", and the
@@ -466,6 +469,7 @@ local function BuildNPStyle(kind, variant)
         stackOffX = stk.x,
         stackOffY = stk.y,
     }
+    if style.border then style.border.cornerRadius = ns.NP_AuraCornerRadius() end
     -- variant: nil/1 = the dispellable glow group ("np" -- the Magic half
     -- while split), 2 = the non-Magic half ("np2", enrages), "plain" = the
     -- npnb remainder: identical text styling, NEVER the glow. Per-aura
@@ -1033,16 +1037,27 @@ end
 -- keeps the union overlap-free), narrowed to IMPORTANT in Important mode and
 -- whole in Show All mode, parked at 0 in Dispellable mode. Important mode
 -- therefore shows important OR dispellable, Show All every buff, and
--- Dispellable the glow group alone. All are composed filter STRINGS with
--- INCLUDE_NAME_PLATE_ONLY (matches Blizzard's own buffFilterString) --
--- C-evaluated, so the split holds on secret enemy data in instanced PvP and
--- the glow needs no per-aura signal (the machinery #1509 deleted). The
--- Dispel Glow setting never touches these filters -- it is only the style
--- the "np" group wears, so every shown dispellable buff glows.
+-- Dispellable the glow group alone. On retail, Dispellable By Me
+-- (BuffDispelByMe) narrows "dispellable" to the group's own dispels in
+-- Important and Dispellable mode: both groups then take RAID_DISPELLABLE in
+-- place of DISPELLABLE, so they stay exact complements. All are composed
+-- filter STRINGS with INCLUDE_NAME_PLATE_ONLY (matches Blizzard's own
+-- buffFilterString) -- C-evaluated, so the split holds on secret enemy data in
+-- instanced PvP and the glow needs no per-aura signal (the machinery #1509
+-- deleted). The Dispel Glow setting never touches these filters -- it is only
+-- the style the "np" group wears, so every shown dispellable buff glows.
 local function BuffMode()
     local m = PVal("npEnemyBuffFilter")
     if m == "dispellable" or m == "showall" then return m end
     return "important"
+end
+
+-- Important or Only Dispellable with "Dispellable By Me" on (retail only;
+-- Show All never reads it).
+local function BuffDispelByMe()
+    local mode = BuffMode()
+    return not EllesmereUI.IS_FOREVER and RAID_DISPELLABLE ~= nil and mode ~= "showall"
+        and PVal("npEnemyBuffDispelByMe") == true
 end
 
 local function BuffFilterGlow()
@@ -1050,7 +1065,7 @@ local function BuffFilterGlow()
     -- Stale-client shape only: without the DISPELLABLE token the union cannot
     -- be expressed, so Important mode keeps the old curated single group.
     if BuffMode() == "important" and IMPORTANT and not DISPELLABLE then t[#t + 1] = IMPORTANT end
-    if DISPELLABLE then t[#t + 1] = DISPELLABLE end
+    if DISPELLABLE then t[#t + 1] = BuffDispelByMe() and RAID_DISPELLABLE or DISPELLABLE end
     return t
 end
 
@@ -1062,7 +1077,8 @@ local function BuffFilterPlain()
     if mode == "dispellable" or not DISPELLABLE then return nil end
     local t = { "HELPFUL", "INCLUDE_NAME_PLATE_ONLY" }
     if mode == "important" and IMPORTANT then t[#t + 1] = IMPORTANT end
-    t[#t + 1] = "!" .. DISPELLABLE
+    -- The same token the glow group uses, so the two stay exact complements.
+    t[#t + 1] = "!" .. (BuffDispelByMe() and RAID_DISPELLABLE or DISPELLABLE)
     return t
 end
 
@@ -1113,7 +1129,9 @@ function NPB.GlowSpec(idx)
                 ApplyNPBuffExtra(btn, dd, style)
             end
         end,
-        layout = { elementWidth = 24, elementHeight = 24, elementSpacing = 4, lineSpacing = 4 },
+        -- Laid out by its place in the row (Magic, enrages, plain), not by
+        -- when it was declared: the enrage half can join after the plain group.
+        layout = { elementWidth = 24, elementHeight = 24, elementSpacing = 4, lineSpacing = 4, layoutIndex = idx },
     }
 end
 
@@ -1160,7 +1178,7 @@ local function AddBundleBuffs(b)
         maxFrameCount = plainToks and 4 or 0,
         sortMethod = SORT_IMPORTANT,
         style = "np:buffsplain",
-        layout = { elementWidth = 24, elementHeight = 24, elementSpacing = 4, lineSpacing = 4 },
+        layout = { elementWidth = 24, elementHeight = 24, elementSpacing = 4, lineSpacing = 4, layoutIndex = 3 },
     }
     b.containers.buffs = BundleContainer(b, "buffs", specs)
     if #specs > 2 then b.containers.buffs._npbSplit = true end
@@ -1354,10 +1372,22 @@ local function AnchorNPContainer(container, kind, plate, slotVal)
             elementWidth = size, elementHeight = height,
             elementSpacing = spacing, lineSpacing = spacing,
         }
+        -- A layout replaces the group's whole layout, its layoutIndex too: the
+        -- buff row's groups keep their row order (Magic, enrages, plain; see
+        -- NPB.GlowSpec) through every pass.
+        local buffs = kind == "buffs"
+        if buffs then gLayout.layoutIndex = 1 end
         container:SetAuraGroupLayout("np", gLayout)
         -- The buff row's non-Magic glow group shares the row's element sizing.
         if container._npbSplit then
+            gLayout.layoutIndex = 2
             container:SetAuraGroupLayout("np2", gLayout)
+        end
+        -- So does its plain remainder group (always declared on the buff row).
+        if buffs then
+            gLayout.layoutIndex = 3
+            container:SetAuraGroupLayout("npnb", gLayout)
+            gLayout.layoutIndex = nil
         end
         -- NPF record groups share the row's element sizing.
         if container._npfGroups then
@@ -1414,8 +1444,9 @@ local function PositionLockout(plate, f, slotVal)
 end
 
 ------------------------------------------------------------------------------
--- Core Positions chains: the elements sharing one slot (the raid marker, the Rare/Quest
--- indicator, the Quest Objective Text, the faction badge, the three aura rows), laid out one
+-- Core Positions chains: the elements sharing one slot (the raid marker, the Elite/Rare
+-- Indicator, the Quest Indicator, the Quest Objective Text, the faction badge, the three
+-- aura rows), laid out one
 -- after another in the slot's order (<pos>SlotOrder: the option keys joined by commas; unset
 -- = the default order), <pos>SlotElementSpacing apart (unset = the first aura row's Spacing
 -- in that order, else the global aura spacing). A slot holding fewer than two of them costs
@@ -1438,9 +1469,9 @@ end
 ------------------------------------------------------------------------------
 local Chain = {
     DEFAULT = "debuffs,buffs,ccs,raidmarker,rare,quest,questtext,faction",
-    -- Option key -> member (rare and quest are one frame).
+    -- Option key -> member (rare: the elite/rare mark, with a riding faction badge).
     MEMBER = { debuffs = "debuffs", buffs = "buffs", ccs = "cc", raidmarker = "raid",
-        rare = "class", quest = "class", questtext = "qtext", faction = "faction" },
+        rare = "class", quest = "quest", questtext = "qtext", faction = "faction" },
     orderMemo = {},   -- [pos] = { src = the saved string, list = { member, ... } }
     keys = {},        -- [pos] = the slot's setting keys (no string building per pass)
     m = {},           -- the slot's members in order (ChainMembers)
@@ -1492,16 +1523,18 @@ local function ChainOrder(pos)
 end
 
 -- The members the slot holds, in its order, into Chain.m; returns their count. A member
--- counts while its own position key names the slot: the badge riding the Rare/Quest
--- indicator is part of that member, Crowd Control inside the debuff row is the debuff row's.
--- The Rare/Quest member counts only while one of its halves is on or the badge rides it.
+-- counts while its own position key names the slot: the badge riding an indicator is
+-- part of the Elite/Rare member, Crowd Control inside the debuff row is the debuff row's.
+-- The Elite/Rare Indicator and the Quest Indicator share one slot key and are two members:
+-- the first counts while its box is checked or the badge rides it, the second while its
+-- box is.
 local function ChainMembers(pos)
     local m = Chain.m
     local n = 0
     local ds, bs, cs = ns.GetAuraSlots()
     local raid, class = ns.GetRaidMarkerPos(), ns.GetClassificationSlot()
-    if PVal("classificationHideRare") and not ns.NP_QuestIconOn()
-        and PVal("classificationIncludeFaction") ~= true then class = "none" end
+    local quest = ns.NP_QuestIconOn() and class or "none"
+    if PVal("classificationHideRare") and PVal("classificationIncludeFaction") ~= true then class = "none" end
     local fac = (PVal("classificationIncludeFaction") ~= true) and ns.NP_GetFactionSlot() or "none"
     local qtext = ns.NP_GetQuestTextSlot()
     local order = ChainOrder(pos)
@@ -1513,6 +1546,7 @@ local function ChainMembers(pos)
         elseif id == "cc" then at = cs
         elseif id == "raid" then at = raid
         elseif id == "class" then at = class
+        elseif id == "quest" then at = quest
         elseif id == "qtext" then at = qtext
         else at = fac end
         if at == pos then
@@ -1587,10 +1621,14 @@ local function ChainShown(plate, pos, n)
             lead = plate.raidFrame
         elseif id == "class" then
             lead = plate.classFrame
-            -- Rare/Quest + Faction with no mark: the badge stands in for the pair.
-            if not (lead and lead:IsShown()) and PVal("classificationIncludeFaction") == true then
+            -- Rare/Quest + Faction with no indicator: the badge stands in for them (behind
+            -- the quest icon alone it rides that member instead).
+            if not (lead and lead:IsShown()) and PVal("classificationIncludeFaction") == true
+                and not ns.NP_RideFrame(plate) then
                 lead = plate.factionFrame
             end
+        elseif id == "quest" then
+            lead = plate.questFrame
         elseif id == "qtext" then
             lead = plate.questTextFrame
         elseif id == "faction" then
@@ -1739,11 +1777,12 @@ end
 -- The cast-lockout icon is hand-built outside AuraKit, so Custom Border on Aura Icons
 -- reaches it through its own child frame (the icon inset drops to 0 while that draws);
 -- off, the plain 1px edge. Runs on every lockout show, so the restyle is
--- skipped while its inputs (shown state, level, texture, size step, exact px, colour,
+-- skipped while its inputs (shown state, level, texture, size step, exact px, color,
 -- alpha, offsets, shifts) are unchanged; the child turns off through
 -- ApplyBorderStyle(frame, 0) so the UI scale re-apply cannot bring it back.
 local function NPLockoutBorder(f)
     local on = ns.GetIconBorderEnabled("ccs")
+    local radius = on and ns.NP_AuraCornerRadius()
     local cb = f._npCB
     if on and NPIconCustomBorderOn() then
         if not cb then
@@ -1780,6 +1819,11 @@ local function NPLockoutBorder(f)
             f.icon:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
             f.icon:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
         end
+        if (radius and radius > 0) or (f.auraRound and f.auraRound.on) then
+            local size = NPSize("cc")
+            EllesmereUI.RoundAuraCorners(f, f, f.icon, f.cd, cb,
+                (px or sz) > 0 and (not tex or tex == "" or tex == "solid") and radius, size, NPHeight("cc", size))
+        end
         ns.ApplyFrameIconBorder(f, false)
         return
     end
@@ -1787,7 +1831,11 @@ local function NPLockoutBorder(f)
         EllesmereUI.ApplyBorderStyle(cb, 0)
         cb:Hide()
     end
-    if f._npCBInset0 then
+    if radius and not f._npCBInset0 then
+        f.icon:ClearAllPoints()
+        f.icon:SetAllPoints(f)
+        f._npCBInset0 = true
+    elseif not radius and f._npCBInset0 then
         -- Back to the creation inset (0 under the stock styles, else 1).
         f._npCBInset0 = nil
         local px = ns.NP_Blizz() and 0 or 1
@@ -1796,6 +1844,10 @@ local function NPLockoutBorder(f)
         f.icon:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -px, px)
     end
     ns.ApplyFrameIconBorder(f, on)
+    if radius or (f.auraRound and f.auraRound.on) then
+        local size = NPSize("cc")
+        EllesmereUI.RoundAuraCorners(f, f, f.icon, f.cd, f, radius, size, NPHeight("cc", size))
+    end
 end
 
 function ns.NPC_UpdateLockout(plate)
@@ -2110,7 +2162,7 @@ local function StyleFPFor(kind, idx)
     -- Custom Border on Aura Icons: every input of NPCustomIconBorder, folded in only
     -- while it is on (a constant "-" otherwise, so a border edit never restyles default
     -- users' icons): the toggle and Border = Custom (the gate), texture, size step, the
-    -- exact-size value, colour, alpha, both offsets and both shifts. Colour and alpha go
+    -- exact-size value, color, alpha, both offsets and both shifts. Color and alpha go
     -- in as exact strings, not FP's two-decimal numbers.
     local cbFP = "-"
     if NPIconCustomBorderOn() then
@@ -2126,7 +2178,7 @@ local function StyleFPFor(kind, idx)
         -- NOT `fn(kind) or true`: the getter legitimately returns false, and
         -- `false or true` would pin this fingerprint input to a constant so
         -- the toggle never restyles (the ternary-falsy trap).
-        (not ns.GetIconBorderEnabled) or ns.GetIconBorderEnabled(kind), cbFP,
+        (not ns.GetIconBorderEnabled) or ns.GetIconBorderEnabled(kind), cbFP, ns.NP_AuraCornerRadius(),
         PVal("showAuraTooltips") == true)
 end
 
@@ -2162,7 +2214,7 @@ local function GeoFP()
         PVal("toprightSlotElementSpacing"), PVal("topleftSlotElementSpacing"), PVal("bottomSlotElementSpacing"),
         PVal("raidMarkerPos"), PVal("classificationSlot"), PVal("factionSlot"),
         PVal("classificationIncludeFaction"),
-        -- The Rare/Quest member's halves decide whether it is a member at all.
+        -- Each indicator's box decides whether it is a member at all.
         PVal("classificationHideRare") and true or false, ns.NP_QuestIconOn(),
         -- The Quest Objective Text's slot: its own key and, while that is unset, the legacy
         -- view (Replace Quest Icon with Objective, the Quest Indicator box and slot).
@@ -2174,7 +2226,7 @@ local function CfgFP()
     -- with the container config rather than with the styles.
     return FP(PVal("maxDebuffs"), PVal("showAllDebuffs"), BuffMode(), NPB.Split(),
         PVal("debuffIncludeCC"), ns.NPF_FP(), PVal("hideBloodPlagueCopies") ~= false,
-        NPF_SunderOn())
+        NPF_SunderOn(), BuffDispelByMe())
 end
 
 local function ReanchorActive()
@@ -2243,8 +2295,8 @@ local function QueueBundleEnsure(b)
 end
 
 -- Class mode on an aura glow (Dispel or Pandemic) that takes a color: the style
--- prints hold the palette colour, kept here for the colours-changed hook below
--- NPC_ReloadAll. Any other state clears it, so later colour edits never reload.
+-- prints hold the palette color, kept here for the colors-changed hook below
+-- NPC_ReloadAll. Any other state clears it, so later color edits never reload.
 function NPB.SnapClassColor()
     local PB = EllesmereUI.Glows.PANDEMIC_BORDER
     local class = (PurgeGlowActive() and PVal("dispelGlowColorMode") == "class"
@@ -2373,7 +2425,7 @@ end
 
 -- Colors page edits (swatches, darken, resets, profile switches) all end in
 -- ApplyColorsToOUF. Once a Class-mode aura glow was printed, a changed class
--- colour re-runs the reload; the glow prints carry the colour, so only the
+-- color re-runs the reload; the glow prints carry the color, so only the
 -- glow styles restyle. Calls in one frame (a profile switch can make two)
 -- collapse into one check on the next frame: the flush frame stays hidden
 -- until a call and hides itself before working.

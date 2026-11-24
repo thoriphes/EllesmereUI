@@ -102,7 +102,7 @@ end
 
 local function DeleteRequirement()
     if addon.Session:IsRunning() then
-        return addon.Locale.Format(T["Requires no loot run in progress."])
+        return addon.Locale.Format(T["Requires no loot session in progress."])
     end
     if #addon.db.responses <= 1 then
         return addon.Locale.Format(T["Requires at least one other response."])
@@ -125,7 +125,12 @@ local function Responses()
         list = function() return addon.db.responses end,
         entry = function(index) return addon.db.responses[index] end,
 
+
         add = function(r, g, b)
+            if addon.Session:IsRunning() then
+                Chat("accent", T["Response buttons locked while loot session is active"])
+                return nil
+            end
             local responses = addon.db.responses
             if #responses >= Schema.MAX_RESPONSES then return nil end
             local index = #responses + 1
@@ -143,14 +148,19 @@ local function Responses()
                 accept = T["Delete"] }
         end,
 
-        remove = function(index)
+
+        remove = function(index, entry)
             local refused = DeleteRequirement()
             if refused then
                 Chat("accent", addon.Locale.Format(T["not deleted. %s"], refused))
                 return false
             end
             local responses = addon.db.responses
-            if not responses[index] then return false end
+            if entry ~= nil and responses[index] ~= entry then
+                index = nil
+                for i, e in ipairs(responses) do if e == entry then index = i end end
+            end
+            if not index or not responses[index] then return false end
             table.remove(responses, index)
             for i, entry in ipairs(responses) do entry.sort = i end
             addon.Council:RequestBroadcast()
@@ -160,19 +170,21 @@ local function Responses()
         setName = function(index, text)
             local entry = addon.db.responses[index]
             text = text:trim()
-            if not entry or text == "" then return false end
+            if not entry or text == "" or addon.Session:IsRunning() then return false end
             entry.text = text
             addon.Council:RequestBroadcast()
             return true
         end,
 
         setAutoroll = function(entry, on)
+            if addon.Session:IsRunning() then return false end
             entry.autoroll = on and true or nil
             addon.Council:RequestBroadcast()
         end,
 
 
         setColour = function(entry, r, g, b)
+            if addon.Session:IsRunning() then return false end
             entry.r, entry.g, entry.b = r, g, b
             addon.Council:RequestBroadcast()
         end,
@@ -235,6 +247,7 @@ function Schema.QualifiedName(fullName, colourOf)
     fullName = addon.Player:CanonicalName(fullName) or fullName
     local character, realm = fullName:match("^([^-]+)(%-.*)$")
     character = character or fullName
+    if addon.IsForever then realm = nil end
 
     local record = addon.Player:Get(fullName)
     local colour = record and record.classFile and colourOf(record.classFile)
@@ -247,6 +260,33 @@ function Schema.QualifiedName(fullName, colourOf)
         end
     end
     return character, realm or "", colour
+end
+
+
+
+function Schema.GroupSuggestions(text, limit)
+    local wanted = addon.Locale.Fold((text or ""):match("^%s*(.-)%s*$"))
+    local n = #wanted
+    local rows = {}
+    for fullName in pairs(addon.GetCandidates()) do
+        local name = fullName:match("^([^-]+)%-.+$")
+        name = name or fullName
+        if n == 0 or addon.Locale.Fold(name):sub(1, n) == wanted
+            or addon.Locale.Fold(fullName):sub(1, n) == wanted then
+            local record = addon.Player:Peek(fullName)
+            rows[#rows + 1] = { name = name, fullName = fullName, online = true,
+                classFile = record and record.classFile }
+        end
+    end
+    table.sort(rows, function(a, b)
+        local x, y = addon.Locale.Fold(a.name), addon.Locale.Fold(b.name)
+        if x ~= y then return x < y end
+        return a.fullName < b.fullName
+    end)
+    if limit then
+        for i = #rows, limit + 1, -1 do rows[i] = nil end
+    end
+    return rows
 end
 
 
@@ -289,11 +329,16 @@ local function DescribeCouncilEntry(entry, present)
     end
     local pending = entry.pending
     return T["Council Member"], {
-        { text = entry.fullName or entry.identity or "?" },
+        { text = addon.Player:DisplayName(entry.fullName or entry.identity or "?") },
         { text = pending and T["Not confirmed"] or T["Confirmed"], tone = pending and "accent" or "good" },
+
         { text = pending
-            and T["Stored by name, so it is matched as typed. The next time this player is in your group it becomes a permanent id and survives a rename or a realm transfer."]
-            or T["Seen in your group and stored by player id, so a rename or a realm transfer will not lose them."],
+            and (addon.IsForever
+                and T["Stored by name, so it is matched as typed. The next time this player is in your group it becomes a permanent id and survives a rename."]
+                or T["Stored by name, so it is matched as typed. The next time this player is in your group it becomes a permanent id and survives a rename or a realm transfer."])
+            or (addon.IsForever
+                and T["Seen in your group and stored by player id, so a rename will not lose them."]
+                or T["Seen in your group and stored by player id, so a rename or a realm transfer will not lose them."]),
             wrap = true },
 
         { text = T["In your group now"], value = present and T["yes"] or T["no"] },
@@ -556,7 +601,7 @@ local function StatusTags()
                 if OpensCouncil() then
                     addon.UI.MLFrame:Toggle()
                 elseif not addon.UI.VoterFrame:Toggle() then
-                    Chat("accent", T["nothing in this run is waiting for your answer."])
+                    Chat("accent", T["nothing in this session is waiting for your answer."])
                 end
             elseif button == "RightButton" and addon.PlayerIsMasterLooter() then
                 addon.UI.MLFrame:ConfirmEndRun()
@@ -581,6 +626,18 @@ local function LootMaster()
 
         line = T["Loot Master: %s, %s"],
         command = "/slc lootmaster",
+
+
+        promote = {
+            label = T["Promote new Loot Master"],
+            enabled = function() return addon.CanAssignMasterLooter() end,
+            disabledTip = T["only the group leader can set the Loot Master"],
+            guildSuggest = false, suggestOnFocus = true,
+            suggestMinChars = 0, suggestLimit = 40, suggestRows = 5, suggestNameChars = 12,
+            suggest = Schema.GroupSuggestions,
+            suggestionText = Schema.SuggestionText,
+            apply = function(name) return addon.PromoteLootMasterByName(name) end,
+        },
         name = function() return tostring(addon.GetMasterLooter() or T["unknown"]) end,
         fullName = function() return addon.GetMasterLooter() end,
 
@@ -590,8 +647,9 @@ local function LootMaster()
         end,
         unknown = T["unknown"],
         role = function()
-            return addon.IsLootPromoted() and T["promoted for this raid"] or T["group leader"]
+            return addon.IsLootPromoted() and T["Promoted for this raid"] or T["Group leader"]
         end,
+
 
 
         stored = function(paint)
@@ -605,8 +663,11 @@ local function LootMaster()
                 local classFile = kept.classFile or (kept.guid and addon.Player:Get(kept.guid).classFile)
                 name = paint(name, classFile)
             end
-            return addon.Locale.Format(T["%s auto-promotion"], name)
+            return T["Auto-promotion"], name
         end,
+
+        forget = function() addon.UI.RaidPrompt:ForgetPromote() end,
+        forgetTip = T["Forget the remembered Loot Master promotion"],
     }
 end
 
@@ -696,7 +757,7 @@ local function MainButtons()
                 return true
             end
             if addon.UI.VoterFrame:Open() then return true end
-            Chat("accent", Live() and T["nothing in this run is waiting for your answer."]
+            Chat("accent", Live() and T["nothing in this session is waiting for your answer."]
                 or T["no loot session is running."])
             return false
         end,
@@ -831,6 +892,11 @@ local function Build()
                     db().autoStart = v and true or false
                     if addon.AutoStart then addon.AutoStart:Refresh() end
                 end),
+
+            SwitchRow("autoEnd", T["Automatically end session when every item is awarded"],
+                T["When the last open item of a loot session is awarded or removed, the session ends for everyone. Off: end it yourself with End session."],
+                function() return db().autoEnd == true end,
+                function(v) db().autoEnd = v and true or false end),
         } },
 
         { id = "session", title = T["Session"], rows = {

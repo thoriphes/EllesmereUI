@@ -111,12 +111,16 @@ local CHANNEL_EVENTS = {
 -- power change (UNIT_POWER_UPDATE is throttled), and moves only the bar value
 -- and the power text through the value flush below; the power channel keeps
 -- the full paint on its own events.
+local BORDER_COLOR_EVENTS = { "UNIT_FACTION", "UNIT_FLAGS", "UNIT_NAME_UPDATE", "UNIT_PORTRAIT_UPDATE", "UNIT_MODEL_CHANGED" }
 local OPTIN_EVENTS = {
     healpred = { "UNIT_HEAL_PREDICTION", "UNIT_MAXHEALTH",
                  "UNIT_HEAL_ABSORB_AMOUNT_CHANGED", "UNIT_MAX_HEALTH_MODIFIERS_CHANGED" },
     absglow  = { "UNIT_HEALTH" },
     maxhp    = { "UNIT_MAX_HEALTH_MODIFIERS_CHANGED", "UNIT_MAXHEALTH" },
     powerval = { "UNIT_POWER_FREQUENT" },
+    bordercolor = BORDER_COLOR_EVENTS,
+    borderclassification = { "UNIT_CLASSIFICATION_CHANGED", unpack(BORDER_COLOR_EVENTS) },
+    textclassification = { "UNIT_CLASSIFICATION_CHANGED" },
 }
 
 -- Events consumed by the castbar channel; routed raw (event identity matters
@@ -249,6 +253,9 @@ do
             return
         end
 
+        -- WoW Forever reports the generic "Channeling" as a channel's display
+        -- text; the spell name is the first return.
+        if element.channeling and EllesmereUI.IS_FOREVER then text = name end
         text = EllesmereUI.CleanCastName(text)
 
         element.delay = 0
@@ -473,6 +480,7 @@ end
 -- for the same reason).
 local IDENTITY_EVENTS = {
     UNIT_NAME_UPDATE = true, UNIT_LEVEL = true, UNIT_CONNECTION = true, UNIT_FACTION = true,
+    UNIT_CLASSIFICATION_CHANGED = true,
 }
 
 -- Heal prediction's trailing flush: a same-frame repeat can carry state the
@@ -534,6 +542,12 @@ local function Paint(frame, channel, event)
             return
         end
         stamps[channel] = gen
+        -- A painter that returns false leaves the channel open for the rest of
+        -- this hardware frame: a later event of the frame still reaches it (the
+        -- 2D portrait, whose art comes with UNIT_PORTRAIT_UPDATE, which can land
+        -- after UNIT_MODEL_CHANGED in one frame: a shapeshift sends both).
+        if fn(frame, frame._euiUnit, event) == false then stamps[channel] = key end
+        return
     end
     fn(frame, frame._euiUnit, event)
 end
@@ -651,6 +665,8 @@ function Engine.Attach(frame, unit, channels)
     attached[frame] = { unit = unit, channels = channels }
     unitFrames[unit] = frame
     t._euiGuidGuard = unit:match("^boss%d$") and true or nil
+    -- A boss frame: the slot takeover event is listened to from here on.
+    if t._euiGuidGuard then Engine.WatchBossSlots() end
     -- Unit-watch shows happen while events were being dropped (hidden frames
     -- skip dispatch), so a freshly shown frame repaints in full.
     if not frame._euiEngineShowHook then
@@ -888,6 +904,19 @@ local function Frame_EnableElement(self, elementName)
         local fn = painters[channel]
         if fn then fn(self, self._euiUnit, "ForceUpdate") end
     elseif channel then
+        -- A channel with no unit events (the raid marker) is attached only
+        -- when its element existed at spawn: one turned on later joins the
+        -- frame's repaint list here, so a target or focus swap, a show and
+        -- every other full repaint paint it too.
+        local info = attached[self]
+        if info and not CHANNEL_EVENTS[channel] then
+            local chans = info.channels
+            local listed = false
+            for i = 1, #chans do
+                if chans[i] == channel then listed = true break end
+            end
+            if not listed then chans[#chans + 1] = channel end
+        end
         -- A paint earlier in this frame (the settings reload repaints every
         -- frame first) skipped the element while it was off: its stamp must
         -- not eat this one.
@@ -906,6 +935,31 @@ local function Frame_DisableElement(self, elementName)
     if elementName == "Power" then ns.UF_PowerValSync(self) end
 end
 
+-- Player frame pings match Blizzard's PlayerFrame: off the portrait they
+-- call out the player's health instead of just the name.
+local function Player_OverPortrait(self)
+    local pt = self.Portrait and self.Portrait.backdrop
+    return pt and pt:IsVisible() and pt:IsMouseOver()
+end
+
+-- Self Ping Only (player.pingSelfOnly) pings the whole frame like the portrait.
+local function Player_HealthPing(self)
+    if self._euiUnit ~= "player" or Player_OverPortrait(self) then return false end
+    local s = ns.db and ns.db.profile.player
+    return not (s and s.pingSelfOnly)
+end
+
+local function Player_GetAllowRadialWheel(self)
+    return not Player_HealthPing(self)
+end
+
+local function Player_GetTargetInfo(self)
+    return {
+        guid = UnitGUID("player"),
+        isPlayerResource = Player_HealthPing(self),
+    }
+end
+
 --- Spawns one secure unit button. The caller styles it and attaches engine
 --- channels afterward; RegisterUnitWatch owns show/hide from here on.
 function Engine.SpawnUnitFrame(unit, name)
@@ -918,8 +972,10 @@ function Engine.SpawnUnitFrame(unit, name)
     -- the whole chain secure, so secrets pass and enemy pings work exactly
     -- like the default frames (field-proven 2026-08-20). Hence the live
     -- token lives in `_euiUnit`, and GetIsPingable/GetTargetInfo are never
-    -- overridden here (raw override = securecopy error, secrecy-guarded
-    -- override = pings dead in all restricted content; both field-failed).
+    -- overridden for a unit that can be secret (raw override = securecopy
+    -- error, secrecy-guarded override = pings dead in all restricted
+    -- content; both field-failed). The player frame is the one exception:
+    -- it only reads the player's own GUID, which is never secret.
     local frame = CreateFrame("Button", name, petBattleHider,
         "SecureUnitButtonTemplate, PingableUnitFrameTemplate")
     frame._euiBaseUnit = unit
@@ -927,8 +983,12 @@ function Engine.SpawnUnitFrame(unit, name)
     frame.IsElementEnabled = Frame_IsElementEnabled
     frame.EnableElement = Frame_EnableElement
     frame.DisableElement = Frame_DisableElement
+    if unit == "player" then
+        frame.GetAllowRadialWheel = Player_GetAllowRadialWheel
+        frame.GetTargetInfo = Player_GetTargetInfo
+    end
     frame:SetAttribute("unit", unit)
-    frame:SetAttribute("*type1", "target")
+    EllesmereUI.SetLeftClickTarget(frame)
     frame:SetAttribute("toggleForVehicle", true)
     EllesmereUI.AttachSecureUnitMenu(frame)
     -- The secure environment rewrites the unit attribute on vehicle and pet
@@ -982,6 +1042,29 @@ globalFrame:RegisterEvent("PLAYER_FOCUS_CHANGED")
 globalFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 globalFrame:RegisterEvent("RAID_TARGET_UPDATE")
 globalFrame:RegisterEvent("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
+-- A unit turning targetable can take a boss slot with no engage event (an add becoming
+-- boss 2; Blizzard's own boss frames update on this event too). Listened to once a boss
+-- frame is attached (Engine.Attach), and not on WoW Forever.
+function Engine.WatchBossSlots()
+    if EllesmereUI.IS_FOREVER then return end
+    globalFrame:RegisterEvent("UNIT_TARGETABLE_CHANGED")
+end
+-- One identity repaint of the boss frames on screen, on the next frame, however many
+-- events asked for it in this one.
+local BOSS_TOKENS = { "boss1", "boss2", "boss3", "boss4", "boss5" }
+local bossSettlePending = false
+local function BossSettleRun()
+    bossSettlePending = false
+    for i = 1, 5 do
+        local f = unitFrames[BOSS_TOKENS[i]]
+        if f and f:IsShown() then Engine.RepaintAll(f, "UnitChanged") end
+    end
+end
+local function BossSettle()
+    if bossSettlePending then return end
+    bossSettlePending = true
+    C_Timer.After(0, BossSettleRun)
+end
 -- 2D portrait art streams in AFTER the paint that asked for it (loading
 -- screens, vehicle transitions); this unitless event is the only trigger
 -- that follows, so it fans the portrait painter out to every shown frame
@@ -1011,28 +1094,34 @@ globalFrame:SetScript("OnEvent", function(self, event, unit)
             -- The whole occupant changed, so the repaint is an identity one
             -- (the text painter paints only its target zones for the event
             -- name itself, which would leave the old name under the new
-            -- colour). The poll's GUID memo takes the new occupant, so its
+            -- color). The poll's GUID memo takes the new occupant, so its
             -- next tick does not repeat this paint.
             f._euiLastGuid = UnitGUID(f._euiUnit)
             Engine.RepaintAll(f, "UnitChanged")
         end
     elseif event == "INSTANCE_ENCOUNTER_ENGAGE_UNIT" then
         for i = 1, 5 do
-            local f = unitFrames["boss" .. i]
+            local f = unitFrames[BOSS_TOKENS[i]]
             if f and f:IsShown() then Engine.RepaintAll(f, event) end
         end
         -- The slots can still be settling when the event lands (one occupant
         -- moves down while the new one moves in): one next-frame pass reads
         -- the final order.
-        if not self._euiBossSettle then
-            self._euiBossSettle = true
-            C_Timer.After(0, function()
-                self._euiBossSettle = nil
-                for i = 1, 5 do
-                    local f = unitFrames["boss" .. i]
-                    if f and f:IsShown() then Engine.RepaintAll(f, "UnitChanged") end
+        BossSettle()
+    elseif event == "UNIT_TARGETABLE_CHANGED" then
+        -- A targetable flip can re-sort the boss slots, and the trackers' GUID probe
+        -- is blind where the game hides unit identity. Whatever token reports the
+        -- flip (the slot itself, the unit's nameplate, the target), the boss frames
+        -- on screen take the one next-frame repaint; with none on screen nothing is
+        -- asked for. No other frame is touched.
+        if not bossSettlePending then
+            for i = 1, 5 do
+                local f = unitFrames[BOSS_TOKENS[i]]
+                if f and f:IsShown() then
+                    BossSettle()
+                    break
                 end
-            end)
+            end
         end
     elseif event == "RAID_TARGET_UPDATE" then
         local fn = painters.raidicon

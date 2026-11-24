@@ -93,7 +93,7 @@ local DEFAULTS = {
     nameOffsetX = 0,
     nameOffsetY = 0,
     textColor = { r = 1, g = 1, b = 1 },
-    -- On, the bubble takes the per-channel colour the engine already gave it.
+    -- On, the bubble takes the per-channel color the engine already gave it.
     followBlizzardColor = false,
 }
 
@@ -167,13 +167,7 @@ end
 --  Secret-safe helpers
 -------------------------------------------------------------------------------
 
--- pcall'd as well as presence-tested: issecretvalue is absent on older clients, and the test
--- itself can raise.
-local function IsSecret(v)
-    if not issecretvalue then return false end
-    local ok, r = pcall(issecretvalue, v)
-    return ok and r or false
-end
+local IsSecret = EUI.IsSecret
 
 -- Upvalues instead of closures: these run once per incoming line and per candidate bubble,
 -- and a pcall'd closure would allocate every time.
@@ -183,11 +177,10 @@ local function RawEq()
     _cmpEq = (_cmpA == _cmpB)
 end
 
--- Either side can be a secret string in restricted content, and comparing one raises. That is
--- exactly why the existence test is type() and not "== nil": comparing a secret to nil is the
--- operation our own secret rules forbid (EUI_Chat_EditBox.lua's OnEditBoxPreSendText carries
--- the same note), so a nil belt in front of the guard would itself be the hazard. type()
--- reports a secret's underlying type, so a secret string still reaches the guarded compare.
+-- Either side can be a secret string in restricted content, and comparing one with another
+-- string raises (EUI_Chat_EditBox.lua's OnEditBoxPreSendText carries the same note), so the
+-- compare runs under pcall. type() reports a secret's underlying type, so a secret string
+-- still reaches the guarded compare.
 local function SafeEq(a, b)
     if type(a) ~= "string" or type(b) ~= "string" then return false end
     _cmpA, _cmpB, _cmpEq = a, b, false
@@ -322,7 +315,7 @@ local function RawReadColor()
     _colorR, _colorG, _colorB = _colorFS:GetTextColor()
 end
 
--- The colour the engine itself put on this bubble, which is how "follow Blizzard" answers per
+-- The color the engine itself put on this bubble, which is how "follow Blizzard" answers per
 -- channel without us mapping chat events to chat types. Guarded like every other read of a
 -- Blizzard frame, and secret-tested because a restricted one answers with numbers that cannot
 -- be handed to SetTextColor.
@@ -479,8 +472,8 @@ local function Layout(f, cfg)
     BubbleFont(f.text, path, fontSize, flag)
     local tc = cfg.textColor or d.textColor
     local tr, tg, tb = (tc and tc.r) or 1, (tc and tc.g) or 1, (tc and tc.b) or 1
-    -- Blizzard's own colour when it was asked for AND we managed to read it; the configured
-    -- one otherwise, so a bubble whose colour would not come back is still readable.
+    -- Blizzard's own color when it was asked for AND we managed to read it; the configured
+    -- one otherwise, so a bubble whose color would not come back is still readable.
     if cfg.followBlizzardColor == true and f.blizzR then
         tr, tg, tb = f.blizzR, f.blizzG, f.blizzB
     end
@@ -1062,7 +1055,7 @@ end
 function CB.ShowPreview(parent, onResize)
     if not preview then
         preview = NewBubble()
-        preview.text:SetText("The quick brown fox jumps over the lazy dog.")
+        preview.text:SetText(EllesmereUI.L("The quick brown fox jumps over the lazy dog."))
     end
     preview:SetParent(parent)
     preview:SetFrameStrata(parent:GetFrameStrata())

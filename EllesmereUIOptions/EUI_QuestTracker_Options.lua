@@ -44,7 +44,7 @@ initFrame:SetScript("OnEvent", function(self)
 
     local function BuildPage(_, parent, yOffset)
         local W  = EllesmereUI.Widgets
-        local PP = EllesmereUI.PP
+        local PP = EllesmereUI.PanelPP
         local y  = yOffset
         local row, h
 
@@ -101,7 +101,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Stock styles (Blizzard Style / Classic WoW UI) keep Blizzard's own
-        -- tracker art, text and quest icons: the background, font and colour
+        -- tracker art, text and quest icons: the background, font and color
         -- rows only apply to the EllesmereUI look.
         local BS = EllesmereUI.BlizzStyle
         local STOCK = BS and BS.Get("questtracker") and not CUSTOM
@@ -138,7 +138,7 @@ initFrame:SetScript("OnEvent", function(self)
                   setValue=function(v) Set("customGroupByZone", v); RefreshAll(); EllesmereUI:RefreshPage() end })
             y = y - h
 
-            -- Zone header colour, on the Group Quests by Zone slot: Custom
+            -- Zone header color, on the Group Quests by Zone slot: Custom
             -- Colored | Accent Colored. With no pick the headers follow the
             -- Header Color, so the lit swatch is the one they show now.
             if not EllesmereUI._prebuilding then
@@ -322,7 +322,7 @@ initFrame:SetScript("OnEvent", function(self)
               tooltip="Draws a 1px accent line above the background at the top of the tracker.",
               getValue=function() return Cfg("showTopLine") ~= false end,
               setValue=function(v) Set("showTopLine", v); if EQT.ApplyBackground then EQT.ApplyBackground() end end })
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = bgRow._leftRegion
             local ctrl = rgn._control
             -- The custom tracker can hide its background until hovered.
@@ -341,19 +341,21 @@ initFrame:SetScript("OnEvent", function(self)
                     },
                 })
             end
-            local bgSwatch, bgSwatchRefresh = EllesmereUI.BuildColorSwatch(
-                rgn, bgRow:GetFrameLevel() + 3,
-                function()
-                    return (Cfg("bgR") or 0), (Cfg("bgG") or 0), (Cfg("bgB") or 0)
-                end,
-                function(r, g, b)
-                    Set("bgR", r); Set("bgG", g); Set("bgB", b)
-                    if EQT.ApplyBackground then EQT.ApplyBackground() end
-                end,
-                false, 20)
-            PP.Point(bgSwatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
-            rgn._lastInline = bgSwatch
-            EllesmereUI.RegisterWidgetRefresh(function() bgSwatchRefresh() end)
+            if not EllesmereUI._prebuilding then
+                local bgSwatch, bgSwatchRefresh = EllesmereUI.BuildColorSwatch(
+                    rgn, bgRow:GetFrameLevel() + 3,
+                    function()
+                        return (Cfg("bgR") or 0), (Cfg("bgG") or 0), (Cfg("bgB") or 0)
+                    end,
+                    function(r, g, b)
+                        Set("bgR", r); Set("bgG", g); Set("bgB", b)
+                        if EQT.ApplyBackground then EQT.ApplyBackground() end
+                    end,
+                    false, 20)
+                PP.Point(bgSwatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
+                rgn._lastInline = bgSwatch
+                EllesmereUI.RegisterWidgetRefresh(function() bgSwatchRefresh() end)
+            end
         end
         y = y - h
 
@@ -664,20 +666,19 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         local ApplyWatches, ApplyProgress = EQT.ApplyQuestWatches, EQT.ApplyQuestProgress
-        local StandDown = EQT.QuestToolsStandDown
-        local GAMEPAD_TIP = "This option does not work with the Gamepad interface style."
         -- Quest Log Order is the base sort mode (a saved "default", the retired
-        -- Blizzard order mode, reads as it).
+        -- Blizzard order mode, reads as it, as does Distance off the custom tracker).
         local function SortModeCfg()
             local m = Cfg("questSortMode")
             if m == nil or m == "default" then return "log" end
+            if m == "distance" and not CUSTOM then return "log" end
             return m
         end
         -- Section gate: Sort Quests, Filter Quests and Auto Track Zone Quests are
-        -- built only while Experimental Quest Tools is on (and usable); turning
+        -- built only while Experimental Quest Tools is on; turning
         -- it on or off rebuilds the page. The progress rows always show.
         -- The custom tracker needs no switch: it never edits the watch list.
-        local toolsOn = CUSTOM or (Cfg("questWatchExperimental") == true and not StandDown())
+        local toolsOn = CUSTOM or Cfg("questWatchExperimental") == true
         local function FilterRow(key, label)
             return { type="toggle", label=label,
                 get=function() return Cfg(key) or false end,
@@ -686,8 +687,8 @@ initFrame:SetScript("OnEvent", function(self)
 
         local expCfg = { type="toggle", text="Experimental Quest Tools",
               tooltip="Unlocks Sort Quests, Filter Quests and Auto Track Zone Quests.",
-              disabled=function() return CUSTOM or StandDown() end,
-              disabledTooltip=CUSTOM and "Always on with the Custom Quest Tracker." or GAMEPAD_TIP,
+              disabled=function() return CUSTOM end,
+              disabledTooltip="Always on with the Custom Quest Tracker.",
               rawTooltip=CUSTOM or nil,
               getValue=function() return CUSTOM or Cfg("questWatchExperimental") == true end,
               setValue=function(v)
@@ -734,8 +735,9 @@ initFrame:SetScript("OnEvent", function(self)
                 { type="dropdown", text="Sort Quests",
                   tooltip="Reorders your tracked quests; Quest Log Order lists them as your quest log does.",
                   values = { log = "Quest Log Order", zone = "Zone", level = "Level",
-                             name = "Name", progress = "Progress", type = "Quest Type" },
-                  order  = { "log", "zone", "level", "name", "progress", "type" },
+                             name = "Name", progress = "Progress", type = "Quest Type",
+                             distance = CUSTOM and "Distance" or nil },
+                  order  = { "log", "zone", "level", "name", "progress", "type", CUSTOM and "distance" or nil },
                   getValue=SortModeCfg,
                   setValue=function(v) Set("questSortMode", v); ApplyWatches() end })
             EllesmereUI.BuildInlineCog(row._rightRegion, {
@@ -748,11 +750,16 @@ initFrame:SetScript("OnEvent", function(self)
                       set=function(v) Set("questSortCompleted", v); ApplyWatches() end },
                     { type="dropdown", label="Then By",
                       values = { none = "None", zone = "Zone", level = "Level", name = "Name",
-                                 progress = "Progress", type = "Quest Type" },
-                      order  = { "none", "zone", "level", "name", "progress", "type" },
+                                 progress = "Progress", type = "Quest Type",
+                                 distance = CUSTOM and "Distance" or nil },
+                      order  = { "none", "zone", "level", "name", "progress", "type", CUSTOM and "distance" or nil },
                       disabled=function() return SortModeCfg() == "log" end,
                       disabledTooltip="Requires Sort Quests set to something other than Quest Log Order.", rawTooltip=true,
-                      get=function() return Cfg("questSortThenBy") or "none" end,
+                      get=function()
+                          local m = Cfg("questSortThenBy") or "none"
+                          if m == "distance" and not CUSTOM then return "none" end
+                          return m
+                      end,
                       set=function(v) Set("questSortThenBy", v); ApplyWatches() end },
                 },
             })

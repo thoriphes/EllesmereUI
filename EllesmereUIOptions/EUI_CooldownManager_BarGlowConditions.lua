@@ -5,6 +5,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  EllesmereUICdmBarGlowConditions.lua). A glow entry on the page reads:
 --
 --    When (icon) Fingers of Frost is [Active v]  | And [(icon) Brain Freeze v] is [Missing v]  [toggle]
+--    Health         [Ignore v]                   | Health %        [slider]
 --    At Stacks      (gear) [toggle]              | Glow Type       [Pixel Glow v]
 --    Only In Combat [toggle]                     | Hero Talent     [Any v]
 --    Glow Color     ...                          | (icon) [Duplicate] [Remove]
@@ -13,7 +14,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  entry.andMode = "and" | nil (its buff and state grey out while off); the
 --  second buff and its state are entry.conditions[1]. Each glow starts with a
 --  collapse bar (collapsed: buff icon + name only, entry.collapsed); Duplicate
---  inserts a full copy right below.
+--  inserts a full copy right below. A Glow When Usable glow reads Require
+--  Resource [toggle] where At Stacks is (entry.requirePower).
 --  Frames are built with the page; nothing exists until it is opened.
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUICooldownManager"]
@@ -148,13 +150,14 @@ local function Row(i)
     local cbBg = cb:CreateTexture(nil, "BACKGROUND")
     cbBg:SetAllPoints()
     cbBg:SetColorTexture(0.114, 0.106, 0.099, 1)
-    r.brd = EllesmereUI.MakeBorder(cb, 0.224, 0.215, 0.207, 0.6, EllesmereUI.PanelPP)
+    r.brd = EllesmereUI.MakeRoundedBorder(cb, 0.224, 0.215, 0.207, 0.6, cbBg)
     local ACCENT = EllesmereUI.ELLESMERE_GREEN
     r.fill = cb:CreateTexture(nil, "ARTWORK")
     r.fill:SetSnapToPixelGrid(false)
     r.fill:SetTexelSnappingBias(0)
     r.fill:SetPoint("TOPLEFT", cb, "TOPLEFT", 3, -3)
     r.fill:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", -3, 3)
+    EllesmereUI.RoundBody(cb, r.fill, 1)
     r.fill:SetColorTexture(ACCENT.r, ACCENT.g, ACCENT.b, 1)
     r.ico = r:CreateTexture(nil, "ARTWORK")
     r.ico:SetSize(ITEM_H - 4, ITEM_H - 4)
@@ -313,11 +316,12 @@ local USABLE_ORDER = { "USABLE" }
 -- The left column is a standard dropdown row (the glow's own Glow When); the
 -- right is a standard toggle row labelled "And"; while it is off the buff
 -- picker and its state grey out. Returns the new y.
-function ns.BuildBarGlowWhenRow(W, parent, y, entry, onChange)
+-- ownSid: the button's ability when the entry saves none (CDM icons).
+function ns.BuildBarGlowWhenRow(W, parent, y, entry, onChange, ownSid)
     local c = Cond(entry)
     local Paint  -- forward: the toggle repaints the right column
     local usable = entry.mode == "USABLE"
-    local sid = tonumber(usable and entry.actionSpellID or entry.spellID) or 0
+    local sid = tonumber(usable and (entry.actionSpellID or ownSid) or entry.spellID) or 0
     local ownName = (sid > 0) and SpellLabel(sid) or (usable and EllesmereUI.L("this ability") or "buff")
 
     local row, h = W:DualRow(parent, y,
@@ -435,6 +439,19 @@ function ns.BarGlowCombatCfg(entry, onChange)
         end }
 end
 
+-- The Require Resource toggle's row config (entry.requirePower): a Glow When
+-- Usable glow also waits for the ability's resource. It takes the half At
+-- Stacks has for a buff glow.
+function ns.BarGlowResourceCfg(entry)
+    return { type = "toggle", text = "Require Resource",
+        tooltip = "Only glow while the ability also has the rage, energy, mana or other resource it costs.",
+        getValue = function() return entry.requirePower == true end,
+        setValue = function(v)
+            entry.requirePower = v or nil
+            if ns.RequestBarGlowUpdate then ns.RequestBarGlowUpdate() end
+        end }
+end
+
 -- Only In Combat | Hero Talent (the current spec's hero trees; glows are
 -- saved per spec). Retail only: WoW Forever has no hero talents, so the page
 -- pairs Only In Combat with Glow Color there instead. Returns the new y.
@@ -467,8 +484,47 @@ function ns.BuildBarGlowCombatRow(W, parent, y, entry, onChange)
     return y - h
 end
 
+-- Health [Ignore / Below / Above] | Health % (entry.healthBelow or
+-- entry.healthAbove, never both). The slider only re-evaluates the glows, not
+-- the whole Cooldown Manager, on each drag step. Returns the new y.
+function ns.BuildBarGlowHealthRow(W, parent, y, entry, onChange)
+    local _, h = W:DualRow(parent, y,
+        { type = "dropdown", text = "Health",
+          -- The At Stacks comparison's words (translated as comparisons, not positions).
+          values = { disabled = "Ignore", below = "Below (<)", above = "Above (>)" },
+          order = { "disabled", "below", "above" },
+          tooltip = "Only glow while your health is below or above the selected percentage.",
+          getValue = function()
+              if tonumber(entry.healthAbove) then return "above" end
+              if tonumber(entry.healthBelow) then return "below" end
+              return "disabled"
+          end,
+          setValue = function(v)
+              local pct = tonumber(entry.healthBelow) or tonumber(entry.healthAbove) or 35
+              entry.healthBelow = v == "below" and pct or nil
+              entry.healthAbove = v == "above" and pct or nil
+              if onChange then onChange() end
+              EllesmereUI:RefreshPage()
+          end },
+        { type = "slider", text = "Health %",
+          min = 1, max = 100, step = 1,
+          disabled = function()
+              return not (tonumber(entry.healthBelow) or tonumber(entry.healthAbove))
+          end,
+          disabledTooltip = "Health",
+          getValue = function()
+              return tonumber(entry.healthBelow) or tonumber(entry.healthAbove) or 35
+          end,
+          setValue = function(v)
+              if tonumber(entry.healthAbove) then entry.healthAbove = v
+              else entry.healthBelow = v end
+              if ns.RequestBarGlowUpdate then ns.RequestBarGlowUpdate() end
+          end })
+    return y - h
+end
+
 -- "Duplicate" left of a glow's Remove button: inserts a full copy of the glow
--- (buff, style, colour, stacks, And condition, hero talent) right below it, so
+-- (buff, style, color, stacks, And condition, hero talent) right below it, so
 -- variants of the same buff (e.g. one per hero tree) start from the original.
 -- Returns the button so the buff icon can sit to its left.
 function ns.BarGlowDuplicateButton(region, removeBtn, buffList, index, onDone)
@@ -519,7 +575,7 @@ end
 local ARROW_DOWN  = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-down3.png"
 local ARROW_RIGHT = "Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-arrow-right.png"
 
-function ns.BuildBarGlowHeader(parent, y, entry, aIdx)
+function ns.BuildBarGlowHeader(parent, y, entry, aIdx, ownSid)
     if not EllesmereUI._prebuilding then EllesmereUI._passReadSearchFlag = true end  -- reads the search flag below
     if EllesmereUI._prebuilding or EllesmereUI._lessCommonSearchActive then return y, true end
     local collapsed = entry.collapsed == true
@@ -551,7 +607,7 @@ function ns.BuildBarGlowHeader(parent, y, entry, aIdx)
     PaintArrow(1, 1, 1, 0.7)
 
     local usable = entry.mode == "USABLE"
-    local ico = ns.BarGlowSpellIcon(bar, 26, usable and entry.actionSpellID or entry.spellID)
+    local ico = ns.BarGlowSpellIcon(bar, 26, usable and (entry.actionSpellID or ownSid) or entry.spellID)
     ico:SetPoint("LEFT", arrow, "RIGHT", 11, 0)
     local title = EllesmereUI.MakeFont(bar, 13, nil, 1, 1, 1)
     title:SetPoint("LEFT", ico, "RIGHT", 10, 0)

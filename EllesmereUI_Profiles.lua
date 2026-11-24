@@ -141,7 +141,7 @@ end
 -------------------------------------------------------------------------------
 local PRIVATE_ADDON_KEYS = {
     ["EllesmereUIDataBars"] = { "characters" },  -- gold record -> EllesmereUIDB.goldLedger
-    ["EllesmereUIQoL"]      = { "chars" },       -- upgrade calc -> EllesmereUIDB.qolUpgradeCalcChars
+    ["EllesmereUIQoL"]      = { "chars" },       -- upgrade calc -> EllesmereUIDB.chars[guid].upgradeCalc
 }
 
 -- Strip account data from an addons table, in place. Accepts either keyspace
@@ -201,7 +201,7 @@ if EllesmereUI.IS_FOREVER == true then AB_BAREWORD.FavorBar = true end
 local UF_BAREWORD = {
     player=true, target=true, focus=true, pet=true, targettarget=true,
     focustarget=true, boss=true, classPower=true,
-    playerCastbar=true, targetCastbar=true, focusCastbar=true,
+    playerCastbar=true, targetCastbar=true, focusCastbar=true, petCastbar=true,
 }
 -- providedFolder (already a local folder: elem.folder, or a payload value that
 -- has been CanonToLocal'd) wins; the static resolution is the fallback.
@@ -778,6 +778,7 @@ local function StampUnlockLayoutIfMissing(prof)
         { cb = "playerCastbar", parent = "player" },
         { cb = "targetCastbar", parent = "target" },
         { cb = "focusCastbar",  parent = "focus" },
+        { cb = "petCastbar",    parent = "pet" },
     }
     for _, def in ipairs(CB_DEFAULTS) do
         if not snap.anchors[def.cb] then
@@ -922,14 +923,14 @@ local function RepointAllDBs(profileName)
     -- re-apply when any section is per-profile. GetCustomColorsDB() resolves the
     -- right tables LIVE (edits write straight to the profiles' own customColors --
     -- never a wipe/restore, which is what once let a combat-end spec switch reset
-    -- colours). ApplyColorsToOUF self-guards combat on its action-bar branch.
+    -- colors). ApplyColorsToOUF self-guards combat on its action-bar branch.
     if EllesmereUIDB and EllesmereUI.AnyColorSectionPerProfile() and EllesmereUI.ApplyColorsToOUF then
         EllesmereUI.ApplyColorsToOUF()
     end
     -- Dark Mode settings are ALWAYS per-profile, so the active profile's dark
     -- palette + darken amounts change on every repoint. Re-read and repaint.
     -- RefreshDarkMode() also runs ApplyColorsToOUF, so the (possibly different)
-    -- darken propagates to class/power colours even in global colour mode.
+    -- darken propagates to class/power colors even in global color mode.
     EllesmereUI.RefreshDarkMode()
     -- Number Format is per-profile too: drop the resolved configs and redraw.
     EllesmereUI.RefreshNumberFormat()
@@ -954,7 +955,7 @@ end
 --  runtime spec event handler.
 --
 --  Resolution order:
---    1. Cached spec from lastSpecByChar (reliable across sessions)
+--    1. Cached spec from EllesmereUIDB.chars[guid].lastSpec (reliable across sessions)
 --    2. Live C_SpecializationInfo.GetSpecialization() API (available after ADDON_LOADED for
 --       returning characters, may be nil for brand-new characters)
 --
@@ -966,13 +967,11 @@ local function ResolveSpecProfile()
     local specProfiles = EllesmereUIDB.specProfiles
     if not specProfiles or not next(specProfiles) then return nil end
 
-    local charKey = EllesmereUI.CharKey(" - ", EllesmereUIDB.lastSpecByChar)
-    if not EllesmereUIDB.lastSpecByChar then
-        EllesmereUIDB.lastSpecByChar = {}
-    end
+    local charKey = EllesmereUI.CharGUID()
+    local mine = EllesmereUI.CharEntry(true)
 
     -- Prefer cached spec from last session (always reliable)
-    local resolvedSpecID = EllesmereUIDB.lastSpecByChar[charKey]
+    local resolvedSpecID = mine and mine.lastSpec
 
     -- Fall back to live API if no cached value
     if not resolvedSpecID then
@@ -981,7 +980,7 @@ local function ResolveSpecProfile()
             local liveSpecID = C_SpecializationInfo.GetSpecializationInfo(specIdx)
             if liveSpecID then
                 resolvedSpecID = liveSpecID
-                EllesmereUIDB.lastSpecByChar[charKey] = resolvedSpecID
+                if mine then mine.lastSpec = resolvedSpecID end
             end
         end
     end
@@ -1323,8 +1322,8 @@ function EllesmereUI.ApplyProfileData(profileData)
     -- snapshot. A partial import nils profileData.fonts to keep the recipient's
     -- own fonts -- wiping unconditionally here reset them to the default
     -- (Expressway/shadow) instead. Mirrors SwitchProfile's guarded restore.
-    -- Custom colours are getter-redirected (GetCustomColorsDB) and must NEVER be
-    -- wiped/restored here (see the custom-colours global-mode design).
+    -- Custom colors are getter-redirected (GetCustomColorsDB) and must NEVER be
+    -- wiped/restored here (see the custom-colors global-mode design).
     if profileData.fonts then
         local fontsDB = EllesmereUI.GetFontsDB()
         for k in pairs(fontsDB) do fontsDB[k] = nil end
@@ -1391,7 +1390,8 @@ local REFRESH_ADDON_STEPS = {
     -- Cursor (style + position), Crosshair, Self Combat Text, and the QoL
     -- extras (FPS counter + Secondary Stats -- one call for both: the FPS
     -- readout may be drawn by the Secondary Stats block, so the two owners
-    -- re-evaluate together).
+    -- re-evaluate together; the Target Distance text, the alerts and the
+    -- Durability Warning).
     function()
         if _G._ECL_Apply then _G._ECL_Apply() end
         if _G._ECL_ApplyTrail then _G._ECL_ApplyTrail() end
@@ -1405,6 +1405,14 @@ local REFRESH_ADDON_STEPS = {
         elseif EllesmereUI._applySecondaryStats then
             EllesmereUI._applySecondaryStats()
         end
+        if EllesmereUI._applyTargetDistance then EllesmereUI._applyTargetDistance() end
+        if EllesmereUI._applyCombatAlert then EllesmereUI._applyCombatAlert() end
+        if EllesmereUI._applyPotionAlert then EllesmereUI._applyPotionAlert() end
+        if EllesmereUI._applyTalentAlert then EllesmereUI._applyTalentAlert() end
+        if EllesmereUI._applyLegacyAlert then EllesmereUI._applyLegacyAlert() end
+        if EllesmereUI._applyAnnounceGroupDeaths then EllesmereUI._applyAnnounceGroupDeaths() end
+        if EllesmereUI._applyGroupDeathAlert then EllesmereUI._applyGroupDeathAlert() end
+        if EllesmereUI._syncDurWarnEvents then EllesmereUI._syncDurWarnEvents() end
     end,
     -- QoL Battle Res and Bloodlust (enable state, visibility, position;
     -- neither exists on WoW Forever)
@@ -1422,7 +1430,11 @@ local REFRESH_ADDON_STEPS = {
     -- ActionBars (style + layout + position)
     function() if _G._EAB_Apply then _G._EAB_Apply() end end,
     -- UnitFrames (style + layout + position)
-    function() if _G._EUF_ReloadFrames then _G._EUF_ReloadFrames() end end,
+    function()
+        if _G._EUF_ReloadFrames then _G._EUF_ReloadFrames() end
+        -- The Rested Indicator follows profiles (EUI_UnitFrames_Init.lua).
+        if EllesmereUI._applyRestedIndicator then EllesmereUI._applyRestedIndicator() end
+    end,
     -- Raid Frames + Party Frames (style + layout + size; positions re-applied
     -- by the tail)
     function() if _G._ERF_RefreshAll then _G._ERF_RefreshAll() end end,
@@ -1618,8 +1630,14 @@ end
 --  Each profile can have a key bound to switch to it instantly.
 --  Stored in EllesmereUIDB.profileKeybinds = { ["Name"] = "CTRL-1", ... }
 --  Uses hidden buttons + SetOverrideBindingClick, same pattern as Party Mode.
+--  A button exists for a profile only while that profile's key is bound; a
+--  button let go (key cleared, profile deleted) is kept for the next bind, and
+--  a rename moves the profile's button and binding to the new name.
 -------------------------------------------------------------------------------
-local _profileBindBtns = {} -- [profileName] = hidden Button
+local _profileBindBtns = {}  -- [profileName] = hidden Button
+local _profileBindName = {}  -- [Button] = the profile it switches to
+local _profileBindSpare = {} -- buttons let go, reused before a new one is made
+local _profileBindBtnCount = 0
 
 local function GetProfileKeybinds()
     if not EllesmereUIDB then EllesmereUIDB = {} end
@@ -1627,54 +1645,76 @@ local function GetProfileKeybinds()
     return EllesmereUIDB.profileKeybinds
 end
 
-local function EnsureProfileBindBtn(profileName)
-    if _profileBindBtns[profileName] then return _profileBindBtns[profileName] end
-    local safeName = profileName:gsub("[^%w]", "")
-    local btn = CreateFrame("Button", "EllesmereUIProfileBind_" .. safeName, UIParent)
-    btn:Hide()
-    btn:SetScript("OnClick", function()
-        local active = EllesmereUI.GetActiveProfileName()
-        if active == profileName then return end
-        local _, profiles = EllesmereUI.GetProfileList()
-        local fontWillChange = EllesmereUI.ProfileChangesFont(profiles and profiles[profileName])
-        local skinsWillChange = EllesmereUI.ProfileChangesWindowSkins(profiles and profiles[profileName])
-        local styleWillChange = EllesmereUI.ProfileChangesStyle(profiles and profiles[profileName])
-        EllesmereUI.SwitchProfile(profileName)
-        -- true = budgeted: manual swap site, watchdog-sliced module refresh.
-        EllesmereUI.RefreshAllAddons(true)
-        if fontWillChange or skinsWillChange or styleWillChange then
-            EllesmereUI:ShowConfirmPopup({
-                title       = "Reload Required",
-                message     = fontWillChange
-                    and "Font changed. A UI reload is needed to apply the new font."
-                    or skinsWillChange
-                    and "Window skins changed for this profile. A UI reload is needed to apply them."
-                    or "Style changed for this profile. A UI reload is needed to apply it.",
-                confirmText = "Reload Now",
-                cancelText  = "Later",
-                reload      = true,
-            })
-        else
-            EllesmereUI:RefreshPage()
-        end
-    end)
+local function OnProfileBindClick(self)
+    local profileName = _profileBindName[self]
+    if not profileName then return end
+    local active = EllesmereUI.GetActiveProfileName()
+    if active == profileName then return end
+    local _, profiles = EllesmereUI.GetProfileList()
+    local fontWillChange = EllesmereUI.ProfileChangesFont(profiles and profiles[profileName])
+    local skinsWillChange = EllesmereUI.ProfileChangesWindowSkins(profiles and profiles[profileName])
+    local styleWillChange = EllesmereUI.ProfileChangesStyle(profiles and profiles[profileName])
+    EllesmereUI.SwitchProfile(profileName)
+    -- true = budgeted: manual swap site, watchdog-sliced module refresh.
+    EllesmereUI.RefreshAllAddons(true)
+    if fontWillChange or skinsWillChange or styleWillChange then
+        EllesmereUI:ShowConfirmPopup({
+            title       = "Reload Required",
+            message     = fontWillChange
+                and "Font changed. A UI reload is needed to apply the new font."
+                or skinsWillChange
+                and "Window skins changed for this profile. A UI reload is needed to apply them."
+                or "Style changed for this profile. A UI reload is needed to apply it.",
+            confirmText = "Reload Now",
+            cancelText  = "Later",
+            reload      = true,
+        })
+    else
+        EllesmereUI:RefreshPage()
+    end
+end
+
+-- The profile's button: its own, a spare, or a new one. Named by a counter: a
+-- global name built from the profile name can repeat, and every key bound to a
+-- repeated name clicks one button.
+local function AcquireProfileBindBtn(profileName)
+    local btn = _profileBindBtns[profileName]
+    if btn then return btn end
+    local n = #_profileBindSpare
+    if n > 0 then
+        btn = _profileBindSpare[n]
+        _profileBindSpare[n] = nil
+    else
+        _profileBindBtnCount = _profileBindBtnCount + 1
+        btn = CreateFrame("Button", "EllesmereUIProfileBind" .. _profileBindBtnCount, UIParent)
+        btn:Hide()
+        btn:SetScript("OnClick", OnProfileBindClick)
+    end
     _profileBindBtns[profileName] = btn
+    _profileBindName[btn] = profileName
     return btn
+end
+
+-- Unbinds the profile's button and keeps it for the next bind.
+local function ReleaseProfileBindBtn(profileName)
+    local btn = _profileBindBtns[profileName]
+    if not btn then return end
+    ClearOverrideBindings(btn)
+    _profileBindBtns[profileName] = nil
+    _profileBindName[btn] = nil
+    _profileBindSpare[#_profileBindSpare + 1] = btn
 end
 
 function EllesmereUI.SetProfileKeybind(profileName, key)
     local kb = GetProfileKeybinds()
-    -- Clear old binding for this profile
-    local oldKey = kb[profileName]
-    local btn = EnsureProfileBindBtn(profileName)
-    if oldKey then
-        ClearOverrideBindings(btn)
-    end
     if key then
+        local btn = AcquireProfileBindBtn(profileName)
+        ClearOverrideBindings(btn)
         kb[profileName] = key
         SetOverrideBindingClick(btn, true, key, btn:GetName())
     else
         kb[profileName] = nil
+        ReleaseProfileBindBtn(profileName)
     end
 end
 
@@ -1688,36 +1728,36 @@ function EllesmereUI.RestoreProfileKeybinds()
     local kb = GetProfileKeybinds()
     for profileName, key in pairs(kb) do
         if key then
-            local btn = EnsureProfileBindBtn(profileName)
+            local btn = AcquireProfileBindBtn(profileName)
             SetOverrideBindingClick(btn, true, key, btn:GetName())
         end
     end
 end
 
---- Update keybind references when a profile is renamed
+--- Update keybind references when a profile is renamed: the profile's button
+--- and its binding move to the new name (same key, same button).
 function EllesmereUI.OnProfileRenamed(oldName, newName)
     local kb = GetProfileKeybinds()
     local key = kb[oldName]
-    if key then
-        local oldBtn = _profileBindBtns[oldName]
-        if oldBtn then ClearOverrideBindings(oldBtn) end
+    if not key then return end
+    kb[oldName] = nil
+    kb[newName] = key
+    local btn = _profileBindBtns[oldName]
+    if btn then
         _profileBindBtns[oldName] = nil
-        kb[oldName] = nil
-        kb[newName] = key
-        local newBtn = EnsureProfileBindBtn(newName)
-        SetOverrideBindingClick(newBtn, true, key, newBtn:GetName())
+        _profileBindBtns[newName] = btn
+        _profileBindName[btn] = newName
+    else
+        btn = AcquireProfileBindBtn(newName)
+        SetOverrideBindingClick(btn, true, key, btn:GetName())
     end
 end
 
 --- Clean up keybind when a profile is deleted
 function EllesmereUI.OnProfileDeleted(profileName)
     local kb = GetProfileKeybinds()
-    if kb[profileName] then
-        local btn = _profileBindBtns[profileName]
-        if btn then ClearOverrideBindings(btn) end
-        _profileBindBtns[profileName] = nil
-        kb[profileName] = nil
-    end
+    kb[profileName] = nil
+    ReleaseProfileBindBtn(profileName)
 end
 
 --- Returns true if applying profileData would change the global font or outline mode.
@@ -1846,6 +1886,14 @@ function EllesmereUI.ProfileChangesStyle(profileData)
     if type(profileData) ~= "table" or type(profileData.addons) ~= "table" then return false end
     local reg = EllesmereUI._ModuleNS
     if not reg then return false end
+    -- Bags' WoW Forever style: the incoming profile's own Bags pick, else the
+    -- look most of its modules use (BagsForeverWanted).
+    local bags = EllesmereUI.IS_FOREVER and reg.EllesmereUIBags
+    if bags and bags.BagsForeverWanted then
+        local incoming = profileData.addons.EllesmereUIBags
+        local want = bags.BagsForeverWanted(type(incoming) == "table" and incoming or nil, profileData.addons)
+        if bags.BagsForever() ~= want then return true end
+    end
     for i = 1, #STYLE_FLAGS do
         local f = STYLE_FLAGS[i]
         local mns = reg[f.folder]
@@ -1903,6 +1951,37 @@ function EllesmereUI.RenderedLook()
     return look
 end
 
+--- WoW Forever: true when more than half of the loaded modules' styleable
+--- surfaces are on the WoW Forever look in a profile's addons table (nil = the
+--- active profile's): the Blizzard flag set with its Forever sibling, which a
+--- surface with no variant of its own also carries beside the Blizzard flag (as
+--- RenderedLook reads it); the Classic flag wins. Bags' WoW Forever style
+--- follows it while the profile has no Bags style picked. false off the Forever
+--- client and with no loaded surface. Reads settings only.
+function EllesmereUI.ForeverLookMajority(addons)
+    if not EllesmereUI.IS_FOREVER then return false end
+    if addons == nil then
+        local p = EllesmereUI.GetActiveProfileData()
+        addons = p and p.addons
+    end
+    local reg = EllesmereUI._ModuleNS
+    if type(addons) ~= "table" or not reg then return false end
+    local total, forever = 0, 0
+    for i = 1, #STYLE_FLAGS do
+        local f = STYLE_FLAGS[i]
+        if reg[f.folder] and not f.retailOnly then
+            total = total + 1
+            local t = addons[f.data or f.folder]
+            if f.sub and type(t) == "table" then t = t[f.sub] end
+            if type(t) == "table" and t[f.key] and not t[f.classic]
+                and t[f.forever or (f.key:gsub("Blizzard", "Forever", 1))] then
+                forever = forever + 1
+            end
+        end
+    end
+    return forever * 2 > total
+end
+
 -------------------------------------------------------------------------------
 --  Export / Import
 --  Format: !EUI_<base64 encoded compressed serialized data>
@@ -1926,6 +2005,43 @@ end
 function EllesmereUI.PayloadFromOtherClient(payload)
     local from = type(payload) == "table" and payload.client or nil
     return (from or "retail") ~= (EllesmereUI.IS_FOREVER and "forever" or "retail")
+end
+
+--- The screen a profile string is made on: payload.meta, at the payload ROOT
+--- beside `client`. Transport only: ImportProfile builds the stored profile
+--- from the recipient's own profile plus named payload.data keys, and
+--- DecodeProfileString hands out payload.data alone, so no import stores it.
+--- euiScale, screenW and screenH are the numbers the import page's warning
+--- (BuildScaleWarning) has read since 4.4, so they stay numbers. class, spec,
+--- look and addon are for the EllesmereUI Builder on the website, which sets
+--- its screen and class from them. Never a character name or realm.
+--- withLook adds the whole-UI look this session renders (RenderedLook; its
+--- false = "mixed"): true only for the active profile's string.
+function EllesmereUI.ScreenStamp(withLook)
+    local sw, sh = GetPhysicalScreenSize()
+    local scale = EllesmereUIDB and EllesmereUIDB.ppUIScale
+    if type(scale) ~= "number" then scale = UIParent and UIParent:GetScale() or 1 end
+    local _, class = UnitClass("player")
+    local spec
+    if not EllesmereUI.IS_FOREVER then
+        local si = C_SpecializationInfo.GetSpecialization()
+        spec = si and si > 0 and C_SpecializationInfo.GetSpecializationInfo(si) or nil
+        if EllesmereUI.IsSecret(spec) or type(spec) ~= "number" then spec = nil end
+    end
+    local look
+    if withLook then
+        look = EllesmereUI.RenderedLook()
+        if look == false then look = "mixed" elseif type(look) ~= "string" then look = nil end
+    end
+    return {
+        euiScale = scale,
+        screenW  = sw and math.floor(sw) or 0,
+        screenH  = sh and math.floor(sh) or 0,
+        class    = EllesmereUI.PlainString(class),
+        spec     = spec,
+        look     = look,
+        addon    = EllesmereUI.VERSION,
+    }
 end
 
 --- The reload prompt text after an import, plus one line when the string
@@ -1985,6 +2101,23 @@ function EllesmereUI.ForeverDropShadowedLegacy(inherited, incoming)
     end
 end
 
+-- Action bar spells (abSpells, profile root): the EllesmereUI Builder's
+-- spells per spec and action slot, which the Action Bars module places. An
+-- import takes the string's own, never the recipient's, and only with the
+-- Action Bars data beside them, the module loaded here, and a string made on
+-- this client. data = the profile data the import builds from (folder keys
+-- already this build's). The import mark (_abSpellsImported) never travels:
+-- each import that takes bar spells sets its own.
+local AB_SPELLS_FOLDER = "EllesmereUIActionBars"
+local function ImportedABSpells(data, payload)
+    local t = type(data) == "table" and data.abSpells
+    if type(t) ~= "table" or next(t) == nil then return nil end
+    if type(data.addons) ~= "table" or type(data.addons[AB_SPELLS_FOLDER]) ~= "table" then return nil end
+    if not EllesmereUI.IsModuleAddonLoaded(AB_SPELLS_FOLDER) then return nil end
+    if EllesmereUI.PayloadFromOtherClient(payload) then return nil end
+    return DeepCopy(t)
+end
+
 -- Snapshot the per-profile CDM spell allocation (which spells sit on which bars +
 -- per-spell settings, per spec) for export. The bar DEFINITIONS already travel in
 -- the addon blob; this carries the content that sits on them. Strips the sharer's
@@ -2016,6 +2149,7 @@ local function SnapshotProfileCDMSpells(profileName, includedFolders, cdmSpecs)
             if type(copy.barSpells) == "table" then copy.barSpells.__ghost_cd = nil end
             copy._barFilterModelV6 = nil
             copy._importGhostMode = nil
+            copy._importKeep = nil
             snap[specKey] = copy
         end
     end
@@ -2058,8 +2192,9 @@ end
 -- roles), charSheetCollapsedSections (transient UI state), characterFramePos /
 -- friendsFramePos (dragged panel positions, resolution- bound), tooltipFixedPos (stale
 -- account key; the live one is per-profile and rides the profile itself),
--- blizzWindowModernBG (dead key, read nowhere), mailAltRoster / mailAltHidden (the
--- player's own characters and which of them the Mail card's Alt List leaves out).
+-- blizzWindowModernBG (dead key, read nowhere), the character roster and its mailAltHidden
+-- (the player's own characters and which of them the Mail card's Alt List leaves out),
+-- mailAltFriends (the friends' characters it has seen), mailAltListTab (its shown tab).
 -------------------------------------------------------------------------------
 local BLIZZ_SKIN_GLOBAL_KEYS = {}
 do
@@ -2082,6 +2217,7 @@ do
         "tooltipShowBuffs", "tooltipBuffPosition", "tooltipBuffSize",
         "tooltipBuffsPerRow", "tooltipBuffOffsetX", "tooltipBuffOffsetY",
         "tooltipBgColor", "tooltipBgOpacity", "tooltipBorderSize",
+        "tooltipRoundedCorners",
         "showSpellID", "spellIDModifier", "showIconID", "showItemID",
         "showItemMaxStacks", "itemStackModifier",
         "reskinPopupsMenus", "reskinGameMenu", "reskinQueuePopup",
@@ -2089,12 +2225,19 @@ do
         "queueTimerBarHeight", "queueTimerTextOffsetY",
         "resurrectAcceptGlow",
         "reskinWidgetBars", "widgetBarMinSize", "reskinExtraActionButton",
+        "reskinTimerBars", "timerBarsTexture", "timerBarsFillMode",
+        "timerBarsFillColor", "timerBarsFillOpacity", "timerBarsBgColor",
+        "timerBarsBgOpacity", "timerBarsTypeColors", "timerBarsBreathColor",
+        "timerBarsFatigueColor", "timerBarsFeignColor", "timerBarsShowText",
+        "timerBarsTextSize", "timerBarsTextColor", "timerBarsTextX",
+        "timerBarsTextY", "timerBarsWidth", "timerBarsHeight",
+        "timerBarsCornerRadius", "timerBarsCornerMask",
         "popupMenuButtonBackgroundColor", "popupMenuButtonTextColorMode",
         "popupMenuButtonTextColor",
         "accentReskinElements",
     })
     -- Shared border-editor key sets (tooltip / popup menu / popup menu button)
-    for _, prefix in ipairs({ "tooltip", "popupMenu", "popupMenuButton", "lootWindow", "lootIcon" }) do
+    for _, prefix in ipairs({ "tooltip", "popupMenu", "popupMenuButton", "lootWindow", "lootIcon", "timerBars" }) do
         for _, suffix in ipairs({
             "BorderTexture", "BorderThickness", "BorderThicknessPx", "BorderColor",
             "BorderColorMode", "BorderOpacity", "BorderOffsetX",
@@ -2118,7 +2261,7 @@ do
         "reskinMicroMenu", "reskinBagBar", "reskinLegacySystem", "reskinHousing", "reskinDressUp", "reskinTransmog",
         "reskinMerchant", "reskinAuctionHouse", "reskinMacros",
         "reskinSettings", "reskinAddonList", "reskinCraftOrders",
-        "reskinTrainer", "reskinGossip", "reskinQuest", "reskinInspectRecipe",
+        "reskinTrainer", "reskinStable", "reskinKeyring", "reskinGossip", "reskinQuest", "reskinInspectRecipe",
         "reskinDelves", "reskinSocialUI",
         "reskinQueueStatus", "reskinDelvePicker", "reskinPlayerChoice",
         "reskinTrade", "reskinFlagCarriers",
@@ -2139,7 +2282,8 @@ do
         "flyoutItemLevels", "flyoutItemStats", "charSheetItemStats",
         "flyoutItemStatsTertiary", "charSheetItemStatsTertiary", "charSheetSocketPanelStats",
         "showCharSheetDurability", "charSheetDurabilityLocation",
-        "charSheetDurabilityShowLabel", "showSecondaryRaw", "showSecondaryBoth",
+        "charSheetDurabilityShowLabel", "charSheetItemLevelPos", "charSheetShowItemStats",
+        "showSecondaryRaw", "showSecondaryBoth",
         "showTertiaryRaw", "showTertiaryBoth", "showAdjustedStats",
         "showManaStat", "highlightSecondaryItems", "highlightTertiaryItems",
         -- Character Sheet stock styles' "Blizzard UI Color" (the style itself
@@ -2147,11 +2291,12 @@ do
         "charSheetBlizzColors",
         -- Inspect card
         "inspectShowEnchants", "inspectEnchantNames", "inspectEnchantSize",
-        "inspectShowItemLevel", "inspectShowUpgradeTrack",
+        "inspectShowItemLevel", "inspectShowUpgradeTrack", "inspectItemLevelPos", "inspectShowItemStats",
         -- LFG / Merchant / Mail cards
         "lfgRememberRoles",
         "merchantShowAsList", "merchantListRowHeight", "merchantShowItemLevel", "merchantBulkBuy",
         "merchantExpand", "merchantCols", "merchantRows",
+        "merchantMarkOwned", "merchantHideKnown",
         "mailAltList", "mailAltListMax", "mailAltListMinLevel", "mailAltListSort",
         -- Friends List card (WoW Forever: the friend tiles and auto-accept)
         "friendsListCard",
@@ -2224,6 +2369,7 @@ function EllesmereUI.ExportProfile(profileName, includedFolders, includeLayout, 
     -- payload metadata, never profile data -- strip any stale copies too (the
     -- export re-stamps them deliberately further down).
     exportData._importEstablishPending = nil
+    exportData._abSpellsImported = nil
     exportData.overridesIncluded = nil
     exportData.overridesExcluded = nil
     exportData.partialImport     = nil
@@ -2256,6 +2402,11 @@ function EllesmereUI.ExportProfile(profileName, includedFolders, includeLayout, 
             end
         end
     end
+    -- Action bar spells ride only with the Action Bars data: a subset export
+    -- without it, or the module not loaded, carries none.
+    if not (exportData.addons and exportData.addons[AB_SPELLS_FOLDER]) then
+        exportData.abSpells = nil
+    end
     -- Exclude spec-specific data from export
     exportData.trackedBuffBars = nil
     exportData.tbbPositions = nil
@@ -2279,7 +2430,7 @@ function EllesmereUI.ExportProfile(profileName, includedFolders, includeLayout, 
     -- fonts/customColors/darkMode/euiAccent are profile-GLOBAL appearance and are
     -- not separable per-addon, so a subset export must not carry them (they'd
     -- clobber the recipient's). Only a full-profile export carries them.
-    -- Profile-global appearance (fonts, custom colours, dark mode, accent,
+    -- Profile-global appearance (fonts, custom colors, dark mode, accent,
     -- number format) and the account UI scale ride only when "Global Settings" is included
     -- (default ON) -- full and subset exports alike, since the unified export
     -- flow offers the toggle for both (2026-07-20 redesign; the old subset
@@ -2365,6 +2516,8 @@ function EllesmereUI.ExportProfile(profileName, includedFolders, includeLayout, 
     exportData.addons = AddonsToCanon(exportData.addons)
     local payload = { version = EllesmereUI.LayoutExportVersion(exportData), type = "full", data = exportData }
     EllesmereUI.StampPayloadClient(payload)
+    -- The screen it was made on (payload root, never stored: ScreenStamp).
+    payload.meta = EllesmereUI.ScreenStamp(profileName == (db.activeProfile or "Default"))
     local serialized = Serializer.Serialize(payload)
     if not LibDeflate then return nil end
     local compressed = LibDeflate:CompressDeflate(serialized)
@@ -2383,6 +2536,31 @@ function EllesmereUI.EncodePayload(payload)
     return EXPORT_PREFIX .. encoded
 end
 
+-- A small share string of a feature's own (Talent Reminders): "!EUI" .. tag
+-- .. "_" then the data serialized, deflated and made printable. Its prefix is
+-- never a profile string's ("!EUI_"), so neither import takes the other's.
+-- Decode returns the data table, or nil and a reason; a malformed or deeply
+-- nested string fails here, never in the caller.
+function EllesmereUI.EncodeShareString(tag, data)
+    if not LibDeflate or type(data) ~= "table" then return nil end
+    local compressed = LibDeflate:CompressDeflate(Serializer.Serialize(data))
+    return "!EUI" .. tag .. "_" .. LibDeflate:EncodeForPrint(compressed)
+end
+
+function EllesmereUI.DecodeShareString(tag, str)
+    if type(str) ~= "string" then return nil, "invalid" end
+    str = strtrim(str)
+    local prefix = "!EUI" .. tag .. "_"
+    if str:sub(1, #prefix) ~= prefix then return nil, "prefix" end
+    if not LibDeflate then return nil, "invalid" end
+    local decoded = LibDeflate:DecodeForPrint(str:sub(#prefix + 1))
+    local raw = decoded and LibDeflate:DecompressDeflate(decoded)
+    if not raw then return nil, "invalid" end
+    local ok, data = pcall(Serializer.Deserialize, raw)
+    if not ok or type(data) ~= "table" then return nil, "invalid" end
+    return data
+end
+
 -------------------------------------------------------------------------------
 --  FULL ACCOUNT EXPORT  (separate format, purely additive)
 --
@@ -2394,8 +2572,8 @@ end
 --  assignments, first-install state. Stores keyed by the recipient's own
 --  profiles keep the recipient's entries and take only the carried
 --  profile's from the string (FULL_IMPORT_MERGE: profile keybinds, sync
---  groups, last-spec records, color pull-from pointers, the other
---  profiles' CDM spell layouts).
+--  groups, color pull-from pointers, the other profiles' CDM spell
+--  layouts).
 --
 --  It shares NOTHING with ExportProfile / ImportProfile: no include toggles,
 --  no per-module filtering, no canonical re-keying, no store merging, no
@@ -2407,67 +2585,54 @@ end
 --  what to include: any account key added in a future version rides
 --  automatically instead of being silently missed.
 --
---  Excluded by design -- per-character data that is nobody else's:
---    goldLedger           cross-character and warband gold record
---    qolUpgradeCalcChars  Upgrade Calculator per-character cache
---    xpBarChars           XP bar session clock, XP rate and time this level
---    timePlayedChars      Time Played block: each character's total played time
---    questWatchChars      WoW Forever quest tools: quests each character's
---                         filters and auto-track moved
---    questTrackerChars    WoW Forever Custom Quest Tracker: each character's
---                         untracked, collapsed, opened and pinned quests
---    mailAltRoster        the Mail card's Alt List: every character recorded
---    mailAltHidden        and the ones its Shown Characters leaves out
---    raidHoroscope        Party Mode's Should I Raid Tonight?: each
---                         character's birthday
---    cdmCachedBarSizes    Cooldown Manager bar sizes cached per character
---    bagCurrencyByChar    Bags' tracked currencies per character
---    mageArmorByChar      AuraBuff Reminders (WoW Forever): the mage armor
---                         each character last had up
---    global               friend groups: the groups, their order and colours,
---                         and each friend's group by BattleTag
---  (The upgrade-calc and gold blobs are what PRIVATE_ADDON_KEYS strips from
---  normal strings, at their current top-level homes. The three legacy gold
---  keys stay listed: until Bags or DataBars loads and absorbs them they are
---  still on disk.) And the game settings this client had
---  before EllesmereUI, which Uninstall EUI puts back, with the values modules
---  hand back to this client's CVars later:
---    restoreOnUninstall     (EllesmereUI_Uninstall.lua)
---    gfxBackup              Optimize My FPS and Graphics' Restore values
---    friendlyPlateVisSaved  friendly plates hidden in a follower dungeon
---    chatTellMuted          the whisper sound Chat muted
---  And the inline cogs this user has opened (cogSeen: their notification dots
---  stay for whoever imports the string).
+--  FULL_EXPORT_EXCLUDED lists what it leaves out.
 -------------------------------------------------------------------------------
 local FULL_EXPORT_TYPE = "fullaccount"
 local FULL_EXPORT_EXCLUDED = {
-    goldLedger            = true,
-    dataBarsGold          = true,
-    characterGold         = true,
+    -- Per-character data that is nobody else's
+    chars                 = true, -- every character's own data, by GUID (EllesmereUI.Chars)
+    goldLedger            = true, -- warband gold and the tracking switch
+    groupFinderApps       = true, -- Group Finder application counts (account, session)
+    mailAltFriends        = true, -- Mail card Alt List: friends' characters seen
+    kickMarkers           = true, -- Kick Tracker: the group's announced markers of one instance
+    loadoutManager        = true, -- Loadout Manager's General settings (its loadouts are in the character roster, never exported)
+    dataBarsGold          = true, -- legacy gold keys: on disk until Bags or
+    characterGold         = true, -- DataBars loads and absorbs them
     warbandGold           = true,
-    qolUpgradeCalcChars   = true,
-    xpBarChars            = true,
-    timePlayedChars       = true,
-    restoreOnUninstall    = true,
-    gfxBackup             = true,
-    friendlyPlateVisSaved = true,
-    chatTellMuted         = true,
-    groupFinderApps       = true,
-    questWatchChars       = true,
-    questTrackerChars     = true,
-    cdmRepopulatePending  = true,
+    -- Per-character stores of older builds, folded into chars by
+    -- char_roster_v1; strings from those builds still carry them
+    lastSpecByChar        = true, -- spec of each character's last session
+    qolUpgradeCalcChars   = true, -- Upgrade Calculator cache
+    xpBarChars            = true, -- XP bar session clock, rate, time this level
+    timePlayedChars       = true, -- Time Played block totals
+    travelHearths         = true, -- Travel block: hearth bind and ready time
+    questWatchChars       = true, -- Forever quest tools: filter/auto-track moves
+    questTrackerChars     = true, -- Forever quest tracker: untracked, collapsed, pinned
+    cdmRepopulatePending  = true, -- CDM spec repopulate state
     cdmRepopulateDone     = true,
-    mailAltRoster         = true,
-    mailAltHidden         = true,
-    raidHoroscope         = true,
-    cdmCachedBarSizes     = true,
-    bagCurrencyByChar     = true,
-    mageArmorByChar       = true,
-    global                = true,
+    cdmCachedBarSizes     = true, -- CDM bar sizes
+    mailAltRoster         = true, -- Mail card Alt List
+    mailAltHidden         = true, -- and the characters it hides
+    lootFeedHistory       = true, -- Forever Loot History rows
+    raidHoroscope         = true, -- Party Mode birthdays
+    searchPicks           = true, -- options search: the player's own picks
+    bagCurrencyByChar     = true, -- Bags tracked currencies
+    bagPinnedByChar       = true, -- Bags pinned items
+    mageArmorByChar       = true, -- AuraBuff Reminders (Forever): last mage armor
+    classBuffByChar       = true, -- and last class buff lines
+    spellUprankChars      = true, -- Auto Uprank: highest ranks per character and pet
+    global                = true, -- friend groups, keyed by BattleTag
+    -- Game settings from before EllesmereUI, put back by Uninstall EUI
+    restoreOnUninstall    = true, -- EllesmereUI_Uninstall.lua
+    gfxBackup             = true, -- Optimize My FPS and Graphics' Restore values
+    friendlyPlateVisSaved = true, -- friendly plates hidden in a follower dungeon
+    chatTellMuted         = true, -- whisper sound Chat muted
+    chatClassColorWas     = true, -- the game's chatClassColorOverride before Chat's Name of Chatter hold
+    -- Opened inline cogs: their notification dots stay for the importer
     cogSeen               = true,
 }
 
--- Root stores keyed by profile name (or character) describe the recipient's
+-- Root stores keyed by profile name describe the recipient's
 -- own profiles. A full import keeps them and takes from the string only the
 -- carried profile's entry: fn(own, fromString, carriedName) -> new value.
 local function KeepOwn(own) return own end
@@ -2479,7 +2644,6 @@ local function OwnOrCarried(own, str, name)
 end
 local FULL_IMPORT_MERGE = {
     syncedModules  = KeepOwn,
-    lastSpecByChar = KeepOwn,
     lastNonSpecProfile = OwnOrCarried,
     colorsPullFrom     = OwnOrCarried,
     colorsSectionPullFrom = function(own, str, name)
@@ -2547,6 +2711,7 @@ function EllesmereUI.ExportFullAccountData()
         copy.unlockLayout = SnapshotUnlockLayout()
         -- Recipient-local import bookkeeping never rides a string.
         copy._importEstablishPending = nil
+        copy._abSpellsImported = nil
         -- The gold ledger and Upgrade Calculator cache also have LEGACY homes
         -- inside the module profile blobs (see PRIVATE_ADDON_KEYS); an older
         -- profile can still carry them there, and they are excluded from a
@@ -2657,6 +2822,10 @@ function EllesmereUI.ImportFullAccountData(payload)
             -- Legacy per-profile homes of the excluded blobs (see the export
             -- side): refused on the way in too.
             StripPrivateAddonData(copy.addons)
+            -- Action bar spells: the profile's own by the profile import's
+            -- rules, and the mark the Action Bars popup reads at the next login.
+            copy.abSpells = ImportedABSpells(copy, payload)
+            copy._abSpellsImported = copy.abSpells and time() or nil
             -- WoW Forever: the one-time buff clear, before the profile is
             -- installed (EllesmereUI_Migration.lua).
             if EllesmereUI.FvBW then EllesmereUI.FvBW.ProcessProfile(copy, "import") end
@@ -2896,6 +3065,12 @@ function EllesmereUI.ExportCurrentProfile(includeLayout, includeCDM, cdmSpecs)
     profileData.assignedSpecs = CollectAssignedSpecs(activeName)
     -- HoverCast (click-cast) bindings are account-global, not per-profile; never export.
     profileData.clickCast = nil
+    -- Action bar spells ride with the Action Bars data, as in ExportProfile.
+    local activeProf = EllesmereUIDB and EllesmereUIDB.profiles and EllesmereUIDB.profiles[activeName]
+    if profileData.addons and profileData.addons[AB_SPELLS_FOLDER]
+       and activeProf and type(activeProf.abSpells) == "table" then
+        profileData.abSpells = DeepCopy(activeProf.abSpells)
+    end
     -- Per-character account data (gold ledger, upgrade-calc caches) likewise
     -- never rides a shared string -- see PRIVATE_ADDON_KEYS. SnapshotAllAddons
     -- deep-copies each module's live profile blob, so a profile still holding
@@ -2912,17 +3087,10 @@ function EllesmereUI.ExportCurrentProfile(includeLayout, includeCDM, cdmSpecs)
         profileData.unlockLayout, includeLayout, nil)
     profileData.unlockLayout     = fLayout
     profileData.unlockLayoutMeta = layoutMeta
-    local sw, sh = GetPhysicalScreenSize()
-    -- Use EllesmereUI's own stored scale (UIParent scale), not Blizzard's CVar
-    local euiScale = EllesmereUIDB and EllesmereUIDB.ppUIScale or (UIParent and UIParent:GetScale()) or 1
-    local meta = {
-        euiScale = euiScale,
-        screenW  = sw and math.floor(sw) or 0,
-        screenH  = sh and math.floor(sh) or 0,
-    }
     -- Normalize local db.folder keys -> canonical (suite) keys (no-op in suite).
     profileData.addons = AddonsToCanon(profileData.addons)
-    local payload = { version = EllesmereUI.LayoutExportVersion(profileData), type = "full", data = profileData, meta = meta }
+    local payload = { version = EllesmereUI.LayoutExportVersion(profileData), type = "full", data = profileData,
+        meta = EllesmereUI.ScreenStamp(true) }
     EllesmereUI.StampPayloadClient(payload)
     local serialized = Serializer.Serialize(payload)
     if not LibDeflate then return nil end
@@ -3300,6 +3468,33 @@ local function BuildImportedCDMSpellBucket(profileName, activeName, incomingSpec
             -- drag-arranged buffDisplayOrder without the flag; stamp it or the first
             -- live reconcile resyncs the imported order to Blizzard order (idempotent).
             EllesmereUI.MigrateCdmBuffOrderUserFlag(specProf)
+            -- Every spell the layout places is held by the Cooldown Manager's automatic
+            -- keep/drop passes until Blizzard tracks it (the set is read and emptied
+            -- there: ImportKeepKey in EUI_CDM_Reconcile.lua), so a layout imported
+            -- before its Blizzard layout is picked keeps its spells. Entries those
+            -- passes never judge are left out.
+            local keep
+            if type(specProf.barSpells) == "table" then
+                for _, bs in pairs(specProf.barSpells) do
+                    local list = type(bs) == "table" and bs.assignedSpells
+                    if type(list) == "table" then
+                        local custom = type(bs.customSpellIDs) == "table" and bs.customSpellIDs
+                        local cdurs = type(bs.customSpellDurations) == "table" and bs.customSpellDurations
+                        local sdurs = type(bs.spellDurations) == "table" and bs.spellDurations
+                        local groups = type(bs.customSpellGroups) == "table" and bs.customSpellGroups
+                        for i = 1, #list do
+                            local id = list[i]
+                            if type(id) == "number" and id > 0
+                               and not (custom and custom[id]) and not (cdurs and cdurs[id])
+                               and not (sdurs and sdurs[id]) and not (groups and groups[id]) then
+                                keep = keep or {}
+                                keep[id] = true
+                            end
+                        end
+                    end
+                end
+            end
+            specProf._importKeep = keep
         end
     end
 end
@@ -3593,6 +3788,15 @@ function EllesmereUI.ImportProfile(importStr, profileName)
         -- value, never the recipient's (an absent key reads as the
         -- EllesmereUI look).
         merged.windowSkinLook = imported.windowSkinLook
+        -- Action bar spells follow the Action Bars data. An import that brings
+        -- that data takes the string's own or none, with the mark the Action
+        -- Bars popup reads once at the next login when it brought some. An
+        -- import without it (a partial string, Action Bars unticked) leaves the
+        -- profile's own bar spells and mark as they were.
+        if type(imported.addons) == "table" and type(imported.addons[AB_SPELLS_FOLDER]) == "table" then
+            merged.abSpells = ImportedABSpells(imported, payload)
+            merged._abSpellsImported = merged.abSpells and time() or nil
+        end
 
         -- Snap all positions to the physical pixel grid (imported profiles
         -- may come from a different version without pixel snapping)
@@ -3729,12 +3933,12 @@ function EllesmereUI.ImportProfile(importStr, profileName)
         -- apply of any later session; value harvests are never suppressed.
         db.profiles[profileName]._importEstablishPending = true
         EllesmereUI._importGuardArmedNow = true
-        -- Custom colours resolve live via GetCustomColorsDB. A GLOBAL-mode colour
+        -- Custom colors resolve live via GetCustomColorsDB. A GLOBAL-mode color
         -- section takes its palette from its Pull Colors From (or the first profile); a
         -- recipient who pinned a specific source would store the imported palette but
-        -- keep seeing their own. When the import actually carries colours, point every
+        -- keep seeing their own. When the import actually carries colors, point every
         -- global-mode section at the imported profile so its palette is what shows.
-        -- Getter-redirect only -- never wipes or restores a live colour table (that is
+        -- Getter-redirect only -- never wipes or restores a live color table (that is
         -- banned). Per-profile sections read the active (now imported) profile already.
         if imported.customColors and EllesmereUIDB then
             EllesmereUI.PointColorSectionsAt(profileName)
@@ -3828,8 +4032,10 @@ function EllesmereUI.SaveCurrentAsProfile(name)
     -- Count existing profiles BEFORE adding the new one
     -- Deep-copy the current profile into the new name
     local copy = src and DeepCopy(src) or {}
-    -- Never inherit the import-window guard flag (see ImportProfile).
+    -- Never inherit the import-window guard flag (see ImportProfile), nor
+    -- the action bar spells import mark (the copy never asks again).
     copy._importEstablishPending = nil
+    copy._abSpellsImported = nil
     -- Ensure fonts/colors/unlock layout are current
     copy.fonts = DeepCopy(EllesmereUI.GetFontsDB())
     copy.customColors = DeepCopy(EllesmereUI.GetCustomColorsDB())
@@ -3907,9 +4113,9 @@ function EllesmereUI.DeleteProfile(name)
             end
         end
     end
-    -- Colour sources: deleting a source profile must not leave a dangling pointer
+    -- Color sources: deleting a source profile must not leave a dangling pointer
     -- (the stale name showed in Pull Colors From, the shared palette silently fell
-    -- back, and colour editing locked because the user could never be "on" the
+    -- back, and color editing locked because the user could never be "on" the
     -- deleted source). nil = default (first profile), per section too.
     if EllesmereUI.ColorSourcesProfileRemoved(name) then
         EllesmereUI.ApplyColorsToOUF()
@@ -3961,8 +4167,8 @@ function EllesmereUI.RenameProfile(oldName, newName)
             end
         end
     end
-    -- Keep every colour source following the renamed profile (same palette
-    -- tables, so no colour refresh is needed).
+    -- Keep every color source following the renamed profile (same palette
+    -- tables, so no color refresh is needed).
     EllesmereUI.ColorSourcesProfileRenamed(oldName, newName)
     if db.activeProfile == oldName then
         -- Rename repoints the SAME profile table: unlockLayout rides it, so
@@ -4185,13 +4391,10 @@ do
                         specRetryTimer = nil
                         -- Record the spec so future events use the fast path
                         lastKnownSpecID = sid
-                        local ck = EllesmereUI.CharKey(" - ")
-                        lastKnownCharKey = ck
+                        lastKnownCharKey = EllesmereUI.CharGUID()
                         if not EllesmereUIDB then EllesmereUIDB = {} end
-                        if not EllesmereUIDB.lastSpecByChar then
-                            EllesmereUIDB.lastSpecByChar = {}
-                        end
-                        EllesmereUIDB.lastSpecByChar[ck] = sid
+                        local mine = EllesmereUI.CharEntry(true)
+                        if mine then mine.lastSpec = sid end
                         EllesmereUI._profileSaveLocked = false
                         -- Resolve via the unified function
                         local target = ResolveSpecProfile()
@@ -4237,7 +4440,7 @@ do
             specRetryTimer = nil
         end
 
-        local charKey = EllesmereUI.CharKey(" - ")
+        local charKey = EllesmereUI.CharGUID()
         local isFirstLogin = (lastKnownSpecID == nil)
         -- charChanged is true when the active character is different from the
         -- last session (alt-swap). On a plain /reload the charKey stays the same.
@@ -4260,8 +4463,8 @@ do
         -- Persist the current spec so PreSeedSpecProfile can guarantee the
         -- correct profile is loaded on next login via ResolveSpecProfile().
         if not EllesmereUIDB then EllesmereUIDB = {} end
-        if not EllesmereUIDB.lastSpecByChar then EllesmereUIDB.lastSpecByChar = {} end
-        EllesmereUIDB.lastSpecByChar[charKey] = specID
+        local mine = EllesmereUI.CharEntry(true)
+        if mine then mine.lastSpec = specID end
 
         -- Spec resolved successfully -- unlock auto-save if it was locked
         -- during PreSeedSpecProfile when spec was unavailable.
@@ -4347,7 +4550,7 @@ do
                 -- already injected the correct data into each child SV, the
                 -- addons built with the right values and no further action is
                 -- needed. Only call SwitchProfile if the pre-seed did not run
-                -- (e.g. first session after update, no lastSpecByChar entry).
+                -- (e.g. first session after update, no cached lastSpec).
                 if not EllesmereUI._preSeedComplete then
                     C_Timer.After(0, function()
                         C_Timer.After(0, function()
@@ -4586,7 +4789,7 @@ function EllesmereUI.AttachImportPasteAbsorber(editBox, onRetry)
     }
 end
 
-local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLabel)
+local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLabel, rawPaste)
     local POPUP_W, POPUP_H = 520, 310
     local FONT = EllesmereUI.EXPRESSWAY
 
@@ -4611,24 +4814,34 @@ local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLab
     local bg = popup:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(0.077, 0.068, 0.058, 1)
-    EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PanelPP)
+    EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, bg)
 
     -- Title
     local titleFS = EllesmereUI.MakeFont(popup, 15, "", 1, 1, 1)
     titleFS:SetPoint("TOP", popup, "TOP", 0, -20)
-    titleFS:SetText(title)
+    titleFS:SetText(EllesmereUI.L(title))
 
     -- Subtitle
     local subFS = EllesmereUI.MakeFont(popup, 11, "", 1, 1, 1)
     subFS:SetAlpha(0.45)
     subFS:SetPoint("TOP", titleFS, "BOTTOM", 0, -4)
-    subFS:SetText(subtitle)
+    subFS:SetText(EllesmereUI.L(subtitle))
+
+    -- An empty editable box needs a visible field to paste into.
+    if not readOnly then
+        local field = CreateFrame("Frame", nil, popup)
+        field:SetPoint("TOPLEFT",     popup, "TOPLEFT",     14, -52)
+        field:SetPoint("BOTTOMRIGHT", popup, "BOTTOMRIGHT", -14, 46)
+        field:SetFrameLevel(popup:GetFrameLevel() + 1)
+        EllesmereUI.SolidTex(field, "BACKGROUND", 0, 0, 0, 0.3):SetAllPoints()
+        EllesmereUI.MakeBorder(field, 1, 1, 1, 0.12, EllesmereUI.PanelPP)
+    end
 
     -- ScrollFrame containing the EditBox
     local sf = CreateFrame("ScrollFrame", nil, popup)
     sf:SetPoint("TOPLEFT",     popup, "TOPLEFT",     20, -58)
     sf:SetPoint("BOTTOMRIGHT", popup, "BOTTOMRIGHT", -20, 52)
-    sf:SetFrameLevel(popup:GetFrameLevel() + 1)
+    sf:SetFrameLevel(popup:GetFrameLevel() + 2)
     sf:EnableMouseWheel(true)
 
     local sc = CreateFrame("Frame", nil, sf)
@@ -4706,7 +4919,7 @@ local function BuildStringPopup(title, subtitle, readOnly, onConfirm, confirmLab
     -- (import mode only; export boxes are read-only and set text directly).
     -- Attached after the OnTextChanged SetScript above so the hook survives.
     local absorber
-    if not readOnly then
+    if not readOnly and not rawPaste then
         absorber = EllesmereUI.AttachImportPasteAbsorber(editBox)
     end
 
@@ -4784,10 +4997,22 @@ end
 --  Copy Popup (read-only string with a custom title/subtitle)
 --  Same auto-highlight behavior as ShowExportPopup, but the caller supplies the
 --  title and subtitle (e.g. for the preset "Copy Blizz Edit Mode" string).
+--  opts.keep: a key; the popup is built once for it and shown again with the
+--  new string (its title and subtitle are the first call's).
 -------------------------------------------------------------------------------
-function EllesmereUI:ShowCopyPopup(title, subtitle, str)
-    local dimmer, editBox, RefreshHeight = BuildStringPopup(
-        title or "Copy", subtitle or "", true, nil, nil)
+do
+local keptCopyPopups = {}
+function EllesmereUI:ShowCopyPopup(title, subtitle, str, opts)
+    local key = opts and opts.keep
+    local kept = key and keptCopyPopups[key]
+    local dimmer, editBox, RefreshHeight
+    if kept then
+        dimmer, editBox, RefreshHeight = kept[1], kept[2], kept[3]
+    else
+        dimmer, editBox, RefreshHeight = BuildStringPopup(
+            title or "Copy", subtitle or "", true, nil, nil)
+        if key then keptCopyPopups[key] = { dimmer, editBox, RefreshHeight } end
+    end
 
     editBox._readOnly = str or ""
     editBox:SetText(str or "")
@@ -4799,6 +5024,7 @@ function EllesmereUI:ShowCopyPopup(title, subtitle, str)
         editBox:HighlightText()
     end)
 end
+end -- keptCopyPopups
 
 -------------------------------------------------------------------------------
 --  Apply a Blizzard Edit Mode layout from a preset's export string.
@@ -4888,13 +5114,27 @@ end
 -------------------------------------------------------------------------------
 --  Import Popup
 -------------------------------------------------------------------------------
-function EllesmereUI:ShowImportPopup(onImport, title, subtitle)
-    local dimmer, editBox = BuildStringPopup(
-        title or "Import Profile",
-        subtitle or "Paste an EllesmereUI profile string below",
-        false,
-        function(str) if onImport then onImport(str) end end,
-        "Import")
+-- opts: confirmLabel (button text), rawPaste (no paste absorber; for short multi-line text), keep (a
+-- key, with rawPaste: the popup is built once for that key and shown again with an empty box; its
+-- title, subtitle, label and callback are the first call's).
+local keptImportPopups = {}
+function EllesmereUI:ShowImportPopup(onImport, title, subtitle, opts)
+    opts = opts or {}
+    local key = opts.rawPaste and opts.keep
+    local kept = key and keptImportPopups[key]
+    local dimmer, editBox
+    if kept then
+        dimmer, editBox = kept.dimmer, kept.editBox
+        editBox:SetText("")
+    else
+        dimmer, editBox = BuildStringPopup(
+            title or "Import Profile",
+            subtitle or "Paste an EllesmereUI profile string below",
+            false,
+            function(str) if onImport then onImport(str) end end,
+            opts.confirmLabel or "Import", opts.rawPaste)
+        if key then keptImportPopups[key] = { dimmer = dimmer, editBox = editBox } end
+    end
 
     dimmer:Show()
     C_Timer.After(0.05, function() editBox:SetFocus() end)

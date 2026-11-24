@@ -359,11 +359,11 @@ local function Shape(bd, s, shaped, w, h)
     return true
 end
 
--- Class-coloured shape border: the unit's class for players, its reaction
--- colour otherwise, the player's own class in dark mode or with no unit.
+-- Class-colored shape border: the unit's class for players, its reaction
+-- color otherwise, the player's own class in dark mode or with no unit.
 local function PlayerClassColor()
     local _, ct = UnitClass("player")
-    local c = ct and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
+    local c = ct and EllesmereUI.GetClassColor(ct)
     if c then return c.r, c.g, c.b end
     return 1, 1, 1
 end
@@ -373,7 +373,7 @@ local function TintBorder(bd, unit, ctOverride)
     local r, g, b
     local s = ns._scaledPartyProxy
     if ctOverride then
-        local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ctOverride]
+        local c = EllesmereUI.GetClassColor(ctOverride)
         if c then r, g, b = c.r, c.g, c.b end
     elseif s and s.healthColorMode == "dark" then
         r, g, b = PlayerClassColor()
@@ -381,7 +381,7 @@ local function TintBorder(bd, unit, ctOverride)
         local _, ct = UnitClass(unit)
         local isPl = UnitIsPlayer(unit)
         if not issecretvalue(ct) and not issecretvalue(isPl) and isPl and ct then
-            local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
+            local c = EllesmereUI.GetClassColor(ct)
             if c then r, g, b = c.r, c.g, c.b end
         else
             local re = UnitReaction(unit, "player")
@@ -487,7 +487,7 @@ function ns.RF_PtPaint(st, unit, event)
             repainted = true
         end
     end
-    -- The class-coloured border follows the occupant (a real assignment
+    -- The class-colored border follows the occupant (a real assignment
     -- too: a same-guid return after a no-unit re-shape).
     if repainted or changed or event == "UnitChanged" then TintBorder(bd, unit) end
 end
@@ -622,14 +622,14 @@ function ns.RF_PtApply(owner, st, s, bw, bh, unit)
     end
     if unit then
         ns.RF_PtPaint(st, unit, "Apply")
-        -- The border colour is in no paint memo (a re-shape, dark mode).
+        -- The border color is in no paint memo (a re-shape, dark mode).
         TintBorder(bd, unit)
         -- A new model starts at full alpha: take the unit's range fade now.
         if swapped and mode == "3d" and not bd._preview and ns._UpdateButtonRange then
             ns._UpdateButtonRange(unit, owner)
         end
     elseif reshaped and bd._tintClass and not bd._preview then
-        -- A re-shaped border takes the default colour: re-tint it.
+        -- A re-shaped border takes the default color: re-tint it.
         local u = owner:GetAttribute("unit")
         TintBorder(bd, (u and UnitExists(u)) and u or nil)
     end
@@ -702,7 +702,12 @@ function ns.RF_PtModelAlphaApply(bd)
     local m = bd._3dOn and bd._3d
     if not m then return end
     local pc = ns._partyContainerFrame
-    local c = pc and pc:GetAlpha() or 1
+    -- A UIParent fade (models ignore it) scales the mirror too.
+    local c = EllesmereUI.UIScaledAlpha(pc and pc:GetAlpha() or 1)
+    if not ns._ptUIAlphaHooked then
+        ns._ptUIAlphaHooked = true
+        EllesmereUI.OnUIAlphaChanged(ns.RF_PtContainerAlpha)
+    end
     if bd._rSecret then
         m:SetAlphaFromBoolean(bd._rIn, c * bd._rA1, c * bd._rA2)
     else

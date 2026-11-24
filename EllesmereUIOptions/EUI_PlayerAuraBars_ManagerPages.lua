@@ -1235,7 +1235,7 @@ local function BuildDisplayFields(frame, fontPath, sy, cfg, apply, isBuff)
             rows = borderCogRows,
         })
         local function UpdateBorderCogVisibility()
-            if cogBtn then cogBtn:SetShown((cfg.borderTexture or "solid") ~= "solid"
+            if cogBtn then cogBtn:SetShown((cfg.borderTexture or "solid") ~= "solid" and cfg.borderTexture ~= ""
                 and not IsMaskShape(cfg.iconShape)
                 and not EllesmereUI.BlizzStyle.Get("playerauras")) end
         end
@@ -1357,6 +1357,14 @@ local function BuildDisplayFields(frame, fontPath, sy, cfg, apply, isBuff)
     ); sy = sy - hh
     do
         local rgn = styleRow._rightRegion
+        EllesmereUI.BuildInlineCog(rgn, EllesmereUI.AuraRadiusCogCfg(cfg.borderTexture,
+            function() return cfg.borderCornerRadius or 0 end,
+            function(v) cfg.borderCornerRadius = v; apply() end,
+            function() return IsMaskShape(cfg.iconShape) or EllesmereUI.BlizzStyle.Get("playerauras") end,
+            function()
+                if EllesmereUI.BlizzStyle.Get("playerauras") then return EllesmereUI.BlizzStyle.Label("playerauras") end
+                return "This option requires a non-custom shape to be selected"
+            end))
         local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
             rgn, styleRow:GetFrameLevel() + 3,
             function()
@@ -1380,6 +1388,7 @@ local function BuildDisplayFields(frame, fontPath, sy, cfg, apply, isBuff)
         end
         local function CopyBorderTo(entry)
             entry.cfg.borderSize = cfg.borderSize
+            entry.cfg.borderCornerRadius = cfg.borderCornerRadius or 0
             -- The exact size travels with its step, verbatim (string/false/nil);
             -- a target whose value was set is cleared with false, never nil.
             local px = cfg.borderSizePx
@@ -1399,7 +1408,7 @@ local function BuildDisplayFields(frame, fontPath, sy, cfg, apply, isBuff)
         end
         EllesmereUI.BuildSyncIcon({
             region  = rgn,
-            tooltip = "Apply Border Size and Color to all Bars",
+            tooltip = "Apply Border Size, Corner Radius and Color to all Bars",
             onClick = function()
                 for _, entry in ipairs(PabAllBarEntries()) do
                     if entry.cfg ~= cfg then CopyBorderTo(entry) end
@@ -1413,6 +1422,7 @@ local function BuildDisplayFields(frame, fontPath, sy, cfg, apply, isBuff)
                     local c = entry.cfg
                     if (c.borderSize or 1) ~= size or (c.borderR or 0) ~= r or (c.borderG or 0) ~= g
                         or (c.borderB or 0) ~= b or (c.borderA or 1) ~= a
+                        or (c.borderCornerRadius or 0) ~= (cfg.borderCornerRadius or 0)
                         or (c.borderSizePx or false) ~= (cfg.borderSizePx or false) then
                         return false
                     end
@@ -1636,6 +1646,29 @@ local function BuildDisplayFields(frame, fontPath, sy, cfg, apply, isBuff)
     return sy
 end
 
+-- Default Buffs and Debuffs bars only. The shared Visibility row picks when the bar
+-- is shown; outside those conditions it dims to Hidden Opacity (0 = fully hidden).
+local function BuildVisibilityFields(frame, fontPath, sy, cfg)
+    local W = EllesmereUI.Widgets
+    -- Neither row changes how the bar is drawn: only the visibility pass runs.
+    local function apply()
+        if ns.PAB_SyncVisibility then ns.PAB_SyncVisibility() end
+    end
+    local _, hh = W:SectionHeader(frame, "VISIBILITY", sy); sy = sy - hh
+    _, hh = EllesmereUI.BuildVisibilityRow(W, frame, sy,
+        { getStore = function() return cfg end, legacyKey = "visibility",
+          caps = { partyIncludesRaid = false, luaDragonriding = true },
+          onChanged = apply, onOptionChanged = apply },
+        {
+            type = "slider", text = "Hidden Opacity", min = 0, max = 100, step = 5, trackWidth = 120,
+            tooltip = "How visible the bar stays while its Visibility conditions are not met. 0 hides it completely.",
+            getValue = function() return cfg.hiddenOpacity or 0 end,
+            setValue = function(v) cfg.hiddenOpacity = v; apply() end
+        }
+    ); sy = sy - hh
+    return sy
+end
+
 -- Debuff-category bars only (default debuffs + custom debuff bars).
 local DISPEL_ICON_POS_VALUES = {
     none        = "None",
@@ -1694,7 +1727,7 @@ local function BuildDispelColorFields(frame, fontPath, sy, cfg, apply)
     end
 
     -- Blizzard Style paints the stock per-type border art, so the palette has
-    -- nothing to colour: the whole section stays out (fully gated rows hide).
+    -- nothing to color: the whole section stays out (fully gated rows hide).
     if EllesmereUI.BlizzStyle.Get("playerauras") then return sy end
 
     _, hh = W:SectionHeader(frame, "DISPEL COLORS", sy); sy = sy - hh
@@ -2038,6 +2071,7 @@ local function BuildDefaultBarDetail(frame, fontPath, isBuff)
     end
     sy = BuildCoreFields(body, fontPath, sy, cfg, ApplyBar, isBuff)
     sy = BuildDisplayFields(body, fontPath, sy, cfg, ApplyBar, isBuff)
+    sy = BuildVisibilityFields(body, fontPath, sy, cfg)
     if not isBuff then
         sy = BuildDispelColorFields(body, fontPath, sy, cfg, ApplyBar)
         sy = BuildFxEffects(body, sy, cfg, ApplyBar)
@@ -2065,6 +2099,7 @@ local function AddNewButton(parentFrame, y, width, label, onClick)
     local addBg = addBtn:CreateTexture(nil, "BACKGROUND")
     addBg:SetAllPoints()
     addBg:SetColorTexture(accentColor.r, accentColor.g, accentColor.b, 0.8)
+    EllesmereUI.RoundBody(addBtn, addBg)
     local lbl = addBtn:CreateFontString(nil, "OVERLAY")
     -- Drop shadow via the shadow FontObject, primed BEFORE SetFont
     -- (SetShadowOffset alone does not render). Module font, same as the
@@ -2227,7 +2262,7 @@ function ns.PABMP_ShowFilterEditor()
     popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
     popup:EnableMouse(true)
     local popBg = EllesmereUI.SolidTex(popup, "BACKGROUND", 0.077, 0.068, 0.058, 1); popBg:SetAllPoints()
-    EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15)
+    EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
     if EllesmereUI.GetPopupScale then popup:SetScale(EllesmereUI.GetPopupScale()) end
 
     local title = EllesmereUI.MakeFont(popup, 16, "", 1, 1, 1)
@@ -2303,7 +2338,8 @@ function ns.PABMP_ShowFilterEditor()
     side:SetPoint("BOTTOMRIGHT", popup, "BOTTOMRIGHT", 0, 0)
     side:SetFrameLevel(popup:GetFrameLevel() + 1)
     local sideBg = EllesmereUI.SolidTex(side, "BACKGROUND", 0, 0, 0, 0.35); sideBg:SetAllPoints()
-    EllesmereUI.MakeBorder(side, 1, 1, 1, 0.10)
+    -- Flush with the popup's bottom-right corner: same shape, rows clipped to it.
+    EllesmereUI.MakeRoundedBorder(side, 1, 1, 1, 0.10, sideBg, nil, true)
 
     local sideScroll = CreateFrame("ScrollFrame", nil, side)
     sideScroll:SetPoint("TOPLEFT", side, "TOPLEFT", 1, -1)
@@ -2592,11 +2628,12 @@ function ns.PABMP_ShowFilterEditor()
         box:SetPoint("LEFT", srow, "LEFT", 6, 0)
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
         boxBg:SetAllPoints(); boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
-        local boxBrd = EllesmereUI.MakeBorder(box, 0.4, 0.4, 0.4, 0.6)
+        local boxBrd = EllesmereUI.MakeRoundedBorder(box, 0.4, 0.4, 0.4, 0.6, boxBg)
         local chk = box:CreateTexture(nil, "ARTWORK")
         chk:SetPoint("TOPLEFT", box, "TOPLEFT", 2, -2)
         chk:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -2, 2)
         chk:SetColorTexture(eg.r, eg.g, eg.b, 1)
+        EllesmereUI.RoundBody(box, chk, 2)
         local on = sel.spells[id] and true or false
         local ico = srow:CreateTexture(nil, "ARTWORK")
         ico:SetSize(22, 22)
@@ -2721,7 +2758,7 @@ local function ShowAddBarPopup(anchorBtn, kind, fontPath)
         local bg = popup:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(0.067, 0.067, 0.067, 0.95)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.2)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.2, bg)
 
         -- Auto-close on outside click, same pattern as DM's Add New popup.
         popup:SetScript("OnShow", function(p2)
@@ -2770,6 +2807,7 @@ local function ShowAddBarPopup(anchorBtn, kind, fontPath)
         local cBg = cBtn:CreateTexture(nil, "BACKGROUND")
         cBg:SetAllPoints()
         cBg:SetColorTexture(accentColor.r, accentColor.g, accentColor.b, 0.8)
+        EllesmereUI.RoundBody(cBtn, cBg)
         local cTx = cBtn:CreateFontString(nil, "OVERLAY")
         cTx:SetPoint("CENTER")
         cTx:SetFont(fontPath, 12, "")

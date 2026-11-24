@@ -115,7 +115,11 @@ local function GetPandemicGlowSpeed()
     return (p and p.pandemicGlowSpeed) or defaults.pandemicGlowSpeed
 end
 ns.GetPandemicGlowSpeed = GetPandemicGlowSpeed
+-- WoW Forever has no pandemic window (a refresh carries no time over there, so the game
+-- never opens one): the glow is off whatever is saved, and its options are not built.
+ns.NP_PANDEMIC_NONE = EllesmereUI.IS_FOREVER == true
 function ns.GetPandemicGlow()
+    if ns.NP_PANDEMIC_NONE then return false end
     local v = p and p.pandemicGlow
     if v == nil then v = defaults.pandemicGlow end
     return v == true
@@ -213,7 +217,7 @@ do
         out = out or {}
         local idx = ns.GetDispelGlowStyle()
         -- Blizzard Border sits outside the view and keeps Blizzard's own art
-        -- until a colour is picked (ns.GetDispelBorderColor); Blizzard
+        -- until a color is picked (ns.GetDispelBorderColor); Blizzard
         -- Pandemic Border is always drawn untinted.
         if idx == EllesmereUI.Glows.STEALABLE_BORDER then
             out.style = idx
@@ -233,9 +237,9 @@ do
         out.bgR, out.bgG, out.bgB = bgc and bgc.r, bgc and bgc.g, bgc and bgc.b
         return out
     end
-    -- Blizzard Border tint: the glow colour, except the untouched default gold
+    -- Blizzard Border tint: the glow color, except the untouched default gold
     -- (the profile merge fills the key, so it is compared, not nil-tested)
-    -- keeps Blizzard's own stealable art. Per-type colours always tint.
+    -- keeps Blizzard's own stealable art. Per-type colors always tint.
     ns.GetDispelBorderColor = function(dispelType)
         local r, g, b = ns.GetDispelGlowColor(dispelType)
         if dispelType and ns.GetDispelGlowUseTypeColor() then return r, g, b end
@@ -314,12 +318,15 @@ function ns.LayoutCastBar(plate, footprintW, castH)
     -- Snap to whole physical pixels at the plate's own scale (nameplates have their own scale
     -- stack, not UIParent's) so the health-bottom/cast-top gap stays constant instead of
     -- oscillating +/-1px as the plate slides to fractional screen positions.
-    if offsetY ~= 0 and PP then
+    local offsetX = ns.GetCastBarOffsetX()
+    if (offsetY ~= 0 or offsetX ~= 0) and PP then
         local plateES = plate:GetEffectiveScale()
         local onePx = (plateES and plateES > 0) and (PP.perfect / plateES) or (PP.mult or 1)
         offsetY = math.floor(offsetY / onePx + 0.5) * onePx
+        offsetX = math.floor(offsetX / onePx + 0.5) * onePx
     end
-    plate.cast:SetPoint("TOPLEFT", plate.health, "BOTTOMLEFT", shiftX, offsetY)
+    plate._castOffsetX = offsetX
+    plate.cast:SetPoint("TOPLEFT", plate.health, "BOTTOMLEFT", shiftX + offsetX, offsetY)
     -- The cast bar's bottom edge below the health bar's: the bottom text slots
     -- drop by this while a cast shows (PlaceSlotText). Clamped at 0, so a cast
     -- bar raised above the health bar never lifts them.
@@ -359,12 +366,14 @@ function ns.LayoutCastIcon(plate, castH)
         -- size: anchored to the same points the health/cast borders use, they pixel-snap
         -- together and shift as ONE unit instead of rounding independently. SetWidth keeps it
         -- square (height is fixed by the top/bottom anchors = side).
+        -- The top corner follows the cast bar's X offset, as the bottom one does.
         icon:SetWidth(side)
+        local barX = plate._castOffsetX or 0
         if onRight then
-            icon:SetPoint("TOPLEFT", plate.health, "TOPRIGHT", xOff, yOff)
+            icon:SetPoint("TOPLEFT", plate.health, "TOPRIGHT", xOff + barX, yOff)
             icon:SetPoint("BOTTOMLEFT", plate.cast, "BOTTOMRIGHT", xOff, yOff)
         else
-            icon:SetPoint("TOPRIGHT", plate.health, "TOPLEFT", xOff, yOff)
+            icon:SetPoint("TOPRIGHT", plate.health, "TOPLEFT", xOff + barX, yOff)
             icon:SetPoint("BOTTOMRIGHT", plate.cast, "BOTTOMLEFT", xOff, yOff)
         end
     else
@@ -376,6 +385,9 @@ function ns.LayoutCastIcon(plate, castH)
             icon:SetPoint("TOPRIGHT", plate.cast, "TOPLEFT", xOff, yOff)
         end
     end
+    -- A cast glow art showing on this plate goes around the icon (the cast file, which loads
+    -- after this one).
+    if ns.NP_PlaceCastGlowArt then ns.NP_PlaceCastGlowArt(plate) end
 end
 
 -- How far the cast icon protrudes past the bar edge, plus that side ("left"/"right"). The
@@ -483,10 +495,6 @@ local function GetRaidMarkerSize()
     return ns.NP_ElementSize("raidmarker")
 end
 ns.GetRaidMarkerSize = GetRaidMarkerSize
-local function GetRaidMarkerYOffset()
-    return 0
-end
-ns.GetRaidMarkerYOffset = GetRaidMarkerYOffset
 local function GetClassificationSlot()
     return (p and p.classificationSlot) or defaults.classificationSlot
 end
@@ -627,9 +635,9 @@ do
         end
         return nil
     end
-    -- A slot's Core Text Coloring mode: "custom" (the slot colour),
+    -- A slot's Core Text Coloring mode: "custom" (the slot color),
     -- "class" (Hostility / Class, painted per unit) or "level" (Level Difficulty, the
-    -- unit's level difficulty colour; any text but Target of Target, which names
+    -- unit's level difficulty color; any text but Target of Target, which names
     -- another unit). An unset <slot>ColorMode is derived from keys read
     -- here and never written: levelDifficultyColor makes a standalone level "level";
     -- <slot>ClassColor, or enemyNameTextReactionColor on the first name slot, makes
@@ -651,8 +659,8 @@ do
         end
         return "custom"
     end
-    -- Level | Name / Name | Level: the level part in the difficulty colour (applies
-    -- while the slot's mode is not "level"). A custom level colour turns it off; unset
+    -- Level | Name / Name | Level: the level part in the difficulty color (applies
+    -- while the slot's mode is not "level"). A custom level color turns it off; unset
     -- follows levelDifficultyColor.
     function ns.NP_SlotLevelDiff(slotKey, db)
         db = db or p or defaults
@@ -663,8 +671,8 @@ do
         if v ~= nil then return v == true end
         return db.levelDifficultyColor == true
     end
-    -- A combo part's stored colour (part "name" or "level"), falling back to the slot
-    -- colour; r, g, b. Whether it applies is <slot>NameColorOn / <slot>LevelColorOn.
+    -- A combo part's stored color (part "name" or "level"), falling back to the slot
+    -- color; r, g, b. Whether it applies is <slot>NameColorOn / <slot>LevelColorOn.
     function ns.NP_SlotPartColor(slotKey, part, db)
         db = db or p or defaults
         local k = SK[slotKey]
@@ -673,9 +681,9 @@ do
         if c then return c.r, c.g, c.b end
         return 1, 1, 1
     end
-    -- Materializes every slot's combo format strings: a part with a custom colour is
+    -- Materializes every slot's combo format strings: a part with a custom color is
     -- wrapped in its escape inside the format (the name stays a %s argument), and diff
-    -- marks a level part drawn in the difficulty colour. Run by NP_RefreshSlotClassFlags.
+    -- marks a level part drawn in the difficulty color. Run by NP_RefreshSlotClassFlags.
     function ns.NP_RefreshSlotNameParts()
         local db = p or defaults
         for i = 1, #textSlotKeys do
@@ -693,8 +701,8 @@ do
             f.diff = ns.NP_SlotColorMode(s, db) ~= "level" and ns.NP_SlotLevelDiff(s, db)
         end
     end
-    -- r, g, b for a readable level: the skull's colour below 0, else the difficulty
-    -- colour (nil when attackability or the player's level is secret). "player" is the
+    -- r, g, b for a readable level: the skull's color below 0, else the difficulty
+    -- color (nil when attackability or the player's level is secret). "player" is the
     -- options preview's stand-in mob, ranked as attackable like a hostile mob.
     -- friendly: rank friendly units by difficulty whatever levelDifficultyColorFriendly says.
     local function LevelRGB(unit, lvl, friendly)
@@ -702,7 +710,7 @@ do
         return EllesmereUI.GetLevelColor(unit, lvl,
             friendly or unit == "player" or (p and p.levelDifficultyColorFriendly))
     end
-    -- The unit's level difficulty colour, r, g, b; nil while its level cannot be read.
+    -- The unit's level difficulty color, r, g, b; nil while its level cannot be read.
     function ns.NP_UnitLevelColor(unit)
         local lvl = UnitEffectiveLevel(unit)
         if type(lvl) ~= "number" or (issecretvalue and issecretvalue(lvl)) then return nil end
@@ -710,7 +718,7 @@ do
     end
     -- Display string for the unit's EFFECTIVE level (so scaling/Chromie time read as the game
     -- ranks them). "??" for skull-ranked (-1) or unreadable (secret) levels, matching default UI.
-    -- color "diff" wraps it in the difficulty colour (an unreadable level stays a plain
+    -- color "diff" wraps it in the difficulty color (an unreadable level stays a plain
     -- "??"); "diffAll" does too and ranks friendly units as well (the friendly player
     -- plates' Color Level by Difficulty); any other value returns it plain.
     function ns.GetUnitLevelText(unit, color)
@@ -726,8 +734,8 @@ do
     end
     -- Write a name-family element's text into a FontString (shared by runtime update and
     -- options preview). name may be SECRET: only ever passed as a %s display arg, never inspected.
-    -- slotKey (nil = FindNameSlot's) picks the combo's materialized part colours; the rest
-    -- of the text keeps the font string's colour.
+    -- slotKey (nil = FindNameSlot's) picks the combo's materialized part colors; the rest
+    -- of the text keeps the font string's color.
     function ns.SetNameElementText(fs, element, name, unit, slotKey)
         if element == "levelName" or element == "nameLevel" then
             local f = PARTS[slotKey or ns.FindNameSlot()] or PLAIN
@@ -808,8 +816,11 @@ do
         return ns.NP_FormatName(name, slotKey, u)
     end
     -- Tag modifiers shape the plain name. They do not also apply the slot's Name Format.
+    -- [name:last] and [target:last] show nothing for your own unit while your name is
+    -- your first name alone (OwnSurnameHidden: WoW Forever, Blizzard's My Surname off).
     local function Shaped(mode)
         return function(u)
+            if mode == "last" and EllesmereUI.OwnSurnameHidden(u) then return "" end
             local name = EllesmereUI.WithSurname(UnitName(u))
             if type(name) == "nil" then return "" end
             return EllesmereUI.ShortName(name, mode)
@@ -1321,6 +1332,31 @@ end
 function ns.GetClassPowerBorderSize()
     return (p and p.classPowerBorderSize) or defaults.classPowerBorderSize
 end
+function ns.GetClassPowerEnergyBar()
+    local v = p and p.classPowerEnergyBar
+    if v == nil then return defaults.classPowerEnergyBar end
+    return v
+end
+function ns.GetClassPowerEnergyHeight()
+    return (p and p.classPowerEnergyHeight) or defaults.classPowerEnergyHeight
+end
+function ns.GetClassPowerEnergyWidth()
+    return (p and p.classPowerEnergyWidth) or defaults.classPowerEnergyWidth
+end
+function ns.GetClassPowerEnergyAnchor()
+    return (p and p.classPowerEnergyAnchor) or defaults.classPowerEnergyAnchor
+end
+function ns.GetClassPowerEnergyXOffset()
+    return (p and p.classPowerEnergyXOffset) or defaults.classPowerEnergyXOffset
+end
+function ns.GetClassPowerEnergyYOffset()
+    return (p and p.classPowerEnergyYOffset) or defaults.classPowerEnergyYOffset
+end
+function ns.GetClassPowerEnergyHideFull()
+    local v = p and p.classPowerEnergyHideFull
+    if v == nil then return defaults.classPowerEnergyHideFull end
+    return v
+end
 local function IsBorderEnabled()
     -- The stock styles carry their own art instead of an EUI border: the
     -- stock background art (Blizzard Style), the vanilla border sheets
@@ -1356,6 +1392,18 @@ function ns.GetIconBorderEnabled(kind)
     end
     return not v
 end
+function ns.NP_AuraCornerRadius()
+    if not (p and p.cornerRadiusAuras) then return end
+    local radius = p.cornerRadius or 0
+    if radius <= 0 or ns.NP_Blizz() or ns.GetWrapBorderCastbar() then return end
+    if ns.IsCustomBorderEnabled() then
+        local tex = p.customBorderTexture or defaults.customBorderTexture
+        if not EllesmereUI.RoundedStyleOK(tex) then return end
+        if p.auraIconCustomBorder and tex and tex ~= "" and tex ~= "solid" then return end
+    end
+    return radius
+end
+
 function ns.ApplyFrameIconBorder(frame, enabled, adjustIconInset)
     local PP = EllesmereUI and EllesmereUI.PP
     if not (frame and PP and PP.GetBorders and PP.GetBorders(frame)) then return end
@@ -1384,7 +1432,7 @@ function ns.NP_CanShowCastIconSeparator(db)
 end
 
 -- Shared by live plates and the preview; the cast bar owns this lazy divider. It
--- does not follow the target or threat tint, so the border-colour passes that land
+-- does not follow the target or threat tint, so the border-color passes that land
 -- here (every threat repaint) change nothing: only a moved style input restyles it.
 function ns.NP_ApplyCastIconSeparator(cast, icon, db, customOn, strata)
     local seam = cast._iconSeam
@@ -1411,7 +1459,7 @@ function ns.NP_ApplyCastIconSeparator(cast, icon, db, customOn, strata)
     local c = db.customBorderColor or defaults.customBorderColor
     local a = db.customBorderAlpha or defaults.customBorderAlpha
     -- Restyle inputs: shown state, strata, level (a strata change resets it), texture,
-    -- size step, exact px, side, the scale its width snaps to, and its colour.
+    -- size step, exact px, side, the scale its width snaps to, and its color.
     if seam:IsShown() and seam:GetFrameStrata() == st and seam:GetFrameLevel() == lvl
         and seam._key == key and seam._size == size and seam._px == px and seam._right == right
         and seam._es == seam:GetEffectiveScale()
@@ -1455,7 +1503,7 @@ end
 -- hide with the icon, and turns off through ApplyBorderStyle(frame, 0) so the UI scale
 -- re-apply cannot bring it back. MEDIUM strata lifts it out of the plate's flattened
 -- layer above the icon art (the lift's strata while the cast bar is lifted). Style
--- inputs restyle only when one moved; a colour change (Use Target Border Color on the
+-- inputs restyle only when one moved; a color change (Use Target Border Color on the
 -- target) is a plain tint. Off, this is the 1px edge call plus the opt-in gates.
 function ns.ApplyCastIconBorder(plate)
     local icon = plate and plate.castIconFrame
@@ -1481,6 +1529,8 @@ function ns.ApplyCastIconBorder(plate)
         bf:SetAllPoints(icon)
         bf:EnableMouse(false)
         plate._castIconBorder = bf
+        -- Built as the plate spawns: snap at the nameplate's settled scale.
+        EllesmereUI.SetBorderSnapHost(bf, plate)
     end
     local tex = p.customBorderTexture or defaults.customBorderTexture
     local sz = p.customBorderSize or defaults.customBorderSize
@@ -1498,7 +1548,7 @@ function ns.ApplyCastIconBorder(plate)
     local offX, offY = p.customBorderOffset, p.customBorderOffsetY
     local shX, shY = p.customBorderShiftX, p.customBorderShiftY
     -- Restyle inputs: shown state, strata, level (a strata change resets it), texture,
-    -- size step, exact px, both offsets and both shifts. Anything else is colour.
+    -- size step, exact px, both offsets and both shifts. Anything else is color.
     if not bf:IsShown() or bf:GetFrameStrata() ~= strata or bf:GetFrameLevel() ~= lvl
         or bf._sTex ~= tex or bf._sSz ~= sz or bf._sPx ~= px
         or bf._sOX ~= offX or bf._sOY ~= offY or bf._sSX ~= shX or bf._sSY ~= shY then
@@ -1525,7 +1575,7 @@ function ns.NP_BorderSize()
     if ns.NP_Classic() then return 1 end
     return (p and p.borderSize) or defaults.borderSize
 end
--- Cast bar border colour: black under Classic WoW UI, else the profile's.
+-- Cast bar border color: black under Classic WoW UI, else the profile's.
 function ns.NP_CastBorderColor()
     if ns.NP_Classic() then return 0, 0, 0 end
     local c = (p and p.castBorderColor) or defaults.castBorderColor
@@ -1537,6 +1587,29 @@ function ns.GetWrapBorderCastbar()
     local v = p and p.wrapBorderCastbar
     if v == nil then return defaults.wrapBorderCastbar end
     return v
+end
+-- Whether Wrap Around Castbar can draw: the setting is on and there is a border to wrap
+-- (Basic or Custom). Neither stock style has one, and neither has Border None.
+function ns.NP_WrapCanDraw()
+    return (ns.GetWrapBorderCastbar() and (IsBorderEnabled() or ns.IsCustomBorderEnabled())) and true or false
+end
+-- Cast Bar X Offset; 0 while the border can wrap the cast bar (the wrap spans the health
+-- bar's width). A saved wrap that cannot draw holds nothing back.
+function ns.GetCastBarOffsetX()
+    if ns.NP_WrapCanDraw() then return 0 end
+    return (p and p.castBarOffsetX) or defaults.castBarOffsetX
+end
+-- Places the cast bars and cast icons again, for a setting that only moves the cast bar:
+-- each live plate at its cast bar's own height (a focus plate keeps its Focus Cast Height),
+-- pooled plates at their next spawn (the appearance pass).
+function ns.NP_RelayoutCastBars()
+    ns._npAppearanceGen = (ns._npAppearanceGen or 0) + 1
+    local barW = ns.GetHealthBarWidth()
+    for _, plate in pairs(ns.plates) do
+        local castH = plate.cast:GetHeight()
+        ns.LayoutCastBar(plate, barW, castH)
+        ns.LayoutCastIcon(plate, castH)
+    end
 end
 local function GetAuraSlots()
     local ds = (p and p.debuffSlot) or defaults.debuffSlot
@@ -1568,6 +1641,9 @@ function ns.ApplySlotStrata(plate)
     end
     if plate.classFrame then
         plate.classFrame:SetFrameStrata(StrataFor(GetClassificationSlot()))
+    end
+    if plate.questFrame then
+        plate.questFrame:SetFrameStrata(StrataFor(GetClassificationSlot()))
     end
     if plate.factionFrame then
         plate.factionFrame:SetFrameStrata(StrataFor(ns.NP_GetFactionSlot()))
@@ -1818,6 +1894,8 @@ local function PlaceArrow(plate, arrow, side, extent, aw, ah)
     elseif row and ry < a1 and a0 < ry + rh then
         local icon = ns.NP_FullIconPush(plate, side, a0, a1)
         if icon > 0 and ns.NP_FullIconPush(plate, side, ry, ry + rh) == 0 then x = x + icon end
+        -- The row starts the side aura gap off the bar: an empty one leaves the arrow where a bare side puts it.
+        x = x - GetSideAuraXOffset()
         local cy = barH / 2 - ry
         local corner = (side == "left") and "BOTTOMLEFT" or "BOTTOMRIGHT"
         if side == "left" then x = -x end
@@ -1838,7 +1916,7 @@ local function PlaceArrow(plate, arrow, side, extent, aw, ah)
 end
 
 -- Position target arrows outside the side elements they meet: the cast icon, the side-slot
--- icons (raid marker, classification, faction, Quest Objective Text) and a side aura row. An
+-- icons (raid marker, Elite/Rare and Quest indicators, faction, Quest Objective Text) and a side aura row. An
 -- element its slot's Y offset moved clear of the arrows (above or below them) is passed over.
 local function PositionArrowsOutsideAuras(plate)
     if not plate.leftArrow then return end
@@ -1856,21 +1934,28 @@ local function PositionArrowsOutsideAuras(plate)
         local r = ArrowSideReach(plate, rmPos, ry, GetRaidMarkerSize(), rx, ah)
         if rmPos == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
     end
-    -- The Rare/Quest icon at the size its update set (elite/rare mark or quest icon).
+    -- The elite/rare mark and the quest icon, each at the size its update set.
     local clSlot = GetClassificationSlot()
-    local cf = plate.classFrame
-    if (clSlot == "left" or clSlot == "right") and cf and cf:IsShown() then
+    if clSlot == "left" or clSlot == "right" then
         local cx, cy = GetAuraSlotOffsets("classification")
-        local r = ArrowSideReach(plate, clSlot, cy, cf._npSz or GetRareEliteIconSize(), cx, ah)
+        local cf, qi = plate.classFrame, plate.questFrame
+        local r = 0
+        if cf and cf:IsShown() then
+            r = ArrowSideReach(plate, clSlot, cy, cf._npSz or GetRareEliteIconSize(), cx, ah)
+        end
+        if qi and qi:IsShown() then
+            r = math.max(r, ArrowSideReach(plate, clSlot, cy, qi._npSz or GetRareEliteIconSize(), cx, ah))
+        end
         if clSlot == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end
     end
     -- The faction badge (its own, or Rare/Quest + Faction, stacked higher behind a showing
-    -- Rare/Quest icon as UpdateFaction places it).
+    -- indicator as UpdateFaction places it).
     local fcSlot = ns.NP_GetFactionSlot()
     if (fcSlot == "left" or fcSlot == "right") and plate.factionFrame and plate.factionFrame:IsShown() then
         local fx, fy = GetSlotOffsets(fcSlot)
-        if p and p.classificationIncludeFaction and cf:IsShown() then
-            fy = fy + math.floor((cf._npSz or GetRareEliteIconSize()) * 0.6 + 0.5)
+        local ride = p and p.classificationIncludeFaction and ns.NP_RideFrame(plate)
+        if ride then
+            fy = fy + math.floor((ride._npSz or GetRareEliteIconSize()) * 0.6 + 0.5)
         end
         local r = ArrowSideReach(plate, fcSlot, fy, ns.NP_GetFactionIconSize(), fx, ah)
         if fcSlot == "left" then leftExtent = math.max(leftExtent, r) else rightExtent = math.max(rightExtent, r) end

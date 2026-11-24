@@ -125,7 +125,8 @@ local function SkinBlizzardFlyoutButton(btn, shape, zoom, brdOn, cr, cg, cb, ca,
         icon:SetAllPoints(btn)
         if shape == "cropped" then
             local z = zoom or 0
-            icon:SetTexCoord(z, 1 - z, z + 0.10, 1 - z - 0.10)
+            -- 80% as tall as wide: the top and bottom are cut, the art keeps its proportions.
+            icon:SetTexCoord(z, 1 - z, 0.1 + 0.8 * z, 0.9 - 0.8 * z)
         elseif zoom and zoom > 0 then
             icon:SetTexCoord(zoom, 1 - zoom, zoom, 1 - zoom)
         else
@@ -220,11 +221,7 @@ end
 
 -------------------------------------------------------------------------------
 --  Hook Installation (at login, with PLAYER_ENTERING_WORLD as the retry when
---  SpellFlyout is not there yet). WoW Forever's Gamepad interface style shows
---  and hides the flyout from secure code, where a hook of ours would taint
---  it on a client whose navigation still can be (EllesmereUI.PadTaintStandDown):
---  there the flyout keeps Blizzard's look for the session, decided once
---  logged in.
+--  SpellFlyout is not there yet).
 -------------------------------------------------------------------------------
 local function InstallBlizzFlyoutHook()
     local sf = _G.SpellFlyout
@@ -241,7 +238,7 @@ do
     hookFrame:RegisterEvent("PLAYER_LOGIN")
     hookFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
     hookFrame:SetScript("OnEvent", function(self)
-        if EllesmereUI.PadTaintStandDown() or InstallBlizzFlyoutHook() then
+        if InstallBlizzFlyoutHook() then
             self:UnregisterAllEvents()
             self:SetScript("OnEvent", nil)
         end

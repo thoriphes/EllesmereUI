@@ -183,7 +183,7 @@ ns.UF_KITS.classic = {
         power  = { x = 23, y = 56, w = 119, h = 12 },
         merge = { t = 48 / 128, b = 62 / 128, src = 46 / 128, srcB = 48 / 128, x = 147 / 256 },
         -- The name plaque behind the name, tinted by the unit's selection
-        -- colour, under the art (the art's name window shows it).
+        -- color, under the art (the art's name window shows it).
         rep = { art = { key = "c-namebg", file = "Interface\\TargetingFrame\\UI-TargetingFrame-LevelBackground", w = 119, h = 19 },
                 point = "TOPRIGHT", x = -90, y = -26, below = true },
         name  = { point = "CENTER", x = -34, y = 15, w = 100, justify = "CENTER" },
@@ -263,15 +263,24 @@ function ns.UF_ForeverKit()
         bar.mx, bar.my = -l * kx, t * ky
         bar.mw, bar.mh = mw * kx, mh * ky
     end
-    Fit(P.health, 88, 45.5, 123, 15, 4, 123, 9, 21, 128, 32)
-    Fit(P.power, 88, 61.5, 123, 10, 4, 123, 4, 11, 128, 16)
+    -- 122.5 wide, half a unit short of its 123-wide mask: the fill's bright
+    -- end stops at the rim.
+    Fit(P.health, 88, 45.5, 122.5, 15, 4, 123, 9, 21, 128, 32)
+    -- The Forever mana mask's opening ends a column later than the health
+    -- one's, so the mask is fitted 124 wide: its rounded right end meets the
+    -- bar's end.
+    Fit(P.power, 88, 61.5, 123, 10, 4, 124, 4, 11, 128, 16)
     P.name = { point = "CENTER", x = 33, y = 13, w = 116, justify = "CENTER" }
     P.badge = { point = "BOTTOMLEFT", x = 13, y = 7, size = 39, atlas = circle }
     P.level = { point = "CENTER", x = 0, y = -0.5, justify = "CENTER", skullDy = 0.5 }
     P.pvp = { point = "TOP", relPoint = "TOPLEFT", x = 22, y = -65, scale = 0.8 }
     P.vis.b, P.pad.bottom = 7, 7
-    Fit(T.health, 22, 44, 123, 15, 4, 123, 10, 22, 128, 32)
-    Fit(T.power, 22, 60, 123, 10, 68, 187, 4, 11, 256, 16)
+    -- The target bars draw over the art, so a bar a pixel past its track
+    -- shows over the rim: both span 23..145, the inside of the Forever rim.
+    -- The mana mask's opening has no rounded end on the left, so that
+    -- corner stays square.
+    Fit(T.health, 23, 44, 122, 15, 4, 123, 10, 22, 128, 32)
+    Fit(T.power, 23, 60, 122, 10, 68, 187, 4, 11, 256, 16)
     -- Both Forever target bars end alike: Hide Power Bar's stretched health
     -- mask fits, not the retail art's joined one.
     T.mergedHealth = nil
@@ -375,9 +384,9 @@ function ns.UF_CustomBorderOn(s)
     if tex == nil or tex == "" or tex == "solid" then return false end
     return (s.borderSize or 1) > 0
 end
--- Blizzard Style's coloured type strip over the target-family name ("Blizz
+-- Blizzard Style's colored type strip over the target-family name ("Blizz
 -- Colored Target Header", on unless the unit's settings turn it off, which
--- leaves the header uncoloured like the player frame's). Classic keeps its
+-- leaves the header uncolored like the player frame's). Classic keeps its
 -- name plaque either way.
 function ns.UF_BlizzHeaderOn(s)
     return not (ns.UF_Style() == "blizzard" and s and s.blizzColoredHeader == false)
@@ -640,6 +649,18 @@ function ns.UF_BlizzResolve(frame, unit)
     frame._blizzExtras = (G.rep and kind == "target") or nil
     return G, mirror
 end
+-- The player frame's rest icon and resting glow sit by the art (the icon's
+-- spot and the glow belong to the player art alone): placed and shown again
+-- when the layout pass resolved another art under them, as a Portrait Side
+-- change does. Nothing for a frame with no rest indicator, or the same art.
+function ns.UF_RestFollowArt(frame, G, mirror)
+    if not frame._restPlace then return end
+    mirror = mirror or nil
+    if frame._restGeom == G and frame._restMirror == mirror then return end
+    frame._restGeom, frame._restMirror = G, mirror
+    frame._restPlace()
+    frame._restUpdate()
+end
 function ns.UF_BlizzGeom(frame)
     if not frame then return nil end
     return frame._blizzGeom or ns.UF_BlizzResolve(frame)
@@ -833,8 +854,8 @@ function ns.UF_SetMask(tex, mask)
     tex:AddMaskTexture(mask)
 end
 -- Health + power bars: the user's own Bar Texture stays on the fills (the
--- stock fill art is pre-coloured and would darken every chosen colour), so
--- colours, gradients, opacity and textures render exactly as on the EUI
+-- stock fill art is pre-colored and would darken every chosen color), so
+-- colors, gradients, opacity and textures render exactly as on the EUI
 -- look; the stock rounded masks shape the fills AND the EUI bar backgrounds,
 -- so Bar Background keeps working inside the stock track. Masks are
 -- (re)seated after every texture swap (a swap replaces the fill object), so
@@ -1339,6 +1360,8 @@ function ns.UF_ApplyBlizzPortrait(frame, G)
         repaint = true
     end
     if repaint and pt.ForceUpdate then pt:ForceUpdate() end
+    -- Rested Indicator on the portrait: follows the stock portrait's show and level.
+    if frame._restFollowPortrait then frame._restFollowPortrait() end
 end
 
 -- Text zones: the left zone (the name by default) moves onto the stock name
@@ -1366,7 +1389,7 @@ end
 -- Level number in the frame's level circle, as the stock frames draw it:
 -- the stock number font at the stock spot (the right end of the player
 -- art's name bar, the left end of the target art's type strip), gold, green
--- while the player is level-scaled, the creature difficulty colour on an
+-- while the player is level-scaled, the creature difficulty color on an
 -- attackable target, and the stock skull for a level the client will not
 -- tell. One FontString per full frame on its own host above the bars,
 -- refreshed by a shared event frame created with the first frame (nothing
@@ -1425,8 +1448,8 @@ function ns.UF_BlizzLevelPass(frame)
     -- Same face, outline and shadow as the unit name (and its size, unless
     -- the level has its own): the name's font object first (it carries the
     -- shadow), then its face. A name on a font family gives its roman member's
-    -- face, the chosen font, whatever script the name holds. The colour keeps
-    -- the stock rules (set as an instance text colour, never vertex-only).
+    -- face, the chosen font, whatever script the name holds. The color keeps
+    -- the stock rules (set as an instance text color, never vertex-only).
     local lt = frame.LeftText
     if lt then
         local fo = lt:GetFontObject()
@@ -1589,6 +1612,26 @@ function ns.UF_SetBlizzCastFill(cb, kind)
     cb._blizzFillKind = kind
     cb:GetStatusBarTexture():SetAtlas(atlas)
 end
+-- Blizzard Style cast frame art reach past the bar (left, right, top), the
+-- spell name's nudge in the text box and the timer's on the bar; the live
+-- bars and the options preview both seat from here. `iconSide` is the side
+-- an icon sits flush against the bar ("left" | "right" | nil). The numbers
+-- are the parent's (EllesmereUI.CastChromeGeom, shared with Resource Bars).
+function ns.UF_CastChromeGeom(iconSide)
+    return EllesmereUI.CastChromeGeom(ns.UF_Forever(), iconSide)
+end
+-- The side an icon sits flush against its cast bar, nil while it is off or
+-- nudged away from the bar by an offset: the one rule the live bars and the
+-- options preview share.
+function ns.UF_CastIconSide(shown, onRight, offX, offY)
+    if not shown or (offX or 0) ~= 0 or (offY or 0) ~= 0 then return nil end
+    return onRight and "right" or "left"
+end
+-- The same for a live cast bar, for UF_CastChromeGeom.
+function ns.UF_CastIconFlushSide(cb)
+    if not cb then return nil end
+    return ns.UF_CastIconSide(cb._icoShown, cb._icoOnRight, cb._icoOffX, cb._icoOffY)
+end
 -- Spell name into the text box under the bar (honouring its side + offsets).
 function ns.UF_BlizzCastText(cb)
     local box = cb and cb._blizzTextBox
@@ -1603,7 +1646,8 @@ function ns.UF_BlizzCastText(cb)
     w = w or 0
     cb.Text:ClearAllPoints()
     local side = cb._nameSide or "left"
-    local ox, oy = cb._nameOX or 0, cb._nameOY or 0
+    local _, _, _, nameY = ns.UF_CastChromeGeom()
+    local ox, oy = cb._nameOX or 0, (cb._nameOY or 0) + nameY
     if side == "right" then
         cb.Text:SetJustifyH("RIGHT")
         cb.Text:SetPoint("RIGHT", box, "RIGHT", -8 + ox, oy)
@@ -1661,7 +1705,7 @@ function ns.UF_BlizzCastIcon(cb)
     end
 end
 -- Cast bar: stock background, fill art, frame and text box; the EUI tint
--- layer stays off (the fill art is its own colour). Border and icon frame go.
+-- layer stays off (the fill art is its own color). Border and icon frame go.
 function ns.UF_ApplyBlizzCastbar(cb)
     if not cb then return end
     -- The stock chrome owns the frame: a Custom Border Style host stays hidden.
@@ -1670,7 +1714,7 @@ function ns.UF_ApplyBlizzCastbar(cb)
     local CK = ns.UF_BLIZZ.cast
     if CK then
         -- Classic kit: the vanilla cast bar frame round the user's own fill
-        -- and colours; no stock background, fill art or text box (the spell
+        -- and colors; no stock background, fill art or text box (the spell
         -- name stays on the bar in its EUI zone). The frame is the shared
         -- nine-slice anchored to the HOLDER's corners (bar plus icon: the
         -- icon is part of the bar under this kit and sits inside the frame's
@@ -1754,10 +1798,11 @@ function ns.UF_ApplyBlizzCastbar(cb)
     if cb._blizzArtFr and cb._blizzArtFr:GetFrameLevel() ~= artLvl then cb._blizzArtFr:SetFrameLevel(artLvl) end
     local frAtlas = ns.UF_BlizzAtlas(ns.UF_CAST_BLIZZ.frame)
     if frAtlas then
+        local reachL, reachR, reachT = ns.UF_CastChromeGeom(ns.UF_CastIconFlushSide(cb))
         ns.UF_StockAtlas(cb._blizzFrame, frAtlas)
         cb._blizzFrame:ClearAllPoints()
-        cb._blizzFrame:SetPoint("TOPLEFT", cb, "TOPLEFT", -2, 2)
-        cb._blizzFrame:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", 2, -2)
+        cb._blizzFrame:SetPoint("TOPLEFT", cb, "TOPLEFT", -reachL, reachT)
+        cb._blizzFrame:SetPoint("BOTTOMRIGHT", cb, "BOTTOMRIGHT", reachR, -2)
         cb._blizzFrame:Show()
     else
         cb._blizzFrame:Hide()
@@ -1794,10 +1839,11 @@ end
 -- focus-target mana), as the stock small frames carry it. Built at spawn
 -- ONLY under Blizzard Style, from the unit's own settings with the stock bar
 -- geometry stamped over them, so it is not a user-positioned bar: the layout
--- pass owns its spot, size and art. Zero cost otherwise: the frame keeps no
--- Power widget (a WoW Forever pet builds its own user-positioned bar in
--- StyleSimpleFrame instead), so the engine registers no power channel and the
--- painter returns on the first field test, exactly as today.
+-- pass owns its spot, size and art. Under the EllesmereUI look it returns nil:
+-- target of target, focus target and a WoW Forever pet build their own
+-- user-positioned bar in StyleSimpleFrame instead (parked while Bar Position is
+-- None), and a retail pet keeps no Power widget, so the engine registers no
+-- power channel for it and the painter returns on the first field test.
 function ns.UF_BlizzMiniPower(frame, unit, settings)
     if not ns.UF_Blizz() or not frame.Health then return nil end
     local view = setmetatable({ powerPosition = "below", powerHeight = 7, powerWidth = 0 },
@@ -1813,6 +1859,7 @@ function ns.UF_ApplyBlizzardLayout(frame, unit)
     -- Layout by unit + Portrait Side (stamped on the frame for the helpers).
     local G, mirror = ns.UF_BlizzResolve(frame, unit)
     if not G then return end
+    ns.UF_RestFollowArt(frame, G, mirror)
     local settings = GetSettingsForUnit(unit)
 
     -- Frame: stock size + hit rect.
@@ -1933,7 +1980,7 @@ function ns.UF_ApplyBlizzardLayout(frame, unit)
 
     -- No EUI chrome: unified border and text bar step aside for the art.
     if frame.unifiedBorder then frame.unifiedBorder:Hide() end
-    if frame.BottomTextBar then frame.BottomTextBar:Hide() end
+    if frame.BottomTextBar then ns.UF_HideBottomTextBar(frame.BottomTextBar) end
 
     ns.UF_BlizzTextPass(frame)
     ns.UF_BlizzLevelPass(frame)

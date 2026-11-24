@@ -104,6 +104,7 @@ local function GetBagRow(index)
 
     row = CreateFrame("Button", nil, bagContent)
     P.Size(row, nil, BAG_ROW_HEIGHT)
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
 
 
@@ -285,8 +286,8 @@ function QueueFrame:RefreshBags()
     bagHint:SetText(not running and (not refusal and T["Click an item to queue it"]
             or refusal == "council" and T["Only the Loot Master and council can queue"]
             or T["Only the Loot Master can queue"])
-        or mine and T["Click an item to add it to the run"]
-        or T["Only the Loot Master can add mid-run"])
+        or mine and T["Click an item to add it to the session"]
+        or T["Only the Loot Master can add mid-session"])
 
 
     local hintHeight = bagHint:GetStringHeight()
@@ -345,13 +346,27 @@ function QueueFrame:RefreshBags()
             row.ilvl:SetText(ilvl or "")
 
             local link, owner = entry.link, section.owner
-            row:SetScript("OnClick", function()
+
+            local clearable = section.mine and (entry.kept or (entry.won and not entry.owed))
+            local kept = entry.kept
+            row:SetScript("OnClick", function(self, mouse)
+                if mouse == "RightButton" then
+                    if not clearable then return end
+                    local _, canonical = C_Item.GetItemInfo(link)
+                    S.ContextMenu(self, {
+                        { title = canonical or link },
+                        { text = T["Clear \"Awarded to you\""], onClick = function()
+                            addon.Storage:ClearOwnLabel(link, kept)
+                        end },
+                    })
+                    return
+                end
                 local index, why = addon.BagShare:AddToQueue(link, owner)
                 if index and addon.Session:IsRunning() then
 
 
                     addon.Chat.Print(addon.Locale.Format(
-                        T["added %s to the running run as session %d."], link, index))
+                        T["added %s to the active session as item %d."], link, index))
                 elseif not index then
                     addon.Chat.Print(addon.BagShare.RefusalText(why, link))
                 end
@@ -421,7 +436,7 @@ local function PaintQueue()
 
 
         row.remove:SetDisabledReason(running
-            and S.RequiresSentence(T["Items cannot be removed once the run has started."])
+            and S.RequiresSentence(T["Items cannot be removed once the session has started."])
             or nil)
         row.remove:SetEnabled(not running)
         row.remove:SetScript("OnClick", function()
@@ -473,7 +488,7 @@ local function PaintQueue()
 
     if #names == 0 then
         councilText:SetText(S.Colorize(S.color.bad,
-            T["Council: nobody resolved yet - a run cannot start"]))
+            T["Council: nobody resolved yet - a session cannot start"]))
     else
 
 
@@ -492,18 +507,18 @@ local function PaintQueue()
     local ready = not running and #items > 0 and #names > 0
 
     if running then
-        startButton:SetLabel(T["Run in progress"])
+        startButton:SetLabel(T["Session in progress"])
     elseif mayRequest and addon.Config:CouncilQueueMode() == "request" then
         startButton:SetLabel(T["Request start"])
     else
-        startButton:SetLabel(T["Start run"])
+        startButton:SetLabel(T["Start session"])
     end
 
 
     local blocked = addon.Restrictions:IsBlocked()
     local startReason
     if running then
-        startReason = S.RequiresSentence(T["The current run must finish first."])
+        startReason = S.RequiresSentence(T["The current session must finish first."])
     elseif blocked then
         startReason = addon.Restrictions:GetBlockReason() or T["unavailable"]
     elseif not mine and not mayRequest then
@@ -518,7 +533,7 @@ local function PaintQueue()
     startButton:SetEnabled((mine or mayRequest) and ready and not blocked)
 
     clearButton:SetDisabledReason(running
-        and S.RequiresSentence(T["The current run must finish first."])
+        and S.RequiresSentence(T["The current session must finish first."])
         or nil)
     clearButton:SetEnabled(not running)
 
@@ -551,7 +566,8 @@ function QueueFrame:AddAllFromBags()
     end
 
 
-    local picks, skipped, won = addon.BagShare.FreeToStage(
+
+    local picks, skipped, won, untimed = addon.BagShare.FreeToStage(
         addon.Storage:GetTradeableItems(), me)
     local links, bosses, encounterIDs = {}, {}, {}
     for i, entry in ipairs(picks) do
@@ -577,6 +593,12 @@ function QueueFrame:AddAllFromBags()
             one = "skipped %d item awarded to you - click it in the bags panel to queue it anyway.",
             other = "skipped %d items awarded to you - click one in the bags panel to queue it anyway.",
         }, won, won))
+    end
+    if untimed > 0 then
+        addon.Chat.Print(addon.Locale.Format(addon.Locale.Plural{
+            one = "skipped %d BoE item outside its six-hour window - click it in the bags panel to queue it anyway.",
+            other = "skipped %d BoE items outside their six-hour window - click one in the bags panel to queue it anyway.",
+        }, untimed, untimed))
     end
     QueueFrame:Refresh()
     return added
@@ -740,7 +762,7 @@ local function Build(host)
         width = 105, labelPad = S.size.BTN_PAD_FOOTER,
     })
     host.AddButton(clearButton)
-    startButton = S.Button(host.footer, T["Start run"], {
+    startButton = S.Button(host.footer, T["Start session"], {
         width = 150, primary = true, labelPad = S.size.BTN_PAD_FOOTER,
     })
     host.AddButton(startButton, true, true)
@@ -765,8 +787,8 @@ local function Build(host)
         end
         addon.Comms:Send("start_request", { items = proposal })
         addon.Chat.Print(addon.Locale.Format(addon.Locale.Plural{
-            one = "asking the Loot Master to start the run with %d proposed item...",
-            other = "asking the Loot Master to start the run with %d proposed items...",
+            one = "asking the Loot Master to start the session with %d proposed item...",
+            other = "asking the Loot Master to start the session with %d proposed items...",
         }, #proposal, #proposal))
     end)
 
@@ -775,7 +797,7 @@ local function Build(host)
 
 
         if addon.Session:IsRunning() and not addon.PlayerIsMasterLooter() then
-            addon.Chat.Print(T["nothing added from bags - a run is in progress, and only the Loot Master can add to it."])
+            addon.Chat.Print(T["nothing added from bags - a session is in progress, and only the Loot Master can add to it."])
             return
         end
         QueueFrame:AddAllFromBags()

@@ -737,7 +737,7 @@ EllesmereUI.GetRegionIcon = GetRegionIcon
 EllesmereUI.MINI_TO_FULL = MINI_TO_FULL
 
 -------------------------------------------------------------------------------
---  Class colour escape per class file (lazy-built cache)
+--  Class color escape per class file (lazy-built cache)
 -------------------------------------------------------------------------------
 local classColorCodes = {}
 function Kit.ClassColorCode(classFile)
@@ -788,8 +788,9 @@ Kit.ICON_STYLE_ORDER = {
 --  population, the click handler and the right-click menu. We own: paint.
 --
 --  A host starts it once per session (Kit.StartTiles) with its settings,
---  its look and its font; the host's settings page repaints through
---  Kit.RedecorateTiles.
+--  its look and its font, or for the custom friends list alone (cards =
+--  false: nothing here touches Blizzard's cards); the host's settings page
+--  repaints through Kit.RedecorateTiles.
 -------------------------------------------------------------------------------
 -- External weak-keyed state. Never write custom keys onto a Blizzard frame.
 local FFD, GetFFD = EllesmereUI.NewFrameData()
@@ -1091,7 +1092,7 @@ local function BuildName(accountInfo)
     return accountInfo.accountName or ""
 end
 
--- The colour Blizzard uses for the location line, so the level suffix can match
+-- The color Blizzard uses for the location line, so the level suffix can match
 -- it rather than the character name.
 local function LocationColor(accountInfo)
     local gi = accountInfo.gameAccountInfo
@@ -1100,7 +1101,7 @@ local function LocationColor(accountInfo)
     return DARKGRAY_COLOR or GRAY_FONT_COLOR
 end
 
--- Line 2: character name (class-coloured) plus the level, the level tinted to
+-- Line 2: character name (class-colored) plus the level, the level tinted to
 -- match the location line below it. Empty when the friend is not on a character
 -- in this project, which collapses the row to two lines.
 local function BuildCharLine(accountInfo)
@@ -1132,13 +1133,52 @@ local function BuildCharLine(accountInfo)
     return shown
 end
 
+-- WoW Forever friend's ruleset, the middle of richPresence
+-- ("Forever - Roleplay PvP - Tirisfal Glades"), plus their region when it is
+-- not ours. nil for anyone else. The project id is a literal: the client
+-- defines its constant only on WoW Forever, and a viewer on another client
+-- has such friends too.
+local WOW_PROJECT_FOREVER = 18
+-- realmName suffix ("CAMWOWUS2Realm10RPPvP") -> ruleset, for a richPresence
+-- that names none: our own names, worded as the rich presence words them.
+local function RealmRuleset(suffix)
+    if suffix == "PvE" then return EllesmereUI.L("Normal") end
+    if suffix == "PvP" then return EllesmereUI.L("PvP") end
+    if suffix == "RP" then return EllesmereUI.L("Roleplay") end
+    if suffix == "RPPvP" then return EllesmereUI.L("Roleplay PvP") end
+end
+local function ForeverRuleset(accountInfo)
+    local gi = accountInfo and accountInfo.gameAccountInfo
+    if not (gi and gi.isOnline and gi.wowProjectID == WOW_PROJECT_FOREVER) then return nil end
+    local ruleset = gi.richPresence and gi.richPresence:match("^.- %- (.-) %- ")
+    if not ruleset or ruleset == "" then
+        ruleset = RealmRuleset(EllesmereUI.RealmRulesetSuffix(gi.realmName))
+    end
+    if not ruleset then return nil end
+    if gi.isInCurrentRegion == false and FriendsListUtil and FriendsListUtil.GetRegionName then
+        ruleset = ruleset .. " (" .. FriendsListUtil.GetRegionName(accountInfo) .. ")"
+    end
+    return ruleset
+end
+
 local function BuildInfo(accountInfo)
     local text = ""
     if FriendsListUtil and FriendsListUtil.BuildLocationDisplayText then
         text = FriendsListUtil.BuildLocationDisplayText(accountInfo) or ""
     end
+    -- A WoW Forever friend on our own client: the ruleset after the zone, in
+    -- the zone's color. Where Blizzard's line is the friend's rich presence
+    -- instead (seen from another client, or no zone yet), that names the
+    -- ruleset already.
+    local gi = accountInfo.gameAccountInfo
+    if gi and gi.areaName and IsSameProjectOnline(gi) then
+        local ruleset = ForeverRuleset(accountInfo)
+        if ruleset then
+            text = text .. LocationColor(accountInfo):WrapTextInColorCode(
+                (gi.areaName ~= "" and " - " or "") .. ruleset)
+        end
+    end
     if text == "" then
-        local gi = accountInfo.gameAccountInfo
         local cp = gi and gi.clientProgram
         if gi and gi.isOnline and (cp == "App" or cp == "BSAp") then
             local loc = GetLocale()
@@ -1317,7 +1357,9 @@ local function RegionOnLeave()
     EllesmereUI.HideWidgetTooltip()
 end
 function Kit.UpdateRegionButton(frame, d, gameAccountInfo, anchor, show)
-    local mini = show and gameAccountInfo and GetFriendMiniRegion(gameAccountInfo)
+    -- Same-region friends never carry a mark.
+    local mini = show and gameAccountInfo and gameAccountInfo.isInCurrentRegion ~= true
+        and GetFriendMiniRegion(gameAccountInfo)
     local full = mini and GetFullRegion(mini)
     if not (mini and full and full ~= GetMyFullRegion()) then
         if d.regionBtn then d.regionBtn:Hide() end
@@ -1384,7 +1426,7 @@ local function PaintCard(card)
     d.charLine:SetShown(hasChar)
     d.info:SetText(BuildInfo(accountInfo))
 
-    -- Every string arrives pre-wrapped in Blizzard colour codes, so the
+    -- Every string arrives pre-wrapped in Blizzard color codes, so the
     -- FontStrings stay white or they would tint the markup.
     d.name:SetTextColor(1, 1, 1, 1)
     d.charLine:SetTextColor(1, 1, 1, 1)
@@ -1430,7 +1472,7 @@ end
 -- its own rows with, so the two never drift apart. Skin builds the tile art,
 -- the three text lines and the status orb on any frame (a row of ours
 -- included); its state is the kit's frame data for that frame. LevelColor is
--- the colour the character line's level takes.
+-- the color the character line's level takes.
 Kit._tile = {
     Host         = function() return host end,
     FontPath     = FontPath,
@@ -1439,6 +1481,7 @@ Kit._tile = {
     CharLine     = BuildCharLine,
     LevelColor   = LocationColor,
     Info         = BuildInfo,
+    Ruleset      = ForeverRuleset,
     State        = TileState,
     ClassFile    = GetClassFile,
     ClassIconTex = SetClassIconTex,
@@ -1506,7 +1549,7 @@ local function DecorateStockCard(card)
         end
     end
 
-    -- Class-coloured character name: our string over Blizzard's (same font
+    -- Class-colored character name: our string over Blizzard's (same font
     -- object and rect, so its truncation still holds). Blizzard never resets
     -- the name's alpha itself, so it is restored here whenever ours stands down.
     local name = card.Name
@@ -1550,7 +1593,7 @@ end
 --    class icon  -> over Blizzard's 24px game logo (same-project friends; an
 --                   online character friend's logo slot is empty and takes it)
 --    class name  -> our string over Blizzard's name, built from the same
---                   pieces Blizzard uses, the character part class-coloured
+--                   pieces Blizzard uses, the character part class-colored
 --    region mark -> under the status icon (Show Region Icons)
 --  Runs from a post-hook on Blizzard's row update, after it has filled the
 --  row. A row updated while the list is hidden (or skipped by an options pass
@@ -1628,8 +1671,8 @@ local function DecorateStockRow(button, restore)
         end
     end
 
-    -- Class-coloured name: our string over Blizzard's (same font object and
-    -- rect, Blizzard's own colour as the base), so the favourite star Blizzard
+    -- Class-colored name: our string over Blizzard's (same font object and
+    -- rect, Blizzard's own color as the base), so the favourite star Blizzard
     -- anchors at the end of its name still lines up. Blizzard never resets
     -- the name's alpha itself, so it is restored whenever ours stands down.
     -- A friend Blizzard greys out as unable to group keeps its grey.
@@ -1666,7 +1709,7 @@ local function DecorateStockRow(button, restore)
                 ov:SetWordWrap(name:CanWordWrap())
                 d.stockName = ov
             end
-            -- Colour only: a region's alpha and its colour alpha are one
+            -- Color only: a region's alpha and its color alpha are one
             -- channel on this client, and Blizzard's name sits at our alpha 0
             -- from the last pass (its 3-arg SetTextColor keeps it), so a full
             -- copy would hand ours alpha 0 from the second update on.
@@ -1721,15 +1764,14 @@ local activeDecorator
 -- h.Settings: returns the settings table (enabled, showClassIcons, iconStyle,
 -- classColorNames, factionBanners, showRegionIcons); h.style: "eui" paints
 -- the EllesmereUI tiles, any other look only decorates Blizzard's cards;
--- h.fontKey: the font the tiles take.
+-- h.fontKey: the font the tiles take; h.cards: false starts the host for the
+-- custom friends list alone (EllesmereUI_FriendsList.lua draws its rows with
+-- these pieces), with no hook on Blizzard's cards, which stay Blizzard's own.
+-- Such a host may start later in the session: it waits for no card.
 function Kit.StartTiles(h)
     if host then return end
-    -- WoW Forever's Gamepad interface style navigates Blizzard's windows from
-    -- secure code, and the tile hover hooks are script hooks on Blizzard's
-    -- cards, so the tiles stand down for the session under it where that
-    -- navigation can still be tainted (EllesmereUI.PadTaintStandDown).
-    if EllesmereUI.PadTaintStandDown() then return end
     host = h
+    if h.cards == false then return end
     if h.style ~= "eui" then
         -- Stock styles decorate whichever window Blizzard shows (the switch
         -- is server-side and can flip mid-session). Blizzard keeps its own
@@ -1823,13 +1865,8 @@ local function AutoAcceptOnEvent(self, event, _, _, _, _, _, _, inviterGUID)
         end
         if isFriend then
             AcceptGroup()
-            -- WoW Forever's Gamepad interface style runs Blizzard's popups from
-            -- secure code: its invite popup is left to it where that navigation
-            -- can still be tainted (EllesmereUI.PadTaintStandDown).
-            if not EllesmereUI.PadTaintStandDown() then
-                autoAcceptHidePopup = true
-                self:RegisterEvent("GROUP_ROSTER_UPDATE")
-            end
+            autoAcceptHidePopup = true
+            self:RegisterEvent("GROUP_ROSTER_UPDATE")
         end
     elseif event == "GROUP_ROSTER_UPDATE" and autoAcceptHidePopup then
         autoAcceptHidePopup = false

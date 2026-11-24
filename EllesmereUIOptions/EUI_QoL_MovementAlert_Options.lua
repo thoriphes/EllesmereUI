@@ -168,7 +168,7 @@ local function ShowAddSpellPopup(onAdded)
         popup:EnableMouse(true)
         local bg = popup:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints(); bg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, bg)
 
         local title = popup:CreateFontString(nil, "OVERLAY")
         title:SetFont(FONT, 14, "")
@@ -209,7 +209,7 @@ local function ShowAddSpellPopup(onAdded)
         addBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, 16)
         local addBg = addBtn:CreateTexture(nil, "BACKGROUND")
         addBg:SetAllPoints(); addBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(addBtn, ar, ag, ab, 0.4, PP)
+        EllesmereUI.MakeRoundedBorder(addBtn, ar, ag, ab, 0.4, addBg)
         local addLbl = addBtn:CreateFontString(nil, "OVERLAY")
         addLbl:SetFont(FONT, 12, "")
         addLbl:SetPoint("CENTER")
@@ -273,7 +273,7 @@ local function ShowCustomTextPopup(titleText, initial, onSave)
         popup:EnableMouse(true)
         local bg = popup:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints(); bg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, PP)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, bg)
 
         local title = popup:CreateFontString(nil, "OVERLAY")
         title:SetFont(FONT, 14, "")
@@ -307,7 +307,7 @@ local function ShowCustomTextPopup(titleText, initial, onSave)
         saveBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, 16)
         local saveBg = saveBtn:CreateTexture(nil, "BACKGROUND")
         saveBg:SetAllPoints(); saveBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(saveBtn, ar, ag, ab, 0.4, PP)
+        EllesmereUI.MakeRoundedBorder(saveBtn, ar, ag, ab, 0.4, saveBg)
         local saveLbl = saveBtn:CreateFontString(nil, "OVERLAY")
         saveLbl:SetFont(FONT, 12, "")
         saveLbl:SetPoint("CENTER")
@@ -555,7 +555,7 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
     );  y = y - h
 
     -- Bar settings cog on the Bar Texture slot: Show Icon on Bar lives here.
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = dmRow._rightRegion
         local function BarCogOff() return maOff() or ma.displayMode ~= "bar" end
         EllesmereUI.BuildInlineCog(rgn, {
@@ -576,7 +576,7 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
     -- Health Bar Left/Right Text rows: dropdown at the right, then the
     -- resize cog, then the Custom + Class color swatch pair. The swatches
     -- (the Use Class Color replacement) only apply to Text and Bar modes.
-    if not EllesmereUI._prebuilding then
+    do
         local leftRgn = dmRow._leftRegion
 
         -- Resize cog (nearest the control): Text Size / Icon Size, each gated to its mode.
@@ -609,53 +609,55 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
             gap = 9, disabled = maOff, disabledTooltip = "Select an Enabled Class",
         })
 
-        local dmAnchor = leftRgn._lastInline or leftRgn._control
+        if not EllesmereUI._prebuilding then
+            local dmAnchor = leftRgn._lastInline or leftRgn._control
 
-        -- Class Colored swatch (nearest the cog)
-        local dmClassSwatch, dmUpdateClassSwatch = EllesmereUI.BuildColorSwatch(
-            leftRgn, leftRgn:GetFrameLevel() + 5,
-            function()
-                local _, classFile = UnitClass("player")
-                local cc = classFile and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classFile]
-                if cc then return cc.r, cc.g, cc.b end
-                return 1, 1, 1
-            end,
-            function() end, nil, 20)
-        PP.Point(dmClassSwatch, "RIGHT", dmAnchor, "LEFT", -8, 0)
-        dmClassSwatch:SetScript("OnClick", function()
-            if DMSwatchesDisabled() then return end
-            ma.textColorUseClass = true; Refresh(); EllesmereUI:RefreshPage()
-        end)
-        dmClassSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(dmClassSwatch, "Class Colored") end)
-        dmClassSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            -- Class Colored swatch (nearest the cog)
+            local dmClassSwatch, dmUpdateClassSwatch = EllesmereUI.BuildColorSwatch(
+                leftRgn, leftRgn:GetFrameLevel() + 5,
+                function()
+                    local _, classFile = UnitClass("player")
+                    local cc = classFile and EllesmereUI.GetClassColor(classFile)
+                    if cc then return cc.r, cc.g, cc.b end
+                    return 1, 1, 1
+                end,
+                function() end, nil, 20)
+            PP.Point(dmClassSwatch, "RIGHT", dmAnchor, "LEFT", -8, 0)
+            dmClassSwatch:SetScript("OnClick", function()
+                if DMSwatchesDisabled() then return end
+                ma.textColorUseClass = true; Refresh(); EllesmereUI:RefreshPage()
+            end)
+            dmClassSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(dmClassSwatch, "Class Colored") end)
+            dmClassSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
 
-        -- Custom Colored swatch (left of the class swatch): opens the picker;
-        -- clicking while class color is active switches back to custom first.
-        local dmSwatch, dmUpdateSwatch = EllesmereUI.BuildColorSwatch(
-            leftRgn, leftRgn:GetFrameLevel() + 5,
-            function() return ma.textColorR or 1, ma.textColorG or 1, ma.textColorB or 1 end,
-            function(r, g, b) ma.textColorR, ma.textColorG, ma.textColorB = r, g, b; Refresh() end,
-            nil, 20)
-        PP.Point(dmSwatch, "RIGHT", dmClassSwatch, "LEFT", -8, 0)
-        leftRgn._lastInline = dmSwatch
-        local dmOrigClick = dmSwatch:GetScript("OnClick")
-        dmSwatch:SetScript("OnClick", function(self, ...)
-            if DMSwatchesDisabled() then return end
-            if ma.textColorUseClass then
-                ma.textColorUseClass = false; Refresh(); EllesmereUI:RefreshPage(); return
+            -- Custom Colored swatch (left of the class swatch): opens the picker;
+            -- clicking while class color is active switches back to custom first.
+            local dmSwatch, dmUpdateSwatch = EllesmereUI.BuildColorSwatch(
+                leftRgn, leftRgn:GetFrameLevel() + 5,
+                function() return ma.textColorR or 1, ma.textColorG or 1, ma.textColorB or 1 end,
+                function(r, g, b) ma.textColorR, ma.textColorG, ma.textColorB = r, g, b; Refresh() end,
+                nil, 20)
+            PP.Point(dmSwatch, "RIGHT", dmClassSwatch, "LEFT", -8, 0)
+            leftRgn._lastInline = dmSwatch
+            local dmOrigClick = dmSwatch:GetScript("OnClick")
+            dmSwatch:SetScript("OnClick", function(self, ...)
+                if DMSwatchesDisabled() then return end
+                if ma.textColorUseClass then
+                    ma.textColorUseClass = false; Refresh(); EllesmereUI:RefreshPage(); return
+                end
+                if dmOrigClick then dmOrigClick(self, ...) end
+            end)
+            dmSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(dmSwatch, "Custom Colored") end)
+            dmSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            local function UpdateDmSwatches()
+                local off = DMSwatchesDisabled()
+                local isClass = ma.textColorUseClass == true
+                dmSwatch:SetAlpha((off or isClass) and 0.3 or 1)
+                dmClassSwatch:SetAlpha((isClass and not off) and 1 or 0.3)
             end
-            if dmOrigClick then dmOrigClick(self, ...) end
-        end)
-        dmSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(dmSwatch, "Custom Colored") end)
-        dmSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        local function UpdateDmSwatches()
-            local off = DMSwatchesDisabled()
-            local isClass = ma.textColorUseClass == true
-            dmSwatch:SetAlpha((off or isClass) and 0.3 or 1)
-            dmClassSwatch:SetAlpha((isClass and not off) and 1 or 0.3)
+            EllesmereUI.RegisterWidgetRefresh(function() dmUpdateSwatch(); dmUpdateClassSwatch(); UpdateDmSwatches() end)
+            UpdateDmSwatches()
         end
-        EllesmereUI.RegisterWidgetRefresh(function() dmUpdateSwatch(); dmUpdateClassSwatch(); UpdateDmSwatches() end)
-        UpdateDmSwatches()
     end
 
     -- TTS Voice doubles as the TTS enable ("None" = off, the default) -- a
@@ -686,7 +688,7 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
           end }
     );  y = y - h
 
-    if not EllesmereUI._prebuilding then
+    do
         local leftRgn = ttsRow._rightRegion
         local function TtsCogOff() return maOff() or not ma.maTtsEnabled end
         EllesmereUI.BuildInlineCog(leftRgn, {
@@ -809,8 +811,10 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
         local totalRows = math.ceil(#items / GRID_COLS)
         local totalW = parent:GetWidth() - GRID_PAD * 2
         local colW = math.floor(totalW / GRID_COLS)
+        -- The spell cells hold nothing the search indexes: none in the index pass.
+        local builtRows = EllesmereUI._prebuilding and 0 or totalRows
 
-        for row = 0, totalRows - 1 do
+        for row = 0, builtRows - 1 do
             local rowFrame = CreateFrame("Frame", nil, parent)
             PP.Size(rowFrame, totalW, GRID_ROW_H)
             PP.Point(rowFrame, "TOPLEFT", parent, "TOPLEFT", GRID_PAD, y - row * GRID_ROW_H)
@@ -846,7 +850,7 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
                     local addBg = EllesmereUI.SolidTex(addBtn, "BACKGROUND",
                         EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
                     addBg:SetAllPoints()
-                    local addBrd = EllesmereUI.MakeBorder(addBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, EllesmereUI.PanelPP)
+                    local addBrd = EllesmereUI.MakeRoundedBorder(addBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, addBg)
                     local addLbl = EllesmereUI.MakeFont(addBtn, 12, nil, 1, 1, 1)
                     addLbl:SetAlpha(EllesmereUI.DD_TXT_A)
                     addLbl:SetPoint("CENTER")
@@ -887,11 +891,12 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
                     boxBg:SetAllPoints()
                     boxBg:SetColorTexture(0.114, 0.106, 0.099, 1)
                     if boxBg.SetSnapToPixelGrid then boxBg:SetSnapToPixelGrid(false); boxBg:SetTexelSnappingBias(0) end
-                    local boxBrd = EllesmereUI.MakeBorder(box, 0.224, 0.215, 0.207, 0.6, EllesmereUI.PanelPP)
+                    local boxBrd = EllesmereUI.MakeRoundedBorder(box, 0.224, 0.215, 0.207, 0.6, boxBg)
                     local check = box:CreateTexture(nil, "ARTWORK")
                     check:SetPoint("TOPLEFT", box, "TOPLEFT", 3, -3)
                     check:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -3, 3)
                     check:SetColorTexture(EG.r, EG.g, EG.b, 1)
+                    EllesmereUI.RoundBody(box, check, 1)
                     if check.SetSnapToPixelGrid then check:SetSnapToPixelGrid(false); check:SetTexelSnappingBias(0) end
 
                     local btn = CreateFrame("Button", nil, cell)
@@ -1024,7 +1029,7 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
     );  y = y - h
 
     -- Time Spiral settings cog (left slot)
-    if not EllesmereUI._prebuilding then
+    do
         local leftRgn = extraRow._leftRegion
         local sndValues2, sndOrder2 = EllesmereUI.BuildSoundDropdownValues()
         local ttsValues2, ttsOrder2 = TTSVoiceDropdownValues()
@@ -1072,7 +1077,7 @@ local function BuildMovementAlertPage(pageName, parent, yOffset)
     end
 
     -- Gateway Shard settings cog (right slot); Combat Only lives in here.
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = extraRow._rightRegion
         local sndValues2, sndOrder2 = EllesmereUI.BuildSoundDropdownValues()
         local ttsValues2, ttsOrder2 = TTSVoiceDropdownValues()

@@ -23,8 +23,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --                  bars that join one above the other)
 --  The opts tables are only read during the call, so callers may reuse them;
 --  at radius 0 no opts are needed.
---  EllesmereUI.RoundedBorderColor(border, r, g, b, a) recolours the ring of a
---  border painted without EllesmereUI.SetBorderStyleColor (which recolours it
+--  EllesmereUI.RoundedBorderColor(border, r, g, b, a) recolors the ring of a
+--  border painted without EllesmereUI.SetBorderStyleColor (which recolors it
 --  on its own).
 --  EllesmereUI.RoundedSetCorners(owner, corners) moves only the round corners
 --  of an owner whose other inputs (radius, style, rect, border, clip, roots,
@@ -140,6 +140,22 @@ function EllesmereUI.RoundedStyleOK(style)
     return STYLE_OK[style or "solid"] == true
 end
 
+function EllesmereUI.AuraRadiusRow(get, set, disabled)
+    return { type = "slider", label = "Corner Radius", min = 0, max = MAX_RADIUS, step = 1,
+        get = get, set = set, disabled = disabled }
+end
+
+-- disabledTooltip: a whole "This option ..." sentence, or the name of what must
+-- be turned off ("Hide Icons", a stock style's label).
+function EllesmereUI.AuraRadiusCogCfg(texture, get, set, disabled, disabledTooltip)
+    if texture and texture ~= "" and texture ~= "solid" then
+        disabled = function() return true end
+        disabledTooltip = "This option requires the Solid border style."
+    end
+    return { title = "Corner Radius", tip = "Corner Radius", disabled = disabled,
+        disabledTooltip = disabledTooltip, requireState = "disabled", rows = { EllesmereUI.AuraRadiusRow(get, set) } }
+end
+
 -- Options: appends the four corner toggles of a Corner Radius cog to rows.
 -- get / set read and write the round corners bits (nil reads as all).
 local CORNER_LABELS = { "Top Left", "Top Right", "Bottom Left", "Bottom Right" }
@@ -187,6 +203,12 @@ local function SetRounded(obj, radius, corners, wrap)
     obj:SetTexture(ROUNDED[radius * 16 + corners], wrap, wrap)
     obj:SetTextureSliceMargins(radius, radius, radius, radius)
     obj:SetTextureSliceMode(STRETCHED)
+end
+
+local function SetHole(mask, radius, corners)
+    mask:SetTexture(ROUNDED_INV[radius * 16 + corners], "CLAMPTOWHITE", "CLAMPTOWHITE")
+    mask:SetTextureSliceMargins(radius, radius, radius, radius)
+    mask:SetTextureSliceMode(STRETCHED)
 end
 
 -- Half a region's short side, or nil while it is unsized or secret.
@@ -298,11 +320,27 @@ end
 -------------------------------------------------------------------------------
 --  Solid: a rounded fill with the body's exact inverse cut out of it
 -------------------------------------------------------------------------------
+local function StripInterior(mask, cont)
+    mask:ClearAllPoints()
+    mask:SetPoint("TOPLEFT", cont._left, "TOPRIGHT", 0, 0)
+    mask:SetPoint("BOTTOMRIGHT", cont._right, "BOTTOMLEFT", 0, 0)
+end
+
+local function Inset(mask, rect, edge)
+    mask:ClearAllPoints()
+    mask:SetPoint("TOPLEFT", rect, "TOPLEFT", edge, -edge)
+    mask:SetPoint("BOTTOMRIGHT", rect, "BOTTOMRIGHT", -edge, edge)
+end
+
 local function SolidOff(st)
     local sd = st.solid
     if not sd or not sd.on then return end
     for i = 1, 4 do RemoveMask(sd.cont[STRIPS[i]], sd.hide) end
     sd.fill:Hide()
+    if sd.auraInset then
+        StripInterior(sd.hole, sd.cont)
+        sd.auraInset = nil
+    end
     sd.on = nil
 end
 
@@ -316,7 +354,7 @@ local function SolidParts(st, cont)
     -- runs other units, so there they take a layer of their own on the border
     -- frame, at the body's scale.
     local host = cont
-    if cont.IsIgnoringParentScale and cont:IsIgnoringParentScale() then
+    if cont._scaleDecoupled then
         local parent = cont:GetParent()
         host = CreateFrame("Frame", nil, parent)
         host:SetAllPoints(cont)
@@ -332,10 +370,14 @@ local function SolidParts(st, cont)
     ownTex[fill] = true
     sd.fill = fill
     local hole = host:CreateMaskTexture()
-    hole:SetPoint("TOPLEFT", cont._left, "TOPRIGHT", 0, 0)
-    hole:SetPoint("BOTTOMRIGHT", cont._right, "BOTTOMLEFT", 0, 0)
+    if st.aura then
+        fill:SetBlockingLoadsRequested(true)
+        hole:SetBlockingLoadsRequested(true)
+    end
+    StripInterior(hole, cont)
     sd.hole = hole
     local hide = cont:CreateMaskTexture()
+    if st.aura then hide:SetBlockingLoadsRequested(true) end
     hide:SetTexture(MEDIA .. "hide.tga", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
     sd.hide = hide
     solidsByCont[cont] = sd
@@ -363,13 +405,15 @@ local function SolidOn(st, cont, radius, inner)
     end
     -- The hole is reshaped only while detached (it must carry its texture
     -- before it is added).
+    if st.auraInset and sd.auraInset ~= st.auraInset then
+        Inset(sd.hole, rect, st.auraInset)
+        sd.auraInset = st.auraInset
+    end
     local corners = st.corners
     local innerKey = inner * 16 + corners
     if sd.inner ~= innerKey then
         if sd.inner then RemoveMask(sd.fill, sd.hole) end
-        sd.hole:SetTexture(ROUNDED_INV[innerKey], "CLAMPTOWHITE", "CLAMPTOWHITE")
-        sd.hole:SetTextureSliceMargins(inner, inner, inner, inner)
-        sd.hole:SetTextureSliceMode(STRETCHED)
+        SetHole(sd.hole, inner, corners)
         AddMask(sd.fill, sd.hole)
         sd.inner = innerKey
     end
@@ -384,12 +428,182 @@ local function SolidOn(st, cont, radius, inner)
     -- The layer draws where the container does.
     local layer = sd.layer
     if layer then
-        if not layer:IsShown() then layer:Show() end
+        layer:Show()
         local lvl = cont:GetFrameLevel()
         if layer:GetFrameLevel() ~= lvl then layer:SetFrameLevel(lvl) end
     end
     sd.fill:SetVertexColor(cont._top:GetVertexColor())
     sd.fill:Show()
+end
+
+-- The icon uses a whole 64x64 mask. An atlas subrectangle on a live aura
+-- mask displaces the visible artwork as the selected cell changes.
+local AURA_MASKS = Paths("aura-masks\\round-%d.tga")
+function EllesmereUI.SetAuraIconMask(mask, shape)
+    mask:SetTexture(AURA_MASKS[shape], "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+end
+local AURA_SWIPE = MEDIA .. "aura-masks\\aura-swipe.tga"
+local UV_ZERO, UV_ONE = { x = 0, y = 0 }, { x = 1, y = 1 }
+local function AuraSwipeUV(inner, w, h)
+    local x = min(16, max(1, math.ceil(32 * inner / max(1, w)))) - 1
+    local y = min(16, max(1, math.ceil(32 * inner / max(1, h)))) - 1
+    return x / 16, (x + 1) / 16, y / 16, (y + 1) / 16
+end
+
+function EllesmereUI.ApplyRoundedIconSwipe(cd, st)
+    cd:ClearAllPoints()
+    cd:SetAllPoints(st.mask)
+    cd:SetSwipeTexture(AURA_SWIPE)
+    cd:SetTexCoordRange(st.swipeStart, st.swipeEnd)
+end
+
+-- Alternate artwork and backgrounds share the icon's screen-space mask.
+function EllesmereUI.MaskRoundedIconLayer(st, tex)
+    if not tex or (st.layers and st.layers[tex]) then return end
+    if AddMask(tex, st.mask) then
+        st.layers = st.layers or setmetatable({}, { __mode = "k" })
+        st.layers[tex] = true
+    end
+end
+
+local function ClearAuraCorners(st, owner, icon, cd)
+    if byBorder[st.rect] == st then byBorder[st.rect] = nil end
+    if icon then RemoveMask(icon, st.mask) end
+    if st.layers then
+        for tex in pairs(st.layers) do RemoveMask(tex, st.mask) end
+        wipe(st.layers)
+    end
+    if st.cover then RemoveMask(st.cover, st.mask); st.cover = nil end
+    SolidOff(st)
+    if cd then
+        cd:ClearAllPoints()
+        if st.swipeInset then Inset(cd, owner, st.swipeInset) else cd:SetAllPoints(owner) end
+        cd:SetSwipeTexture("")
+        cd:SetTexCoordRange(UV_ZERO, UV_ONE)
+    end
+    st.on = nil
+end
+
+-- AuraKit calls this on a style pass, with public layout dimensions. Touch
+-- only the icon, swipe and PP ring. The button can own other engine regions.
+function EllesmereUI.RoundAuraCorners(owner, d, icon, cd, border, radius, w, h)
+    local st = d.auraRound
+    local cont = radius and radius > 0 and EllesmereUI.PP.GetBorders(border)
+    -- The caller selects an active solid border from public style settings.
+    -- Even its owned child frames can return secret visibility on a pooled aura.
+    local edge = cont and cont._snapEdge
+    if not edge or edge <= 0 then
+        if st and st.on then ClearAuraCorners(st, owner, icon, cd) end
+        return
+    end
+    local cap = max(0, (min(w, h) - 1) / 2)
+    if cont._scaleDecoupled then
+        local scale = border:GetEffectiveScale()
+        if scale > 0 then edge = edge * cont:GetEffectiveScale() / scale end
+    end
+    edge = min(edge, cap)
+    radius = min(MAX_RADIUS, max(1, floor(radius + 0.5)), max(1, floor(cap)))
+    if not st then
+        st = { rect = border, corners = ALL_CORNERS, aura = true }
+        if icon then
+            st.mask = owner:CreateMaskTexture()
+            st.mask:SetBlockingLoadsRequested(true)
+        end
+        d.auraRound = st
+    end
+    local color = cont._bdColor
+    if st.on and st.radius == radius and st.edge == edge and st.w == w and st.h == h and st.cont == cont then
+        if color and (st.r ~= color[1] or st.g ~= color[2] or st.b ~= color[3] or st.a ~= color[4]) then
+            st.solid.fill:SetVertexColor(unpack(color))
+        end
+    else
+        local inner = max(1, floor(radius - edge + 0.5))
+        st.rect, st.auraInset = border, edge
+        if icon then
+            if st.on then icon:RemoveMaskTexture(st.mask) end
+            if st.cover then st.cover:RemoveMaskTexture(st.mask) end
+            if st.layers then
+                for tex in pairs(st.layers) do RemoveMask(tex, st.mask) end
+            end
+            local bodyW, bodyH = w - 2 * edge, h - 2 * edge
+            local shape = min(16, max(1, math.ceil(64 * inner / max(2, bodyW + bodyH))))
+            -- Let the next fuller mask overlap the ring's antialiased inner edge.
+            -- On the diagonal, each unit of inset allows 2 + sqrt(2) units less
+            -- radius before the outer arc is crossed. Use 3 on the shorter axis.
+            if shape > 1 and (shape - 1) * min(bodyW, bodyH) / 32 >= radius - 3 * edge then
+                shape = shape - 1
+            end
+            EllesmereUI.SetAuraIconMask(st.mask, shape)
+            Inset(st.mask, border, edge)
+            if not AddMask(icon, st.mask) then
+                if st.on then ClearAuraCorners(st, owner, icon, cd) end
+                return
+            end
+            if st.cover then st.cover:AddMaskTexture(st.mask) end
+            if st.layers then
+                for tex in pairs(st.layers) do AddMask(tex, st.mask) end
+            end
+            local left, right, top, bottom = AuraSwipeUV(inner, bodyW, bodyH)
+            st.swipeStart = { x = left, y = top }
+            st.swipeEnd = { x = right, y = bottom }
+            if cd then EllesmereUI.ApplyRoundedIconSwipe(cd, st) end
+        end
+        st.on = true
+        SolidOn(st, cont, radius, inner)
+        if not st.poolCleanup and POOL.Gen and POOL.Gen(owner) then
+            st.poolCleanup = POOL.Attach(owner, st.solid.fill, nil, function()
+                if st.on then ClearAuraCorners(st, owner, icon, cd) end
+            end)
+        end
+        st.radius, st.edge, st.w, st.h, st.cont = radius, edge, w, h, cont
+        st.dispelKey = nil
+    end
+    if color then st.r, st.g, st.b, st.a = unpack(color) end
+    return st
+end
+
+-- A filter's extra PP border shares the radius, with its own width and tint.
+function EllesmereUI.RoundAuraOverlay(host, body)
+    if body and body.on then
+        EllesmereUI.RoundAuraCorners(host, host, nil, nil, host, body.radius, body.w, body.h)
+    elseif host.auraRound and host.auraRound.on then
+        EllesmereUI.RoundAuraCorners(host, host, nil, nil, host, 0)
+    end
+end
+
+-- Plain preview cells have readable layout and keep their own dressing state.
+function EllesmereUI.PreviewAuraCorners(owner, icon, cd, border, radius, texture, size, swipeInset)
+    local active = radius and radius > 0 and (size or 1) > 0
+        and (not texture or texture == "solid" or texture == "")
+    if active or (owner.auraRound and owner.auraRound.on) then
+        local st = EllesmereUI.RoundAuraCorners(owner, owner, icon, cd, border, active and radius or 0, owner:GetSize())
+        if st then st.swipeInset = swipeInset end
+    end
+end
+
+-- The engine owns this ring's tint and visibility after registration.
+function EllesmereUI.RoundAuraDispel(st, host, px)
+    local scale = host:GetEffectiveScale()
+    local edge = scale > 0 and px * EllesmereUI.PP.perfect / scale or px
+    edge = min(edge, max(0, (min(st.w, st.h) - 1) / 2))
+    if st.dispelKey and st.dispelEdge == edge then return end
+    if not st.dispel then
+        local tex = host:CreateTexture(nil, "OVERLAY")
+        tex:SetAllPoints(host)
+        tex:Hide()
+        st.dispel = { tex }
+        tex:SetBlockingLoadsRequested(true)
+        st.hole = host:CreateMaskTexture()
+        st.hole:SetBlockingLoadsRequested(true)
+    end
+    local tex, hole = st.dispel[1], st.hole
+    if st.dispelEdge then tex:RemoveMaskTexture(hole) end
+    SetRounded(tex, st.radius, ALL_CORNERS)
+    SetHole(hole, max(1, floor(st.radius - edge + 0.5)), ALL_CORNERS)
+    Inset(hole, host, edge)
+    tex:AddMaskTexture(hole)
+    st.dispelEdge = edge
+    st.dispelKey = ("rounded:%s|%s|%s|%s"):format(st.radius, edge, st.w, st.h)
 end
 
 -------------------------------------------------------------------------------
@@ -577,6 +791,14 @@ local function OnBorderColor(borderFrame, r, g, b, a)
 end
 EllesmereUI.RoundedBorderColor = OnBorderColor
 
+function EllesmereUI.TrackRoundedBorderColor(st, border)
+    if not hooked then
+        hooked = true
+        hooksecurefunc(EllesmereUI, "SetBorderStyleColor", OnBorderColor)
+    end
+    byBorder[border] = st
+end
+
 -- The scale-dependent half of a pass: the radius the shape allows, what the
 -- border draws now (Solid strips, a glow backdrop, or nothing) and the body
 -- mask's radius inside the strips.
@@ -677,10 +899,6 @@ function EllesmereUI.RoundCorners(owner, radius, opts)
         st = { owner = owner, masked = {}, gen = 0, poolGen = PoolDress(owner) }
         state[owner] = st
     end
-    if not hooked then
-        hooked = true
-        hooksecurefunc(EllesmereUI, "SetBorderStyleColor", OnBorderColor)
-    end
     st.radius, st.corners = radius, corners
     st.glowStyle = style == "glow" or style == "shadow"
     local rect = opts.rect or owner
@@ -694,7 +912,7 @@ function EllesmereUI.RoundCorners(owner, radius, opts)
         st.border = border
         st.kRadius = nil
     end
-    if border then byBorder[border] = st end
+    if border then EllesmereUI.TrackRoundedBorderColor(st, border) end
     local clip = opts.clip
     if st.clip ~= clip then
         if st.clip then st.clip:SetClipsChildren(true) end
@@ -750,7 +968,7 @@ end
 -- stadium h px tall with round ends of radius h / 2, sliced, so drawn on a
 -- pixel layer at any width; EllesmereUI.SetCircleArt(tex, d), a circle d px
 -- across, unsliced, so on any frame where the region is d px square. White:
--- the colour is the texture's vertex colour.
+-- the color is the texture's vertex color.
 local WEAK_K = { __mode = "k" }
 local layers = setmetatable({}, WEAK_K)   -- layer frame -> layer object
 local PILL = Paths("pill-%d.tga")
@@ -770,19 +988,43 @@ function EllesmereUI.SetCircleArt(tex, d)
     tex:SetTexture(CIRCLE[d])
 end
 
+-- The layer's edges on whole pixels: a parent centred on its row or header
+-- can sit half a pixel off the grid, which spread a 1 px outline over two.
+-- Each edge moves to its nearest pixel (offsets in layer units = pixels).
+local function SeatLayer(L, layer, k)
+    local p = L.parent
+    local l, t, r, b = p:GetLeft(), p:GetTop(), p:GetRight(), p:GetBottom()
+    if not (l and t and r and b) or issecretvalue(l) or issecretvalue(t)
+        or issecretvalue(r) or issecretvalue(b) then return end
+    l, t, r, b = l * k, t * k, r * k, b * k
+    l, t, r, b = floor(l + 0.5) - l, floor(t + 0.5) - t, floor(r + 0.5) - r, floor(b + 0.5) - b
+    if L.sl == l and L.st == t and L.sr == r and L.sb == b then return end
+    L.sl, L.st, L.sr, L.sb = l, t, r, b
+    layer:ClearAllPoints()
+    layer:SetPoint("TOPLEFT", p, "TOPLEFT", l, t)
+    layer:SetPoint("BOTTOMRIGHT", p, "BOTTOMRIGHT", r, b)
+end
+
 local function FitLayer(L)
     local layer = L._frame
     if L.gen ~= PoolDress(layer) then
         layers[layer] = nil
         return
     end
+    -- A parent under a restricted anchor (a game tooltip on some owners)
+    -- raises on every layout read with no flag to ask first: skip the fit,
+    -- the next show tries again.
+    if not pcall(L.parent.GetLeft, L.parent) then return end
     local px = EllesmereUI.PP.perfect
     if L.px ~= px then
         L.px = px
         layer:SetScale(px)
     end
     local k = L.parent:GetEffectiveScale() / px
-    if k > 0 then L.fit(L, k) end
+    if k > 0 then
+        SeatLayer(L, layer, k)
+        L.fit(L, k)
+    end
 end
 
 local function LayerOnShow(self)
@@ -790,6 +1032,19 @@ local function LayerOnShow(self)
     if not L then return end
     FitLayer(L)
     if L.onShow and layers[self] then L.onShow(L) end
+end
+
+-- A layer made under a shown parent gets no OnShow, and its caller anchors
+-- the parent only after the first fit, so the seat was taken from the wrong
+-- spot until the next show. New layers re-fit once, together, a frame later.
+local newLayers, newQueued = {}, false
+local function FitNewLayers()
+    newQueued = false
+    for i = 1, #newLayers do
+        local L = newLayers[i]
+        newLayers[i] = nil
+        if layers[L._frame] == L and L._frame:IsVisible() then FitLayer(L) end
+    end
 end
 
 function EllesmereUI.MakePixelLayer(parent, fit)
@@ -801,6 +1056,11 @@ function EllesmereUI.MakePixelLayer(parent, fit)
     local L = { _frame = layer, parent = parent, fit = fit, gen = PoolDress(layer), Fit = FitLayer }
     layers[layer] = L
     layer:SetScript("OnShow", LayerOnShow)
+    newLayers[#newLayers + 1] = L
+    if not newQueued then
+        newQueued = true
+        C_Timer.After(0, FitNewLayers)
+    end
     return L
 end
 
@@ -813,7 +1073,7 @@ end
 if not EllesmereUI._onScaleChanged then EllesmereUI._onScaleChanged = {} end
 EllesmereUI._onScaleChanged[#EllesmereUI._onScaleChanged + 1] = RefitLayers
 
--- EllesmereUI.MakeRoundedBorder(parent, r, g, b, a, body, radius, clip) is the
+-- EllesmereUI.MakeRoundedBorder(parent, r, g, b, a, body, radius, clip, width) is the
 -- rounded form of EllesmereUI.MakeBorder for the settings controls, with the
 -- same API (_frame, :SetColor). The outline is a rounded fill with its inverse
 -- cut out 1 px in, on a pixel layer, so its edge stays exactly 1 px and its
@@ -823,13 +1083,35 @@ EllesmereUI._onScaleChanged[#EllesmereUI._onScaleChanged + 1] = RefitLayers
 -- keeps the mask through SetColorTexture). clip (dropdown lists): on every
 -- show, the textures in the scroll content of the parent's scroll frames take
 -- a mask of the shape 1 unit in, so a row scrolled to an edge keeps the
--- corners round. Only scroll content, which sits inside the list by
+-- corners round (once the mask's art and the texture's own have loaded:
+-- ClipWhenLoaded). Only scroll content, which sits inside the list by
 -- construction: a list's other children may lie outside it (a side submenu),
 -- where the mask would hide them.
+-- width (default 1): the edge in whole pixels, for a heavier ring (a pulse);
+-- the radius keeps room for it; o:SetWidth(w) changes it later.
 local OUTLINE_RADIUS = 4
+
+-- Defined with the wait below: tex takes the hole m once m's art has loaded
+-- and stays hidden until then.
+local HoleWhenLoaded
 
 local function OutlineSetColor(self, r, g, b, a)
     self._fill:SetVertexColor(r, g, b, a or 1)
+end
+
+-- o:SetCover(r, g, b): an opaque fill in the color the control sits on,
+-- under the outline, over its band and the corners outside it. A control of
+-- stacked layers drawn square below it then reads rounded with its edge
+-- blended once, where masks on each layer let the lower ones show through.
+local function OutlineSetCover(self, r, g, b)
+    local cover = self.cover
+    if not cover then
+        cover = self._frame:CreateTexture(nil, "BORDER", nil, 6)
+        cover:SetAllPoints(self._frame)
+        self.cover = cover
+        if self.r then HoleWhenLoaded(cover, self.hole) end
+    end
+    cover:SetColorTexture(r, g, b, 1)
 end
 
 -- The radius in whole pixels from the parent's scale (at most what the height
@@ -842,23 +1124,36 @@ local function FitOutline(o, k)
         local cap = floor(half * k - 0.5)
         if r > cap then r = cap end
     end
-    if r > MAX_RADIUS then r = MAX_RADIUS elseif r < 2 then r = 2 end
+    local w = o.width
+    if r > MAX_RADIUS then r = MAX_RADIUS elseif r < w + 1 then r = w + 1 end
     if o.r ~= r then
         -- The hole is reshaped detached (a mask carries its texture before
         -- it is added).
-        local fill, hole = o._fill, o.hole
-        if o.r then RemoveMask(fill, hole) end
+        local fill, hole, cover = o._fill, o.hole, o.cover
+        if o.r then
+            RemoveMask(fill, hole)
+            if cover then RemoveMask(cover, hole) end
+        end
         o.r = r
         SetRounded(fill, r, ALL_CORNERS)
-        local inner = r - 1
+        local inner = r - w
         hole:SetTexture(ROUNDED_INV[inner * 16 + ALL_CORNERS], "CLAMPTOWHITE", "CLAMPTOWHITE")
         hole:SetTextureSliceMargins(inner, inner, inner, inner)
         hole:SetTextureSliceMode(STRETCHED)
-        AddMask(fill, hole)
+        -- Hidden while the hole's art loads: uncut, they would draw a box.
+        HoleWhenLoaded(fill, hole)
+        if cover then HoleWhenLoaded(cover, hole) end
     end
     local bm = o.bodyMask
     if bm then
         local br = o.radius
+        -- A wide edge raised the outline's radius (w + 1): the body takes it
+        -- in the parent's units, so no body corner pokes past the ring.
+        if w > 1 and r > floor(o.radius * k + 0.5) then
+            local need = floor(r / k + 0.5)
+            if need > br then br = need end
+            if br > MAX_RADIUS then br = MAX_RADIUS end
+        end
         if half then
             local cap = floor(half - 0.5)
             if br > cap then br = cap end
@@ -868,7 +1163,7 @@ local function FitOutline(o, k)
             if o.br then RemoveMask(o.body, bm) end
             o.br = br
             SetRounded(bm, br, ALL_CORNERS, "CLAMPTOBLACKADDITIVE")
-            AddMask(o.body, bm)
+            if not o.off then o:MaskBody() end
         end
     end
 end
@@ -876,15 +1171,28 @@ end
 -- The clip walk (walks never nest): every texture in the scroll content of
 -- the parent's own scroll frames takes the inner mask once per pool dress
 -- (the pool's reset takes it off a texture it hands out again). Edit boxes
--- are skipped (the engine makes some of their regions).
-local cMask, cSet
+-- are skipped (the engine makes some of their regions). A texture whose own
+-- art is still loading (a spell icon the session has not shown yet) goes
+-- without the mask, losing one an earlier show gave it, and waits in
+-- artWaiting (texture -> its list) for the art: see the wait below.
+local cMask, cSet, cOwner
+local artWaiting
 local ClipFrame
 local function ClipRegions(...)
     for i = 1, select("#", ...) do
         local reg = select(i, ...)
         if reg:GetObjectType() == "Texture" then
             local g = PoolDress(reg) or 0
-            if cSet[reg] ~= g and AddMask(reg, cMask) then cSet[reg] = g end
+            if reg.IsObjectLoaded and not reg:IsObjectLoaded() then
+                if cSet[reg] == g then
+                    RemoveMask(reg, cMask)
+                    cSet[reg] = nil
+                end
+                if not artWaiting then artWaiting = setmetatable({}, WEAK_K) end
+                artWaiting[reg] = cOwner
+            elseif cSet[reg] ~= g and AddMask(reg, cMask) then
+                cSet[reg] = g
+            end
         end
     end
 end
@@ -905,23 +1213,174 @@ local function ClipScrolls(...)
         end
     end
 end
+local StartWait
 local function ClipContent(o)
-    cMask, cSet = o.innerMask, o.clipped
+    cMask, cSet, cOwner = o.innerMask, o.clipped, o
     ClipScrolls(o.parent:GetChildren())
-    cMask, cSet = nil, nil
+    cMask, cSet, cOwner = nil, nil, nil
+    if artWaiting and next(artWaiting) then StartWait() end
 end
 
-function EllesmereUI.MakeRoundedBorder(parent, r, g, b, a, body, radius, clip)
+-- The client loads texture files in the background, and a rounded mask's art
+-- is first read when a session's first control of that shape shows. A texture
+-- that takes a mask before the mask's art has loaded draws nothing, and nothing
+-- redraws it when the art arrives: a list's checkboxes and icons stayed blank on
+-- that first open until the pointer crossed them. So a list's clip walk, and a
+-- card's clip and accent, wait for the art, as Blizzard's map waits for its
+-- tiles: a frame of ours, shown only while something waits, finishes each once
+-- its mask has loaded. Until then a texture draws unmasked (square corners).
+-- The same holds for a masked texture's OWN art: a list of spell icons the
+-- session had not shown yet drew most of them blank, or as a small stale
+-- image, until the pointer crossed their rows. So the walk leaves a texture
+-- whose art is still loading without the mask (it then draws as any texture
+-- does once its art arrives), and the same frame gives it the mask once the
+-- art is in, while its list is still open; a list closed meanwhile drops
+-- its waits, and its next show walks it again.
+local clipWait, clipWaiting, maskWaiting
+local function ClipWaitTick(self)
+    for o in pairs(clipWaiting) do
+        if o.innerMask:IsObjectLoaded() then
+            clipWaiting[o] = nil
+            -- Still this layer's outline and on screen: a list closed
+            -- meanwhile is walked by its next show.
+            local layer = o._frame
+            if layers[layer] == o and layer:IsVisible() then ClipContent(o) end
+        end
+    end
+    for tex, w in pairs(maskWaiting) do
+        if w.m:IsObjectLoaded() then
+            maskWaiting[tex] = nil
+            -- Not a texture the options page pool handed to another build since.
+            if PoolDress(tex) == w.gen then
+                AddMask(tex, w.m)
+                if w.hide then tex:Show() end
+            end
+        end
+    end
+    for tex, o in pairs(artWaiting) do
+        local layer = o._frame
+        if layers[layer] ~= o or not layer:IsVisible() then
+            artWaiting[tex] = nil
+        elseif tex:IsObjectLoaded() then
+            artWaiting[tex] = nil
+            local g = PoolDress(tex) or 0
+            if o.clipped[tex] ~= g and AddMask(tex, o.innerMask) then o.clipped[tex] = g end
+        end
+    end
+    if not next(clipWaiting) and not next(maskWaiting) and not next(artWaiting) then self:Hide() end
+end
+function StartWait()
+    if not clipWait then
+        clipWaiting, maskWaiting = setmetatable({}, WEAK_K), setmetatable({}, WEAK_K)
+        if not artWaiting then artWaiting = setmetatable({}, WEAK_K) end
+        clipWait = CreateFrame("Frame")
+        clipWait:Hide()
+        clipWait:SetScript("OnUpdate", ClipWaitTick)
+    end
+    clipWait:Show()
+end
+local function ClipWhenLoaded(o)
+    local m = o.innerMask
+    if not m.IsObjectLoaded or m:IsObjectLoaded() then return ClipContent(o) end
+    StartWait()
+    clipWaiting[o] = true
+end
+-- tex takes m now if its art has loaded, else once it has.
+local function MaskWhenLoaded(tex, m)
+    if not m.IsObjectLoaded or m:IsObjectLoaded() then return AddMask(tex, m) end
+    StartWait()
+    local w = maskWaiting[tex]
+    if w then w.m, w.gen = m, PoolDress(tex) else maskWaiting[tex] = { m = m, gen = PoolDress(tex) } end
+end
+
+-- An outline's fill or cover and its hole: uncut it would draw a whole box,
+-- so it hides while the hole's art loads (Hide, as a texture's SetAlpha
+-- writes its vertex color's alpha) and the wait shows it with the mask.
+function HoleWhenLoaded(tex, m)
+    if maskWaiting then maskWaiting[tex] = nil end
+    MaskWhenLoaded(tex, m)
+    local w = maskWaiting and maskWaiting[tex]
+    if w then w.hide = true end
+    tex:SetShown(not w)
+end
+
+-- The body takes its mask (a wait for an earlier shape is dropped).
+local function OutlineMaskBody(self)
+    local body = self.body
+    if maskWaiting then maskWaiting[body] = nil end
+    MaskWhenLoaded(body, self.bodyMask)
+end
+
+-- o:SetShown(on): off hides the outline and takes its mask off the body
+-- (square again, a setting turned off live); on brings both back.
+local function OutlineSetShown(self, on)
+    self._frame:SetShown(on)
+    local off = not on or nil
+    if self.off == off then return end
+    self.off = off
+    local bm, body = self.bodyMask, self.body
+    if not (bm and self.br) then return end
+    if on then
+        self:MaskBody()
+    else
+        if maskWaiting then maskWaiting[body] = nil end
+        RemoveMask(body, bm)
+    end
+end
+
+-- o:SetWidth(w): a new edge width in whole pixels on the same outline. The
+-- hole comes off, moves w px in and is reshaped by the next fit (radius at
+-- least w + 1, so w stays below EllesmereUI.ROUNDED_MAX_RADIUS).
+local function OutlineSetWidth(self, w)
+    if self.width == w then return end
+    self.width = w
+    local layer, hole = self._frame, self.hole
+    if self.r then
+        -- Uncut until the fit adds the hole back (HoleWhenLoaded shows them).
+        RemoveMask(self._fill, hole)
+        self._fill:Hide()
+        if self.cover then
+            RemoveMask(self.cover, hole)
+            self.cover:Hide()
+        end
+        self.r = nil
+    end
+    hole:ClearAllPoints()
+    hole:SetPoint("TOPLEFT", layer, "TOPLEFT", w, -w)
+    hole:SetPoint("BOTTOMRIGHT", layer, "BOTTOMRIGHT", -w, w)
+    self:Fit()
+end
+
+-- The outline's inner shape in the parent's units, made once: 1 unit in
+-- with a radius 1 unit smaller, the same arc centres, so what it masks
+-- follows the outline's corners as its sides do.
+local function InnerMask(o)
+    local im = o.innerMask
+    if not im then
+        local p = o.parent
+        im = p:CreateMaskTexture()
+        im:SetPoint("TOPLEFT", p, "TOPLEFT", 1, -1)
+        im:SetPoint("BOTTOMRIGHT", p, "BOTTOMRIGHT", -1, 1)
+        SetRounded(im, max(1, o.radius - 1), ALL_CORNERS, "CLAMPTOBLACKADDITIVE")
+        o.innerMask = im
+    end
+    return im
+end
+
+function EllesmereUI.MakeRoundedBorder(parent, r, g, b, a, body, radius, clip, width)
     local o = EllesmereUI.MakePixelLayer(parent, FitOutline)
     local layer = o._frame
     local fill = layer:CreateTexture(nil, "BORDER", nil, 7)
     fill:SetAllPoints(layer)
     fill:SetVertexColor(r or 0, g or 0, b or 0, a or 1)
-    -- One unit is one pixel on the layer: 1 px in from every edge.
+    -- One unit is one pixel on the layer: width px in from every edge.
+    local w = width or 1
+    o.width = w
     local hole = layer:CreateMaskTexture()
-    hole:SetPoint("TOPLEFT", layer, "TOPLEFT", 1, -1)
-    hole:SetPoint("BOTTOMRIGHT", layer, "BOTTOMRIGHT", -1, 1)
-    o._fill, o.hole, o.SetColor = fill, hole, OutlineSetColor
+    hole:SetPoint("TOPLEFT", layer, "TOPLEFT", w, -w)
+    hole:SetPoint("BOTTOMRIGHT", layer, "BOTTOMRIGHT", -w, w)
+    o._fill, o.hole, o.SetColor, o.SetCover = fill, hole, OutlineSetColor, OutlineSetCover
+    o.SetShown, o.MaskBody, o.SetWidth = OutlineSetShown, OutlineMaskBody, OutlineSetWidth
     o.radius = radius or OUTLINE_RADIUS
     if body then
         local bm = parent:CreateMaskTexture()
@@ -929,13 +1388,8 @@ function EllesmereUI.MakeRoundedBorder(parent, r, g, b, a, body, radius, clip)
         o.body, o.bodyMask = body, bm
     end
     if clip then
-        -- 1 unit in with a radius 1 unit smaller: the same arc centres, so
-        -- the rows' corners follow the outline as their sides do.
-        local im = parent:CreateMaskTexture()
-        im:SetPoint("TOPLEFT", parent, "TOPLEFT", 1, -1)
-        im:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -1, 1)
-        SetRounded(im, max(1, o.radius - 1), ALL_CORNERS, "CLAMPTOBLACKADDITIVE")
-        o.innerMask, o.clipped, o.onShow = im, setmetatable({}, WEAK_K), ClipContent
+        InnerMask(o)
+        o.clipped, o.onShow = setmetatable({}, WEAK_K), ClipWhenLoaded
     end
     o:Fit()
     return o
@@ -944,13 +1398,14 @@ end
 -- EllesmereUI.RoundBody(parent, body, radius): a background with no outline
 -- (a search field, an input with no border) rounded: body takes a mask of a
 -- rounded rect over its own rect, radius (default 4) in the parent's units,
--- at most what the body's short side holds. The mask is the parent's, so body
+-- at most what the body's short side holds (a body not laid out yet reads
+-- 1 x 1 and takes the radius as given). The mask is the parent's, so body
 -- is the parent's texture or a descendant's; it keeps the mask through
 -- SetColorTexture. Returns the mask.
 function EllesmereUI.RoundBody(parent, body, radius)
     radius = radius or OUTLINE_RADIUS
     local half = HalfSide(body)
-    if half then
+    if half and half > 1 then
         local cap = floor(half - 0.5)
         if radius > cap then radius = cap end
     end
@@ -960,4 +1415,51 @@ function EllesmereUI.RoundBody(parent, body, radius)
     SetRounded(m, radius, ALL_CORNERS, "CLAMPTOBLACKADDITIVE")
     AddMask(body, m)
     return m
+end
+
+-- EllesmereUI.MakeRoundedCard(parent, brdA, bgA, accentH, r, g, b): the
+-- settings card. A fill (default 0.077, 0.068, 0.058 at bgA 0.5) under a
+-- rounded 1 px white outline at brdA (0.12). accentH: a top accent edge on
+-- the outline's pixel layer under its inner shape (sharp, ends follow the
+-- corners); the caller colors it. Returns the outline with o.bg, o.accent
+-- and o:Clip(tex), masking a texture of parent or a descendant to the
+-- inside of the outline (a side strip, a hover fill).
+local CARD_R, CARD_G, CARD_B = 0.077, 0.068, 0.058
+
+local function FitCard(o, k)
+    FitOutline(o, k)
+    local accent, am = o.accent, o.accentMask
+    if o.r and o.ar ~= o.r then
+        if o.ar then RemoveMask(accent, am) end
+        o.ar = o.r
+        SetRounded(am, o.r - 1, ALL_CORNERS, "CLAMPTOBLACKADDITIVE")
+        MaskWhenLoaded(accent, am)
+    end
+    local h = floor(o.accentH * k + 0.5)
+    accent:SetHeight(h < 1 and 1 or h)
+end
+
+local function CardClip(o, tex)
+    MaskWhenLoaded(tex, InnerMask(o))
+end
+
+function EllesmereUI.MakeRoundedCard(parent, brdA, bgA, accentH, r, g, b)
+    local bg = parent:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(r or CARD_R, g or CARD_G, b or CARD_B, bgA or 0.5)
+    local o = EllesmereUI.MakeRoundedBorder(parent, 1, 1, 1, brdA or 0.12, bg)
+    o.bg, o.Clip = bg, CardClip
+    if accentH then
+        -- One unit is one pixel on the layer, as the outline's hole.
+        local layer = o._frame
+        local accent = layer:CreateTexture(nil, "BORDER", nil, 6)
+        accent:SetPoint("TOPLEFT", layer, "TOPLEFT", 1, -1)
+        accent:SetPoint("TOPRIGHT", layer, "TOPRIGHT", -1, -1)
+        local am = layer:CreateMaskTexture()
+        am:SetPoint("TOPLEFT", layer, "TOPLEFT", 1, -1)
+        am:SetPoint("BOTTOMRIGHT", layer, "BOTTOMRIGHT", -1, 1)
+        o.accent, o.accentMask, o.accentH, o.fit = accent, am, accentH, FitCard
+        o:Fit()
+    end
+    return o
 end

@@ -19,7 +19,7 @@ local floor, max = math.floor, math.max
 local _B, DEFAULT_TEXT_COLOR, EABR = I._B, I.DEFAULT_TEXT_COLOR, I.EABR
 local GetPlayerClass, GetTextAnchorPoints = I.GetPlayerClass, I.GetTextAnchorPoints
 local InCombat, Known, ResolveFontPath = I.InCombat, I.Known, I.ResolveFontPath
-local ResolveGlowTint, SetABRFont, Tex = I.ResolveGlowTint, I.SetABRFont, I.Tex
+local ResolveGlowTint, SetABRFont, SpellName, Tex = I.ResolveGlowTint, I.SetABRFont, I.SpellName, I.Tex
 local RAID_BUFFS, _dismissedUntilLoad = I.RAID_BUFFS, I._dismissedUntilLoad
 local GLOW_VIEW, StopAllGlows = I.GLOW_VIEW, I.StopAllGlows
 
@@ -123,7 +123,10 @@ do
                 state.highlightAttached = nil
             end
             if state.mask then state.mask:Hide() end
-            icon:SetTexCoord(zoom, 1 - zoom, zoom + crop / 100, 1 - zoom - crop / 100)
+            -- Cropped: the frame is (1 - 2 x crop) as tall as wide; only the top and bottom are
+            -- cut, so the art keeps its proportions.
+            local half = (1 - 2 * zoom) * (1 - 2 * crop / 100) / 2
+            icon:SetTexCoord(zoom, 1 - zoom, 0.5 - half, 0.5 + half)
         end
         if icon.SetSnapToPixelGrid then
             icon:SetSnapToPixelGrid(false)
@@ -370,8 +373,18 @@ local function HideCombatIcons()
 end
 
 local function ShowCombatIcon(m)
+    local hunter = m.dismissKey == "forever:huntertracking"
     local f
-    if EABR.IsReceiverRaidBuff(m) then
+    if hunter then
+        f = GetOrCreateReceiverIcon("HunterTracking")
+        f._hunterTracking = m
+        f:EnableMouse(not m.hunterTrackingStatus)
+        -- EnableMouse turns clicks back on: an icon built in combat lets
+        -- every click through until HideCombatIcons routes it.
+        if not f._routed then f:SetMouseClickEnabled(false) end
+        f._icon:SetAlpha(0)
+        f._eabrBorderFrame:SetAlpha(0)
+    elseif EABR.IsReceiverRaidBuff(m) then
         receiversShown = receiversShown + 1
         f = GetOrCreateReceiverIcon(receiversShown)
     else
@@ -382,7 +395,7 @@ local function ShowCombatIcon(m)
     local spellID = m.spellID or (m.data and m.data.castSpell)
     f._icon:SetTexture(m.texture or (spellID and Tex(spellID)) or 134400)
     local p = db and db.profile.display
-    if p and p.showText and not m.isEating then
+    if p and p.showText and not m.isEating and not hunter then
         local tc = p.textColor or DEFAULT_TEXT_COLOR
         local fontPath = ResolveFontPath(p.nameFont)
         local textSize = p.textSize or 11
@@ -400,6 +413,7 @@ local function ShowCombatIcon(m)
         f._text:Hide()
     end
     EABR.ApplyEatingVisual(f, m)
+    EABR.ApplyIconExpiry(f, m)
     EABR.ApplyIconTooltipData(f, m)
     EABR.ApplyIconQuality(f, (not m.isEating) and m.qualityAtlas or nil)
     if m.groupTotal then
@@ -411,6 +425,63 @@ local function ShowCombatIcon(m)
     end
     f:Show()
     combatActiveIcons[#combatActiveIcons+1] = f
+end
+
+-- Native reverse fill slides seven built-in icons behind a fixed viewport.
+-- Lua only styles public cells; it never reads the fill's restricted geometry.
+local function PaintHunterTargetIcon(f, entry)
+    local s = f._hunterIcons
+    if not s then
+        local clip = CreateFrame("Frame", nil, f)
+        clip:SetClipsChildren(true)
+        clip:EnableMouse(false)
+        local ruler = CreateFrame("StatusBar", nil, clip)
+        ruler:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+        ruler:SetMinMaxValues(0, 16)
+        ruler:SetReverseFill(true)
+        ruler:SetAlpha(0)
+        ruler:EnableMouse(false)
+        s = { clip = clip, ruler = ruler, fill = ruler:GetStatusBarTexture(), icons = {} }
+        f._hunterIcons = s
+        for spellID, creatureTypeID in pairs(EABR._fvHunterTrackingTypes) do
+            local cell = CreateFrame("Frame", nil, clip)
+            cell:EnableMouse(false)
+            cell._icon = cell:CreateTexture(nil, "ARTWORK")
+            cell._icon:SetAllPoints()
+            cell._icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+            cell._icon:SetTexture(Tex(spellID))
+            s.icons[creatureTypeID] = cell
+        end
+    end
+    local p = db.profile.display
+    local size, texture = p.borderSize or 1, p.borderTexture or "solid"
+    local scale = f:GetEffectiveScale()
+    local _, ox, oy, sx, sy = EllesmereUI.BorderPlacement(size, texture,
+        p.borderTextureOffset, p.borderTextureOffsetY, p.borderTextureShiftX, p.borderTextureShiftY,
+        "aurabuffreminders", size, EllesmereUI.BorderPx(p.borderSizePx, size, texture), nil, scale)
+    local pad = math.ceil(max(0, ox + math.abs(sx), oy + math.abs(sy))) + 1
+    local width, height = f:GetSize()
+    local step = width + 2 * pad
+    s.clip:ClearAllPoints()
+    s.clip:SetPoint("TOPLEFT", f, "TOPLEFT", -pad, pad)
+    s.clip:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", pad, -pad)
+    s.ruler:ClearAllPoints()
+    s.ruler:SetSize(16 * step, height + 2 * pad)
+    s.ruler:SetPoint("TOPRIGHT", s.clip, "TOPRIGHT")
+    s.clip:Show()
+    s.ruler:SetValue(entry.hunterTargetTypeID)
+    for creatureTypeID, cell in ipairs(s.icons) do
+        -- Restyle while anchored to the public owner, then restore native positioning.
+        cell:ClearAllPoints()
+        cell:SetPoint("TOPLEFT", f, "TOPLEFT")
+        cell:SetSize(width, height)
+        if s.scale ~= scale and cell._eabrBorderFrame then cell._eabrBorderFrame._eabrSize = nil end
+        EABR.ApplyIconBorder(cell, false)
+        cell:SetAlpha(bit.band(entry.hunterMatchMask, 2 ^ (creatureTypeID - 1)) == 0 and 1 or 0)
+        cell:ClearAllPoints()
+        cell:SetPoint("TOPLEFT", s.fill, "TOPLEFT", (creatureTypeID - 1) * step + pad, -pad)
+    end
+    s.scale = scale
 end
 
 -- Left-aligned from the anchor's left edge; Grow Left right-aligns from its
@@ -441,6 +512,7 @@ local function LayoutCombatIcons()
         EABR.SizeIconBagCount(f, sz)
         f:ClearAllPoints()
         f:SetPoint(pt, combatAnchor, pt, xOff + (i-1)*(sz+spacing), 0)
+        if f._hunterTracking then PaintHunterTargetIcon(f, f._hunterTracking) end
     end
 end
 
@@ -520,6 +592,7 @@ local function ShowCursorIcon(iconIdx, m)
         f._text:Hide()
     end
     EABR.ApplyEatingVisual(f, m)
+    EABR.ApplyIconExpiry(f, m)
     EABR.ApplyIconTooltipData(f, m)
     EABR.ApplyIconQuality(f, (not m.isEating) and m.qualityAtlas or nil)
     if m.groupTotal then
@@ -1091,7 +1164,7 @@ function EABR.SizeIconBagCount(f, sz)
     fs:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", dx, dy)
 end
 
-function EABR.ApplyIconBagCount(f, count, outOfStock, substitute)
+function EABR.ApplyIconBagCount(f, count, outOfStock, substitute, badge)
     if not f then return end
     EABR.CreateIconBagCountOverlay(f)
     f._outOfStock = outOfStock and true or nil
@@ -1105,10 +1178,10 @@ function EABR.ApplyIconBagCount(f, count, outOfStock, substitute)
         fs:SetTextColor(1, 0.2, 0.2, 1)
         EABR.SizeIconBagCount(f, f:GetWidth() or ICON_SIZE)
         fs:Show()
-    elseif showCount and count and count > 0 then
+    elseif badge or (showCount and count and count > 0) then
         f._bagCountShown = true
-        fs:SetText(count)
-        if substitute then
+        fs:SetText(badge or count)
+        if substitute and not badge then
             fs:SetTextColor(1, 0.82, 0, 1)
         else
             fs:SetTextColor(1, 1, 1, 1)
@@ -1155,6 +1228,7 @@ function EABR.ClearEatingVisual(f)
         f._eabrEatingOnUpdate = nil
     end
     if f._count then f._count:Hide() end
+    if f._expiryBinding then f._expiryBinding:SetEnabled(false) end
     f._eabrEatingIcon = nil
 end
 
@@ -1208,6 +1282,93 @@ function EABR.ApplyEatingVisual(f, m)
     f:SetScript("OnUpdate", EABR.EatingTick)
 end
 
+function EABR.UpdateIconItemCooldown(btn, itemID)
+    local swipe = btn._itemCooldown
+    if itemID and not InCombat() then
+        local start, duration, enabled = C_Item.GetItemCooldown(itemID)
+        -- Ignore the global cooldown. The buff expiration countdown is separate.
+        if not (I.isSecret(start) or I.isSecret(duration) or I.isSecret(enabled))
+            and (enabled == true or enabled == 1) and start and duration
+            and start > 0 and duration > 1.5 and start + duration > GetTime() then
+            if not swipe then
+                swipe = CreateFrame("Cooldown", nil, btn, "CooldownFrameTemplate")
+                swipe:SetAllPoints(btn._icon)
+                swipe:SetHideCountdownNumbers(true)
+                swipe:SetDrawEdge(false)
+                swipe:SetDrawBling(false)
+                btn._itemCooldown = swipe
+            end
+            if swipe._itemStart ~= start or swipe._itemDuration ~= duration then
+                swipe._itemStart, swipe._itemDuration = start, duration
+                swipe:SetCooldown(start, duration)
+                swipe:Show()
+            end
+            return
+        end
+    end
+    if swipe and swipe._itemStart then
+        swipe._itemStart, swipe._itemDuration = nil, nil
+        swipe:Clear()
+        swipe:Hide()
+    end
+end
+
+function EABR.FvUpdateStatItemCooldowns()
+    if InCombat() then return end
+    for _, btn in ipairs(activeIcons) do
+        if btn._cooldownItemID then EABR.UpdateIconItemCooldown(btn, btn._cooldownItemID) end
+    end
+end
+
+function EABR.ApplyIconExpiry(f, m)
+    local expireAt = m and m.expireAt
+    local swipe = f._expirySwipe
+    if expireAt and m.expireSwipe then
+        if not swipe then
+            swipe = CreateFrame("Cooldown", nil, f, "CooldownFrameTemplate")
+            swipe:SetAllPoints(f._icon)
+            swipe:SetHideCountdownNumbers(true)
+            swipe:SetDrawEdge(false)
+            swipe:SetDrawBling(false)
+            f._expirySwipe = swipe
+        end
+        if swipe._expiryEnd ~= expireAt or swipe._expiryTotal ~= m.expireTotal then
+            swipe:SetCooldown(expireAt - m.expireTotal, m.expireTotal)
+            swipe._expiryEnd, swipe._expiryTotal = expireAt, m.expireTotal
+        end
+        swipe:Show()
+    elseif swipe then
+        swipe:Hide()
+        swipe._expiryEnd, swipe._expiryTotal = nil, nil
+    end
+    local binding = f._expiryBinding
+    if not expireAt then
+        if binding then binding:SetEnabled(false) end
+        return
+    end
+    if not (C_DurationUtil and C_DurationUtil.CreateDurationTextBinding) then return end
+    local count = EABR.CreateIconCountOverlay(f)
+    if not binding then
+        f._expiryDuration = C_DurationUtil.CreateDuration()
+        binding = C_DurationUtil.CreateDurationTextBinding()
+        binding:SetFontString(count)
+        binding:SetDuration(f._expiryDuration)
+        local fmt = EllesmereUI.AuraKit.GetDurationFormatter(false)
+        if fmt then binding:SetFormatter(fmt) end
+        f._expiryBinding = binding
+    end
+    local p = db and db.profile.display
+    SetABRFont(count, ResolveFontPath(), max(14, floor(((p and p.textSize) or 11) * 1.15)))
+    count:SetTextColor(1, 1, 1, 1)
+    f._expiryDuration:SetTimeFromEnd(expireAt, m.expireTotal)
+    binding:SetEnabled(true)
+    count:Show()
+end
+
+local ShowForeverGroupMenu
+local iconPickerStyle
+local ShowForeverItemMenu
+
 local function GetOrCreateIcon(index)
     if iconPool[index] then return iconPool[index] end
     -- SecureActionButtonTemplate for click-to-cast in combat
@@ -1220,18 +1381,24 @@ local function GetOrCreateIcon(index)
 
     -- Middle-click dismiss: hide this reminder until the next loading screen.
     -- Right-click on a multi-pet-cycle reminder previews the next pet without
-    -- casting (ShowIcon's pass-through toggle decides whether this reminder
-    -- claims the click at all, vs letting it fall through like every other
-    -- reminder does).
+    -- casting. On a clickable spell group it opens the spell picker, on the
+    -- item reminders with choices it opens the item picker.
     btn:HookScript("PostClick", function(self, button, down)
         if button == "MiddleButton" and self._dismissKey then
             _dismissedUntilLoad[self._dismissKey] = true
+            if self._dismissKey == "forever:wellfed" then
+                EABR.SyncForeverFoodWatch(false)
+            end
             if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
         elseif button == "LeftButton" and self._requestKey and not down then
             EABR.SendBuffRequest(self._requestKey, self._requestName)
         elseif button == "RightButton" and self._petCycleTotal then
             EABR._petCycleIndex = ((EABR._petCycleIndex or 1) % self._petCycleTotal) + 1
             if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+        elseif button == "RightButton" and self._foreverGroup and not InCombat() then
+            ShowForeverGroupMenu(self)
+        elseif button == "RightButton" and (self._foreverFood or self._foreverStatItems) and not InCombat() then
+            ShowForeverItemMenu(self)
         end
     end)
 
@@ -1314,6 +1481,299 @@ local function SetIconMacro(btn, macrotext, texture, spellID)
     btn._tooltipItem = nil
 end
 
+local pickerSpellData = {}
+
+function EABR.ForeverPickerSpellData(id, ranked)
+    local data = pickerSpellData[id]
+    if not data or (ranked and not data.rank) then
+        local name = SpellName(id)
+        if not name then return end
+        local subtext = C_Spell.GetSpellSubtext(id)
+        local rank = subtext and subtext:match("%d+")
+        if subtext and subtext ~= "" then name = name .. "(" .. subtext .. ")" end
+        -- A faded pooled button can still receive clicks during lockdown.
+        data = { macro = "/cast [@player,nocombat] " .. name, rank = rank }
+        -- Retry incomplete metadata for spells with more than one known rank.
+        if rank or not ranked then pickerSpellData[id] = data end
+    end
+    return data.macro, data.rank
+end
+
+local function DrawPickerIcon(frame, texture, selected)
+    if selected then
+        local border = frame:AttachTexture()
+        border:SetSize(38, 38)
+        border:SetPoint("CENTER")
+        border:SetColorTexture(1, 0.82, 0, 1)
+    end
+    local icon = frame:AttachTexture()
+    icon:SetDrawLayer("ARTWORK", 1)
+    icon:SetSize(34, 34)
+    icon:SetPoint("CENTER")
+    icon:SetTexture(texture or 134400)
+end
+
+local function ShowPickerGrid(btn, ids, IsCurrent, populate)
+    if not (MenuUtil and MenuUtil.CreateContextMenu and MenuVariants
+        and MenuConstants and MenuConstants.HorizontalGridDirection) then return end
+    EABR.HideIconTooltip(btn)
+    if not iconPickerStyle then
+        local inset = { left = 4, right = 4, top = 4, bottom = 4 }
+        local padding = { width = 0, height = 0 }
+        iconPickerStyle = CreateFromMixins(MenuVariants.GetDefaultContextMenuMixin(), {
+            GetInset = function() return inset end,
+            GetChildExtentPadding = function() return padding end,
+            Generate = function(frame)
+                local background = frame:AttachTexture()
+                background:SetAtlas("common-dropdown-bg")
+                background:SetAllPoints()
+                background:SetAlpha(0.925)
+            end,
+        })
+    end
+    local previousStyle = btn.menuMixin
+    btn.menuMixin = iconPickerStyle
+    local menu = MenuUtil.CreateContextMenu(btn, function(_, root)
+        root:AddMenuReleasedCallback(function() EABR.ValidateOpenPicker = nil end)
+        local columns = math.min(#ids, max(1, floor((UIParent:GetWidth() - 32) / 42)))
+        root:SetGridMode(MenuConstants.HorizontalGridDirection, columns, 2)
+        -- The context menu otherwise applies a minimum width meant for text rows.
+        root:SetMaximumWidth(columns * 38 + 8)
+        populate(root)
+    end)
+    btn.menuMixin = previousStyle
+    if menu then
+        EABR.ValidateOpenPicker = function()
+            if not IsCurrent() then menu:Close() end
+        end
+    end
+    if menu and not InputUtil.IsGamepadUIEnabled() then
+        local point = menu:GetPoint()
+        menu:ClearAllPoints()
+        InputUtil.AnchorRegionToCursor(menu, point == "BOTTOMLEFT" and "BOTTOM" or "TOP")
+    end
+end
+
+ShowForeverGroupMenu = function(btn)
+    local group = btn._foreverGroup
+    local profile = db.profile
+    local forever = profile.forever
+    local settings = group.settings
+    if not group.actions then settings = group end
+    local function SaveSettings()
+        if not settings then
+            settings = {}
+            group.actions[group.key] = settings
+            group.settings = settings
+        end
+        return settings
+    end
+    local ids, seen = {}, {}
+    for _, spellID in ipairs(group.ids) do
+        local castID, ranks = EABR.ForeverGroupCastSpell(group, spellID)
+        if castID and (not group.actions or C_SpellBook.IsSpellKnown(castID)) then
+            local index = seen[ranks]
+            if not index then
+                index = #ids + 1
+                seen[ranks] = index
+                ids[index] = spellID
+            elseif settings and spellID == settings.castSpellID then
+                ids[index] = spellID
+            end
+        end
+    end
+    local function IsSelected(spellID)
+        return btn._tooltipSpell == EABR.ForeverGroupCastSpell(group, spellID)
+    end
+    local function IsCurrent()
+        if InCombat() or db.profile ~= profile or profile.forever ~= forever or not (forever and forever.pickerEnabled)
+            or btn._foreverGroup ~= group or not btn:IsVisible() then return false end
+        if group.actions then
+            return forever and forever.classBuffActions == group.actions and group.actions[group.key] == settings
+        end
+        return forever and forever.customGroups and tContains(forever.customGroups, group)
+    end
+    local function CanChange(spellID)
+        return IsCurrent() and tContains(group.ids, spellID)
+    end
+    local function ApplySpell(id, ranked)
+        local macro, rank = EABR.ForeverPickerSpellData(id, ranked)
+        if not macro then return end
+        SetIconMacro(btn, macro, Tex(id), id)
+        EABR.ApplyIconBagCount(btn, nil, nil, nil, rank)
+    end
+    local function SelectSpell(spellID)
+        if not CanChange(spellID) then return end
+        local id, ranks = EABR.ForeverGroupCastSpell(group, spellID)
+        if not id or (group.actions and not C_SpellBook.IsSpellKnown(id)) then return end
+        SaveSettings().castSpellID = spellID
+        ApplySpell(id, #ranks > 1)
+    end
+    local function AddRankControl(button, spellID)
+        button:AddInitializer(function(frame)
+            local badge = frame:AttachFontString()
+            badge:SetFontObject(NumberFontNormalSmall)
+            badge:SetDrawLayer("OVERLAY", 7)
+            badge:SetWidth(30)
+            badge:SetJustifyH("RIGHT")
+            badge:SetPoint("CENTER", frame, "CENTER", 0, -10)
+            local id, ranks = EABR.ForeverGroupCastSpell(group, spellID)
+            if not id then return end
+            local _, rank = EABR.ForeverPickerSpellData(id, #ranks > 1)
+            badge:SetText(rank or "")
+            if #ranks < 2 then return end
+            frame:EnableMouseWheel(true)
+            frame:SetScript("OnMouseWheel", function(_, delta)
+                if delta == 0 or not CanChange(spellID) then return end
+                local current, known, at = EABR.ForeverGroupCastSpell(group, spellID)
+                if not current then return end
+                local nextRank = at + (delta > 0 and 1 or -1)
+                local nextID = known[nextRank]
+                if not nextID or (group.actions and not C_SpellBook.IsSpellKnown(nextID)) then return end
+                local _, rank = EABR.ForeverPickerSpellData(nextID, true)
+                if nextRank < #known and not rank then return end
+                local selected = btn._tooltipSpell == current
+                if nextRank < #known then
+                    local saved = SaveSettings()
+                    if not saved.castRanks then saved.castRanks = {} end
+                    saved.castRanks[spellID] = nextID
+                elseif settings and settings.castRanks then
+                    settings.castRanks[spellID] = nil
+                    if not next(settings.castRanks) then settings.castRanks = nil end
+                end
+                if selected then ApplySpell(nextID, true) end
+                badge:SetText(rank or "")
+                if GameTooltip:IsOwned(frame) then GameTooltip:SetSpellByID(nextID) end
+            end)
+        end)
+        button:AddResetter(function(frame)
+            frame:SetScript("OnMouseWheel", nil)
+            frame:EnableMouseWheel(false)
+        end)
+    end
+    if #ids < 2 then return end
+    ShowPickerGrid(btn, ids, IsCurrent, function(root)
+        for _, id in ipairs(ids) do
+            local button = root:CreateButton("", SelectSpell, id)
+            button:AddInitializer(function(frame, description)
+                local spellID = description:GetData()
+                DrawPickerIcon(frame, Tex(spellID), IsSelected(spellID))
+                return 38, 38
+            end)
+            button:SetTooltip(function(tooltip, description)
+                local owner = tooltip:GetOwner()
+                tooltip:SetOwner(owner, "ANCHOR_NONE")
+                tooltip:ClearAllPoints()
+                tooltip:SetPoint("BOTTOMLEFT", owner, "TOPRIGHT", 4, 4)
+                local spellID = EABR.ForeverGroupCastSpell(group, description:GetData())
+                if spellID then tooltip:SetSpellByID(spellID) end
+            end)
+            AddRankControl(button, id)
+        end
+    end)
+end
+
+local foodMacros
+function EABR.ForeverFoodMacro(itemID)
+    if not foodMacros then foodMacros = {} end
+    local macro = foodMacros[itemID]
+    if not macro then
+        -- A faded pooled button can still receive clicks during lockdown.
+        macro = "/use [nocombat] item:" .. itemID
+        foodMacros[itemID] = macro
+    end
+    return macro
+end
+
+ShowForeverItemMenu = function(btn)
+    local profile = db.profile
+    local fo = profile.forever
+    local statItems = btn._foreverStatItems
+    local automaticItem = btn._foreverStatAutomaticItem
+    local statFamily = btn._foreverStatFamily
+    local class = statItems and GetPlayerClass()
+    local items = statItems or btn._foreverFood
+    if not items then return end
+    local ids = {}
+    -- The collector reuses the stat item table, so keep the counts shown by this menu.
+    local statSnapshot = statItems and {}
+    for id, count in pairs(items) do
+        ids[#ids + 1] = id
+        if statSnapshot then statSnapshot[id] = count end
+    end
+    local function IsCurrent()
+        if InCombat() or db.profile ~= profile or profile.forever ~= fo
+            or not (fo and fo.pickerEnabled == true and btn:IsVisible()) then return false end
+        if statItems then
+            if not class or GetPlayerClass() ~= class or btn._foreverStatItems ~= statItems
+                or btn._foreverStatFamily ~= statFamily or btn._foreverStatAutomaticItem ~= automaticItem
+                or (fo.statConsumableSeparateReminders == true) ~= (statFamily ~= nil) then return false end
+            local n = 0
+            for id, count in pairs(statItems) do
+                if statSnapshot[id] ~= count then return false end
+                n = n + 1
+            end
+            return n == #ids
+        end
+        return fo.wellFed and EABR.IsForeverFoodCurrent(items) and btn._foreverFood == items
+    end
+    if #ids == 0 or not IsCurrent() then return end
+    table.sort(ids)
+    local function SelectItem(id)
+        if not IsCurrent() or not items[id] then return end
+        local count = C_Item.GetItemCount(id)
+        if not count or count <= 0 then return end
+        if statItems then
+            local pin = id ~= automaticItem and id or nil
+            if statFamily then
+                local byClass = fo.statConsumablePickerByFamily
+                local picks = byClass and byClass[class]
+                if (picks and picks[statFamily]) == pin then return end
+                if not byClass then byClass = {}; fo.statConsumablePickerByFamily = byClass end
+                if not picks then picks = {}; byClass[class] = picks end
+                picks[statFamily] = pin
+                if not next(picks) then byClass[class] = nil end
+                if not next(byClass) then fo.statConsumablePickerByFamily = nil end
+            else
+                local picks = fo.statConsumablePickerByClass
+                if (picks and picks[class]) == pin then return end
+                if not picks then picks = {}; fo.statConsumablePickerByClass = picks end
+                picks[class] = pin
+                if not next(picks) then fo.statConsumablePickerByClass = nil end
+            end
+            if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+            return
+        end
+        fo.wellFedItem = id
+        SetIconMacro(btn, EABR.ForeverFoodMacro(id), C_Item.GetItemIconByID(id))
+        btn._tooltipItem = id
+        EABR.ApplyIconBagCount(btn, count)
+    end
+    ShowPickerGrid(btn, ids, IsCurrent, function(root)
+        for _, id in ipairs(ids) do
+            local button = root:CreateButton("", SelectItem, id)
+            button:AddInitializer(function(frame, description)
+                local itemID = description:GetData()
+                DrawPickerIcon(frame, C_Item.GetItemIconByID(itemID), btn._tooltipItem == itemID)
+                local count = frame:AttachFontString()
+                count:SetFontObject(NumberFontNormalSmall)
+                count:SetDrawLayer("OVERLAY", 7)
+                count:SetWidth(30)
+                count:SetJustifyH("RIGHT")
+                count:SetPoint("CENTER", frame, "CENTER", 0, -10)
+                count:SetText((statSnapshot or items)[itemID])
+                return 38, 38
+            end)
+            button:SetTooltip(function(tooltip, description)
+                local owner = tooltip:GetOwner()
+                tooltip:SetOwner(owner, "ANCHOR_NONE")
+                tooltip:ClearAllPoints()
+                tooltip:SetPoint("BOTTOMLEFT", owner, "TOPRIGHT", 4, 4)
+                tooltip:SetItemByID(description:GetData())
+            end)
+        end
+    end)
+end
 
 -------------------------------------------------------------------------------
 --  Data-driven setup: eliminates per-refresh closure + table allocations
@@ -1334,14 +1794,27 @@ do
         e.mode = nil; e.spellID = nil; e.itemID = nil; e.macro = nil
         e.texture = nil; e.label = nil; e.unit = nil; e.desaturated = false
         e.tooltipItem = nil
+        e.cooldownItemID = nil
         e.cat = nil; e.data = nil; e.dismissKey = nil; e.petCycleTotal = nil
         e.isEating = nil; e.eatingExpirationTime = nil
+        e.expireAt = nil; e.expireTotal = nil; e.expireSwipe = nil
         e.qualityAtlas = nil
         e.bagCount = nil
         e.substitute = nil
         e.groupHave = nil
         e.groupTotal = nil
         e.requestKey = nil; e.requestName = nil
+        e.foreverGroup = nil
+        e.spellRank = nil
+        e.foreverFood = nil
+        e.hunterTrackingStatus = nil
+        e.hunterTargetTypeID = nil
+        e.hunterMatchMask = nil
+        e.foreverStatItems = nil
+        e.foreverStatAutomaticItem = nil
+        e.foreverStatFamily = nil
+        e.fvExtra = nil
+        e.stackText = nil
         return e
     end
 
@@ -1364,6 +1837,7 @@ do
         else -- "texture"
             SetIconTexture(btn, m.texture, m.label)
             if m.spellID then btn._tooltipSpell = m.spellID end
+            if m.tooltipItem then btn._tooltipItem = m.tooltipItem end
         end
         btn._text:SetText(m.label or "")
         btn._icon:SetDesaturated(m.desaturated or false)

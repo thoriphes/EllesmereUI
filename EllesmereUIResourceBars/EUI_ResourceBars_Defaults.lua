@@ -17,26 +17,27 @@ local UnitClass, GetShapeshiftFormID = UnitClass, GetShapeshiftFormID
 -------------------------------------------------------------------------------
 local _, playerClassFile = UnitClass("player")
 
--- Druid "hide bar text per form", the same buckets on every bar: Cat (1),
--- Bear (5) and Moonkin (31/35) each have their own; any other form, or none,
--- is "Caster" ("mana").
+-- The druid's per-form bucket, the same on every bar: Cat (1), Bear (5, and
+-- WoW Forever's Dire Bear Form, 8) and Moonkin (31/35) each have their own; any
+-- other form, or none, is "Caster" ("mana").
+local function FormBucket()
+    local f = GetShapeshiftFormID()
+    return (f == 1) and "energy" or (f == 5 or f == 8) and "rage" or (f == 31 or f == 35) and "moonkin" or "mana"
+end
+-- Druid "hide bar text per form", driven by cfg.textDisabledForms.
 _G._ERB_TextHiddenByForm = function(cfg)
     if playerClassFile ~= "DRUID" then return false end
     local df = cfg and cfg.textDisabledForms
     if not df then return false end
-    local f = GetShapeshiftFormID()
-    local key = (f == 1) and "energy" or (f == 5) and "rage" or (f == 31 or f == 35) and "moonkin" or "mana"
-    return df[key] and true or false
+    return df[FormBucket()] and true or false
 end
--- Druid "hide whole bar per form": the same buckets as above, driven by
--- cfg.barDisabledForms. Alpha-based hide, safe to flip mid-combat.
+-- Druid "hide whole bar per form", driven by cfg.barDisabledForms (the WoW
+-- Forever swing timer reads it too). Alpha-based hide, safe to flip mid-combat.
 _G._ERB_BarHiddenByForm = function(cfg)
     if playerClassFile ~= "DRUID" then return false end
     local df = cfg and cfg.barDisabledForms
     if not df then return false end
-    local f = GetShapeshiftFormID()
-    local key = (f == 1) and "energy" or (f == 5) and "rage" or (f == 31 or f == 35) and "moonkin" or "mana"
-    return df[key] and true or false
+    return df[FormBucket()] and true or false
 end
 -- Static neutral defaults for custom fill colors; used only as the initial custom
 -- color when the user first enables "Custom Colored" (class/power colors apply
@@ -44,6 +45,19 @@ end
 -- StripDefaults on logout nils any channel matching the current class default,
 -- then DeepMergeDefaults on a different class refills it with the wrong color.
 local CUSTOM_FILL_DEFAULT = { 1, 1, 1 }
+
+-- Mirror Timers (EUI_ResourceBars_MirrorTimer.lua): one timer bar's own
+-- settings, its switch, fill color and Low Warning; the rest of its look is
+-- the Player Cast Bar's. A fresh table per call. OFF by default: nothing is
+-- built, registered or hidden until a bar is turned on.
+local function MirrorTimerDefaults(r, g, b)
+    return {
+        enabled   = false,
+        fillR = r, fillG = g, fillB = b, fillA = 1,
+        lowWarn   = false,   -- red and blinking once lowWarnAt percent is left
+        lowWarnAt = 30,      -- percent of the bar left where the warning starts
+    }
+end
 
 local DEFAULTS = {
     profile = {
@@ -337,7 +351,7 @@ local DEFAULTS = {
             timerX        = 0,
             timerY        = 0,
             timerSide     = "right",  -- "left" | "right" (duration position; "None" = showTimer false)
-            timerR = 1, timerG = 1, timerB = 1, timerA = 1,  -- Duration Text colour (white = untinted)
+            timerR = 1, timerG = 1, timerB = 1, timerA = 1,  -- Duration Text color (white = untinted)
             showSpellText = true,
             showSpellRank = false,
             spellTextSize = 11,
@@ -345,7 +359,7 @@ local DEFAULTS = {
             spellTextY    = 0,
             fitSpellName  = false,    -- Show Full Spell Name: long names shrink to fit instead of truncating
             spellTextSide = "left",   -- "left" | "right" | "center" (spell text position; "None" = showSpellText false)
-            spellTextR = 1, spellTextG = 1, spellTextB = 1, spellTextA = 1,  -- Spell Text colour (white = untinted)
+            spellTextR = 1, spellTextG = 1, spellTextB = 1, spellTextA = 1,  -- Spell Text color (white = untinted)
             unlockPos     = nil,
             showChannelTicks  = true,
             showTickMarks     = true,
@@ -397,7 +411,7 @@ local DEFAULTS = {
         },
         -- WoW Forever swing timer (EUI_ResourceBars_SwingTimer.lua): one row per
         -- weapon slot that can swing (Main Hand / Off Hand / Ranged), driven by the
-        -- client's native PLAYER_SWING event. Flat colour keys per module
+        -- client's native PLAYER_SWING event. Flat color keys per module
         -- convention; OFF by default, and nothing is built or registered until it
         -- is turned on. Ignored entirely on clients without C_SwingTimer.
         swingTimer = {
@@ -418,11 +432,13 @@ local DEFAULTS = {
             showSpark     = false,
             sparkWidth    = 8,
             sparkOverhang = 0,      -- how far the spark reaches past the bar's top and bottom
-            -- Spark colours (mhSparkR/G/B/A, ohSpark.., rSpark..) are unset by default:
-            -- white, and a combined off hand's spark its fill colour.
+            -- Spark colors (mhSparkR/G/B/A, ohSpark.., rSpark..) are unset by default:
+            -- white, and a combined off hand's spark its fill color.
             depleteFill   = true,   -- start full and deplete instead of filling up
-            idleShowFill  = nil,    -- true = idle row sits full of its fill colour
-            hideWhenIdle  = false,  -- hide the whole bar while no swing is running
+            -- Idle Behavior (one dropdown over these three keys):
+            idleShowFill  = nil,    -- true = idle row sits full of its fill color (Filled)
+            hideWhenIdle  = false,  -- hide the whole bar while no swing is running (Hidden)
+            idleHidePerType = nil,  -- true with hideWhenIdle = each row hides while its weapon is not attacking
             showTime      = true,   -- remaining seconds on each row
             showLabel     = true,   -- MH / OH / R tag on each row
             showMH        = true,   -- per-row toggles (a row also needs a weapon in the slot)
@@ -436,11 +452,11 @@ local DEFAULTS = {
             textSize      = 11,
             rangeCheck    = true,   -- dim rows whose target is out of auto-attack range
             outOfRangeAlpha = 0.4,
-            -- Attack State: "off" | "queued" (melee rows take the queued attack's colour + name)
+            -- Attack State: "off" | "queued" (melee rows take the queued attack's color + name)
             -- | "full" (also On while the attack is on, Waiting while it is on with nothing swinging)
             attackState   = "queued",
             queueR = 1, queueG = 0.70, queueB = 0.20, queueA = 1,   -- Queued: shared fallback for Heroic Strike / Maul / Raptor Strike
-            -- Per-attack colours (queueHSR/G/B/A, queueRaptor..., queueMaul...) are unset by default: they inherit the shared Queued colour above.
+            -- Per-attack colors (queueHSR/G/B/A, queueRaptor..., queueMaul...) are unset by default: they inherit the shared Queued color above.
             queueCleaveR = 0.95, queueCleaveG = 0.35, queueCleaveB = 0.25, queueCleaveA = 1,   -- Queued: Cleave
             activeR = 0.047, activeG = 0.824, activeB = 0.616, activeA = 1,   -- On: EUI teal #0CD29D
             pendingR = 0.659, pendingG = 0.502, pendingB = 0.949, pendingA = 1,   -- Waiting: violet #A880F2
@@ -465,8 +481,19 @@ local DEFAULTS = {
             visHideNoEnemy = false,
             unlockPos     = nil,
         },
+        -- Mirror Timers: the timer bars (Breath, Fatigue, Feign Death and the
+        -- countdowns), set in the OTHER BARS section of the Cast Bar page.
+        -- unlockPos: their stack's one Unlock Mode position.
+        mirrorTimer = {
+            breath  = MirrorTimerDefaults(0, 0.5, 1),
+            fatigue = MirrorTimerDefaults(1, 0.9, 0),
+            feign   = MirrorTimerDefaults(1, 0.7, 0),
+            pvp     = MirrorTimerDefaults(0.8, 0.1, 0.1),
+            countdown = MirrorTimerDefaults(1, 0.8, 0.2),
+            unlockPos = nil,
+        },
         -- Sunfury Arcane Mage Arcane Soul callout (EUI_ResourceBars_ArcaneSoul.lua).
-        -- Flat colour keys per module convention; OFF by default, and nothing at
+        -- Flat color keys per module convention; OFF by default, and nothing at
         -- all is built or registered until it is turned on.
         arcaneSoul = {
             enabled     = false,
@@ -502,6 +529,7 @@ local DEFAULTS = {
             showTimer     = true,
             timerSize     = 11,
             orientation   = "HORIZONTAL",  -- "HORIZONTAL" or "VERTICAL"
+            flyoutDirection = "RIGHT",     -- vertical only: "RIGHT" or "LEFT"
             borderSize    = 1,
             borderR       = 0, borderG = 0, borderB = 0, borderA = 1,
             borderTexture = "solid",

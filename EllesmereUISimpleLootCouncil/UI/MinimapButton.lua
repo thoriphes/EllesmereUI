@@ -59,7 +59,18 @@ local function Place()
     button:SetPoint("CENTER", Minimap, "CENTER", x, y)
 end
 
+local function EndDrag()
+    button.dragging = nil
+    button:SetScript("OnUpdate", nil)
+end
+
 local function DragUpdate()
+
+    if not IsMouseButtonDown("LeftButton") then
+        addon.Log:W("UI", "drag ended without OnDragStop", "minimap")
+        EndDrag()
+        return
+    end
     local mx, my = Minimap:GetCenter()
     local scale = Minimap:GetEffectiveScale()
     local cx, cy = GetCursorPosition()
@@ -127,10 +138,14 @@ local function ShowTip()
     P.Size(tip, math.ceil(w) + 2 + 2 * TIP_PAD, math.ceil(h) + 2 * TIP_PAD)
 
 
+
     local x, y = button:GetCenter()
+    local scale, screen = button:GetEffectiveScale(), UIParent:GetEffectiveScale()
+    if type(scale) ~= "number" or type(screen) ~= "number" or issecretvalue and
+        (issecretvalue(scale) or issecretvalue(screen)) then scale, screen = 1, 1 end
     local gap = TIP_GAP * P.Hairline(tip)
-    local below = y and y > UIParent:GetHeight() / 2
-    local right = x and x > UIParent:GetWidth() / 2
+    local below = y and y * scale > UIParent:GetHeight() * screen / 2
+    local right = x and x * scale > UIParent:GetWidth() * screen / 2
     local from = (below and "TOP" or "BOTTOM") .. (right and "RIGHT" or "LEFT")
     local to = (below and "BOTTOM" or "TOP") .. (right and "RIGHT" or "LEFT")
     tip:ClearAllPoints()
@@ -196,7 +211,10 @@ local function Build()
         icon:SetVertexColor(0.85, 0.85, 0.85)
         HideTip()
     end)
-    button:SetScript("OnHide", HideTip)
+    button:SetScript("OnHide", function()
+        HideTip()
+        EndDrag()
+    end)
     button:SetScript("OnClick", OnClick)
     button:SetScript("OnDragStart", function(self)
         if Docked() then return end
@@ -204,10 +222,7 @@ local function Build()
         HideTip()
         self:SetScript("OnUpdate", DragUpdate)
     end)
-    button:SetScript("OnDragStop", function(self)
-        self.dragging = nil
-        self:SetScript("OnUpdate", nil)
-    end)
+    button:SetScript("OnDragStop", EndDrag)
     Place()
 end
 

@@ -1814,7 +1814,7 @@ local function SkinFriendsFrame()
             hint:SetFont(fontPath, 8, "")
             hint:SetTextColor(1, 1, 1, 0.5)
             hint:SetPoint("TOP", copyPopup, "TOP", 0, -6)
-            hint:SetText("Ctrl+C to copy, Escape to close")
+            hint:SetText(EllesmereUI.L("Ctrl+C to copy, Escape to close"))
 
             local eb = CreateFrame("EditBox", nil, copyPopup)
             eb:SetSize(160, 16)
@@ -3225,7 +3225,7 @@ end
 -- the real profile once and latched for the session (a profile switch prompts
 -- for a reload instead). Both stock styles mean the same to the tiles -- there
 -- is no vanilla version of this list -- so they keep Blizzard's own list and
--- cards and add only the EllesmereUI decoration (class icon, class-coloured
+-- cards and add only the EllesmereUI decoration (class icon, class-colored
 -- name, region mark). The legacy-skin switch above reads it too.
 function ns.FR_Style()
     local v = ns._frStyle

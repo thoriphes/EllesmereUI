@@ -239,7 +239,7 @@ end
 -- Custom Border Style rows of a cast bar section, built only while the Cast
 -- Bar cog's "Custom Border Style" opt-in is on: Border Style (+ a DIRECTIONS
 -- cog for textured styles: Shift X, Shift Y, Show Behind) | Border Size (+ a
--- colour swatch), then Width Offset | Height Offset while the style is
+-- color swatch), then Width Offset | Height Offset while the style is
 -- textured. Every slot is BlizzStyle.Gate'd, so a stock style drops the rows
 -- and the Classic-only Border Size row stays the section's odd last slot.
 -- getS() returns the unit's settings table; onChange repaints; matchKey names
@@ -283,7 +283,7 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
           getTex=function() return getS().castBorderStyle or "solid" end,
           getPx=function() return getS().castBorderSizePx end,
           setPx=function(v) getS().castBorderSizePx = v end,
-          -- The refresh dims the colour swatch at 0.
+          -- The refresh dims the color swatch at 0.
           apply=function() Changed(); EllesmereUI:RefreshPage() end })))
     y = y - h
     -- Width Offset | Height Offset: a textured style's outward offsets.
@@ -306,7 +306,6 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
             y = y - oh
         end
     end
-    if EllesmereUI._prebuilding then return y0 - y end
 
     -- Border Options cog (left): shifts and layering, textured styles only.
     do
@@ -340,15 +339,18 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
                   set = function(v) getS().castBorderBehind = v; Changed() end },
             },
         })
-        local function UpdateCogVis()
-            local tex = getS().castBorderStyle or "solid"
-            if tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+        if not EllesmereUI._prebuilding then
+            local function UpdateCogVis()
+                local tex = getS().castBorderStyle or "solid"
+                if tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+            UpdateCogVis()
         end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
     end
+    if EllesmereUI._prebuilding then return y0 - y end
 
-    -- Colour swatch (with alpha) on Border Size; greyed and blocked at 0.
+    -- Color swatch (with alpha) on Border Size; greyed and blocked at 0.
     do
         local rgn = row._rightRegion
         local sw, updateSw = EllesmereUI.BuildColorSwatch(rgn, row:GetFrameLevel() + 3,
@@ -389,8 +391,8 @@ function ns.UF_CastBorderRows(W, parent, y, getS, onChange, matchKey, sync)
     end
 
     -- Apply-to-all links (main frames page): the style link carries the style,
-    -- its offsets, shifts, layering and colour; the size link the size, its
-    -- exact px, colour and style. Both carry the opt-in itself.
+    -- its offsets, shifts, layering and color; the size link the size, its
+    -- exact px, color and style. Both carry the opt-in itself.
     if sync then
         local function CopyTo(units, withSize)
             local src = getS()
@@ -485,7 +487,7 @@ end
 -- Boss Frames DISPLAY "Border Style | Border Size": the boss frames' own frame
 -- border. "Inherit (Main Frames)" (the first entry; boss borderCustom false)
 -- keeps the mini frame donor's border, as before; any other pick stores the
--- boss table's own border, and the size, colour and Border Options cog then
+-- boss table's own border, and the size, color and Border Options cog then
 -- edit it (while inheriting they show what is drawn, greyed). A textured style
 -- adds Width Offset | Height Offset. Every slot is BlizzStyle.Gate'd, so the
 -- stock styles drop the rows. B = the boss settings table (boss1-5 share it);
@@ -540,7 +542,7 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
           getTex=function() return Src().borderTexture or "solid" end,
           getPx=function() return Src().borderSizePx end,
           setPx=function(v) B.borderSizePx = v end,
-          -- The refresh dims the colour swatch at 0.
+          -- The refresh dims the color swatch at 0.
           apply=function() onChange(); EllesmereUI:RefreshPage() end })))
     y = y - h
     -- Width Offset | Height Offset: a textured style's outward offsets.
@@ -563,7 +565,6 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
             y = y - oh
         end
     end
-    if EllesmereUI._prebuilding then return y0 - y end
 
     -- Border Options cog (left): shifts and layering, own textured styles only.
     do
@@ -607,15 +608,17 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
                   set = function(v) B.borderPowerSeam = v; onChange() end },
             },
         })
-        local function UpdateCogVis()
-            local tex = B.borderTexture or "solid"
-            if Inheriting() or tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+        if not EllesmereUI._prebuilding then
+            local function UpdateCogVis()
+                local tex = B.borderTexture or "solid"
+                if Inheriting() or tex == "solid" or tex == "" or BS.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+            UpdateCogVis()
         end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
     end
 
-    -- Colour swatch (with alpha) on Border Size: shows what is drawn; greyed
+    -- Color swatch (with alpha) on Border Size: shows what is drawn; greyed
     -- and blocked while inheriting or at 0.
     do
         local rgn = row._rightRegion
@@ -639,6 +642,7 @@ function ns.UF_BossFrameBorderRows(W, parent, y, B, onChange)
                 function() local pos = B.powerPosition or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
                 "Detached Power Bar"),
         })
+        if EllesmereUI._prebuilding then return y0 - y end
         local sw, updateSw = EllesmereUI.BuildColorSwatch(rgn, row:GetFrameLevel() + 3,
             function()
                 local s = Src()
@@ -700,20 +704,27 @@ local function TrackedList(unitKey, field)
     if not s[field] then s[field] = {} end
     return s[field]
 end
-function ns.UFOpt_ShowTrackedAuras(unitKey)
+-- Shared by the debuff and buff Tracked Auras popups: the units the Copy row
+-- offers (every other unit of the list), and the reapply after every edit.
+local function TrackedChoices(units, unitKey)
     local choices = {}
-    for i = 1, #TRACKED_UNITS do
-        local u = TRACKED_UNITS[i]
+    for i = 1, #units do
+        local u = units[i]
         if u.key ~= unitKey then choices[#choices + 1] = u end
     end
-    local function Changed()
-        if ns.ReloadFrames then ns.ReloadFrames() end
-        if ns.UpdatePreview then ns.UpdatePreview() end
-        -- Non-force: the Debuff Filter dropdown's empty warning (Only Tracked
-        -- Auras with its list emptied) re-reads live, without rebuilding the
-        -- page under the popup.
-        EllesmereUI:RefreshPage()
-    end
+    return choices
+end
+local function TrackedChanged()
+    if ns.ReloadFrames then ns.ReloadFrames() end
+    if ns.UpdatePreview then ns.UpdatePreview() end
+    -- Non-force: the filter dropdown's empty warning (Only Tracked Auras with
+    -- its list emptied) re-reads live, without rebuilding the page under the
+    -- popup.
+    EllesmereUI:RefreshPage()
+end
+function ns.UFOpt_ShowTrackedAuras(unitKey)
+    local choices = TrackedChoices(TRACKED_UNITS, unitKey)
+    local Changed = TrackedChanged
     EllesmereUI.ShowTrackedAurasPopup({
         eyebrow = "UNIT FRAME AURA FILTERS",
         title = TRACKED_TITLES[unitKey] or "Tracked Auras",
@@ -740,12 +751,7 @@ function ns.UFOpt_ShowTrackedAuras(unitKey)
                 local src = db and db.profile and db.profile[srcKey]
                 local dst = db and db.profile and db.profile[unitKey]
                 if not (src and dst) then return end
-                local function Clone(t)
-                    if not t then return nil end
-                    local c = {}
-                    for k, v in pairs(t) do c[k] = v end
-                    return c
-                end
+                local Clone = EllesmereUI.Lite.DeepCopy
                 dst.debuffInclude = Clone(src.debuffInclude)
                 dst.debuffExclude = Clone(src.debuffExclude)
                 -- The caster-scope maps have opposite polarity per unit kind (boss:
@@ -770,6 +776,53 @@ function ns.UFOpt_ShowTrackedAuras(unitKey)
                         dst.debuffIncludeAnyCaster = nil
                     end
                 end
+                Changed()
+            end,
+        },
+    })
+end
+
+-- Buff Tracked Auras popup: the target/focus Buff Filter's "Edit Tracked
+-- Auras" action. The engine applies the lists only while the unit is friendly
+-- (BuffTrack in EUI_UnitFrames_AuraContainers.lua). No boss entry: boss frames
+-- are hostile.
+local BUFF_TRACKED_UNITS = {
+    { key = "target", label = "Target" },
+    { key = "focus",  label = "Focus" },
+}
+local BUFF_TRACKED_TITLES = {
+    target = "Target Tracked Buffs",
+    focus  = "Focus Tracked Buffs",
+}
+function ns.UFOpt_ShowBuffTrackedAuras(unitKey)
+    local choices = TrackedChoices(BUFF_TRACKED_UNITS, unitKey)
+    local Changed = TrackedChanged
+    EllesmereUI.ShowTrackedAurasPopup({
+        eyebrow = "UNIT FRAME AURA FILTERS",
+        title = BUFF_TRACKED_TITLES[unitKey] or "Tracked Buffs",
+        subtitle = "Friendly units only. Included buffs show on top of your Buff Filter (or alone with Only Tracked Auras).",
+        includeGet = function() return TrackedList(unitKey, "buffInclude") end,
+        excludeGet = function() return TrackedList(unitKey, "buffExclude") end,
+        includeMine = {
+            mineGet = function() return TrackedList(unitKey, "buffIncludeMine") end,
+        },
+        includeTitle = "INCLUDED BUFFS",
+        excludeTitle = "EXCLUDED BUFFS",
+        includePrompt = "Enter the spell ID of the buff to always show on this frame.",
+        excludePrompt = "Enter the spell ID of the buff to hide on this frame.",
+        onChanged = Changed,
+        copyFrom = {
+            label = "Copy Included/Excluded Buffs From:",
+            choices = choices,
+            apply = function(srcKey)
+                local db = ns.db
+                local src = db and db.profile and db.profile[srcKey]
+                local dst = db and db.profile and db.profile[unitKey]
+                if not (src and dst) then return end
+                local Clone = EllesmereUI.Lite.DeepCopy
+                dst.buffInclude = Clone(src.buffInclude)
+                dst.buffExclude = Clone(src.buffExclude)
+                dst.buffIncludeMine = Clone(src.buffIncludeMine)
                 Changed()
             end,
         },
@@ -1611,12 +1664,10 @@ initFrame:SetScript("OnEvent", function(self)
                 PP.Point(pFrame._previewTex, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", oR, oB)
             end
         end
-        if pFrame._previewModel then
-            -- 3D models ignore SetClipsChildren, so pin them to the frame bounds.
-            pFrame._previewModel:ClearAllPoints()
-            PP.Point(pFrame._previewModel, "TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-            PP.Point(pFrame._previewModel, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
-        end
+        -- 3D Portrait Below Border: the model inside the ring and under it,
+        -- as on the live portrait; off, it fills the frame over the ring.
+        ns.UF_PortraitShapeModel(pFrame, pFrame._shapeBorderTex, pFrame._previewModel,
+            pFrame._previewMode == "3d" and s.portrait3dBelowBorder == true, shape, rawBorderSize)
 
         -- Outer Ring / Inner Shadow: the live portrait's own helper. A shown
         -- Outer Ring and an unmasked ring below Size 7 reach past the frame,
@@ -1887,7 +1938,12 @@ initFrame:SetScript("OnEvent", function(self)
     --  Unified settings builder  (shared settings for the Main Frames page)
     ---------------------------------------------------------------------------
     local UNIT_SUPPORTS = {
-        powerHeight          = { player=true, target=true, focus=true },
+        borderRareColored    = { target=true, focus=true },
+        borderEliteColored   = { target=true, focus=true },
+        borderExcludeFriendly = { target=true, focus=true },
+        borderRareColor      = { target=true, focus=true },
+        borderEliteColor     = { target=true, focus=true },
+        powerHeight          = { player=true, target=true, focus=true, targettarget=true, focustarget=true, pet=true },
         showPlayerAbsorb     = { player=true, target=true, focus=true },
         absorbCleanAlpha     = { player=true, target=true, focus=true },
         absorbOpacity        = { player=true, target=true, focus=true },
@@ -1945,7 +2001,11 @@ initFrame:SetScript("OnEvent", function(self)
         factionIndicatorPosition    = { player=true, target=true },
         factionIndicatorX           = { player=true, target=true },
         factionIndicatorY           = { player=true, target=true },
-        buffAnchor           = { player=true, target=true, focus=true },
+        factionIndicatorTimer       = { player=true },
+        factionIndicatorTimerSize   = { player=true },
+        factionIndicatorTimerX      = { player=true },
+        factionIndicatorTimerY      = { player=true },
+        buffAnchor          = { player=true, target=true, focus=true },
         buffGrowth           = { player=true, target=true, focus=true },
         maxBuffs             = { player=true, target=true, focus=true },
         showPlayerCastbar    = { player=true },
@@ -2103,6 +2163,7 @@ initFrame:SetScript("OnEvent", function(self)
     -- the full-group rule, so cast bar settings never cross to/from player.
     local MINI_GROUP_ORDER = { "targettarget", "focustarget", "pet" }
     local TARGET_FOCUS_PAIR = { "target", "focus" }
+    local TOT_FOT_PAIR = { "targettarget", "focustarget" }
     local function IsGroupSharedKey(key, groupUnits)
         -- Visibility mode stays with the frame: it pairs with enabledFrames (never
         -- copied) and copying one alone desyncs them. Underscore keys are runtime
@@ -2112,9 +2173,8 @@ initFrame:SetScript("OnEvent", function(self)
         -- with the frame for the same reason: copying the modifier to a frame that kept
         -- its own mode changes how that mode reads.
         if key == "barVisibility" or key == "visibilityMatch" or key:sub(1, 1) == "_" then return false end
-        -- WoW Forever: the pet's power bar position has no counterpart on the
-        -- other small frames (theirs never shows), so it stays with the pet.
-        if key == "powerPosition" and ns.UF_PetHasPower and groupUnits == MINI_GROUP_ORDER then return false end
+        -- A Retail pet has no power bar, so power keys skip copies involving it.
+        if groupUnits == MINI_GROUP_ORDER and not ns.UF_PetHasPower and key:find("[Pp]ower") then return false end
         -- The pet's buffs and debuffs stay with the pet: the other small frames
         -- have none, so a copy either way would only clear or plant aura keys.
         if groupUnits == MINI_GROUP_ORDER and (key:find("^buff") or key:find("^debuff")
@@ -2140,6 +2200,9 @@ initFrame:SetScript("OnEvent", function(self)
         if (srcUnit == "target" or srcUnit == "focus")
             and (dstUnit == "target" or dstUnit == "focus") then
             groupUnits = TARGET_FOCUS_PAIR
+        elseif (srcUnit == "targettarget" or srcUnit == "focustarget")
+            and (dstUnit == "targettarget" or dstUnit == "focustarget") then
+            groupUnits = TOT_FOT_PAIR
         end
         local src = UNIT_DB_MAP[srcUnit]()
         local dst = UNIT_DB_MAP[dstUnit]()
@@ -2419,6 +2482,9 @@ initFrame:SetScript("OnEvent", function(self)
         if (optState.selectedUnit == "player" or optState.selectedUnit == "target") and parent._ufFactionRow then
             parent._sharedClickTargets.factionIndicator = { section = sharedAddHeader, target = parent._ufFactionRow, slotSide = "left" }
         end
+        if optState.selectedUnit == "player" and parent._ufPvpTimerRow then
+            parent._sharedClickTargets.pvpTimer = { section = sharedAddHeader, target = parent._ufPvpTimerRow, slotSide = "left" }
+        end
 
         return y
     end  -- BuildSharedSettings
@@ -2649,6 +2715,12 @@ initFrame:SetScript("OnEvent", function(self)
                     pv._badgeOv[b[1]] = ov
                 end
             end
+            -- The PvP Flagged Timer's sample text, the same way.
+            if pv._pvPvpTimer and targets.pvpTimer then
+                local ov = CreateHitOverlay(pv._pvPvpTimer, "pvpTimer", true, baseLevel + 20)
+                ov:SetShown(pv._pvPvpTimer:IsShown())
+                pv._badgeOv[pv._pvPvpTimer] = ov
+            end
             pv._textOverlays = textOverlays
         end
 
@@ -2778,8 +2850,8 @@ initFrame:SetScript("OnEvent", function(self)
             local baseLevel = (pv._health and pv._health:GetFrameLevel() or 20) + 15
             local textLevel = baseLevel + 10
             if pv._health then CreateHitOverlay(pv._health, "healthBar", false, baseLevel, { hlAnchor = pv._border or pv._health }) end
-            -- WoW Forever's pet: power bar, power text and happiness icon (the
-            -- other mini previews build none of them).
+            -- Power bar and power text (target of target, focus target and the
+            -- WoW Forever pet), and the pet's happiness icon (WoW Forever only).
             if pv._power then CreateHitOverlay(pv._power, "powerBar", false, baseLevel) end
             if pv._ppFS and pv._ppFS:IsShown() then CreateHitOverlay(pv._ppFS, "powerBarText", true, textLevel) end
             if pv._happyInd then CreateHitOverlay(pv._happyInd, "petHappiness", false, baseLevel + 20) end

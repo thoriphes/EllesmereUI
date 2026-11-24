@@ -44,22 +44,24 @@ EllesmereUI.FONT_FILES = {
 -- Bundled faces whose cmap covers the FULL Russian alphabet (U+0410-U+044F plus U+0401
 -- and U+0451, i.e. the Yo pair): these stay
 -- usable in ruRU instead of being swapped for the system glyph font. Verified per file
--- against its cmap table -- everything omitted here (Poppins, Exo, Gotham, Changa, Cinzel,
--- Future X Black, Homespun, HWT Artz, KMT Ninja Naruto, Barlow Condensed) has ZERO Cyrillic
--- and would render boxes. Re-check coverage before adding a face; a wrong entry ships
--- unreadable text. Expressway CAPS: cmap checked, 66/66 Russian letters (Yo pair included).
+-- against its cmap table -- every other face (Poppins, Exo, Gotham Narrow Ultra, Changa,
+-- Cinzel, Future X Black, Homespun, HWT Artz, KMT Ninja Naruto, Barlow Condensed) has ZERO
+-- Cyrillic and would render boxes, except Avant Garde: it carries the alphabet in another
+-- open face's letters and is left to the system glyph font on ruRU. Re-check coverage before
+-- adding a face; a wrong entry ships unreadable text. Expressway CAPS: cmap checked, 66/66
+-- Russian letters (Yo pair included), its Russian lowercase drawn as lowercase.
 -- Deliberately NOT extended to FONT_BLIZZARD: the Cyrillic-capable Blizzard face is
 -- FRIZQT___CYR (already the fallback), and the plain ones vary by installed client locale.
 EllesmereUI.FONT_CYRILLIC = {
     ["Expressway"]       = true,
     ["Expressway Bold"]  = true,
     ["Expressway CAPS"]  = true,
-    ["Avant Garde"]      = true,
     ["Arial Bold"]       = true,
     ["Arial Narrow"]     = true,
     ["Fira Sans Medium"] = true,
     ["Fira Sans Bold"]   = true,
     ["Fira Sans Light"]  = true,
+    ["Gotham Narrow"]    = true,
     ["KMT Kimberley"]    = true,
     ["Russo One"]        = true,
     ["Ubuntu"]           = true,
@@ -82,8 +84,53 @@ EllesmereUI.FONT_ORDER = {
     "KMT Kimberley", "KMT Ninja Naruto",
     "Friz Quadrata", "Arial", "Morpheus", "Skurri",
 }
--- Display name overrides for the font dropdown (key = FONT_ORDER name)
+-- Display name overrides for the font dropdown (key = FONT_ORDER name). The key is what
+-- settings save and what LSM lists, and FONT_FILES keeps each file name (some settings save
+-- the path): the label alone names the face the file holds, with the name it replaced.
 EllesmereUI.FONT_DISPLAY_NAMES = {
+    ["Expressway"]          = "Roboto ExtraBold (previously Expressway)",
+    ["Expressway Bold"]     = "Roboto Black (previously Expressway Bold)",
+    ["Expressway CAPS"]     = "Roboto CAPS (previously Expressway CAPS)",
+    ["Avant Garde"]         = "Adventor (previously Avant Garde)",
+    ["Arial Bold"]          = "Arimo Bold (previously Arial Bold)",
+    ["Arial Narrow"]        = "Liberation Narrow (previously Arial Narrow)",
+    ["Future X Black"]      = "Gantari Black (previously Future X Black)",
+    ["Gotham Narrow Ultra"] = "Blinker ExtraBold (previously Gotham Narrow Ultra)",
+    ["Gotham Narrow"]       = "TikTok Sans (previously Gotham Narrow)",
+    ["HWT Artz"]            = "Anek CAPS (previously HWT Artz)",
+    ["KMT Kimberley"]       = "Tektur (previously KMT Kimberley)",
+    ["KMT Ninja Naruto"]    = "Sedgwick Ave (previously KMT Ninja Naruto)",
+}
+-- The label a font list shows for a FONT_ORDER name.
+function EllesmereUI.FontDisplayName(name)
+    return EllesmereUI.FONT_DISPLAY_NAMES[name] or name
+end
+-- The forced Latin face's label in glyph-restricted pickers: the translated
+-- "... (Latin only)" text with the face's own name in it.
+function EllesmereUI.LatinOnlyFontLabel()
+    local key = "Expressway (Latin only)"
+    local face = (EllesmereUI.FONT_DISPLAY_NAMES["Expressway"] or "Expressway"):match("^(.-) %(") or "Expressway"
+    return (EllesmereUI.L(key):gsub("Expressway", face, 1))
+end
+-- Menu options of a font list (values._menuOpts): a label too long for its row ends in
+-- "..." and shows in full while the row is hovered, as the closed dropdown does for its value.
+EllesmereUI.FONT_MENU_OPTS = {
+    maxTextWidthPct = 0.86,
+    onItemHover = function(_, item)
+        local lbl = item and item._label
+        if not lbl then return end
+        local cut = lbl:IsTruncated()
+        if not issecretvalue(cut) and cut then
+            item._fontNameTip = true
+            EllesmereUI.ShowWidgetTooltip(item, lbl:GetText())
+        end
+    end,
+    onItemLeave = function(_, item)
+        if item and item._fontNameTip then
+            item._fontNameTip = nil
+            EllesmereUI.HideWidgetTooltip()
+        end
+    end,
 }
 
 -- Sentinel key = "use the locale system font", offered in the picker for glyph-restricted
@@ -155,6 +202,13 @@ EllesmereUI.BLIZZARD_FONT_KEY = "__blizzard"
 function EllesmereUI.GetBlizzardFontPath()
     return EllesmereUI._clientFontPath or _G.STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
 end
+-- "Blizzard Chat": the client's chat face (ChatFontNormal), which differs from its UI face.
+EllesmereUI.BLIZZARD_CHAT_FONT_KEY = "__blizzardchat"
+-- Read at load, before the chat failsafe or Apply to All Game Text swaps it.
+EllesmereUI._clientChatFontPath = _G.ChatFontNormal and (_G.ChatFontNormal:GetFont()) or nil
+function EllesmereUI.GetBlizzardChatFontPath()
+    return EllesmereUI._clientChatFontPath or EllesmereUI.GetBlizzardFontPath()
+end
 
 function EllesmereUI.InvalidateFontCache()
     EllesmereUI._fontCacheDirty = true
@@ -196,6 +250,9 @@ local function ResolveFontName(fontName)
     -- locale-aware (the engine picks the right face per client language).
     if fontName == EllesmereUI.BLIZZARD_FONT_KEY then
         return EllesmereUI.GetBlizzardFontPath()
+    end
+    if fontName == EllesmereUI.BLIZZARD_CHAT_FONT_KEY then
+        return EllesmereUI.GetBlizzardChatFontPath()
     end
     -- Explicit Expressway override: bypasses the glyph-restriction mapping below.
     if fontName == EllesmereUI.EXPRESSWAY_FORCED_KEY then
@@ -482,15 +539,17 @@ end
 --  Cyrillic, Korean and Chinese faces draw the scripts it lacks. Every member has
 --  the same size and flags, so Latin text draws exactly as with a plain SetFont.
 --  A family carries face, size, flags and its shadow (a drop shadow renders only
---  from a font object), never a text colour or justification: SetFontObject
+--  from a font object), never a text color or justification: SetFontObject
 --  pushes only what the object defines, so a string keeps its own.
 --  A plain fs:SetFont pins that string's face for good (a later SetFontObject no
 --  longer changes it), so a string takes its family from its FIRST font write
 --  and every later write to it goes through SetFontFamily, never SetFont,
 --  ApplyModuleFont, ApplyIconTextFont or PrimeFontShadow.
 --  Blizzard's own font OBJECTS (families or plain) change member by member
---  through SetFontObjectFace, never through a family object's own SetFont, whose
---  effect on its other alphabets is not defined.
+--  through SetFontObjectFace. A family object's own SetFont changes only its own
+--  font, the one GetFont() reads and copies take (Blizzard's guild chat copies the
+--  main chat window's), never a member; SetFontObjectFace sets it too, where the
+--  client's own alphabet takes the face.
 --  Built once per path / size / flags / shadow; a hit reads four table fields and
 --  builds nothing. Table fields, not file-scope locals (200-local limit).
 -------------------------------------------------------------------------------
@@ -503,6 +562,9 @@ EllesmereUI._FONT_CLIENT_ALPHABET = ({ koKR = "korean", zhCN = "simplifiedchines
     zhTW = "traditionalchinese" })[GetLocale()]
 -- On a Russian client the russian member keeps the path, as every text in Russian draws with it.
 EllesmereUI._FONT_CLIENT_RU = (GetLocale() == "ruRU")
+-- The alphabet the client's own language draws with.
+EllesmereUI._FONT_CLIENT_OWN = EllesmereUI._FONT_CLIENT_ALPHABET
+    or (EllesmereUI._FONT_CLIENT_RU and "russian") or "roman"
 EllesmereUI._FONT_CYR_FILE = "Fonts\\FRIZQT___CYR.TTF"
 -- path -> size -> flags ("" for none) -> shadow (true / false) -> family, or false
 -- when the client has no families or the creation failed (never retried).
@@ -550,7 +612,9 @@ function EllesmereUI._FontMemberTakesPath(alphabet, path)
 end
 
 -- Whether the client loads the font file at `path`: a hidden scratch string's
--- SetFont returns false for a file it cannot load. Tested once per path.
+-- SetFont returns false for a file it cannot load. Tested once per path, except
+-- that failures are retested until the loading screen after the first one ends
+-- (see below).
 function EllesmereUI._FontPathLoads(path)
     local c = EllesmereUI._fontPathOK
     local hit = c[path]
@@ -564,8 +628,64 @@ function EllesmereUI._FontPathLoads(path)
     end
     local ok, loaded = pcall(probe.SetFont, probe, path, 12, "")
     hit = ok and loaded ~= false
-    c[path] = hit
+    -- On a fresh game start a file can fail before it is read: retested at login (see below).
+    if hit or EllesmereUI._fontRetryDone then c[path] = hit else EllesmereUI._FontRetryArm(path) end
     return hit
+end
+
+-- Paths that failed before login finished, and the families built without them.
+EllesmereUI._fontPathPending = {}
+EllesmereUI._fontFamPending = {}
+-- Retests each pending path at the login stages; a path that loads goes into the
+-- families that fell back, member by member, so their texts update in place.
+function EllesmereUI._FontRetryArm(path)
+    EllesmereUI._fontPathPending[path] = true
+    local f = EllesmereUI._fontRetryFrame
+    if f then return end
+    f = CreateFrame("Frame")
+    EllesmereUI._fontRetryFrame = f
+    f:RegisterEvent("PLAYER_LOGIN")
+    f:RegisterEvent("PLAYER_ENTERING_WORLD")
+    f:RegisterEvent("LOADING_SCREEN_DISABLED")
+    f:SetScript("OnEvent", function(self, event)
+        local pending, c = EllesmereUI._fontPathPending, EllesmereUI._fontPathOK
+        local final = event == "LOADING_SCREEN_DISABLED"
+        for p in pairs(pending) do
+            local ok, loaded = pcall(EllesmereUI._fontProbe.SetFont, EllesmereUI._fontProbe, p, 12, "")
+            if ok and loaded ~= false then
+                c[p], pending[p] = true, nil
+                EllesmereUI._FontFamiliesTakePath(p)
+            elseif final then
+                c[p], pending[p] = false, nil
+            end
+        end
+        if final or not next(pending) then
+            EllesmereUI._fontRetryDone = final or nil
+            if final then
+                self:UnregisterAllEvents()
+                wipe(EllesmereUI._fontFamPending)
+            end
+        end
+    end)
+end
+
+-- The families built while `path` failed get it now, on the members that take it,
+-- and as their own font (a family built with the path has its roman member's).
+function EllesmereUI._FontFamiliesTakePath(path)
+    local list = EllesmereUI._fontFamPending
+    local alphabets = EllesmereUI._FONT_ALPHABETS
+    for i = #list, 1, -1 do
+        local e = list[i]
+        if e.path == path then
+            for a = 1, #alphabets do
+                local member = EllesmereUI._FontMemberTakesPath(alphabets[a], path)
+                    and e.fam:GetFontObjectForAlphabet(alphabets[a])
+                if member then pcall(member.SetFont, member, path, e.size, e.flags) end
+            end
+            pcall(e.fam.SetFont, e.fam, path, e.size, e.flags)
+            table.remove(list, i)
+        end
+    end
 end
 
 -- The shadow on the family and on each member (PrimeFontShadow's values), and the
@@ -628,6 +748,10 @@ function EllesmereUI._BuildFontFamily(path, size, flags, shadow)
         return nil
     end
     byShadow[shadow] = fam
+    if face ~= path and EllesmereUI._fontPathPending[path] then
+        local list = EllesmereUI._fontFamPending
+        list[#list + 1] = { fam = fam, path = path, size = size, flags = flags }
+    end
     return fam
 end
 
@@ -652,7 +776,7 @@ end
 
 -- Sets a font string's font as a family (see the block above). A string already on
 -- that family is not touched. Its first switch from a font object that is not one
--- of ours keeps the string's justification and text colour, which a template object
+-- of ours keeps the string's justification and text color, which a template object
 -- may have given it. With no family: PrimeFontShadow, then a plain SetFont.
 function EllesmereUI.SetFontFamily(fs, path, size, flags, shadow)
     if not (fs and fs.SetFontObject) then return end
@@ -668,7 +792,7 @@ function EllesmereUI.SetFontFamily(fs, path, size, flags, shadow)
         fs:SetFontObject(fam)
         return
     end
-    -- The getters may hand back secret values (a text colour set from secret
+    -- The getters may hand back secret values (a text color set from secret
     -- data), so they are tested with type() only and passed straight back.
     local justifyH, justifyV = fs:GetJustifyH(), fs:GetJustifyV()
     local r, g, b, a = fs:GetTextColor()
@@ -722,6 +846,12 @@ function EllesmereUI._FontObjectFaceInto(obj, path, size, flags, scale, done)
                 EllesmereUI._SetFontMemberFace(member, face, size, flags, scale, done)
             end
         end
+        -- The family's own font as well (it changes no member): GetFont() reads it and
+        -- copies take it (the guild chat copies the main chat window's font). Only
+        -- where the client's own alphabet takes the face.
+        if not path or EllesmereUI._FontMemberTakesPath(EllesmereUI._FONT_CLIENT_OWN, path) then
+            EllesmereUI._SetFontMemberFace(obj, path, size, flags, scale, done)
+        end
     else
         EllesmereUI._SetFontMemberFace(obj, path, size, flags, scale, done)
     end
@@ -740,11 +870,14 @@ function EllesmereUI.SetFontObjectFace(obj, path, size, flags, scale)
     EllesmereUI._FontObjectFaceInto(obj, path, size, flags, scale, done)
 end
 
--- Each member's (or a plain object's) face, size and flags, for RestoreFontObject.
+-- Each member's (or a plain object's) face, size and flags, and a family's own
+-- font, for RestoreFontObject.
 function EllesmereUI.SnapshotFontObject(obj)
     if not (obj and type(obj) == "table" and obj.GetFont) then return nil end
     local snap = {}
     if EllesmereUI._FontObjectIsFamily(obj) then
+        local ownFace, ownSize, ownFlags = obj:GetFont()
+        snap.own = { face = ownFace, size = ownSize, flags = ownFlags }
         local alphabets = EllesmereUI._FONT_ALPHABETS
         for i = 1, #alphabets do
             local ok, member = pcall(obj.GetFontObjectForAlphabet, obj, alphabets[i])
@@ -773,6 +906,7 @@ function EllesmereUI.RestoreFontObject(obj, snap)
         EllesmereUI._RestoreFontMember(obj, snap.plain)
         return
     end
+    EllesmereUI._RestoreFontMember(obj, snap.own)
     local alphabets = EllesmereUI._FONT_ALPHABETS
     for i = 1, #alphabets do
         local s = snap[alphabets[i]]
@@ -791,6 +925,55 @@ end
 -- scale can never compound); either setting requires a reload (no undo path: off/100% =
 -- that half skipped, defaults kept). Scale works without the face swap too -- each
 -- object keeps its own face at the scaled size.
+-- The font objects the pass leaves alone: the floating combat text's, which the
+-- Combat Text Font setting owns.
+EllesmereUI._GAME_TEXT_KEEP = { "CombatTextFont", "SystemFont_World" }
+-- Keep their own faces under the face swap, still scaled: hotkey and range-dot text shows
+-- RANGE_INDICATOR (U+25CF), which most bundled faces have no glyph for (it draws as boxes).
+EllesmereUI._GAME_TEXT_KEEP_FACE = { "NumberFontNormalSmallGray" }
+-- Keeps one font object on its own faces. Such an object draws through the members of the
+-- family it inherits and shares them with that family and with every other object on it
+-- (the hotkey font with the count texts'), so its faces cannot be kept on those members.
+-- It is pointed at a family of our own, made from the members' own faces at their sizes
+-- times `scale`, and keeps its color and shadow; the shared members then take the pass
+-- like any other. Our family, its members and the object go into `done`. An object the
+-- family cannot be made for is left to the pass; a plain one owns its face and is scaled
+-- where it is.
+function EllesmereUI._KeepFontObjectFace(obj, scale, done)
+    if not EllesmereUI._FontObjectIsFamily(obj) then
+        EllesmereUI._SetFontMemberFace(obj, nil, nil, nil, scale, done)
+        return
+    end
+    local alphabets = EllesmereUI._FONT_ALPHABETS
+    local members, n = {}, 0
+    for i = 1, #alphabets do
+        local ok, member = pcall(obj.GetFontObjectForAlphabet, obj, alphabets[i])
+        if ok and member then
+            local face, size, flags = member:GetFont()
+            if face and size and size > 0 then
+                n = n + 1
+                members[n] = { alphabet = alphabets[i], file = face, height = size * scale, flags = flags or "" }
+            end
+        end
+    end
+    if n == 0 then return end
+    local okFam, fam = pcall(CreateFontFamily, "EUIFontFamily" .. (EllesmereUI._fontFamilyCount + 1), members)
+    if not (okFam and fam) then return end
+    EllesmereUI._fontFamilyCount = EllesmereUI._fontFamilyCount + 1
+    local r, g, b, a = obj:GetTextColor()
+    local sr, sg, sb, sa = obj:GetShadowColor()
+    local sx, sy = obj:GetShadowOffset()
+    if not pcall(obj.SetFontObject, obj, fam) then return end
+    if r then obj:SetTextColor(r, g, b, a) end
+    if sr then obj:SetShadowColor(sr, sg, sb, sa) end
+    if sx then obj:SetShadowOffset(sx, sy) end
+    local ours = EllesmereUI._fontFamilySet
+    ours[fam], done[fam], done[obj] = true, true, true
+    for i = 1, #alphabets do
+        local ok, member = pcall(fam.GetFontObjectForAlphabet, fam, alphabets[i])
+        if ok and member then ours[member], done[member] = true, true end
+    end
+end
 function EllesmereUI.ApplyGlobalFontToGameText()
     local db = EllesmereUI.GetFontsDB()
     -- Zero cost while fully off: both settings absent (scale 100 stores nil)
@@ -823,12 +1006,59 @@ function EllesmereUI.ApplyGlobalFontToGameText()
     local fonts = (GetFonts and GetFonts()) or {}
     local ours = EllesmereUI._fontFamilySet
     local done = {}
+    -- The floating combat text over the player draws with CombatTextFont (on the
+    -- SystemFont_World family), the numbers over enemies with DAMAGE_TEXT_FONT. Both
+    -- follow the Combat Text Font setting alone, so the pass marks those two objects,
+    -- their own fonts and every member as done and leaves them as they are.
+    local keep = EllesmereUI._GAME_TEXT_KEEP
+    local alphabets = EllesmereUI._FONT_ALPHABETS
+    for k = 1, #keep do
+        local obj = _G[keep[k]]
+        if obj and type(obj) == "table" then
+            done[obj] = true
+            if obj.GetFontObjectForAlphabet then
+                for a = 1, #alphabets do
+                    local ok, member = pcall(obj.GetFontObjectForAlphabet, obj, alphabets[a])
+                    if ok and member then done[member] = true end
+                end
+            end
+        end
+    end
+    -- Their own faces at the pass's scale (EllesmereUI._KeepFontObjectFace). Only the face
+    -- swap takes a face away: a scale alone leaves them to the loop below.
+    if swap then
+        local keepFace = EllesmereUI._GAME_TEXT_KEEP_FACE
+        for k = 1, #keepFace do
+            local obj = _G[keepFace[k]]
+            if obj and type(obj) == "table" and obj.GetFont and obj.SetFont then
+                EllesmereUI._KeepFontObjectFace(obj, scale, done)
+            end
+        end
+    end
     for i = 1, #fonts do
         local obj = _G[fonts[i]]
         -- Guard each: GetFonts may list entries that are not usable font objects.
         if obj and type(obj) == "table" and not ours[obj] and obj.GetFont and obj.SetFont then
             EllesmereUI._FontObjectFaceInto(obj, swap and path or nil, nil, nil, scale, done)
         end
+    end
+    -- Premade Groups' category labels are copies of GameFontNormal taken as each button
+    -- is built, with no font object to follow, so one built before this pass (the first:
+    -- Blizzard's XML declares it) keeps the client's face. A label still on that face
+    -- takes the global one at its own size. Nothing to do under Blizzard Default (the
+    -- same face) or on WoW Forever (no such window, so the wait would never end).
+    local old = EllesmereUI._clientFontPath
+    if swap and path ~= old and not EllesmereUI.IS_FOREVER and EventUtil and EventUtil.ContinueOnAddOnLoaded then
+        EventUtil.ContinueOnAddOnLoaded("Blizzard_GroupFinder", function()
+            if not LFGListCategorySelection_AddButton then return end
+            hooksecurefunc("LFGListCategorySelection_AddButton", function(cs, i)
+                local b = cs and type(cs.CategoryButtons) == "table" and cs.CategoryButtons[i]
+                local label = b and b.Label
+                if not (label and label.GetFont) then return end
+                local face, size, flags = label:GetFont()  -- not in an and-chain, that keeps only face
+                if face == old and size then label:SetFont(path, size, flags or "") end
+            end)
+        end)
     end
 end
 
@@ -945,8 +1175,9 @@ function EllesmereUI.BuildFontDropdownData()
     if EllesmereUI.LOCALE_FONT_FALLBACK then
         local values = { ["__global"] = { text = "EUI Global Font" },
                          [EllesmereUI.SYSTEM_FONT_KEY] = { text = "System Default", font = EllesmereUI.LOCALE_FONT_FALLBACK },
-                         [EllesmereUI.EXPRESSWAY_FORCED_KEY] = { text = "Expressway (Latin only)",
-                             font = EllesmereUI.MEDIA_PATH .. "fonts\\Expressway.TTF" } }
+                         [EllesmereUI.EXPRESSWAY_FORCED_KEY] = { text = EllesmereUI.LatinOnlyFontLabel(),
+                             font = EllesmereUI.MEDIA_PATH .. "fonts\\Expressway.TTF" },
+                         _menuOpts = EllesmereUI.FONT_MENU_OPTS }
         local order  = { "__global", EllesmereUI.SYSTEM_FONT_KEY, EllesmereUI.EXPRESSWAY_FORCED_KEY }
         if EllesmereUI.AppendExternalSharedMediaFonts then
             EllesmereUI.AppendExternalSharedMediaFonts(values, order)
@@ -958,8 +1189,11 @@ function EllesmereUI.BuildFontDropdownData()
     -- Default" entry already IS the client's own font.
     local values = { ["__global"] = { text = "EUI Global Font" },
                      [EllesmereUI.BLIZZARD_FONT_KEY] = { text = "Blizzard Default",
-                         font = EllesmereUI.GetBlizzardFontPath() } }
-    local order  = { "__global", EllesmereUI.BLIZZARD_FONT_KEY, "---" }
+                         font = EllesmereUI.GetBlizzardFontPath() },
+                     [EllesmereUI.BLIZZARD_CHAT_FONT_KEY] = { text = "Blizzard Chat",
+                         font = EllesmereUI.GetBlizzardChatFontPath() },
+                     _menuOpts = EllesmereUI.FONT_MENU_OPTS }
+    local order  = { "__global", EllesmereUI.BLIZZARD_FONT_KEY, EllesmereUI.BLIZZARD_CHAT_FONT_KEY, "---" }
     local FONT_DIR = EllesmereUI.MEDIA_PATH .. "fonts\\"
     for _, name in ipairs(EllesmereUI.FONT_ORDER) do
         if name == "---" then

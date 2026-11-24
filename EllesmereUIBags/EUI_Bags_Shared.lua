@@ -17,6 +17,7 @@ local GetItemInfoInstant = C_Item.GetItemInfoInstant
 local EUI = EllesmereUI
 
 local BP, GetFont, SetBagFont = I.BP, I.GetFont, I.SetBagFont
+local GetItemMergeKey = I.GetItemMergeKey
 
 -- Shared state: one copy per file. A write goes through the Set<Name>
 -- function of ns._bagsInternals, which hands the value to every copy.
@@ -26,7 +27,32 @@ I.categoryIndexSetters[#I.categoryIndexSetters + 1] = function(v) selectedCatego
 -------------------------------------------------------------------------------
 --  Inset border helper (1 physical pixel inside frame edge)
 -------------------------------------------------------------------------------
-local function CreateInsetBorder(btn)
+local FV_SLOT_FRAME = "Interface\\Buttons\\UI-Quickslot2"
+local FV_QUALITY_FRAME = "Interface\\Common\\WhiteIconFrame"
+
+local function CreateInsetBorder(btn, isSlot, icon)
+    if isSlot and ns.BagsForever() then
+        local frame = btn:CreateTexture(nil, "OVERLAY")
+        frame:SetAllPoints(btn)
+        frame:SetTexture(FV_SLOT_FRAME)
+        -- The visible 37x37 area of the stock 64x64 rim, centered one unit down.
+        frame:SetTexCoord(13.5 / 64, 50.5 / 64, 12.5 / 64, 49.5 / 64)
+        local mask = btn.Mask
+        if not mask then
+            mask = btn:CreateMaskTexture()
+            mask:SetAllPoints(btn)
+            mask:SetTexture("Interface\\Common\\common-iconmask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+        end
+        frame:AddMaskTexture(mask)
+        if icon then
+            icon:AddMaskTexture(mask)
+            btn._fvIconMask = mask
+        elseif btn.icon then
+            btn.icon:AddMaskTexture(mask)
+        end
+        btn._fvSlotBorder = frame
+        return
+    end
     local PP = EUI and EUI.PP
     local px = (PP and PP.mult) or 1
     local WHITE = "Interface\\Buttons\\WHITE8X8"
@@ -50,12 +76,38 @@ local function CreateInsetBorder(btn)
 end
 
 local function SetInsetBorderColor(btn, cr, cg, cb, ca)
-    if btn._brdT then
+    local frame = btn._fvSlotBorder
+    if frame then
+        frame.r, frame.g, frame.b, frame.a = cr, cg, cb, ca
+        local color = ca > 0 and (cr ~= cg or cg ~= cb or cr > 0.25)
+        local shade = not color and cr < 0.25 and cr or 1
+        frame:SetVertexColor(shade, shade, shade, ca)
+        local glow = btn._fvQualityBorder
+        if color and not glow then
+            glow = btn:CreateTexture(nil, "OVERLAY", nil, 1)
+            glow:SetAllPoints(btn)
+            glow:SetTexture(FV_QUALITY_FRAME)
+            btn._fvQualityBorder = glow
+        end
+        if glow then
+            glow:SetShown(color)
+            if color then glow:SetVertexColor(cr, cg, cb, ca) end
+        end
+    elseif btn._brdT then
         btn._brdT:SetColorTexture(cr, cg, cb, ca)
         btn._brdB:SetColorTexture(cr, cg, cb, ca)
         btn._brdL:SetColorTexture(cr, cg, cb, ca)
         btn._brdR:SetColorTexture(cr, cg, cb, ca)
     end
+end
+
+local function GetInsetBorderStyle(btn)
+    local frame = btn._fvSlotBorder
+    if frame then return frame.r, frame.g, frame.b, frame.a end
+    local top = btn._brdT
+    if not top then return end
+    local r, g, b, a = top:GetVertexColor()
+    return r, g, b, a, top:GetHeight()
 end
 
 -- Border thickness in px (1 normally, 2 for quest items); must be re-applied per render because item buttons are pooled.
@@ -75,6 +127,33 @@ ns.CreateInsetBorder = CreateInsetBorder
 ns.SetBagFont = SetBagFont
 ns.SetInsetBorderColor = SetInsetBorderColor
 
+function ns.GetSlotQuestFlags(bag, slot)
+    local info = C_Container.GetContainerItemQuestInfo(bag, slot)
+    if info and (info.isQuestItem or info.questID) then
+        return true, info.questID and not info.isActive or nil
+    end
+end
+
+function ns.SetForeverSlotQuestBorder(btn, isQuest, isStarter)
+    local border = btn._fvQuestBorder
+    if isQuest then
+        if not border then
+            border = btn:CreateTexture(nil, "OVERLAY", nil, 2)
+            border:SetPoint("TOPLEFT", btn, "TOPLEFT")
+            border:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 0, -1)
+            btn._fvQuestBorder = border
+        end
+        local asset = isStarter and TEXTURE_ITEM_QUEST_BANG or TEXTURE_ITEM_QUEST_BORDER
+        if border._asset ~= asset then
+            border._asset = asset
+            border:SetTexture(asset)
+        end
+        border:Show()
+    elseif border then
+        border:Hide()
+    end
+end
+
 -- Item buttons (ContainerFrameItemButtonTemplate) carry frameLevel="10" in
 -- Blizzard's XML, a fixed level that never follows their window: under a window
 -- raised past it (High starts at 100) the window takes the clicks. So each one
@@ -85,6 +164,83 @@ local function PinItemButtonLevel(btn, level)
     btn:SetFrameLevel(level)
     if btn._textOverlay then btn._textOverlay:SetFrameLevel(level + 3) end
     if btn._warbankDim then btn._warbankDim:SetFrameLevel(level + 6) end
+end
+
+-------------------------------------------------------------------------------
+--  Window spot (bags and bank)
+--  Anchor to Nearest Corner (the Window Scale cog; bagAnchorCorner, on unless
+--  turned off): a window holds the screen corner nearest its center, so when
+--  it grows or shrinks with its contents it keeps its margin to that corner's
+--  two edges (a window parked bottom-right grows up and left). Such a spot is
+--  saved as { point, relativePoint, x, y, corner = true }. Off: a drag or the
+--  grip pins the window by its top-left corner.
+-------------------------------------------------------------------------------
+function ns.WindowCornerOn()
+    return BP().bagAnchorCorner ~= false
+end
+
+function ns.AnchorWindowToCorner(frame)
+    local left, right = frame:GetLeft(), frame:GetRight()
+    local top, bottom = frame:GetTop(), frame:GetBottom()
+    if not (left and right and top and bottom) then return nil end
+    -- Offsets are in the window's own scale (the bag scale option)
+    local ratio = UIParent:GetEffectiveScale() / frame:GetEffectiveScale()
+    local screenW, screenH = UIParent:GetWidth() * ratio, UIParent:GetHeight() * ratio
+    local isRight = left + right > screenW
+    local isTop = top + bottom > screenH
+    local PP = EUI.PP
+    local x = PP.Snap(isRight and right - screenW or left)
+    local y = PP.Snap(isTop and top - screenH or bottom)
+    local point = (isTop and "TOP" or "BOTTOM") .. (isRight and "RIGHT" or "LEFT")
+    frame:ClearAllPoints()
+    frame:SetPoint(point, UIParent, point, x, y)
+    return { point = point, relativePoint = point, x = x, y = y, corner = true }
+end
+
+-- Anchor the window to its nearest corner and save that as BP()[key]
+function ns.SaveWindowCorner(frame, key)
+    local pos = ns.AnchorWindowToCorner(frame)
+    if pos then BP()[key] = pos end
+end
+
+-- Pin the window by its top-left corner where it stands and save that as BP()[key]
+function ns.SaveWindowTopLeft(frame, key)
+    local left, top = frame:GetLeft(), frame:GetTop()
+    if not (left and top) then return end
+    local PP = EUI.PP
+    left, top = PP.Snap(left), PP.Snap(top)
+    BP()[key] = { point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = left, y = top }
+    frame:ClearAllPoints()
+    frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+end
+
+-- Save the spot a drag left the window at, in the form the switch asks for
+function ns.SaveWindowPos(frame, key)
+    if ns.WindowCornerOn() then
+        ns.SaveWindowCorner(frame, key)
+    else
+        ns.SaveWindowTopLeft(frame, key)
+    end
+end
+
+-- Call when the window shows: a spot saved in the other form (the switch was
+-- flipped since) is saved again where the window stands, a frame later so the
+-- open's refresh has sized it. Never in combat: a later open does it.
+function ns.SettleWindowPos(frame, key)
+    local pos = BP()[key]
+    if not pos or (pos.corner == true) == ns.WindowCornerOn() then return end
+    C_Timer.After(0, function()
+        if BP()[key] ~= pos or not frame:IsShown() or InCombatLockdown() then return end
+        if (pos.corner == true) ~= ns.WindowCornerOn() then ns.SaveWindowPos(frame, key) end
+    end)
+end
+
+-- The switch was flipped: an open window takes the new form on the next frame,
+-- a closed one at its next open.
+function ns.WindowCornerChanged()
+    local bank = _G.EUI_BankFrame
+    if EUI_Bags:IsShown() then ns.SettleWindowPos(EUI_Bags, "bagsPosition") end
+    if bank and bank:IsShown() then ns.SettleWindowPos(bank, "bankPosition") end
 end
 
 -- background color/opacity for bags and bank: the texture fades with the
@@ -99,9 +255,26 @@ function ns.ApplyWindowBackground(bg, overlay)
     overlay:SetAlpha(o)
 end
 
--- slot background: tint over an empty slot's backdrop, alpha is the slot's
--- own base opacity. each painted one is kept (weakly) so a color change can
--- retint them without a relayout
+local slotBackgroundAtlases
+function ns.SetSlotBackgroundTexture(tex, interactive)
+    if ns.BagsForever() then
+        if not slotBackgroundAtlases then slotBackgroundAtlases = {} end
+        local atlas = interactive and "bags-item-slot64" or "bags-item-slot-blank"
+        local exists = slotBackgroundAtlases[atlas]
+        if exists == nil then
+            exists = C_Texture.GetAtlasInfo(atlas) ~= nil
+            slotBackgroundAtlases[atlas] = exists
+        end
+        if exists then
+            tex:SetAtlas(atlas)
+            return
+        end
+    end
+    tex:SetTexture("Interface\\AddOns\\EllesmereUIBags\\Media\\icon-bg.png")
+end
+
+-- Tint over an empty slot's backdrop. Keep painted regions weakly so a
+-- color change can retint them without a relayout.
 local slotBgs = setmetatable({}, { __mode = "k" })
 function ns.PaintSlotBackground(tex, alpha)
     tex._slotBgAlpha = alpha
@@ -159,6 +332,18 @@ function ns.SetSlotIcon(btn, texture)
     btn:SetItemButtonTexture(texture)
     local z = BP().bagItemIconZoom or 0.08
     btn.icon:SetTexCoord(z, 1 - z, z, 1 - z)
+end
+
+-- Recent Items "Show Picked-Up Amount": marker for the proxies RecentGainedItems
+-- builds (_recentGained, with the carried amount in _recentCarried). Their
+-- count reads "OLD+N" with "+N" in green, or "+N" alone.
+-- full: the amount carried before the pickups, then "+N" in green through a
+-- color escape; nil when nothing was carried before. short: "+N" uncolored.
+function ns.RecentGainedText(n, carried)
+    local short = "+" .. n
+    local old = (carried or n) - n
+    if old <= 0 then return nil, short end
+    return old .. GREEN_FONT_COLOR:WrapTextInColorCode(short), short
 end
 
 -- Flat look for a ContainerFrameItemButtonTemplate slot, plus the text overlay
@@ -220,7 +405,7 @@ function ns.SkinItemButton(btn, opts)
         end
     end
 
-    CreateInsetBorder(btn)
+    CreateInsetBorder(btn, true)
     SetInsetBorderColor(btn, 0.25, 0.25, 0.25, 1)
 
     local textOverlay = CreateFrame("Frame", nil, btn)
@@ -737,14 +922,13 @@ do
         local info = ops.info(bag, slot)
         if not info or info.isLocked or info.itemID ~= d._itemID or not info.stackCount or n >= info.stackCount then return end
         -- Session unmerge mark, written BEFORE the split so the refresh it
-        -- triggers already renders the pieces apart. Same link form the slot
-        -- tables key on; bags and reagent window only (bank items never merge here).
+        -- triggers already renders the pieces apart (bank items never merge here).
         if d._window == EUI_Bags or d._window == EUI_BagsReagent then
-            local link = C_Container.GetContainerItemLink(bag, slot)
-            if link then
+            local key = GetItemMergeKey(C_Container.GetContainerItemLink(bag, slot))
+            if key then
                 local set = EUI_Bags._unmergedLinks
                 if not set then set = {}; EUI_Bags._unmergedLinks = set end
-                set[link] = true
+                set[key] = true
             end
         end
         if auto or d._placeOnce then
@@ -822,7 +1006,9 @@ do
         -- they draw no empty slots, so Blizzard's cursor split has nowhere to
         -- land and a plain Split places its stack instead. Everywhere else the
         -- Stack Splitter setting decides whether the dialog replaces the popup.
-        local placeOnce = (window == EUI_Bags and selectedCategoryIndex >= 0)
+        -- A virtual view (EUI_CategoryManager:RegisterVirtualView) draws no empty slots either.
+        local placeOnce = (window == EUI_Bags and (selectedCategoryIndex >= 0
+            or EUI_CategoryManager:GetViewByIndex(selectedCategoryIndex) ~= nil))
         if not placeOnce and BP().bagStackSplitter ~= true then return end
         local maxStack = EUI.StackSplitFor(owner)
         if not maxStack then return end
@@ -865,6 +1051,7 @@ do
 end
 
 I.CreateInsetBorder, I.QUEST_BORDER_COLOR = CreateInsetBorder, QUEST_BORDER_COLOR
+I.GetInsetBorderStyle = GetInsetBorderStyle
 I.SCROLLBAR_HIT_W, I.SetInsetBorderColor = SCROLLBAR_HIT_W, SetInsetBorderColor
 I.SetInsetBorderThickness = SetInsetBorderThickness
 I.broken = false

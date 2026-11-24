@@ -37,18 +37,23 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  live zone (wrapped text is live on its first two lines only, and an inline
 --  texture is not clickable).
 --
---  Availability: the list has no switch of its own; its host starts it (on
---  WoW Forever, while the Friends List window skin is on). The Social UI
---  friends list must exist and the client's menu code must isolate added
---  entries (Menu.IsMenuProxy came with that change). The list stands down
---  under WoW Forever's Gamepad interface style, where a controller drives
---  Blizzard's list.
+--  Availability: its host starts it, and its host's settings carry its
+--  switch, customTiles (false stands it down; settings without the key keep
+--  it on). On WoW Forever that is the Friends List card's Custom Friends
+--  List Tiles, which follows the card's look until picked: on while the card
+--  is skinned, off under Blizz Default, where the host starts for the list
+--  alone. The Social UI friends list must exist and the client's menu code
+--  must isolate added entries (Menu.IsMenuProxy came with that change). The
+--  list stands down under WoW Forever's Gamepad interface style, where a
+--  controller drives Blizzard's list.
 --
 --  The scroll area is the rect of Blizzard's own list, a tile is inset from
 --  its sides as Blizzard's cards are, and the scroll bar is a frame of ours
 --  made from the template of Blizzard's bar and laid over it: the list looks
 --  like the lists of the window's other tabs. It scrolls as they do too: the
---  wheel is that bar's own step, with no easing.
+--  wheel is that bar's own step, with no easing. An online friend's row
+--  wears Blizzard's own card art at the alpha its host gives it (onlineCards;
+--  WoW Forever's card: whole under Blizz Default, a quarter under its tiles).
 --
 --  Cost: at the start one frame is made, a child of the friends view that
 --  carries its show and hide edge; nothing else is built, registered or run
@@ -58,7 +63,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  scrolling paints only the rows entering view.
 --
 --  Groups are account data in EllesmereUIDB.global (outside the profiles and
---  outside exports): the group list, order, colours and collapsed state, and
+--  outside exports): the group list, order, colors and collapsed state, and
 --  each friend's group by BattleTag. A "||EUI:Group||" tag an old Friends
 --  build left in a friend note is read once and never written.
 --
@@ -660,12 +665,16 @@ local function FriendTooltip(rec)
     tipBuf[1] = T.Name(info)
     if rec.online and gi then
         if rec.priority == 1 and gi.characterName then
-            local realm = gi.realmDisplayName or gi.realmName
+            local realm = T.Ruleset(info) or gi.realmDisplayName or gi.realmName
             n = n + 1
             tipBuf[n] = (realm and realm ~= "") and (gi.characterName .. "-" .. realm) or gi.characterName
             if gi.characterLevel and gi.className and FRIENDS_LEVEL_TEMPLATE then
                 n = n + 1
                 tipBuf[n] = FRIENDS_LEVEL_TEMPLATE:format(gi.characterLevel, gi.className)
+            end
+            if gi.raceName and gi.raceName ~= "" then
+                n = n + 1
+                tipBuf[n] = gi.raceName
             end
             if gi.areaName and gi.areaName ~= "" then
                 n = n + 1
@@ -932,6 +941,16 @@ local function MakeRow(slot)
     f.d = d
     d.orb:Hide()
     f.status = f:CreateTexture(nil, "OVERLAY", nil, 3)
+    -- Blizzard's own card, which an online friend's row wears (PaintRow), at
+    -- the host's alpha for it: whole, it takes the place of the tile's shade
+    -- and online tint; fainter, it lies under them
+    if host.onlineCards then
+        f.card = f:CreateTexture(nil, "BACKGROUND", nil, 1)
+        f.card:SetAllPoints()
+        f.card:SetAlpha(host.onlineCards)
+        f.card:Hide()
+        f.cardWhole = host.onlineCards >= 1
+    end
 
     -- The invite button, in the art of the one on Blizzard's card. Named as
     -- there: the kit hangs its region icon beside it.
@@ -1120,7 +1139,7 @@ local function LayoutText(f, hasChar, stop, reserve)
     end
 end
 
--- The character line in brackets, the brackets in the colour of its level
+-- The character line in brackets, the brackets in the color of its level
 local bracketCache = setmetatable({}, { __mode = "k" })
 local function Bracketed(info, text)
     local color = T.LevelColor(info)
@@ -1199,7 +1218,7 @@ local function PaintRow(f, it)
 
     SetLink(f)
 
-    -- Every string arrives wrapped in Blizzard's colour codes
+    -- Every string arrives wrapped in Blizzard's color codes
     local charText = T.CharLine(info)
     local hasChar = charText ~= ""
     f.playing = hasChar
@@ -1241,7 +1260,26 @@ local function PaintRow(f, it)
     end
 
     UpdateIcon(f, info, p)
-    d.onlineBg:SetShown(rec.online)
+    if f.card then
+        -- An online friend's row wears Blizzard's own card, as on its list: a
+        -- game-level friend's or a Battle.net friend's, picked as Blizzard picks
+        -- it (a level the game keeps secret counts as Battle.net). Whole, it
+        -- hides the tile's shade (MakeRow). The file is at Lua's local cap,
+        -- hence no constants of its own.
+        local atlas
+        if rec.online then
+            local level, levels = info.friendLevel, Enum.BattleNetFriendLevel
+            atlas = (levels and not IsSecret(level) and level == levels.Title) and "friends-card-default"
+                or "friends-card-battleNet"
+        end
+        if f.cardAtlas ~= atlas then
+            f.cardAtlas = atlas
+            if atlas then f.card:SetAtlas(atlas, false) end
+            f.card:SetShown(atlas ~= nil)
+            if f.cardWhole then d.tileBg:SetShown(atlas == nil) end
+        end
+    end
+    if not f.cardWhole then d.onlineBg:SetShown(rec.online) end
     T.Faction(f, d, info)
     SetSelected(f, rec.id == selectedId)
 
@@ -1328,7 +1366,7 @@ local function HeaderDelete(btn)
     PromptDeleteGroup(btn:GetParent().key)
 end
 
--- A section name's colour: the one picked for it, else the accent
+-- A section name's color: the one picked for it, else the accent
 local function SectionRGB(key)
     local color = Store().friendGroupColors[key]
     if color then return color.r, color.g, color.b end
@@ -1337,9 +1375,9 @@ end
 
 local RepaintHeaders   -- defined with the header painter below
 
--- The colour picker for a section's name (it lives in the options addon,
+-- The color picker for a section's name (it lives in the options addon,
 -- which the game will not load in combat). Each pick repaints the section
--- names in view, and a cancel puts the old colour back.
+-- names in view, and a cancel puts the old color back.
 local function PickSectionColor(key, anchor, onChange)
     if not key or InCombatLockdown() then return end
     EllesmereUI:EnsureLoaded()
@@ -1366,8 +1404,8 @@ local function PickSectionColor(key, anchor, onChange)
     }, anchor)
 end
 
--- A custom group's name and colour in one popup: the swatch beside the name
--- opens the colour picker, whose own OK and Cancel keep or drop the colour
+-- A custom group's name and color in one popup: the swatch beside the name
+-- opens the color picker, whose own OK and Cancel keep or drop the color
 -- (the popup's buttons are the name's alone).
 local function PromptEditGroup(name)
     EllesmereUI:ShowInputPopup({
@@ -1387,7 +1425,7 @@ local function PromptEditGroup(name)
     })
 end
 
--- The pencil: a custom group's popup, or the colour alone for a section that
+-- The pencil: a custom group's popup, or the color alone for a section that
 -- cannot be renamed
 local function HeaderEdit(btn)
     local h = btn:GetParent()
@@ -1873,7 +1911,7 @@ local function Build()
         hooksecurefunc(view, "RefreshSearchResults", OnBlizzardSearch)
     end
 
-    -- A new accent colour repaints the section names that follow it
+    -- A new accent color repaints the section names that follow it
     EllesmereUI.RegAccent({
         type = "callback",
         fn = function()
@@ -1886,7 +1924,7 @@ end
 
 local function WantActive()
     local p = Settings()
-    if not (p and p.enabled ~= false) then return false end
+    if not (p and p.enabled ~= false and p.customTiles ~= false) then return false end
     if not FL.Available() or EllesmereUI.PadGamepadUI() then return false end
     if C_SocialRestrictions and C_SocialRestrictions.IsFriendsDisabled
         and C_SocialRestrictions.IsFriendsDisabled() then
@@ -1995,7 +2033,7 @@ end
 function FL.Refresh()
     if not host then return end
     local p = Settings()
-    if not (p and p.enabled ~= false and FL.Available()) then
+    if not (p and p.enabled ~= false and p.customTiles ~= false and FL.Available()) then
         if driver then driver:Hide() end
         Park()
         Uncover()
@@ -2012,8 +2050,9 @@ function FL.Refresh()
 end
 
 -- Starts the list for the session, once, after the kit's tiles
--- (Kit.StartTiles): it draws with the same host's settings and font, and
--- only under the EllesmereUI look (a stock look keeps Blizzard's list).
+-- (Kit.StartTiles, with or without its cards): it draws with the same
+-- host's settings and font, and only under the EllesmereUI look (a stock
+-- look keeps Blizzard's list).
 function FL.Start()
     if host then return end
     local h = T.Host()

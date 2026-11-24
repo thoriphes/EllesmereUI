@@ -97,7 +97,7 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  Visibility row builder (reused across all pages)
     ---------------------------------------------------------------------------
-    local PP = EllesmereUI.PP
+    local PP = EllesmereUI.PanelPP
     -- One control for both halves (see EllesmereUI.BuildVisibilityRow): the mode axes
     -- and the option axes are Show/Hide lanes of the same list now. Storage is
     -- unchanged, so nothing else in this module had to move. The right DualRow slot
@@ -250,7 +250,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- Inline cog on Visibility: Opacity of the shown map (showing and hiding stay
         -- with Visibility). Greyed while the map never shows; the checklist refreshes
         -- the page on close, which re-runs the cog's disabled state.
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(visRow._leftRegion, {
                 title = "Minimap Opacity",
                 disabled = function()
@@ -321,7 +321,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- Icon Size in a cog on Size: Blizzard's Edit Mode Icon Size (the scale of
         -- the icons on the map), kept here and applied to the map itself, so the
         -- Edit Mode layout is never written. Unset shows Edit Mode's value.
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(sizeRow._leftRegion, {
                 title = "Minimap Icons",
                 rows = {
@@ -423,7 +423,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Inline cog for border options (left region); only shown for textured styles
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = borderRow._leftRegion
             local function BorderTex()
                 local m = MinimapDB(); return (m and m.borderTexture) or "solid"
@@ -470,18 +470,20 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                 },
             })
-            local function UpdateCogVis()
-                local rect = ShapeUsesRectLayout() and not EllesmereUI.BlizzStyle.Get("minimap")
-                if rect and BorderTex() ~= "solid" then cogBtn:Show() else cogBtn:Hide() end
+            if not EllesmereUI._prebuilding then
+                local function UpdateCogVis()
+                    local rect = ShapeUsesRectLayout() and not EllesmereUI.BlizzStyle.Get("minimap")
+                    if rect and BorderTex() ~= "solid" then cogBtn:Show() else cogBtn:Hide() end
+                end
+                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                UpdateCogVis()
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-            UpdateCogVis()
         end
-        -- Inline accent + class + custom colour swatches on the Border Size
+        -- Inline accent + class + custom color swatches on the Border Size
         -- slider. Modes are mutually exclusive: class > accent > custom.
         if not EllesmereUI._prebuilding then
             local rgn = borderRow._rightRegion
-            local PPl = EllesmereUI.PP
+            local PPl = EllesmereUI.PanelPP
 
             -- Accent swatch (nearest the control): live theme accent.
             local accentSwatch, updateAccent = EllesmereUI.BuildColorSwatch(
@@ -501,7 +503,7 @@ initFrame:SetScript("OnEvent", function(self)
             PPl.Point(accentSwatch, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
             rgn._lastInline = accentSwatch
 
-            -- Class-colour swatch (to the left of accent): live player class colour.
+            -- Class-color swatch (to the left of accent): live player class color.
             local classSwatch, updateClass = EllesmereUI.BuildColorSwatch(
                 rgn, borderRow:GetFrameLevel() + 3,
                 function()
@@ -520,14 +522,14 @@ initFrame:SetScript("OnEvent", function(self)
             PPl.Point(classSwatch, "RIGHT", rgn._lastInline, "LEFT", -8, 0)
             rgn._lastInline = classSwatch
 
-            -- Custom-colour swatch (outermost): stored custom colour.
+            -- Custom-color swatch (outermost): stored custom color.
             local customSwatch, updateCustom = EllesmereUI.BuildColorSwatch(
                 rgn, borderRow:GetFrameLevel() + 3,
                 function()
                     local m = MinimapDB()
                     local c = m and m.borderColor
                     if c then return c.r, c.g, c.b, (m.borderA) or 1 end
-                    -- Legacy: pre-style users' border colour keys
+                    -- Legacy: pre-style users' border color keys
                     if m then return m.borderR or 0, m.borderG or 0, m.borderB or 0, m.borderA or 1 end
                     return 0, 0, 0, 1
                 end,
@@ -566,7 +568,7 @@ initFrame:SetScript("OnEvent", function(self)
                 if updateAccent then updateAccent() end
                 if updateClass then updateClass() end
                 if updateCustom then updateCustom() end
-                -- Blizzard Style draws the stock ring: every border colour is inert.
+                -- Blizzard Style draws the stock ring: every border color is inert.
                 if EllesmereUI.BlizzStyle.Get("minimap") then
                     accentSwatch:SetAlpha(0.3); classSwatch:SetAlpha(0.3); customSwatch:SetAlpha(0.3)
                     return
@@ -666,6 +668,23 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
+        -- Inline cog on In-Group Button Size: Show as List
+        do
+            EllesmereUI.BuildInlineCog(ungroupRow._rightRegion, {
+                title = "Addon Buttons",
+                rows = {
+                    { type = "toggle", label = "Show as List",
+                      tooltip = "Shows the grouped buttons as a one-column list with each addon's name next to its icon.",
+                      get = function() local m = MinimapDB(); return m and m.flyoutAsList or false end,
+                      set = function(v)
+                          local m = MinimapDB(); if not m then return end
+                          m.flyoutAsList = v
+                          RefreshMinimap()
+                      end },
+                },
+            })
+        end
+
         -- Replace placeholder dropdown with checkbox dropdown
         if not EllesmereUI._prebuilding then
             local leftRgn = ungroupRow._leftRegion
@@ -683,8 +702,7 @@ initFrame:SetScript("OnEvent", function(self)
                 for _, btn in ipairs(btns) do
                     local name = btn:GetName()
                     if name and vis[btn] ~= false then
-                        local label = name:gsub("^LibDBIcon10_", ""):gsub("^Lib_GPI_Minimap_", ""):gsub("MinimapButton$", ""):gsub("_MinimapButton$", "")
-                        items[#items + 1] = { key = name, label = label }
+                        items[#items + 1] = { key = name, label = (ns.MinimapButtonLabel(btn)) }
                     end
                 end
                 local function OrderOf(key)
@@ -739,8 +757,7 @@ initFrame:SetScript("OnEvent", function(self)
                         FullRebuildMinimap()
                     end,
                 })
-            local PP = EllesmereUI.PP
-            PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
             leftRgn._control = cbDD
             leftRgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
@@ -835,8 +852,7 @@ initFrame:SetScript("OnEvent", function(self)
                         RefreshMinimap()
                     end,
                 })
-            local PP = EllesmereUI.PP
-            PP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(cbDD, "RIGHT", leftRgn, "RIGHT", -20, 0)
             leftRgn._control = cbDD
             leftRgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
@@ -884,7 +900,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
         -- Inline cog on Friends Tooltip Cap: Show Notes
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(friendsCapRow._leftRegion, {
                 title = "Friends Tooltip",
                 rows = {
@@ -946,7 +962,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
         -- Inline cog on Button Row Position for icon spacing
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = btnRowRow._leftRegion
             EllesmereUI.BuildInlineCog(rgn, {
                 title = "Button Row Settings",
@@ -980,7 +996,7 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Inline cog on Free Move Buttons: Button Backgrounds. Then the "Reset"
         -- link (only visible while free move is on) to the cog's left.
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = btnRowRow._rightRegion
             local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
                 title = "Button Settings",
@@ -995,33 +1011,35 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                 },
             })
-            -- The stock looks and Forever Square draw no button boxes (every
-            -- button wears the ring dress), so the cog waits under all of them.
-            EllesmereUI.BlizzStyle.BlockInline("minimap", cogBtn)
+            if not EllesmereUI._prebuilding then
+                -- The stock looks and Forever Square draw no button boxes (every
+                -- button wears the ring dress), so the cog waits under all of them.
+                EllesmereUI.BlizzStyle.BlockInline("minimap", cogBtn)
 
-            local resetFS = rgn:CreateFontString(nil, "OVERLAY")
-            resetFS:SetFont(EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 12, "")
-            resetFS:SetTextColor(1, 1, 1, 0.8)
-            resetFS:SetText(EllesmereUI.L("Reset"))
-            resetFS:SetPoint("RIGHT", cogBtn, "LEFT", -8, 0)
-            local hitBtn = CreateFrame("Button", nil, rgn)
-            hitBtn:SetAllPoints(resetFS)
-            hitBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-            hitBtn:SetScript("OnEnter", function() resetFS:SetTextColor(1, 0.3, 0.3, 1) end)
-            hitBtn:SetScript("OnLeave", function() resetFS:SetTextColor(1, 1, 1, 0.8) end)
-            hitBtn:SetScript("OnClick", function()
-                local m = MinimapDB(); if not m then return end
-                m.btnPositions = {}
-                RefreshMinimap()
-            end)
-            local function UpdateResetVis()
-                local m = MinimapDB()
-                local on = m and m.freeMoveBtns
-                resetFS:SetShown(on)
-                hitBtn:SetShown(on)
+                local resetFS = rgn:CreateFontString(nil, "OVERLAY")
+                resetFS:SetFont(EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 12, "")
+                resetFS:SetTextColor(1, 1, 1, 0.8)
+                resetFS:SetText(EllesmereUI.L("Reset"))
+                resetFS:SetPoint("RIGHT", cogBtn, "LEFT", -8, 0)
+                local hitBtn = CreateFrame("Button", nil, rgn)
+                hitBtn:SetAllPoints(resetFS)
+                hitBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
+                hitBtn:SetScript("OnEnter", function() resetFS:SetTextColor(1, 0.3, 0.3, 1) end)
+                hitBtn:SetScript("OnLeave", function() resetFS:SetTextColor(1, 1, 1, 0.8) end)
+                hitBtn:SetScript("OnClick", function()
+                    local m = MinimapDB(); if not m then return end
+                    m.btnPositions = {}
+                    RefreshMinimap()
+                end)
+                local function UpdateResetVis()
+                    local m = MinimapDB()
+                    local on = m and m.freeMoveBtns
+                    resetFS:SetShown(on)
+                    hitBtn:SetShown(on)
+                end
+                UpdateResetVis()
+                EllesmereUI.RegisterWidgetRefresh(UpdateResetVis)
             end
-            UpdateResetVis()
-            EllesmereUI.RegisterWidgetRefresh(UpdateResetVis)
         end
 
         y = y - 10
@@ -1063,7 +1081,7 @@ initFrame:SetScript("OnEvent", function(self)
                   m.omniumFolioScale = v
                   RefreshMinimap()
               end });  y = y - h
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = omniumRow._leftRegion
             local function omniumOff() return OmniumMode() == "never" end
             EllesmereUI.BuildInlineCog(rgn, {
@@ -1118,7 +1136,7 @@ initFrame:SetScript("OnEvent", function(self)
                   m.addonCompartmentScale = v
                   RefreshMinimap()
               end });  y = y - h
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = compartmentRow._leftRegion
             EllesmereUI.BuildInlineCog(rgn, {
                 disabled = CompartmentOff,
@@ -1192,7 +1210,7 @@ initFrame:SetScript("OnEvent", function(self)
                     RefreshMinimap()
                     EllesmereUI:RefreshPage()
                 end)
-            PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
             rgn._control = cbDD
             rgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
@@ -1232,7 +1250,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
         -- Inline offset cog on Mail Position (corner modes only)
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = elRowRow._rightRegion
             local function mailOff()
                 local m = MinimapDB()
@@ -1264,7 +1282,7 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
         -- Inline cog on Element Row Position for icon spacing
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = elRowRow._leftRegion
             local function elOff()
                 return not ShapeUsesRectLayout()
@@ -1290,7 +1308,9 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                 },
             })
-            BlockInline(cogBtn)
+            if not EllesmereUI._prebuilding then
+                BlockInline(cogBtn)
+            end
         end
 
         y = y - 10
@@ -1342,7 +1362,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
         -- Inline cog on Clock Position for scale + X/Y offset
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = clockRow._rightRegion
             local function clockOff()
                 return ClockMode() == "none"
@@ -1419,7 +1439,7 @@ initFrame:SetScript("OnEvent", function(self)
               end })
         );  y = y - h
         -- Inline cog on Zone Text Style: reactive zone coloring
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = zoneRow._leftRegion
             local function styleOff()
                 return LocationMode() == "none"
@@ -1447,7 +1467,7 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
         -- Inline cog on Zone Position for scale + X/Y offset
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = zoneRow._rightRegion
             local function locOff()
                 return LocationMode() == "none"
@@ -1520,7 +1540,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
         -- Inline cog on Show Coordinates for decimal precision
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = coordsRow._leftRegion
             local function coordsOff() return CoordsMode() == "never" end
             EllesmereUI.BuildInlineCog(rgn, {
@@ -1539,7 +1559,7 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
         -- Inline cog on Coordinates Position for X/Y offset
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = coordsRow._rightRegion
             local function coordsOff() return CoordsMode() == "never" end
             EllesmereUI.BuildInlineCog(rgn, {
@@ -1600,9 +1620,9 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
         -- Inline cog on Show FPS/MS (text size + which MS readouts show).
-        -- The description-colour swatches live on the Accented Text row at
+        -- The description-color swatches live on the Accented Text row at
         -- the bottom of this section.
-        if not EllesmereUI._prebuilding then
+        do
             local leftRgn = fpsRow._leftRegion
 
             EllesmereUI.BuildInlineCog(leftRgn, {
@@ -1648,7 +1668,7 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
         -- Inline offset cog on FPS/MS Position
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = fpsRow._rightRegion
             EllesmereUI.BuildInlineCog(rgn, {
                 chain = false,
@@ -1747,7 +1767,7 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
         -- Inline cog on Difficulty Position for text size + X/Y offset
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = diffRow._rightRegion
             local function diffOff()
                 return not DiffTextOn()
@@ -1783,11 +1803,11 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
 
-        -- Accented Text | (empty) -- which Text elements colour their
+        -- Accented Text | (empty) -- which Text elements color their
         -- description parts (clock AM/PM, FPS/MS suffixes, difficulty letter) with the
-        -- accent/custom colour from the inline swatches. Dynamic values always render
+        -- accent/custom color from the inline swatches. Dynamic values always render
         -- white. Difficulty and Difficulty (Reactive) are mutually exclusive: flat
-        -- accent/custom colour vs colour-by-tier. Each locks while the other is
+        -- accent/custom color vs color-by-tier. Each locks while the other is
         -- checked, and the setters clear the sibling as a consistency net (the locked
         -- state repaints on the next menu open).
         local accentItems = {
@@ -1837,7 +1857,7 @@ initFrame:SetScript("OnEvent", function(self)
                     end
                     RefreshMinimap()
                 end)
-            PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
             rgn._control = cbDD
             rgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
@@ -1858,7 +1878,7 @@ initFrame:SetScript("OnEvent", function(self)
             PP.Point(accentSwatch, "RIGHT", cbDD, "LEFT", -12, 0)
             rgn._lastInline = accentSwatch
 
-            -- Custom swatch (to the left of accent): stored custom colour.
+            -- Custom swatch (to the left of accent): stored custom color.
             local customSwatch, updateCustom = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
                 function()
                     local m = MinimapDB()

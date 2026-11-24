@@ -16,10 +16,11 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --      menu's Custom Spell ID, stored as a hosted-buff marker): drawn here
 --      while no Blizzard frame or placeholder claims it, its idle icon grey,
 --      as a hosted buff keeps its slot on such a bar;
---    * a spell ID a provider draws (ns.CDM_AuraIconProvider): the WoW Forever
---      Seals stand-in (EUI_CDM_ForeverSeals.lua). The drop pass and the
---      repopulate keep such an ID, and the options preview never dims it as
---      unlearned (ns.CDM_AuraIconKeeps).
+--    * a spell ID a provider registered (ns.CDM_AuraIconProvider): a stand-in
+--      for an entry Blizzard's Cooldown Manager fails to draw. No file
+--      registers one at present. The drop pass and the repopulate keep such
+--      an ID, and the options preview never dims it as unlearned
+--      (ns.CDM_AuraIconKeeps).
 --
 --  One slot per entry, moved between bars through its proxy: a frame of ours
 --  the slot button fills, parented to the host frame, so the slot takes the
@@ -341,7 +342,8 @@ function ns.CDM_AuraIconFor(barKey, sid)
 end
 
 -- One provider per custom buff spell ID, made on first use. Its aura IDs are
--- the spell's own forms (typed, override, base), as on a buff bar.
+-- the spell's own forms (typed, override, base), as on a buff bar, and on WoW
+-- Forever every other rank of it (_AC.AddSpellForms).
 local function BuffProvider(sid)
     local p = buffProviders[sid]
     if p then return p end
@@ -369,6 +371,21 @@ end
 -- frame on this bar.
 function ns.CDM_AuraIconForBuff(barKey, sid)
     return Place(barKey, BuffProvider(sid))
+end
+
+-- WoW Forever: the rank families were read again (ns.CDMRankFamily: a spell
+-- learned, talents, Blizzard's cooldown data): each custom buff's include set
+-- is read again at its next placement, and built again only if it changed.
+function ns.CDM_AuraIconsRanksChanged()
+    local any = false
+    for sid in pairs(buffProviders) do
+        local E = entries["buff:" .. sid]
+        if E then
+            E.dirty = true
+            any = true
+        end
+    end
+    if any and ns.QueueReanchor then ns.QueueReanchor() end
 end
 
 -------------------------------------------------------------------------------
