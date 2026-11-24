@@ -316,11 +316,30 @@ function EABR:OnEnable()
 
     -- Registers broad UNIT_AURA only when the class needs group aura tracking AND only OOC: it fires 100+/sec in a raid, but in-combat CollectRaidBuffs only checks the player's own auras (PlayerHasAuraByID), so group events are pure waste. Evoker keeps broad in combat for ownOnRaid cache updates but skips RequestRefresh on group events (handler below).
     local function UpdateGroupAuraRegistration()
-        -- WoW Forever keeps the player-only UNIT_AURA from file scope,
-        -- whichever caller (loading screen, profile, spec override, options)
-        -- runs this pass: its one group reader, Raid Buffs, has its own watch,
-        -- synced by every refresh (EABR.FvSyncGroupWatch).
-        if EABR.FOREVER then return end
+        -- WoW Forever: Raid Buffs has its own group watch, synced by every
+        -- refresh (EABR.FvSyncGroupWatch). The paladin aura and Righteous
+        -- Fury read only the player's auras, but follow roster and role
+        -- changes and newly learned ranks. With both off (or not a paladin)
+        -- nothing is registered beyond the player-only UNIT_AURA from file
+        -- scope, whichever caller (loading screen, profile, options) runs this pass.
+        if EABR.FOREVER then
+            local fo = db.profile.forever
+            local any = fo and GetPlayerClass() == "PALADIN" and (fo.palAura or fo.palRF) and true or false
+            EABR._rosterRefresh = any
+            if any then
+                mainFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+                mainFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED")
+                mainFrame:RegisterEvent("SPELLS_CHANGED")
+            else
+                mainFrame:UnregisterEvent("GROUP_ROSTER_UPDATE")
+                mainFrame:UnregisterEvent("PLAYER_ROLES_ASSIGNED")
+                -- Shared with the Action Picker (EABR.FvSyncSpellbookEvents).
+                if not EABR._fvSpellbookEvents then
+                    mainFrame:UnregisterEvent("SPELLS_CHANGED")
+                end
+            end
+            return
+        end
         local playerClass = GetPlayerClass()
         local moonkinOn = playerClass == "DRUID"
             and db.profile.auras.enabled.moonkin_form == true
@@ -920,7 +939,8 @@ if EABR.FOREVER then
             EABR._fvFamDirty = true
             EABR._fvClassPickerGroups = nil
             mainFrame:RegisterEvent("SPELLS_CHANGED")
-        else
+        elseif not EABR._rosterRefresh then
+            -- The paladin reminders keep it for newly learned ranks.
             mainFrame:UnregisterEvent("SPELLS_CHANGED")
         end
     end
