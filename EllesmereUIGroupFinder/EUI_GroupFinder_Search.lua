@@ -1143,14 +1143,15 @@ end
 
 -- does a group pass the client-side filters? info: readable info, false if none,
 -- nil to fetch it
-function XF.PassesFilters(id, info)
+-- asIfNew: judge an application as a group you haven't applied to (no longer matches)
+function XF.PassesFilters(id, info, asIfNew)
     local P = XF.Pass()
     if not SP or P.secret or not P.any then return true end
     local c = Cfg()
     local _, appStatus = C_LFGList.GetApplicationInfo(id)
     if IsSecret(appStatus) then return true end
     if info == nil then info = ResultInfo(id) or false end
-    if appStatus and appStatus ~= "none" then
+    if appStatus and appStatus ~= "none" and not asIfNew then
         -- applied groups stay lit, unless declined with not declined on.
         return not (P.extraOn and c.notDeclined and XF.IsDeclinedResult(id, info))
     end
@@ -1168,6 +1169,7 @@ end
 
 -- read-only filter checks for our results list
 ns.ExtraPasses = function(id) return XF.PassesFilters(id) end
+ns.ExtraPassesAsNew = function(id) return XF.PassesFilters(id, nil, true) end
 ns.ExtraResultsSecret = function() return XF.ResultsSecret() end
 
 -- filters changed: re-fade the visible rows, no search.
@@ -1570,7 +1572,7 @@ local function DecorateEntry(entry)
     local act = type(acts) == "table" and not IsSecret(acts) and acts[1]
     local ai = act and not IsSecret(act) and XF.ActInfo(act)
 
-    -- name colour (blizzard already reds declined ones).
+    -- name color (blizzard already reds declined ones).
     local delisted, censored = info.isDelisted, info.censored
     if IsSecret(delisted) or IsSecret(censored) then XF.ClearIcons(entry) return end
     if Cfg().nameColors == true and entry.Name and not delisted and not censored then
@@ -1624,7 +1626,7 @@ end
 ns.GFRatingColor = RatingColor
 ns.GFOpt = Opt
 ns.GFSpecIcon = SpecIcon
--- the name colour a row gets (nil = blizzard's own): red when declined or
+-- the name color a row gets (nil = blizzard's own): red when declined or
 -- locked out, green when new since the last search
 function ns.GFNameColor(resultID, info, ai)
     if Cfg().nameColors ~= true then return nil end
@@ -2469,7 +2471,7 @@ local function SkinnedButton(parent, w, h, keepKeys, decorate)
     if decorate then decorate(b) end
     local S = Skin()
     if stock then
-        -- no edge of ours: a picked square is tinted (XF.PickBorder), and a border colour write on
+        -- no edge of ours: a picked square is tinted (XF.PickBorder), and a border color write on
         -- a frame with no border does nothing
         return b
     elseif S and S.Button then
@@ -3072,7 +3074,7 @@ Paint = function()
         if HideWorldBosses() then hidden = true end
         if hidden then raidBtn.Glyph:SetVertexColor(Accent()) else raidBtn.Glyph:SetVertexColor(1, 1, 1) end
     end
-    -- bosses: all coloured until one's picked, then the rest grey out.
+    -- bosses: all colored until one's picked, then the rest grey out.
     local chosenBosses = ChosenBosses()
     for _, sq in ipairs(bossSquares) do
         if sq:IsShown() and sq.boss then

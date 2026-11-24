@@ -1117,7 +1117,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
 
     -- Inline cog on Number of Rows (now in the Visibility row's right slot):
     -- Row Icons settings (only relevant when numRows == 2)
-    if not EllesmereUI._prebuilding then
+    do
         local leftRgn = visRow._rightRegion
         local ctrl = leftRgn._control
         local function customTopOff()
@@ -1524,7 +1524,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
               end });  y = y - h
 
         -- Inline cog for Nameplate Offset (left)
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = npRow._leftRegion
             EllesmereUI.BuildInlineCog(rgn, {
                 anchorTo = rgn._control,
@@ -1549,7 +1549,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
         -- Inline cog + dual swatch for Focus Reminders (right region). Layout right-to-left
         -- along the row's right region: [control] [cog] [accent swatch] [custom swatch].
         -- Accent swatch (next to the cog) is the active mode by default; custom swatch dims and blocks while accent is on.
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = npRow._rightRegion
             local ctrl = rgn and rgn._control
 
@@ -1577,6 +1577,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                 },
             })
 
+            if not EllesmereUI._prebuilding then
             -- Right (accent) swatch: one-click activation, displays live ELLESMERE_GREEN
             local accentSwatch, updateAccentSwatch = EllesmereUI.BuildColorSwatch(
                 rgn, npRow:GetFrameLevel() + 3,
@@ -1667,6 +1668,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                 updateAccentSwatch(); updateCustomSwatch(); UpdateFRSwatchState()
             end)
             UpdateFRSwatchState()
+            end
         end
 
         -- Row 2: Focus Cast Sound (left) | Interrupt Spell picker (right). Sound values come
@@ -1760,14 +1762,14 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
             spellValues["__any"] = "Any Cast (Sound Only)"
             spellOrder[#spellOrder + 1] = "__any"
             -- The stored selection can outlive its spell (removing the kick empties
-            -- assignedSpells, focusKickInterruptSpellID keeps pointing at it) and the
+            -- assignedSpells, the stored pick keeps pointing at it) and the
             -- dropdown would render the raw spell id. Give it a NAME but do NOT add it
             -- to spellOrder: it must not be selectable on a bar that no longer holds it.
-            -- Label it ONLY when this character can cast it: the id is profile-level but
-            -- the spellbook is per-spec, so a spec sharing the profile can inherit a pick
+            -- Label it ONLY when this character can cast it: the pick is per class but
+            -- the spellbook is per-spec, so a spec sharing the class can inherit a pick
             -- it can never use; unlabelled makes getValue below fall back to the bar's
             -- own contents.
-            local selSid = BD and BD() and BD().focusKickInterruptSpellID
+            local selSid = BD and BD() and ns.GetFocusKickPick(BD())
             if selSid and (not ns.ResolveCastableInterrupt
                 or ns.ResolveCastableInterrupt(selSid)) then
                 local selKey = tostring(selSid)
@@ -1795,8 +1797,8 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
               tooltip = "Pick your kick to play the sound only while it is off cooldown, or Any Cast (Sound Only) to play it on every enemy cast.\nLeave the bar above empty for a sound with no nameplate icon.",
               values = spellValues, order = spellOrder,
               getValue = function()
-                  if BD().focusCastSoundAnyCast == true then return "__any" end
-                  local sid = BD().focusKickInterruptSpellID
+                  local sid, anyCast = ns.GetFocusKickPick(BD())
+                  if anyCast then return "__any" end
                   if not sid then return spellOrder[1] end
                   -- No label means RebuildSpellOptions rejected it: either
                   -- this character cannot cast it, or it is not on the bar
@@ -1807,11 +1809,10 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                   return key
               end,
               setValue = function(v)
-                  BD().focusCastSoundAnyCast = (v == "__any") or nil
-                  if v == "__none" or v == "__any" then
-                      BD().focusKickInterruptSpellID = nil
+                  if v == "__any" then
+                      ns.SetFocusKickPick(BD(), "any")
                   else
-                      BD().focusKickInterruptSpellID = tonumber(v)
+                      ns.SetFocusKickPick(BD(), v ~= "__none" and tonumber(v) or nil)
                   end
                   if ns.RefreshFocusKickProxies then ns.RefreshFocusKickProxies() end
               end });  y = y - h
@@ -1875,8 +1876,26 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
         return s ~= "none" and s ~= "cropped"
     end
 
+    local function RadiusCogConfig()
+        return EllesmereUI.AuraRadiusCogCfg(BD().borderTexture,
+            function() return BD().borderCornerRadius or 0 end,
+            function(v)
+                local bd = BD()
+                bd.borderCornerRadius = v
+                ns.RefreshCDMIconAppearance(bd.key)
+                -- WoW Forever's swing sweep copies the icon's swipe shape at a sync.
+                if ns.CDM_SwingSweepSync then ns.CDM_SwingSweepSync() end
+                UpdateCDMPreview()
+            end,
+            function() return IsCustomShape() or EllesmereUI.BlizzStyle.Get("cdmicons") end,
+            function()
+                if EllesmereUI.BlizzStyle.Get("cdmicons") then return EllesmereUI.BlizzStyle.Label("cdmicons") end
+                return "This option requires a non-custom button shape"
+            end)
+    end
+
     -- Adjust Crop cog on Custom Icon Shape (both shape rows below). Writes the per-bar
-    -- iconCropPercent that ns.CdmCropFactor / ns.CdmCropTrim read; unset = 10 = the classic
+    -- iconCropPercent that ns.CdmCropFactor reads; unset = 10 = the classic
     -- crop. Disabled unless the shape is Cropped. Under a stock style both shape rows are
     -- fully gated, so the row (and this cog with it) is hidden by the widget factory.
     local function AttachCropCog(rgn)
@@ -1983,6 +2002,9 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                       get=function() return BD().desaturateInactiveBuffs ~= false end,
                       set=function(v)
                           BD().desaturateInactiveBuffs = v
+                          -- Applied by the dirty-gated buff ticker.
+                          ns._btDirty = true
+                          if ns.ArmBuffTicker then ns.ArmBuffTicker() end
                       end },
                 },
             })
@@ -2205,7 +2227,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                 end
             end
             -- Inline cog for border offset
-            if not EllesmereUI._prebuilding then
+            do
                 local rgn = buffBsRow._rightRegion
                 local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
                     title = "Border Options",
@@ -2246,13 +2268,16 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                           end },
                     },
                 })
-                local function UpdateCogVis()
-                    local tex = BD().borderTexture or "solid"
-                    if tex == "solid" or EllesmereUI.BlizzStyle.Get("cdmicons") then cogBtn:Hide() else cogBtn:Show() end
+                if not EllesmereUI._prebuilding then
+                    local function UpdateCogVis()
+                        local tex = BD().borderTexture or "solid"
+                        if tex == "solid" or EllesmereUI.BlizzStyle.Get("cdmicons") then cogBtn:Hide() else cogBtn:Show() end
+                    end
+                    EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                    UpdateCogVis()
                 end
-                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-                UpdateCogVis()
             end
+            EllesmereUI.BuildInlineCog(buffBsRow._leftRegion, RadiusCogConfig())
             -- Inline border color swatches on Border Size (left region of row 4)
             if not EllesmereUI._prebuilding then
                 local leftRgn = buffBsRow._leftRegion
@@ -2268,7 +2293,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                     end,
                     function() end,
                     false, 20)
-                PP.Point(classBorderSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
+                PP.Point(classBorderSwatch, "RIGHT", leftRgn._lastInline or ctrl, "LEFT", -8, 0)
                 classBorderSwatch:SetScript("OnClick", function()
                     if EllesmereUI.BlizzStyle.Get("cdmicons") then return end
                     BD().borderClassColor = true
@@ -2325,14 +2350,18 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
             if not EllesmereUI._prebuilding then
             EllesmereUI.BuildSyncIcon({
                 region  = buffBsRow._leftRegion,
-                tooltip = "Apply Border Size to all Bars",
+                tooltip = "Apply Border Size and Corner Radius to all Bars",
                 isSynced = function()
                     local bd = BD()
                     local v = bd.borderThickness or "thin"
                     local px = bd.borderSizePx or false
                     local cc = bd.borderClassColor
                     local synced = true
-                    ForEachSyncBar(function(b) if (b.borderThickness or "thin") ~= v or (b.borderSizePx or false) ~= px or b.borderClassColor ~= cc then synced = false end end)
+                    ForEachSyncBar(function(b)
+                        if (b.borderThickness or "thin") ~= v or (b.borderSizePx or false) ~= px
+                            or (b.borderCornerRadius or 0) ~= (bd.borderCornerRadius or 0)
+                            or b.borderClassColor ~= cc then synced = false end
+                    end)
                     return synced
                 end,
                 onClick = function()
@@ -2343,6 +2372,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                     local cc = bd.borderClassColor
                     ForEachSyncBar(function(b)
                         b.borderThickness = v; b.borderSize = sz
+                        b.borderCornerRadius = bd.borderCornerRadius
                         local pxv = px
                         if pxv == nil and b.borderSizePx ~= nil then pxv = false end
                         b.borderSizePx = pxv
@@ -2506,6 +2536,17 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                       bd._matchStrideH = nil
                       ns.BuildAllCDMBars(); Refresh(); UpdateCDMPreviewAndResize()
                   end },
+                { type="dropdown", label="Icon Alignment",
+                  values=minVert
+                      and { AUTO = "Follow Grow", START = "Top", CENTER = "Center", END = "Bottom" }
+                      or  { AUTO = "Follow Grow", START = "Left", CENTER = "Center", END = "Right" },
+                  order={ "AUTO", "START", "CENTER", "END" },
+                  tooltip="Where icons sit in the reserved space.",
+                  get=function() return BD().minSizeAlign or "AUTO" end,
+                  set=function(v)
+                      BD().minSizeAlign = (v ~= "AUTO") and v or nil
+                      ns.BuildAllCDMBars(); Refresh(); UpdateCDMPreviewAndResize()
+                  end },
             },
         })
     end
@@ -2599,7 +2640,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
             end
         end
         -- Inline cog for border offset
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = bsRow._leftRegion
             local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
                 title = "Border Options",
@@ -2640,12 +2681,14 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                       end },
                 },
             })
-            local function UpdateCogVis()
-                local tex = BD().borderTexture or "solid"
-                if tex == "solid" or EllesmereUI.BlizzStyle.Get("cdmicons") then cogBtn:Hide() else cogBtn:Show() end
+            if not EllesmereUI._prebuilding then
+                local function UpdateCogVis()
+                    local tex = BD().borderTexture or "solid"
+                    if tex == "solid" or EllesmereUI.BlizzStyle.Get("cdmicons") then cogBtn:Hide() else cogBtn:Show() end
+                end
+                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                UpdateCogVis()
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-            UpdateCogVis()
         end
         -- Sync icon: Border Style (left region of bsRow)
         if not EllesmereUI._prebuilding then
@@ -2698,6 +2741,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
             end,
         })
         end
+        EllesmereUI.BuildInlineCog(bsRow._rightRegion, RadiusCogConfig())
         -- Inline color swatches on Border Size (right region)
         if not EllesmereUI._prebuilding then
             local rightRgn = bsRow._rightRegion
@@ -2714,7 +2758,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                 end,
                 function() end,
                 false, 20)
-            PP.Point(classBorderSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
+            PP.Point(classBorderSwatch, "RIGHT", rightRgn._lastInline or ctrl, "LEFT", -8, 0)
             classBorderSwatch:SetScript("OnClick", function()
                 if EllesmereUI.BlizzStyle.Get("cdmicons") then return end
                 BD().borderClassColor = true
@@ -2769,7 +2813,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
         if not EllesmereUI._prebuilding then
         EllesmereUI.BuildSyncIcon({
             region  = bsRow._rightRegion,
-            tooltip = "Apply Border Size to all Bars",
+            tooltip = "Apply Border Size and Corner Radius to all Bars",
             isSynced = function()
                 local bd = BD()
                 local v = bd.borderThickness or "thin"
@@ -2781,7 +2825,9 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                 local br, bg, bb, ba = bd.borderR or 0, bd.borderG or 0, bd.borderB or 0, bd.borderA or 1
                 local synced = true
                 ForEachSyncBar(function(b)
-                    if (b.borderThickness or "thin") ~= v or (b.borderSizePx or false) ~= px or b.borderClassColor ~= cc or (b.borderTexture or "solid") ~= bt then synced = false end
+                    if (b.borderThickness or "thin") ~= v or (b.borderSizePx or false) ~= px
+                        or (b.borderCornerRadius or 0) ~= (bd.borderCornerRadius or 0)
+                        or b.borderClassColor ~= cc or (b.borderTexture or "solid") ~= bt then synced = false end
                     if b.borderTextureShiftX ~= sx or b.borderTextureShiftY ~= sy then synced = false end
                     if (b.borderR or 0) ~= br or (b.borderG or 0) ~= bg or (b.borderB or 0) ~= bb or (b.borderA or 1) ~= ba then synced = false end
                 end)
@@ -2799,6 +2845,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                 local br, bg, bb, ba = bd.borderR, bd.borderG, bd.borderB, bd.borderA
                 ForEachSyncBar(function(b)
                     b.borderThickness = v; b.borderSize = sz
+                    b.borderCornerRadius = bd.borderCornerRadius
                         local pxv = px
                         if pxv == nil and b.borderSizePx ~= nil then pxv = false end
                         b.borderSizePx = pxv
@@ -2934,7 +2981,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
     );  y = y - h
 
     -- Duration Size: inline cog + color swatch
-    if not EllesmereUI._prebuilding then
+    do
         local leftRgn = durationRow._leftRegion
         local ctrl = leftRgn._control
         EllesmereUI.BuildInlineCog(leftRgn, {
@@ -2945,6 +2992,13 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                   set=function(v)
                       BD().showCooldownText = v
                       ns.RefreshCDMIconAppearance(BD().key); Refresh(); EllesmereUI:RefreshPage()
+                  end },
+                { type="toggle", label="Duration Above Glows",
+                  tooltip="Draws the duration text above glows. The swipe stays below them.",
+                  get=function() return BD().cooldownTextAboveGlow == true end,
+                  set=function(v)
+                      BD().cooldownTextAboveGlow = v or nil
+                      ns.RefreshCDMIconAppearance(BD().key); Refresh()
                   end },
                 { type="dropdown", label="Position",
                   values=durationPositionValues, order=durationPositionOrder,
@@ -2968,36 +3022,38 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
             },
         })
 
-        local durSwatch, updateDurSwatch = EllesmereUI.BuildColorSwatch(
-            leftRgn, durationRow:GetFrameLevel() + 3,
-            function() return BD().cooldownTextR or 1, BD().cooldownTextG or 1, BD().cooldownTextB or 1 end,
-            function(r, g, b)
-                BD().cooldownTextR = r; BD().cooldownTextG = g; BD().cooldownTextB = b
-                ns.RefreshCDMIconAppearance(BD().key); Refresh(); UpdateCDMPreview()
-            end,
-            false, 20)
-        PP.Point(durSwatch, "RIGHT", leftRgn._lastInline or ctrl, "LEFT", -8, 0)
-        leftRgn._lastInline = durSwatch
+        if not EllesmereUI._prebuilding then
+            local durSwatch, updateDurSwatch = EllesmereUI.BuildColorSwatch(
+                leftRgn, durationRow:GetFrameLevel() + 3,
+                function() return BD().cooldownTextR or 1, BD().cooldownTextG or 1, BD().cooldownTextB or 1 end,
+                function(r, g, b)
+                    BD().cooldownTextR = r; BD().cooldownTextG = g; BD().cooldownTextB = b
+                    ns.RefreshCDMIconAppearance(BD().key); Refresh(); UpdateCDMPreview()
+                end,
+                false, 20)
+            PP.Point(durSwatch, "RIGHT", leftRgn._lastInline or ctrl, "LEFT", -8, 0)
+            leftRgn._lastInline = durSwatch
 
-        local durBlock = CreateFrame("Frame", nil, durSwatch)
-        durBlock:SetAllPoints(); durBlock:SetFrameLevel(durSwatch:GetFrameLevel() + 10); durBlock:EnableMouse(true)
-        durBlock:SetScript("OnEnter", function()
-            EllesmereUI.ShowWidgetTooltip(durSwatch, EllesmereUI.DisabledTooltip("Duration Text"))
-        end)
-        durBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        EllesmereUI.RegisterWidgetRefresh(function()
-            if updateDurSwatch then updateDurSwatch() end
+            local durBlock = CreateFrame("Frame", nil, durSwatch)
+            durBlock:SetAllPoints(); durBlock:SetFrameLevel(durSwatch:GetFrameLevel() + 10); durBlock:EnableMouse(true)
+            durBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(durSwatch, EllesmereUI.DisabledTooltip("Duration Text"))
+            end)
+            durBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            EllesmereUI.RegisterWidgetRefresh(function()
+                if updateDurSwatch then updateDurSwatch() end
+                local on = BD().showCooldownText ~= false
+                durSwatch:SetAlpha(on and 1 or 0.3)
+                if on then durBlock:Hide() else durBlock:Show() end
+            end)
             local on = BD().showCooldownText ~= false
             durSwatch:SetAlpha(on and 1 or 0.3)
             if on then durBlock:Hide() else durBlock:Show() end
-        end)
-        local on = BD().showCooldownText ~= false
-        durSwatch:SetAlpha(on and 1 or 0.3)
-        if on then durBlock:Hide() else durBlock:Show() end
+        end
     end
 
     -- Stack Size: inline cog + color swatch
-    if not EllesmereUI._prebuilding then
+    do
         local rightRgn = durationRow._rightRegion
         local ctrl = rightRgn._control
         local scPopupSpec = {
@@ -3069,32 +3125,34 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
         if not isBuffGlowBar then table.remove(scPopupSpec.rows, 3) end
         EllesmereUI.BuildInlineCog(rightRgn, scPopupSpec)
 
-        local scSwatch, updateScSwatch = EllesmereUI.BuildColorSwatch(
-            rightRgn, durationRow:GetFrameLevel() + 3,
-            function() return BD().stackCountR or 1, BD().stackCountG or 1, BD().stackCountB or 1 end,
-            function(r, g, b)
-                BD().stackCountR = r; BD().stackCountG = g; BD().stackCountB = b
-                ns.RefreshCDMIconAppearance(BD().key); ns.BuildAllCDMBars(); Refresh(); UpdateCDMPreview()
-            end,
-            false, 20)
-        PP.Point(scSwatch, "RIGHT", rightRgn._lastInline or ctrl, "LEFT", -8, 0)
-        rightRgn._lastInline = scSwatch
+        if not EllesmereUI._prebuilding then
+            local scSwatch, updateScSwatch = EllesmereUI.BuildColorSwatch(
+                rightRgn, durationRow:GetFrameLevel() + 3,
+                function() return BD().stackCountR or 1, BD().stackCountG or 1, BD().stackCountB or 1 end,
+                function(r, g, b)
+                    BD().stackCountR = r; BD().stackCountG = g; BD().stackCountB = b
+                    ns.RefreshCDMIconAppearance(BD().key); ns.BuildAllCDMBars(); Refresh(); UpdateCDMPreview()
+                end,
+                false, 20)
+            PP.Point(scSwatch, "RIGHT", rightRgn._lastInline or ctrl, "LEFT", -8, 0)
+            rightRgn._lastInline = scSwatch
 
-        local scBlock = CreateFrame("Frame", nil, scSwatch)
-        scBlock:SetAllPoints(); scBlock:SetFrameLevel(scSwatch:GetFrameLevel() + 10); scBlock:EnableMouse(true)
-        scBlock:SetScript("OnEnter", function()
-            EllesmereUI.ShowWidgetTooltip(scSwatch, EllesmereUI.DisabledTooltip("Item Count"))
-        end)
-        scBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-        EllesmereUI.RegisterWidgetRefresh(function()
-            if updateScSwatch then updateScSwatch() end
+            local scBlock = CreateFrame("Frame", nil, scSwatch)
+            scBlock:SetAllPoints(); scBlock:SetFrameLevel(scSwatch:GetFrameLevel() + 10); scBlock:EnableMouse(true)
+            scBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(scSwatch, EllesmereUI.DisabledTooltip("Item Count"))
+            end)
+            scBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            EllesmereUI.RegisterWidgetRefresh(function()
+                if updateScSwatch then updateScSwatch() end
+                local on = BD().showItemCount ~= false
+                scSwatch:SetAlpha(on and 1 or 0.3)
+                if on then scBlock:Hide() else scBlock:Show() end
+            end)
             local on = BD().showItemCount ~= false
             scSwatch:SetAlpha(on and 1 or 0.3)
             if on then scBlock:Hide() else scBlock:Show() end
-        end)
-        local on = BD().showItemCount ~= false
-        scSwatch:SetAlpha(on and 1 or 0.3)
-        if on then scBlock:Hide() else scBlock:Show() end
+        end
     end
 
     -- Suppress GCD (CD/utility bars only) | Pixel Glow Thickness (+ cog: Lines/Speed)
@@ -3114,7 +3172,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                   ns.BuildAllCDMBars(); if ns.RequestBarGlowUpdate then ns.RequestBarGlowUpdate() end; Refresh()
               end });  y = y - h
         -- Inline cog on Pixel Glow Thickness: Lines + Speed
-        if not EllesmereUI._prebuilding then
+        do
             local rightRgn = sgcdRow._rightRegion
             EllesmereUI.BuildInlineCog(rightRgn, {
                 title = "Pixel Glow",
@@ -3172,7 +3230,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
                   ns.BuildAllCDMBars(); Refresh()
               end });  y = y - h
         -- Inline cog on Pixel Glow Thickness: Lines + Speed (buffGlow* vars)
-        if not EllesmereUI._prebuilding then
+        do
             local leftRgn = pgRow._leftRegion
             EllesmereUI.BuildInlineCog(leftRgn, {
                 title = "Pixel Glow",
@@ -3290,28 +3348,26 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
 
     -- Pandemic Glow: the Glows page's descriptor over this bar, with the
     -- preview and the Pixel Glow cog inline and the swatches in the right half.
-    -- WoW Forever: the same row is the Anti-Clip Glow (EUI_CDM_ForeverAntiClip.lua).
-    do
+    -- Not on WoW Forever, which has no pandemic window (ns.CDM_NO_PANDEMIC).
+    if not ns.CDM_NO_PANDEMIC then
         local GO = EllesmereUI.GlowOptions
-        local antiClip = ns.CDM_ANTI_CLIP
         local panDesc = ns._CDM_PandemicGlowDesc(BD, function() ns.BuildAllCDMBars(); Refresh() end)
         local panGlowRow
         panGlowRow, h = W:DualRow(parent, y,
-            GO.DropdownSpec(panDesc, antiClip and "Anti-Clip Glow" or "Pandemic Glow",
-                antiClip and "Show a glow on icons when casting the spell next, after your current cast or global cooldown, won't clip it, or it has 1.5 seconds or less left"
-                    or "Show a glow on icons when the remaining duration is in the pandemic window (last 30%)"),
-            { type="label", text = antiClip and "Anti-Clip Glow Color" or "Pandemic Glow Color" });  y = y - h
+            GO.DropdownSpec(panDesc, "Pandemic Glow",
+                "Show a glow on icons when the remaining duration is in the pandemic window (last 30%)"),
+            { type="label", text="Pandemic Glow Color" });  y = y - h
 
         if not EllesmereUI._prebuilding then
             local leftRgn = panGlowRow._leftRegion
             leftRgn._lastInline = GO.BuildPreview(leftRgn, panDesc, { anchor = leftRgn._control, x = -8 })
-            GO.AttachInline(leftRgn, panDesc, panGlowRow._rightRegion)
-
+        end
+        GO.AttachInline(panGlowRow._leftRegion, panDesc, panGlowRow._rightRegion)
+        if not EllesmereUI._prebuilding then
             if EllesmereUI.BuildSyncIcon and EllesmereUI.ApplyPandemicGlowToAll then
                 EllesmereUI.BuildSyncIcon({
                     region = panGlowRow._leftRegion,
-                    tooltip = antiClip and "Apply this glow's look to all CDM bars and tracking bars. A surface that can't show a style uses its closest match."
-                        or "Apply this pandemic glow to Nameplates, all CDM bars, and tracking bars. A surface that can't show a style uses its closest match.",
+                    tooltip = "Apply this pandemic glow to Nameplates, all CDM bars, and tracking bars. A surface that can't show a style uses its closest match.",
                     isSynced = function()
                         return EllesmereUI.IsPandemicGlowSyncedToAll(EllesmereUI.PandemicPayloadFromCdmBar(BD()), { skipCdmKey = barKey })
                     end,
@@ -3541,7 +3597,7 @@ local function BuildCDMBarsPage(pageName, parent, yOffset)
             local rotThRow
             rotThRow, h = W:DualRow(parent, y, thicknessCfg, outsetCfg);  y = y - h
             -- Pixel Glow's remaining parameters (Solid Border reads thickness only).
-            if not EllesmereUI._prebuilding then
+            do
                 local function notPixel()
                     local c = RotationBars(); return not c or c.rotationAssistStyle ~= "pixel"
                 end

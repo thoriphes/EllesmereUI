@@ -4,7 +4,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Action Bars options: the Menu, Bags & Rep Bars page (BuildMenuBagsRepPage)
 --  and the data bar kit it shares with the XP Bar page (ns.ABO_DataBarKit):
 --  the data bar rows and controls (Visibility, Orientation and its Vertical
---  Text cog, Width | Height, the border rows, the fill colour swatches, Bar
+--  Text cog, Width | Height, the border rows, the fill color swatches, Bar
 --  Texture, Text Size and its cog, Click Through) and the per-bar section the
 --  reputation and House Favor bars use; the XP Bar page lays the same pieces
 --  out its own way. Definitions only; the shared helpers come from
@@ -201,7 +201,6 @@ local function DataBarKit(parent)
     -- along the bar. Each setting goes to every bar of `keys`, as the
     -- orientation does.
     function K.OrientCog(region, keys, dividers)
-        if EllesmereUI._prebuilding then return end
         local lead = keys[1]
         local function Flag(key)
             local b = EAB.db.profile.bars[lead]
@@ -292,8 +291,8 @@ local function DataBarKit(parent)
 
     -- Custom Border (each data-bar section's opt-in). Its two sync links copy
     -- between the built rep bars (BORDER_SYNC_KEYS) only. The style link
-    -- carries the style, its offsets, shifts and Show Behind plus the colour
-    -- a style pick seeds; the size link carries the size and the colour. Both
+    -- carries the style, its offsets, shifts and Show Behind plus the color
+    -- a style pick seeds; the size link carries the size and the color. Both
     -- turn the target's Custom Border on, so a target never holds values it
     -- does not draw.
     local function DataBarTextured(s)
@@ -379,7 +378,7 @@ local function DataBarKit(parent)
         })
     end
 
-    -- One bar's border rows: Border Style | Border Size (with the colour, the
+    -- One bar's border rows: Border Style | Border Size (with the color, the
     -- Border Options cog and, on a rep bar, the two sync links), then Width
     -- Offset | Height Offset for a textured style. implicit (the XP Bar page,
     -- which has no Custom Border toggle): until the bar's Custom Border is on,
@@ -481,8 +480,9 @@ local function DataBarKit(parent)
             _, h = W:DualRow(parent, y, ocfgL, ocfgR);  y = y - h
         end
 
-        -- Row chrome (frames: never on the search pre-build's absorber rows).
-        if not EllesmereUI._prebuilding then
+        -- Row chrome (frames: never on the search pre-build's absorber rows,
+        -- except the cog, which the index pass reads).
+        do
             -- Border Options cog (Shift X / Shift Y / Show Behind): textured
             -- styles only, hidden (not dimmed) for Solid and under Blizzard bars.
             local lRgn = brdRow._leftRegion
@@ -534,41 +534,43 @@ local function DataBarKit(parent)
                       end },
                 },
             })
-            if cogBtn then
-                local function UpdateCogVis()
-                    cogBtn:SetShown(Textured() and not _blizzDis())
+            if not EllesmereUI._prebuilding then
+                if cogBtn then
+                    local function UpdateCogVis()
+                        cogBtn:SetShown(Textured() and not _blizzDis())
+                    end
+                    EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                    UpdateCogVis()
                 end
-                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-                UpdateCogVis()
-            end
 
-            -- Border color with alpha, left of the Border Size slider.
-            EllesmereUI.BuildInlineSwatches(brdRow._rightRegion, {
-                { tooltip = "Border Color", hasAlpha = true,
-                  getValue = function()
-                      local c = V().borderColor
-                      if c then return c.r or 0, c.g or 0, c.b or 0, c.a or 1 end
-                      return 0, 0, 0, 1
-                  end,
-                  setValue = function(r, g, b, a)
-                      Wr().borderColor = { r = r, g = g, b = b, a = a or 1 }
-                      Done()
-                  end },
-            }, {
-                size = 20,
-                disabled = function() return _blizzDis() or BorderOff() end,
-                disabledTooltip = function()
-                    if _blizzDis() then return BLIZZ_DIS_TIP end
-                    return "This option requires a Border Size above 0."
-                end,
-                rawTooltip = true,
-            })
+                -- Border color with alpha, left of the Border Size slider.
+                EllesmereUI.BuildInlineSwatches(brdRow._rightRegion, {
+                    { tooltip = "Border Color", hasAlpha = true,
+                      getValue = function()
+                          local c = V().borderColor
+                          if c then return c.r or 0, c.g or 0, c.b or 0, c.a or 1 end
+                          return 0, 0, 0, 1
+                      end,
+                      setValue = function(r, g, b, a)
+                          Wr().borderColor = { r = r, g = g, b = b, a = a or 1 }
+                          Done()
+                      end },
+                }, {
+                    size = 20,
+                    disabled = function() return _blizzDis() or BorderOff() end,
+                    disabledTooltip = function()
+                        if _blizzDis() then return BLIZZ_DIS_TIP end
+                        return "This option requires a Border Size above 0."
+                    end,
+                    rawTooltip = true,
+                })
 
-            if S().customBorder == true and BORDER_SYNCS[barKey] then
-                DataBarSyncIcon(lRgn, barKey, "Apply Border Style to all Rep Bars",
-                    CopyDataBarStyle, SameDataBarStyle)
-                DataBarSyncIcon(brdRow._rightRegion, barKey, "Apply Border Size and Color to all Rep Bars",
-                    CopyDataBarSize, SameDataBarSize)
+                if S().customBorder == true and BORDER_SYNCS[barKey] then
+                    DataBarSyncIcon(lRgn, barKey, "Apply Border Style to all Rep Bars",
+                        CopyDataBarStyle, SameDataBarStyle)
+                    DataBarSyncIcon(brdRow._rightRegion, barKey, "Apply Border Size and Color to all Rep Bars",
+                        CopyDataBarSize, SameDataBarSize)
+                end
             end
         end
         return y
@@ -606,7 +608,7 @@ local function DataBarKit(parent)
         return y
     end
 
-    -- The fill colour swatches of a bar's Color control: Custom, Accent and
+    -- The fill color swatches of a bar's Color control: Custom, Accent and
     -- Reactive (Default), the active one bright (multiSwatch or inline).
     function K.ColorSwatches(barKey)
         local function S() return EAB.db.profile.bars[barKey] end
@@ -705,7 +707,6 @@ local function DataBarKit(parent)
     -- The Bar Text Offsets cog on a Text Size control: the anchor and
     -- offsets, then extraRows (the XP bar text's Show Rested).
     function K.TextCog(region, barKey, extraRows)
-        if EllesmereUI._prebuilding then return end
         local function S() return EAB.db.profile.bars[barKey] end
         local textRows = {
                 { type="dropdown", label="Anchor",

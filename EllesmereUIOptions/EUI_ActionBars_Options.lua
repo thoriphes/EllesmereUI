@@ -298,6 +298,22 @@ initFrame:SetScript("OnEvent", function(self)
 
     EllesmereUI:RegisterOnShow(UpdatePreview)
 
+    -- Action Bar Spells (ActionBars_Options\BarSpells_Options.lua): the section
+    -- is built only while the profile has bar spells for this character, and a
+    -- spec change can bring them or take them away (Retail, one profile for
+    -- both specs). On the active Bar Display page: built again when the
+    -- section no longer matches, else its rows re-read (Auto Populate is per
+    -- spec). RefreshPage waits for the next show while the panel is closed.
+    local function BarSpellsRecheck()
+        if EllesmereUI:GetActiveModule() ~= "EllesmereUIActionBars"
+           or EllesmereUI:GetActivePage() ~= PAGE_DISPLAY then return end
+        if ns.ABO_BarSpellsStale() then
+            EllesmereUI:RefreshPage(true)
+        elseif optState.barSpellsBuilt then
+            EllesmereUI:RefreshPage()
+        end
+    end
+
     -- Rebuild the preview on spec change (new talent group).
     do
         local specChangeFrame = CreateFrame("Frame")
@@ -309,6 +325,10 @@ initFrame:SetScript("OnEvent", function(self)
                     EllesmereUI:SetContentHeader(_barsHeaderBuilder)
                     UpdatePreviewAndResize()
                 end
+            end
+            -- Action Bar Spells: a frame later, when the new spec reads settled.
+            if ns.ABO_BarSpellsSpecSensitive and ns.ABO_BarSpellsSpecSensitive() then
+                C_Timer.After(0, BarSpellsRecheck)
             end
         end)
     end
@@ -468,40 +488,41 @@ initFrame:SetScript("OnEvent", function(self)
         -- The checklist in `rgn` (a DualRow half built from C.Cfg), its cog
         -- and its Apply to All link.
         function C.Build(rgn)
-            if EllesmereUI._prebuilding then return end
-            if rgn._control then rgn._control:Hide() end
-            local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
-                rgn, 170, rgn:GetFrameLevel() + 2,
-                { { key = "L", label = "Left Endcap" }, { key = "R", label = "Right Endcap" } },
-                function(k)
-                    local l, r = ns.AB_CapsSides(o.key())
-                    if k == "L" then return l end
-                    return r
-                end,
-                function(k, v)
-                    -- Both sides are written, the untouched one as the bar
-                    -- shows it now: a written side never reads a default.
-                    local s = o.store()
-                    local l, r = ns.AB_CapsSides(o.key())
-                    if k == "L" then l = v and true or false else r = v and true or false end
-                    s.endCapLeft, s.endCapRight = l, r
-                    o.write()
-                end, nil, nil, nil, nil, nil,
-                -- Spec Overrides see each click as it happens (the slot's capture).
-                { notifyWrites = true })
-            PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
-            rgn._control = cbDD
-            rgn._lastInline = nil
-            EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
-            -- The checklist has no disabled state of its own: grey it and
-            -- block clicks on a vertical bar (the row label explains).
-            local function ApplyCapsDisabled()
-                local off = C.Vertical()
-                cbDD:SetAlpha(off and 0.3 or 1)
-                cbDD:EnableMouse(not off)
+            if not EllesmereUI._prebuilding then
+                if rgn._control then rgn._control:Hide() end
+                local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                    rgn, 170, rgn:GetFrameLevel() + 2,
+                    { { key = "L", label = "Left Endcap" }, { key = "R", label = "Right Endcap" } },
+                    function(k)
+                        local l, r = ns.AB_CapsSides(o.key())
+                        if k == "L" then return l end
+                        return r
+                    end,
+                    function(k, v)
+                        -- Both sides are written, the untouched one as the bar
+                        -- shows it now: a written side never reads a default.
+                        local s = o.store()
+                        local l, r = ns.AB_CapsSides(o.key())
+                        if k == "L" then l = v and true or false else r = v and true or false end
+                        s.endCapLeft, s.endCapRight = l, r
+                        o.write()
+                    end, nil, nil, nil, nil, nil,
+                    -- Spec Overrides see each click as it happens (the slot's capture).
+                    { notifyWrites = true })
+                PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
+                rgn._control = cbDD
+                rgn._lastInline = nil
+                EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
+                -- The checklist has no disabled state of its own: grey it and
+                -- block clicks on a vertical bar (the row label explains).
+                local function ApplyCapsDisabled()
+                    local off = C.Vertical()
+                    cbDD:SetAlpha(off and 0.3 or 1)
+                    cbDD:EnableMouse(not off)
+                end
+                ApplyCapsDisabled()
+                EllesmereUI.RegisterWidgetRefresh(ApplyCapsDisabled)
             end
-            ApplyCapsDisabled()
-            EllesmereUI.RegisterWidgetRefresh(ApplyCapsDisabled)
 
             local rows = {}
             if not C.stock then
@@ -542,6 +563,7 @@ initFrame:SetScript("OnEvent", function(self)
                 rawTooltip = true,
                 rows = rows,
             })
+            if EllesmereUI._prebuilding then return end
 
             if o.syncKeys then
                 EllesmereUI.BuildSyncIcon({
@@ -849,6 +871,10 @@ initFrame:SetScript("OnEvent", function(self)
         -------------------------------------------------------------------
         y = BuildSharedBarSettings(parent, y)
 
+        -- ACTION BAR SPELLS, the last section: built only while the profile has
+        -- bar spells for this character (ActionBars_Options\BarSpells_Options.lua).
+        if ns.ABO_BuildBarSpells then y = ns.ABO_BuildBarSpells(parent, y) end
+
         return math.abs(y)
     end
 
@@ -931,6 +957,12 @@ initFrame:SetScript("OnEvent", function(self)
         end,
         onPageCacheRestore = function(pageName)
             if pageName == PAGE_DISPLAY then
+                -- The ACTION BAR SPELLS section no longer matches the profile (a
+                -- spec change behind the kept page): build the page again a frame
+                -- later, once the page switch is done.
+                if ns.ABO_BarSpellsStale and ns.ABO_BarSpellsStale() then
+                    C_Timer.After(0, BarSpellsRecheck)
+                end
                 UpdatePreview()
                 ShowEditOverlay(SelectedKey())
                 local dismissed = IsPreviewHintDismissed()

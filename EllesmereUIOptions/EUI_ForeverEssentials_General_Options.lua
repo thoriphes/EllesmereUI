@@ -179,10 +179,11 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
     --  GENERAL: Auto Uprank Spells on Bars | Classic Windows (the vanilla
     --  spellbook and talent window as one checkbox dropdown), then Most
     --  Valuable Quest Reward (EllesmereUIForeverEssentials_QuestRewards.lua) |
-    --  Gathering Skill in Tooltips (EllesmereUIForeverEssentials_GatherSkill.lua),
-    --  then Auto Summon Pet | Favorites per
-    --  Character. Every control reads and writes its feature's own key and
-    --  runs that feature's own apply.
+    --  Gathering Skill in Tooltips (EllesmereUIForeverEssentials_GatherSkill.lua;
+    --  its cog: Skinning), then Auto Summon Pet | Favorites per
+    --  Character, then Show Solo Player Zones
+    --  (EllesmereUIForeverEssentials_LFGZones.lua). Every control reads and
+    --  writes its feature's own key and runs that feature's own apply.
     ---------------------------------------------------------------------------
     local QR, GS = EllesmereUI._QuestRewards, EllesmereUI._GatherSkill
     _, h = W:SectionHeader(parent, "GENERAL", y);  y = y - h
@@ -247,7 +248,8 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
         EllesmereUI.RegisterWidgetRefresh(cwRefresh)
     end
 
-    _, h = W:DualRow(parent, y,
+    local rewardRow
+    rewardRow, h = W:DualRow(parent, y,
         { type = "toggle", text = "Most Valuable Quest Reward",
           tooltip = "Among a quest's reward choices, a money bag marks the one that sells for most, its count included.",
           getValue = function() return QR.Get("enabled") end,
@@ -261,8 +263,23 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
           setValue = function(v)
               GS.Cfg().enabled = v
               GS.Apply()
+              EllesmereUI:RefreshPage()  -- the cog's disabled state
           end }
     );  y = y - h
+    EllesmereUI.BuildInlineCog(rewardRow._rightRegion, {
+        title = "Gathering Skill in Tooltips",
+        rows = {
+            { type = "toggle", label = "Skinning",
+              tooltip = "Also adds the skill a skinnable corpse needs to its tooltip.",
+              get = function() return GS.Get("skinning") end,
+              set = function(v)
+                  GS.Cfg().skinning = v
+                  GS.Apply()
+              end },
+        },
+        disabled = function() return not GS.Get("enabled") end,
+        disabledTooltip = "Gathering Skill in Tooltips",
+    })
 
     -- Auto Summon Pet | Favorites per Character
     -- (EllesmereUIForeverEssentials_PetSummon.lua), while the Pet Journal exists.
@@ -295,6 +312,18 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
               end }
         );  y = y - h
     end
+
+    local LZ = EllesmereUI._LFGZones
+    _, h = W:DualRow(parent, y,
+        { type = "toggle", text = "Show Solo Player Zones",
+          tooltip = "Shows the zone of the players listed on their own (not in a group) on their row of the Looking For Group window.",
+          getValue = function() return LZ.Get("enabled") end,
+          setValue = function(v)
+              LZ.Cfg().enabled = v
+              LZ.Apply()
+          end },
+        BLANK()
+    );  y = y - h
 
     ---------------------------------------------------------------------------
     --  NAME FORMAT (while a module with a Name Format is on)
@@ -361,7 +390,8 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
     --  Reveal Unexplored Areas with its color in the cog | Show Zone Levels,
     --  then Show Map Markers with its sets in the cog:
     --  EllesmereUIForeverEssentials_MapTravel.lua | Show Fishing Skill:
-    --  EllesmereUIForeverEssentials_ZoneLevels.lua)
+    --  EllesmereUIForeverEssentials_ZoneLevels.lua, then Show Waypoints in the
+    --  World alone: EllesmereUIForeverEssentials_InGameNavigation.lua)
     ---------------------------------------------------------------------------
     local MR = EllesmereUI._MapReveal
     local ZL = EllesmereUI._ZoneLevels
@@ -378,7 +408,8 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
         MF.Apply()
     end
 
-    _, h = W:DualRow(parent, y,
+    local fadeRow
+    fadeRow, h = W:DualRow(parent, y,
         { type = "toggle", text = "Fade Map While Moving",
           tooltip = "The world map fades while you move and comes back when you stop or hover it.",
           getValue = function() return MF.Get("enabled") end,
@@ -386,8 +417,28 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
         { type = "toggle", text = "Show the Game Behind the Map",
           tooltip = "Lightens the black behind the maximized world map.",
           getValue = function() return MF.Get("dim") end,
-          setValue = function(v) SetFade("dim", v) end }
+          setValue = function(v)
+              SetFade("dim", v)
+              EllesmereUI:RefreshPage()  -- the cog's disabled state
+          end }
     );  y = y - h
+    do
+        EllesmereUI.BuildInlineCog(fadeRow._rightRegion, {
+            title = "Map Background Settings",
+            rows = {
+                { type = "slider", label = "Opacity", min = 0, max = 100, step = 5,
+                  get = function() return MF.Get("dimOpacity") end,
+                  set = function(v) SetFade("dimOpacity", v) end },
+                { type = "toggle", label = "Click Through",
+                  tooltip = "Lets clicks and camera turns pass through.",
+                  get = function() return MF.Get("dimClickThrough") == true end,
+                  set = function(v) SetFade("dimClickThrough", v) end },
+            },
+            gap = 9,
+            disabled = function() return not MF.Get("dim") end,
+            disabledTooltip = "Show the Game Behind the Map",
+        })
+    end
 
     local revealRow
     revealRow, h = W:DualRow(parent, y,
@@ -426,7 +477,19 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
               ZL.Apply()
           end }
     );  y = y - h
-    if not EllesmereUI._prebuilding then
+
+    -- Show Waypoints in the World. Runtime in
+    -- EllesmereUIForeverEssentials_InGameNavigation.lua.
+    local NG = EllesmereUI._InGameNavigation
+    _, h = W:DualRow(parent, y,
+        { type = "toggle", text = "Show Waypoints in the World",
+          tooltip = "Shows a marker in the world over your tracked quest or map pin.",
+          getValue = function() return NG.Get("enabled") end,
+          setValue = function(v) NG.Set(v) end },
+        BLANK()
+    );  y = y - h
+
+    do
         EllesmereUI.BuildInlineCog(revealRow._leftRegion, {
             title = "Reveal Unexplored Areas Settings",
             rows = {
@@ -447,7 +510,7 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
 
     -- Map Markers: one toggle; the cog picks the kinds, as the map's filter
     -- menu does, all shown until turned off.
-    if not EllesmereUI._prebuilding then
+    do
         local TIPS = {
             exits = "On zone maps, an arrow on each road out of the zone, pointing to the zone it leads to.",
             flights = "On zone maps, the flight masters, those you have not found yet included.",
@@ -623,6 +686,14 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
                 }
                 _, h = W:DualRow(parent, y, offL, offR);  y = y - h
             end
+
+            _, h = W:DualRow(parent, y,
+                { type = "slider", text = "Opacity",
+                  min = 5, max = 100, step = 1, isPercent = false,
+                  getValue = function() return AF.Get("opacity") end,
+                  setValue = function(v) AFSet("opacity", v) end },
+                BLANK()
+            );  y = y - h
         end
     end
 
@@ -719,7 +790,11 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
               setValue = function(v) JunkSet("showFreeSlots", v) end }
         );  y = y - h
 
-        -- Only Show When Bag Space Is Low (its threshold in the cog) | Use Auctionator Prices
+        local FE = EllesmereUI._ModuleNS["EllesmereUIForeverEssentials"]
+        local function noPriceAddon()
+            return not (FE.PriceSourceLoaded("AUCTIONATOR") or FE.PriceSourceLoaded("BBB"))
+        end
+        -- Only Show When Bag Space Is Low (its threshold in the cog) | Use Auction Prices (its addon in the cog)
         local lowRow
         lowRow, h = W:DualRow(parent, y,
             { type = "toggle", text = "Only Show When Bag Space Is Low",
@@ -729,16 +804,29 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
                   JunkSet("onlyLowBagSpace", v)
                   EllesmereUI:RefreshPage()  -- the cog's disabled state
               end },
-            { type = "toggle", text = "Use Auctionator Prices",
-              tooltip = "Prices items from Auctionator scans.",
-              disabled = function()
-                  return EllesmereUI._ModuleNS["EllesmereUIForeverEssentials"].AuctionAPI() == nil
-              end,
-              disabledTooltip = "This option requires Auctionator to be loaded.",
+            { type = "toggle", text = "Use Auction Prices",
+              tooltip = "Prices items from your auction addon's scans. Use the cog to pick the addon.",
+              disabled = noPriceAddon,
+              disabledTooltip = "This option requires Auctionator or BootyBayBroker to be loaded.",
               getValue = function() return JI.Get("auctionPrices") == true end,
-              setValue = function(v) JunkSet("auctionPrices", v) end }
+              setValue = function(v)
+                  JunkSet("auctionPrices", v)
+                  EllesmereUI:RefreshPage()  -- the cog's disabled state
+              end }
         );  y = y - h
-        if not EllesmereUI._prebuilding then
+        do
+            EllesmereUI.BuildInlineCog(lowRow._rightRegion, {
+                title = "Use Auction Prices",
+                disabled = function() return noPriceAddon() or JI.Get("auctionPrices") ~= true end,
+                disabledTooltip = "Use Auction Prices",
+                rows = {
+                    { type = "dropdown", label = "Price Source",
+                      values = FE.PRICE_SOURCES, order = FE.PRICE_SOURCE_ORDER,
+                      get = function() return FE.PriceSource(JI.Get("priceSource")) end,
+                      set = function(v) JunkSet("priceSource", v) end,
+                      itemDisabled = function(v) return not FE.PriceSourceLoaded(v) end },
+                },
+            })
             EllesmereUI.BuildInlineCog(lowRow._leftRegion, {
                 title = "Only Show When Bag Space Is Low",
                 disabled = function() return JI.Get("onlyLowBagSpace") ~= true end,
@@ -790,9 +878,12 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
               EllesmereUI:RefreshPage()  -- the cog's disabled state
           end }
     );  y = y - h
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = fishKeyRow._leftRegion
-        local kbBtn, refresh = EllesmereUI.BuildKeybindButton(rgn, {
+        local kbBtn
+        if not EllesmereUI._prebuilding then
+        local refresh
+        kbBtn, refresh = EllesmereUI.BuildKeybindButton(rgn, {
             w = 140, h = 30, font = 13,
             get = function() return FI.Get("key") end,
             set = function(v)
@@ -803,6 +894,7 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
         })
         EllesmereUI.PanelPP.Point(kbBtn, "RIGHT", rgn, "RIGHT", -20, 0)
         EllesmereUI.RegisterWidgetRefresh(refresh)
+        end
 
         local function fishRow(label, tooltip, key)
             return { type = "toggle", label = label, tooltip = tooltip,
@@ -835,7 +927,7 @@ _G._EUI_BuildForeverGeneralPage = function(pageName, parent, yOffset)
 
     _, h = W:DualRow(parent, y,
         { type = "toggle", text = "Fishing Sounds",
-          tooltip = "While you fish: music and ambience down, effects up, sound on in the background.",
+          tooltip = "While you fish: sound and effects on and louder, music and ambience down, sound on in the background.",
           getValue = function() return FI.Get("sound") end,
           setValue = function(v) SetFish("sound", v) end },
         BLANK()

@@ -192,7 +192,7 @@ function CogDot.Fit(L, k)
     ring:SetPoint("CENTER", note, "CENTER")
 end
 
--- The pulse: a ring of the dot's colour grows from it and fades, three times.
+-- The pulse: a ring of the dot's color grows from it and fades, three times.
 function CogDot.PulseLoop(ag)
     local n = (ag._euiLoops or 0) + 1
     ag._euiLoops = n
@@ -255,6 +255,25 @@ end
 local function CogHidden(self)
     if self == cogTipCog then HideCogTip() end
     self._euiCogPulse:Stop()
+    if self._euiSearchHit then
+        self._euiSearchHit = nil
+        self._euiCogState()
+    end
+end
+
+-- After a search jump to a row inside a cog's popup: that cog, shown on the
+-- page, wears the accent until it is opened or hidden. Returns whether one was found.
+function EllesmereUI.MarkSearchCog(key)
+    local found
+    for b in pairs(CogDot.live) do
+        local hit = key ~= nil and b._euiSearchKey == key and b:IsVisible()
+        if (b._euiSearchHit or nil) ~= (hit or nil) then
+            b._euiSearchHit = hit or nil
+            if b._euiCogState then b._euiCogState() end
+        end
+        found = found or hit
+    end
+    return found
 end
 
 local function InScrollArea(f)
@@ -341,6 +360,8 @@ end
 -- A cog with a dot is the one its region's writes light (the cog notice above; the last such cog built on the region).
 -- opts.quiet: a cog whose rows are not for most users; its region's writes never light its dot or bring the cog tip up.
 local function BuildInlineCog(rgn, opts)
+    -- No-op until the optional EllesmereUI_GlobalSearch.lua defines it.
+    local searchKey = EllesmereUI._RegisterCogSearch and EllesmereUI._RegisterCogSearch(rgn, opts)
     if EllesmereUI._prebuilding then return end
     -- A disabled cog with no tooltip of its own explains itself with its host control's requirement.
     local tipSrc = (opts.disabled and not opts.disabledTooltip) and rgn._cfg or opts
@@ -397,6 +418,8 @@ local function BuildInlineCog(rgn, opts)
         id = CogDot.Id(CogDot.Key(rgn, opts))
         hostCfg = rgn._cfg
         btn._euiCogId, btn._euiCogNote, btn._euiCogPulse = id, note, pulse
+        -- The options search marks it (MarkSearchCog) after jumping to one of its rows.
+        btn._euiSearchKey = searchKey
         CogDot.live[btn] = true
         -- The cog notice: the region's writes light this cog, unless it is a quiet one.
         btn._euiCogOff = opts.disabled
@@ -435,10 +458,15 @@ local function BuildInlineCog(rgn, opts)
         if paint then paint(btn, off, hot)
         else
             btn:SetAlpha(off and 0.3 or 1)
-            local a = off and 0.5 or (hot and 0.75 or 0.55)
-            L[1]:SetAlpha(a)
-            L[2]:SetAlpha(a)
-            L[3]:SetAlpha(a)
+            -- A search result inside its popup: accent dots at full until opened.
+            local hit = btn._euiSearchHit
+            local a = off and 0.5 or (hit and 1 or (hot and 0.75 or 0.55))
+            local r, g, b = 1, 1, 1
+            if hit then r, g, b = EllesmereUI.GetAccentColor() end
+            for i = 1, 3 do
+                L[i]:SetAlpha(a)
+                L[i]:SetVertexColor(r, g, b)
+            end
             local dot = CogDot.edited[id] == true and not (off or CogDot.Seen()[id]
                 or (hostCfg and hostCfg.disabled and hostCfg.disabled()))
             note:SetShown(dot)
@@ -466,7 +494,10 @@ local function BuildInlineCog(rgn, opts)
             if cogTipCog then CogTipDone() end
             CogDot.Mark(id)
         end
+        local wasHit = self._euiSearchHit
+        self._euiSearchHit = nil
         show(self)
+        if wasHit then State() end
     end)
     State()
     -- A refresh re-reads the disabled states: the cog's own and, for the dot,
@@ -480,7 +511,7 @@ end
 -- opts: width (110), height (24), gap (8), chain (default true: becomes
 -- region._lastInline), tip (a string, or a function returning one: the hover
 -- tooltip while enabled), disabled + disabledTooltip/rawTooltip/requireState
--- (as ResolveDisabledTip): greyed, click-blocked, without hover colours and
+-- (as ResolveDisabledTip): greyed, click-blocked, without hover colors and
 -- explaining itself on hover while disabled, re-checked with the page's
 -- widgets. Returns the button; nil during the search prebuild.
 function EllesmereUI.BuildInlineButton(rgn, text, onClick, opts)
@@ -499,8 +530,8 @@ function EllesmereUI.BuildInlineButton(rgn, text, onClick, opts)
     MakeStyledButton(btn, text, 11, WB_COLOURS, onClick)
     local tip, disabled = opts.tip, opts.disabled
     if not (tip or disabled) then return btn end
-    -- The styled button's hover scripts paint its hover colours; these wrap
-    -- them so a disabled button keeps its resting colours.
+    -- The styled button's hover scripts paint its hover colors; these wrap
+    -- them so a disabled button keeps its resting colors.
     local hoverOn, hoverOff = btn:GetScript("OnEnter"), btn:GetScript("OnLeave")
     -- A state with no text hides the other state's tooltip (a flip replays this).
     local function OnEnter(self)
@@ -875,7 +906,7 @@ local function SetLessCommonSearchActive(active)
     end
 end
 
--- A colour scale across a swatch: stops = { { r, g, b }, ... }, drawn left to
+-- A color scale across a swatch: stops = { { r, g, b }, ... }, drawn left to
 -- right in equal steps over its fill (for a swatch that picks a scale, such as
 -- the meters' value gradient).
 local function PaintSwatchGradient(swatch, stops)
@@ -899,7 +930,8 @@ end
 --  region._lastInline: a slot's cog is built first and the swatches land left of it. opts.disabled/opts.disabledTooltip
 --  mirror the row-level disabled state of the multiSwatch form.
 --  opts.size: the swatch size (nil = 20, the inline swatch size; BuildColorSwatch's own 24 is a swatch half's).
---  sc.gradient: colour stops shown across the swatch in place of its colour (PaintSwatchGradient).
+--  sc.gradient: color stops shown across the swatch in place of its color (PaintSwatchGradient).
+--  sc.bindPicker: binds one picker session's writes and Cancel (BuildColorSwatch's bindPicker).
 -------------------------------------------------------------------------------
 local function BuildInlineSwatches(region, swatches, opts)
     -- Hidden search pre-build: swatches index nothing and the pre-built page is never shown, so none are built (its regions are stand-ins with no frame to build on).
@@ -909,7 +941,7 @@ local function BuildInlineSwatches(region, swatches, opts)
     local anchorTo = region._lastInline or region._control
     for i = #swatches, 1, -1 do
         local sc = swatches[i]
-        local swatch, updateSwatch = BuildColorSwatch(region, level, sc.getValue, sc.setValue, sc.hasAlpha, opts.size or 20)
+        local swatch, updateSwatch = BuildColorSwatch(region, level, sc.getValue, sc.setValue, sc.hasAlpha, opts.size or 20, sc.bindPicker)
         PP.Point(swatch, "RIGHT", anchorTo, "LEFT", -8, 0)
         anchorTo = swatch
         region._lastInline = swatch
@@ -974,7 +1006,7 @@ EllesmereUI.BuildInlineSwatches = BuildInlineSwatches
 --  other flat modes) and the three gradient-stop swatches (100% | 50% | 0%, left to right), which
 --  take its place in "customDynamic". Chains from region._lastInline like the other inline items.
 --  opts.mode() -> the dropdown's value; opts.getCustom() -> r, g, b; opts.setCustom(r, g, b);
---  opts.keys = { key100, key50, key0 }; opts.getStop(key) -> the saved colour table or nil (a
+--  opts.keys = { key100, key50, key0 }; opts.getStop(key) -> the saved color table or nil (a
 --  missing stop shows its default); opts.setStop(key, r, g, b). Nothing in the search pre-build.
 -------------------------------------------------------------------------------
 local FILL_STOPS = {

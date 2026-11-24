@@ -846,7 +846,7 @@ end })
 -- The width and height a CDM bar's own textured icon border draws OUTSIDE the
 -- bar frame, in bar units, from exactly the arguments the icon border renderer
 -- passes (bar-level size, texture, offsets and shifts, the "cdm" registry keyed
--- by the thickness label, the exact px, the colour's alpha). The outer icons sit
+-- by the thickness label, the exact px, the color's alpha). The outer icons sit
 -- flush with the bar's edges, so their reach is the bar's. The renderer
 -- normalizes the icon's scale away (UIParent / icon), so in bar units the ratio
 -- is UIParent / bar. nil for buff-family bars (never in a match), the stock
@@ -1179,7 +1179,18 @@ LayoutCDMBar = function(barKey)
     -- (RIGHT/DOWN grow pins the start, LEFT/UP the end); CENTER splits it evenly. padLead is
     -- the share of the surplus in front of the block, in halves: 0, 2 or 1. Each lead below is
     -- rounded once, so a centred block sits where it did before the surplus followed the grow.
-    local padLead = (grow == "RIGHT" or grow == "DOWN") and 0 or ((grow == "LEFT" or grow == "UP") and 2 or 1)
+    -- minSizeAlign (START/CENTER/END) overrides the grow-derived placement; nil follows the grow.
+    local padLead
+    local minAlign = barData.minSizeAlign
+    if minAlign == "START" then
+        padLead = 0
+    elseif minAlign == "CENTER" then
+        padLead = 1
+    elseif minAlign == "END" then
+        padLead = 2
+    else
+        padLead = (grow == "RIGHT" or grow == "DOWN") and 0 or ((grow == "LEFT" or grow == "UP") and 2 or 1)
+    end
     local surplusPx, padOffsetPx = 0, 0
     -- Per-row branch: growth-axis extent of the wider row (rows center against each other within it).
     local rowContentPx
@@ -1282,8 +1293,10 @@ LayoutCDMBar = function(barKey)
             local rowN     = (rowIdx == 1) and topN or (sizeCount - topN)
             local wPx, hPx = rowWPx[rowIdx], rowHPx[rowIdx]
 
-            FC(icon).matchExpanded = nil
+            local fc = FC(icon)
+            fc.matchExpanded = nil
             icon:SetSize(wPx * onePx * iS, hPx * onePx * iS)
+            if fc.roundRadius then ns.FitCDMRoundedIcon(icon, fc, wPx * onePx * iS, hPx * onePx * iS, true) end
             if blizzIcons then ns.CdmApplyBlizzIconArt(icon) end
 
             if isMouseBar then
@@ -1398,8 +1411,10 @@ LayoutCDMBar = function(barKey)
             thisIconH = expandedCol and (iconH + onePx) or iconH
             thisIconW = expandedRow and (iconW + onePx) or iconW
         end
-        FC(icon).matchExpanded = (expandedCol or expandedRow) or nil
+        local fc = FC(icon)
+        fc.matchExpanded = (expandedCol or expandedRow) or nil
         icon:SetSize(thisIconW * iS, thisIconH * iS)
+        if fc.roundRadius then ns.FitCDMRoundedIcon(icon, fc, thisIconW * iS, thisIconH * iS, true) end
         if blizzIcons then ns.CdmApplyBlizzIconArt(icon) end
 
         -- Cumulative offsets: each prior expanded icon shifts later icons by 1 physical pixel on

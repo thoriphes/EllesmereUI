@@ -156,7 +156,6 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
     -- UpdateFrameVisibility (reacts to the regen path); reuses CDM fade strings
     -- for consistency. Fade rows appear only for the EllesmereUI source.
     local _visSrcIsEui = ns.GetUnitFrameSource(optState.selectedUnit) == "eui"
-    if not EllesmereUI._prebuilding then
     AttachFrameSourceCog(visRow._leftRegion, optState.selectedUnit, {
         title = _visSrcIsEui and "Frame Source & Visibility" or "Frame Source",
         cogTooltip = _visSrcIsEui and "Frame Source & Visibility" or "Frame Source",
@@ -188,7 +187,6 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
               end },
         },
     })
-    end
 
     -- Non-EUI source: no EUI frame spawned, so nothing below applies. Keep the
     -- Visibility row (hosts the Frame Source cog + "Never Show" way back), grey
@@ -301,7 +299,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
             EllesmereUI.SpecOverrides_DarkCondEditActive)
     end
     -- Sync icon: Bar Texture (left region) -- pushes this unit's texture to frames
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = barTexRow._leftRegion
         local function ApplyTexTo(keys)
             local src = UNIT_DB_MAP[optState.selectedUnit]()
@@ -313,26 +311,28 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
             end
             ReloadAndUpdate(); UpdatePreview(); EllesmereUI:RefreshPage()
         end
-        EllesmereUI.BuildSyncIcon({
-            region  = rgn,
-            tooltip = "Apply Bar Texture to all Frames",
-            onClick = function() ApplyTexTo(GROUP_UNIT_ORDER) end,
-            isSynced = function()
-                local g = db.profile.healthBarTexture or "none"
-                local srcTex = UNIT_DB_MAP[optState.selectedUnit]().healthBarTexture or g
-                for _, key in ipairs(GROUP_UNIT_ORDER) do
-                    if (UNIT_DB_MAP[key]().healthBarTexture or g) ~= srcTex then return false end
-                end
-                return true
-            end,
-            flashTargets = function() return { rgn } end,
-            multiApply = {
-                elementKeys   = GROUP_UNIT_ORDER,
-                elementLabels = SHORT_LABELS,
-                getCurrentKey = function() return optState.selectedUnit end,
-                onApply       = function(checkedKeys) ApplyTexTo(checkedKeys) end,
-            },
-        })
+        if not EllesmereUI._prebuilding then
+            EllesmereUI.BuildSyncIcon({
+                region  = rgn,
+                tooltip = "Apply Bar Texture to all Frames",
+                onClick = function() ApplyTexTo(GROUP_UNIT_ORDER) end,
+                isSynced = function()
+                    local g = db.profile.healthBarTexture or "none"
+                    local srcTex = UNIT_DB_MAP[optState.selectedUnit]().healthBarTexture or g
+                    for _, key in ipairs(GROUP_UNIT_ORDER) do
+                        if (UNIT_DB_MAP[key]().healthBarTexture or g) ~= srcTex then return false end
+                    end
+                    return true
+                end,
+                flashTargets = function() return { rgn } end,
+                multiApply = {
+                    elementKeys   = GROUP_UNIT_ORDER,
+                    elementLabels = SHORT_LABELS,
+                    getCurrentKey = function() return optState.selectedUnit end,
+                    onApply       = function(checkedKeys) ApplyTexTo(checkedKeys) end,
+                },
+            })
+        end
         -- Textured Background cog (same region, after the sync icon).
         EllesmereUI.BuildInlineCog(rgn, {
             title = "Texture Settings",
@@ -397,7 +397,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
         end
     end
     -- Inline cog for border shift / layering (left region)
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = sharedScaleBorderRow._leftRegion
         local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
             title = "Border Options",
@@ -449,9 +449,39 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
             local tex = SGet("borderTexture") or "solid"
             if tex == "solid" or EllesmereUI.BlizzStyle.Get("unitframes") then cogBtn:Hide() else cogBtn:Show() end
         end
-        EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-        UpdateCogVis()
+        if not EllesmereUI._prebuilding then
+            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+            UpdateCogVis()
+        end
     end
+    local function CopyBorderColorModes(dst, unit)
+        dst.borderClassColored = SGet("borderClassColored") == true
+        if unit == "player" or optState.selectedUnit == "player" then return end
+        local src = SDB()
+        for _, key in ipairs({ "borderRareColored", "borderEliteColored", "borderExcludeFriendly" }) do
+            dst[key] = src[key] == true
+        end
+        for _, key in ipairs({ "borderRareColor", "borderEliteColor" }) do
+            local c = src[key]
+            dst[key] = c and { r=c.r, g=c.g, b=c.b } or nil
+        end
+    end
+
+    local function BorderColorModesMatch(dst, unit)
+        if (dst.borderClassColored == true) ~= (SGet("borderClassColored") == true) then return false end
+        if unit == "player" or optState.selectedUnit == "player" then return true end
+        local src = SDB()
+        if (dst.borderRareColored == true) ~= (src.borderRareColored == true)
+            or (dst.borderEliteColored == true) ~= (src.borderEliteColored == true)
+            or (dst.borderExcludeFriendly == true) ~= (src.borderExcludeFriendly == true) then return false end
+        for _, key in ipairs({ "borderRareColor", "borderEliteColor" }) do
+            local r, g, b = ns.UF_ClassificationBorderRGB(src, key)
+            local dr, dg, db = ns.UF_ClassificationBorderRGB(dst, key)
+            if r ~= dr or g ~= dg or b ~= db then return false end
+        end
+        return true
+    end
+
     -- Sync icon: Border Style (left region - dropdown)
     if not EllesmereUI._prebuilding then
         local bsLeftRgn = sharedScaleBorderRow._leftRegion
@@ -477,6 +507,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                         UNIT_DB_MAP[key]().borderTextureShiftY = sy
                         UNIT_DB_MAP[key]().borderBehind = bh
                         if bc then UNIT_DB_MAP[key]().borderColor = { r=bc.r, g=bc.g, b=bc.b } end
+                        CopyBorderColorModes(UNIT_DB_MAP[key](), key)
                         UNIT_DB_MAP[key]().borderAlpha = ba
                         UNIT_DB_MAP[key]().borderPowerSeam = ps
                     end
@@ -493,6 +524,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                 local ps = SGet("borderPowerSeam") == true
                 for _, key in ipairs(GROUP_UNIT_ORDER) do
                     if (UNIT_DB_MAP[key]().borderTexture or "solid") ~= bt then return false end
+                    if not BorderColorModesMatch(UNIT_DB_MAP[key](), key) then return false end
                     if UNIT_DB_MAP[key]().borderTextureOffset ~= ox then return false end
                     if UNIT_DB_MAP[key]().borderTextureOffsetY ~= oy then return false end
                     if UNIT_DB_MAP[key]().borderTextureShiftX ~= sx then return false end
@@ -525,6 +557,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                         UNIT_DB_MAP[key]().borderTextureShiftY = sy
                         UNIT_DB_MAP[key]().borderBehind = bh
                         if bc then UNIT_DB_MAP[key]().borderColor = { r=bc.r, g=bc.g, b=bc.b } end
+                        CopyBorderColorModes(UNIT_DB_MAP[key](), key)
                         UNIT_DB_MAP[key]().borderAlpha = ba
                         UNIT_DB_MAP[key]().borderPowerSeam = ps
                     end
@@ -575,6 +608,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                             t.borderSizePx = v
                         end
                         if bc then UNIT_DB_MAP[key]().borderColor = { r=bc.r, g=bc.g, b=bc.b } end
+                        CopyBorderColorModes(UNIT_DB_MAP[key](), key)
                         if ba then UNIT_DB_MAP[key]().borderAlpha = ba end
                         UNIT_DB_MAP[key]().borderTexture = bt
                         UNIT_DB_MAP[key]().borderTextureOffset = ox
@@ -596,6 +630,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                 for _, key in ipairs(GROUP_UNIT_ORDER) do
                     if (UNIT_DB_MAP[key]().borderSize or 1) ~= bs then return false end
                     if (UNIT_DB_MAP[key]().borderTexture or "solid") ~= bt then return false end
+                    if not BorderColorModesMatch(UNIT_DB_MAP[key](), key) then return false end
                     if EllesmereUI.BorderPx(UNIT_DB_MAP[key]().borderSizePx, bs, bt) ~= bpx then return false end
                     if (UNIT_DB_MAP[key]().cornerRadius or 0) ~= cr then return false end
                     if (UNIT_DB_MAP[key]().cornerMask or 15) ~= (cm or 15) then return false end
@@ -642,6 +677,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
                             t.borderSizePx = v
                         end
                         if bc then UNIT_DB_MAP[key]().borderColor = { r=bc.r, g=bc.g, b=bc.b } end
+                        CopyBorderColorModes(UNIT_DB_MAP[key](), key)
                         if ba then UNIT_DB_MAP[key]().borderAlpha = ba end
                         UNIT_DB_MAP[key]().borderTexture = bt
                         UNIT_DB_MAP[key]().borderTextureOffset = ox
@@ -656,53 +692,169 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
             },
         })
     end
-    -- Inline Border color swatch; Highlight lives on "Hover Borders" below
-    -- (same highlightColor var).
-    if not EllesmereUI._prebuilding then
-        local leftRgn = sharedScaleBorderRow._rightRegion
-        local ctrl = leftRgn._control
-        local PP = EllesmereUI.PanelPP
+    -- Inline Border color swatches (Custom | Class Colored); Highlight lives on
+    -- "Hover Borders" below (same highlightColor var).
+    do
+        local rgn = sharedScaleBorderRow._rightRegion
+        local unit = optState.selectedUnit
+        local eliteRare = (unit == "target" or unit == "focus")
 
         -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog on the
-        -- border size control.
-        if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineCog(sharedScaleBorderRow._rightRegion, {
-                title = "Corner Radius", tip = "Corner Radius",
-                disabled = function() return not EllesmereUI.RoundedStyleOK(SGet("borderTexture")) end,
-                disabledTooltip = "This option requires the Solid, Glow or Shadow border style.",
-                rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
-                    { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
-                      get = function() return SVal("cornerRadius", 0) end,
-                      set = function(v) SSet("cornerRadius", v) end },
-                }, function() return SGet("cornerMask") end, function(v) SSet("cornerMask", v) end),
-                    "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
-                    function() return SGet("cornerJoinPower") end, function(v) SSet("cornerJoinPower", v) end,
-                    function() local pos = SGet("powerPosition") or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
-                    "Detached Power Bar"),
-            })
-        end
-
-        -- Border color (with alpha), left of the Corner Radius cog
-        local borderSwatch, updateBorderSwatch = EllesmereUI.BuildColorSwatch(
-            leftRgn, sharedScaleBorderRow:GetFrameLevel() + 3,
-            function()
-                local c = SGet("borderColor") or { r = 0, g = 0, b = 0 }
-                return c.r, c.g, c.b, SVal("borderAlpha", 1)
-            end,
-            function(r, g, b, a)
-                UNIT_DB_MAP[optState.selectedUnit]().borderColor = { r=r, g=g, b=b }
-                UNIT_DB_MAP[optState.selectedUnit]().borderAlpha = a
+        -- border size control. Target and Focus add their Elite / Rare border
+        -- colors to it (Border Settings), which apply to every border style.
+        local ROUNDED_TIP = "This option requires the Solid, Glow or Shadow border style."
+        local function NotRounded() return not EllesmereUI.RoundedStyleOK(SGet("borderTexture")) end
+        local rows = EllesmereUI.RoundedJoinRow(EllesmereUI.RoundedCornerRows({
+            { type = "slider", label = "Corner Radius", min = 0, max = EllesmereUI.ROUNDED_MAX_RADIUS, step = 1,
+              get = function() return SVal("cornerRadius", 0) end,
+              set = function(v) SSet("cornerRadius", v) end },
+        }, function() return SGet("cornerMask") end, function(v) SSet("cornerMask", v) end),
+            "Join Power Bar", "Rounds a detached power bar right above or below the frame as one shape with it.",
+            function() return SGet("cornerJoinPower") end, function(v) SSet("cornerJoinPower", v) end,
+            function() local pos = SGet("powerPosition") or "below"; return pos == "detached_top" or pos == "detached_bottom" end,
+            "Detached Power Bar")
+        if eliteRare then
+            -- The corner rows grey out on their own here, so the overrides stay
+            -- reachable under a textured style.
+            for _, row in ipairs(rows) do
+                local own, ownTip = row.disabled, row.disabledTooltip
+                row.disabled = function() return NotRounded() or (own ~= nil and own()) end
+                row.disabledTooltip = function() if NotRounded() then return ROUNDED_TIP end return ownTip end
+            end
+            local GetSettings = UNIT_DB_MAP[unit]
+            local function SetOverride(key, value)
+                GetSettings()[key] = value
                 ReloadAndUpdate()
-            end,
-            true, 20)
-        PP.Point(borderSwatch, "RIGHT", leftRgn._lastInline or ctrl, "LEFT", -8, 0)
-        leftRgn._lastInline = borderSwatch
-        borderSwatch:SetScript("OnEnter", function()
-            EllesmereUI.ShowWidgetTooltip(borderSwatch, "Border")
-        end)
-        borderSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            end
+            local function OverrideSwatch(label, enabledKey, colorKey)
+                local function Enabled() return GetSettings()[enabledKey] == true end
+                local function ColorOverride(r, g, b)
+                    local dr, dg, db = ns.UF_ClassificationBorderRGB(nil, colorKey)
+                    local function Channel(v) return math.floor(v * 255 + 0.5) end
+                    -- Match the picker's hex representation when restoring the default.
+                    if Channel(r) == Channel(dr) and Channel(g) == Channel(dg) and Channel(b) == Channel(db) then
+                        return nil
+                    end
+                    return { r=r, g=g, b=b }
+                end
+                return {
+                    tooltip = label,
+                    getValue = function() return ns.UF_ClassificationBorderRGB(GetSettings(), colorKey) end,
+                    setValue = function(r, g, b)
+                        if Enabled() then SetOverride(colorKey, ColorOverride(r, g, b)) end
+                    end,
+                    bindPicker = function()
+                        local profile, settings = db.profile, GetSettings()
+                        local oldColor = settings[colorKey]
+                        local lastColor
+                        return function(r, g, b)
+                            if optState.selectedUnit ~= unit or db.profile ~= profile
+                                or GetSettings() ~= settings or not settings[enabledKey] then return false end
+                            lastColor = ColorOverride(r, g, b)
+                            settings[colorKey] = lastColor
+                            ReloadAndUpdate()
+                        end, function()
+                            if profile[unit] ~= settings or settings[colorKey] ~= lastColor then return false end
+                            settings[colorKey] = oldColor
+                            if db.profile ~= profile then return false end
+                            ReloadAndUpdate()
+                        end
+                    end,
+                    onClick = function(self)
+                        if Enabled() and self._eabOrigClick then self._eabOrigClick(self) end
+                    end,
+                    refreshAlpha = function() return Enabled() and 1 or 0.3 end,
+                }
+            end
+            rows[#rows + 1] = { type = "reordercheck", label = "Color Overrides", ddWidth = 170, hint = "Target Types",
+                items = {
+                    { key = "borderEliteColored", label = "Elite", fixed = true },
+                    { key = "borderRareColored", label = "Rare", fixed = true },
+                },
+                get = function(key) return GetSettings()[key] == true end,
+                set = function(key, v)
+                    local snap = EllesmereUI._SOAttribution(rgn)
+                    SetOverride(key, v)
+                    EllesmereUI._settingsChanged = true
+                    EllesmereUI._NotifySettingWrite(rgn, snap)
+                end }
+            rows[#rows + 1] = { type = "multiswatch", label = "Elite/Rare Colors",
+                swatches = {
+                    OverrideSwatch("Elite", "borderEliteColored", "borderEliteColor"),
+                    OverrideSwatch("Rare", "borderRareColored", "borderRareColor"),
+                } }
+            rows[#rows + 1] = { type = "toggle", label = "Exclude Friendly Targets",
+                tooltip = "Friendly elites and rares keep their custom or class/reaction border color.",
+                get = function() return GetSettings().borderExcludeFriendly == true end,
+                set = function(v) SetOverride("borderExcludeFriendly", v) end }
+        end
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = eliteRare and "Border Settings" or "Corner Radius",
+            tip = eliteRare and "Border Settings" or "Corner Radius",
+            disabled = (not eliteRare) and NotRounded or nil,
+            disabledTooltip = (not eliteRare) and ROUNDED_TIP or nil,
+            rows = rows,
+        })
 
-        EllesmereUI.RegisterWidgetRefresh(function() updateBorderSwatch() end)
+        -- Border color (with alpha) | Class Colored, left of the cog. The two
+        -- swatches pick the mode: a click on the dimmed one switches to it.
+        local function IsClassColored()
+            return SVal("borderClassColored", false)
+        end
+        local function SetColorMode(enabled)
+            local snap = EllesmereUI._SOAttribution(rgn)
+            SSet("borderClassColored", enabled)
+            EllesmereUI._settingsChanged = true
+            EllesmereUI._NotifySettingWrite(rgn, snap)
+            EllesmereUI:RefreshPage()
+        end
+        local function WriteCustomColor(settings, r, g, b, a)
+            local color = { r=r, g=g, b=b }
+            settings.borderColor = color
+            settings.borderAlpha = a
+            ReloadAndUpdate()
+            return color
+        end
+        EllesmereUI.BuildInlineSwatches(rgn, {
+            { tooltip = "Custom Color", hasAlpha = true,
+              getValue = function()
+                  local c = SGet("borderColor")
+                  return c and c.r or 0, c and c.g or 0, c and c.b or 0, SVal("borderAlpha", 1)
+              end,
+              setValue = function(r, g, b, a)
+                  WriteCustomColor(SDB(), r, g, b, a)
+              end,
+              bindPicker = function()
+                  local profile, settings = db.profile, SDB()
+                  local oldColor, oldAlpha = settings.borderColor, settings.borderAlpha
+                  local lastColor, lastAlpha
+                  return function(r, g, b, a)
+                      if optState.selectedUnit ~= unit or SDB() ~= settings or db.profile ~= profile then return false end
+                      lastColor, lastAlpha = WriteCustomColor(settings, r, g, b, a), a
+                  end, function()
+                      if profile[unit] ~= settings or settings.borderColor ~= lastColor
+                          or settings.borderAlpha ~= lastAlpha then return false end
+                      settings.borderColor, settings.borderAlpha = oldColor, oldAlpha
+                      if db.profile ~= profile then return false end
+                      ReloadAndUpdate()
+                  end
+              end,
+              onClick = function(self)
+                  if IsClassColored() then
+                      SetColorMode(false)
+                  elseif self._eabOrigClick then
+                      self._eabOrigClick(self)
+                  end
+              end,
+              refreshAlpha = function() return IsClassColored() and 0.3 or 1 end },
+            { tooltip = "Class Colored. Uses reaction colors for NPCs.", hasAlpha = false,
+              getValue = function() return ns.UF_BorderColorSample(optState.selectedUnit) end,
+              setValue = function() end,
+              onClick = function()
+                  if not IsClassColored() then SetColorMode(true) end
+              end,
+              refreshAlpha = function() return IsClassColored() and 1 or 0.3 end },
+        })
     end
 
     -- Row 4: Show Tooltip For (checkbox-dropdown) | Frame Strata. "Show Tooltip
@@ -773,7 +925,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
     end
 
     -- Cog on Frame Strata: custom bar stratas for detached power/text bar
-    if not EllesmereUI._prebuilding then
+    do
         local strataRgn = tipStrataRow
         if strataRgn and strataRgn._rightRegion then strataRgn = strataRgn._rightRegion end
         local barStrataValues = EllesmereUI.FRAME_STRATA_LABELS
@@ -872,7 +1024,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
 
     -- Inline cog: extra decimal options. "Show 2 for Boss" (default on) gives boss
     -- frames a second decimal. Greyed out while the master decimal toggle is off.
-    if not EllesmereUI._prebuilding then
+    do
         EllesmereUI.BuildInlineCog(decRow._leftRegion, {
             disabled = function() return not db.profile.showDecimalOnText end,
             disabledTooltip = "Show Decimal on Health Text",
@@ -1052,7 +1204,7 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
               disabled=pctOff, disabledTooltip=pctOffTip,
               getValue=function() return db.profile.threatPctPosition end,
               setValue=function(v) PctSet("threatPctPosition", v) end });  y = y - h
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(pctRow._leftRegion, {
                 title = "Threat % Units",
                 disabled = pctOff,
@@ -1080,8 +1232,8 @@ function ns.UFO_BuildDisplaySection(parent, y, ctx)
         end
     end
 
-    -- Blizzard Style, target frame: the coloured strip behind the name,
-    -- or an uncoloured header matching the player frame.
+    -- Blizzard Style, target frame: the colored strip behind the name,
+    -- or an uncolored header matching the player frame.
     if optState.selectedUnit == "target" and EllesmereUI.BlizzStyle.Active("unitframes") == "blizzard" then
         _, h = W:DualRow(parent, y,
             { type="toggle", text="Blizz Colored Target Header",
@@ -1247,7 +1399,7 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
         })
     end
     -- Portrait settings; the separator is offered only for attached portraits.
-    if not EllesmereUI._prebuilding then
+    do
         local rows = {
             { type="toggle", label="Custom Non-Player Portrait",
               tooltip="Pick what NPCs show in Class art instead of their 2D portrait.",
@@ -1456,37 +1608,39 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
           getValue=function() return SVal("portraitSide", "left") end,
           setValue=function(v) SSet("portraitSide", v); UpdatePreview() end });  y = y - h
     -- Sync icons: Portrait Size (left) and Portrait Side (right)
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = sharedSizePosRow._leftRegion
-        EllesmereUI.BuildSyncIcon({
-            region  = rgn,
-            tooltip = "Apply Portrait Size to all Frames",
-            onClick = function()
-                local v = UNIT_DB_MAP[optState.selectedUnit]().portraitSize or 0
-                for _, key in ipairs(GROUP_UNIT_ORDER) do
-                    if key ~= optState.selectedUnit then UNIT_DB_MAP[key]().portraitSize = v end
-                end
-                ReloadAndUpdate(); EllesmereUI:RefreshPage()
-            end,
-            isSynced = function()
-                local v = UNIT_DB_MAP[optState.selectedUnit]().portraitSize or 0
-                for _, key in ipairs(GROUP_UNIT_ORDER) do
-                    if (UNIT_DB_MAP[key]().portraitSize or 0) ~= v then return false end
-                end
-                return true
-            end,
-            flashTargets = function() return { rgn } end,
-            multiApply = {
-                elementKeys   = GROUP_UNIT_ORDER,
-                elementLabels = SHORT_LABELS,
-                getCurrentKey = function() return optState.selectedUnit end,
-                onApply       = function(checkedKeys)
+        if not EllesmereUI._prebuilding then
+            EllesmereUI.BuildSyncIcon({
+                region  = rgn,
+                tooltip = "Apply Portrait Size to all Frames",
+                onClick = function()
                     local v = UNIT_DB_MAP[optState.selectedUnit]().portraitSize or 0
-                    for _, key in ipairs(checkedKeys) do UNIT_DB_MAP[key]().portraitSize = v end
+                    for _, key in ipairs(GROUP_UNIT_ORDER) do
+                        if key ~= optState.selectedUnit then UNIT_DB_MAP[key]().portraitSize = v end
+                    end
                     ReloadAndUpdate(); EllesmereUI:RefreshPage()
                 end,
-            },
-        })
+                isSynced = function()
+                    local v = UNIT_DB_MAP[optState.selectedUnit]().portraitSize or 0
+                    for _, key in ipairs(GROUP_UNIT_ORDER) do
+                        if (UNIT_DB_MAP[key]().portraitSize or 0) ~= v then return false end
+                    end
+                    return true
+                end,
+                flashTargets = function() return { rgn } end,
+                multiApply = {
+                    elementKeys   = GROUP_UNIT_ORDER,
+                    elementLabels = SHORT_LABELS,
+                    getCurrentKey = function() return optState.selectedUnit end,
+                    onApply       = function(checkedKeys)
+                        local v = UNIT_DB_MAP[optState.selectedUnit]().portraitSize or 0
+                        for _, key in ipairs(checkedKeys) do UNIT_DB_MAP[key]().portraitSize = v end
+                        ReloadAndUpdate(); EllesmereUI:RefreshPage()
+                    end,
+                },
+            })
+        end
         -- Zoom cog on Size slider
         local _, zoomShow
         _, zoomShow = EllesmereUI.BuildInlineCog(rgn, {
@@ -1576,7 +1730,7 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
     end
     sharedDetSizeRow = sharedSizePosRow
     -- Cog on Position for X/Y offsets
-    if not EllesmereUI._prebuilding then
+    do
         local posRgn = sharedSizePosRow._rightRegion
         EllesmereUI.BuildInlineCog(posRgn, {
             disabled = function() return SVal("portraitStyle", "attached") ~= "detached" end,
@@ -1652,7 +1806,7 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
               end },
           } });  y = y - h
     -- Cog on Shape Border for border settings
-    if not EllesmereUI._prebuilding then
+    do
         local borderRgn = sharedShapeBorderRow._rightRegion
         local borderCog = {
             disabled = function() return SVal("portraitStyle", "attached") ~= "detached" end,
@@ -1869,7 +2023,7 @@ function ns.UFO_BuildPortraitSection(parent, y, ctx)
               disabled=dragonOff, disabledTooltip=dragonName,
               getValue=function() return DVal("scale") end,
               setValue=function(v) DSet("detachedPortraitWinglessDragonScale", v) end }));  y = y - h
-        if not EllesmereUI._prebuilding then
+        do
             local rows = {
                 { type="slider", label="X Offset", min=-100, max=100, step=1,
                   get=function() return DVal("x") end,
@@ -2063,7 +2217,7 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
         sw:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
     end
     -- Cog on Position for X/Y offsets
-    if not EllesmereUI._prebuilding then
+    do
         local posRgn = sharedBtbToggleRow._rightRegion
         EllesmereUI.BuildInlineCog(posRgn, {
             disabled = function() local pos = SVal("btbPosition", "bottom"); return not SVal("bottomTextBar", false) or (pos ~= "detached_top" and pos ~= "detached_bottom") end,
@@ -2235,7 +2389,7 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
             SVal("btbRightContent", "none"), ctx.SDB, apply)
     end
     -- Cogwheel on BTB Left Text
-    if not EllesmereUI._prebuilding then
+    do
         local btbLRgn = sharedBtbTextRow._leftRegion
         EllesmereUI.BuildInlineCog(btbLRgn, {
             disabled = function() return not SVal("bottomTextBar", false) or SVal("btbLeftContent", "none") == "none" end,
@@ -2368,7 +2522,7 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
         UpdateBlSwatches()
     end
     -- Cogwheel on BTB Right Text
-    if not EllesmereUI._prebuilding then
+    do
         local btbRRgn = sharedBtbTextRow._rightRegion
         EllesmereUI.BuildInlineCog(btbRRgn, {
             disabled = function() return not SVal("bottomTextBar", false) or SVal("btbRightContent", "none") == "none" end,
@@ -2605,7 +2759,7 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
             SVal("btbCenterContent", "none"), ctx.SDB, function() ReloadAndUpdate(); UpdatePreview() end)
     end
     -- Cogwheel on BTB Center Text
-    if not EllesmereUI._prebuilding then
+    do
         local btbCRgn = sharedBtbCenterRow._leftRegion
         EllesmereUI.BuildInlineCog(btbCRgn, {
             disabled = function() return not SVal("bottomTextBar", false) or SVal("btbCenterContent", "none") == "none" end,
@@ -2738,7 +2892,7 @@ function ns.UFO_BuildTextBarSection(parent, y, ctx)
         UpdateBcSwatches()
     end
     -- Cogwheel on Class Icon for size/location/x/y
-    if not EllesmereUI._prebuilding then
+    do
         local ciRgn = sharedBtbCenterRow._rightRegion
         EllesmereUI.BuildInlineCog(ciRgn, {
             disabled = function() return not SVal("bottomTextBar", false) or SVal("btbClassIcon", "none") == "none" end,
@@ -2874,7 +3028,7 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
             elseif key == "standard" then
                 return COMBAT_MEDIA_P .. "combat-indicator-custom.png", 0, 1, 0, 1
             else
-                -- New full-colour combat icons (combat0..combat5), shown as-is.
+                -- New full-color combat icons (combat0..combat5), shown as-is.
                 return COMBAT_MEDIA_P .. key .. ".tga", 0, 1, 0, 1
             end
         end },
@@ -2959,35 +3113,37 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
 
     -- Eyeball toggle + cog + swatch on combat indicator dropdown
     -- (player + target only -- the focus row is dimmed with a tooltip)
-    if SVisible("combatIndicatorStyle") and not EllesmereUI._prebuilding then
+    if SVisible("combatIndicatorStyle") then
         local ciRgn = sharedAddRow1._leftRegion
-        local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
-        local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
-        local eyeBtn = CreateFrame("Button", nil, ciRgn)
-        eyeBtn:SetSize(26, 26)
-        eyeBtn:SetPoint("RIGHT", ciRgn._lastInline or ciRgn._control, "LEFT", -8, 0)
-        eyeBtn:SetFrameLevel(ciRgn:GetFrameLevel() + 5)
-        EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
-        ciRgn._lastInline = eyeBtn
-        local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-        eyeTex:SetAllPoints()
-        local function RefreshCombatEye()
-            eyeTex:SetTexture(optState.showCombatIndicatorPreview and EYE_INVISIBLE or EYE_VISIBLE)
-        end
-        RefreshCombatEye()
-        eyeBtn:SetScript("OnClick", function()
-            optState.showCombatIndicatorPreview = not optState.showCombatIndicatorPreview
+        if not EllesmereUI._prebuilding then
+            local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
+            local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
+            local eyeBtn = CreateFrame("Button", nil, ciRgn)
+            eyeBtn:SetSize(26, 26)
+            eyeBtn:SetPoint("RIGHT", ciRgn._lastInline or ciRgn._control, "LEFT", -8, 0)
+            eyeBtn:SetFrameLevel(ciRgn:GetFrameLevel() + 5)
+            EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
+            ciRgn._lastInline = eyeBtn
+            local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+            eyeTex:SetAllPoints()
+            local function RefreshCombatEye()
+                eyeTex:SetTexture(optState.showCombatIndicatorPreview and EYE_INVISIBLE or EYE_VISIBLE)
+            end
             RefreshCombatEye()
-            UpdatePreview()
-        end)
-        eyeBtn:SetScript("OnEnter", function(self)
-            EllesmereUI.SetGlyphAlpha(self, 0.7)
-            EllesmereUI.ShowWidgetTooltip(self, optState.showCombatIndicatorPreview and "Hide combat indicator preview" or "Show combat indicator preview")
-        end)
-        eyeBtn:SetScript("OnLeave", function(self)
-            EllesmereUI.SetGlyphAlpha(self, 0.4)
-            EllesmereUI.HideWidgetTooltip()
-        end)
+            eyeBtn:SetScript("OnClick", function()
+                optState.showCombatIndicatorPreview = not optState.showCombatIndicatorPreview
+                RefreshCombatEye()
+                UpdatePreview()
+            end)
+            eyeBtn:SetScript("OnEnter", function(self)
+                EllesmereUI.SetGlyphAlpha(self, 0.7)
+                EllesmereUI.ShowWidgetTooltip(self, optState.showCombatIndicatorPreview and "Hide combat indicator preview" or "Show combat indicator preview")
+            end)
+            eyeBtn:SetScript("OnLeave", function(self)
+                EllesmereUI.SetGlyphAlpha(self, 0.4)
+                EllesmereUI.HideWidgetTooltip()
+            end)
+        end
 
         -- Cog popup for combat indicator settings
         -- "healthbar" is the long-standing stored value for centered-on-health-bar,
@@ -3032,35 +3188,37 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
         -- the Heal Absorb Style row above: eye, cog, swatch at -8 gaps,
         -- with the swatch dimmed + click-blocked (never hidden, so the
         -- inline chain keeps its spacing) when the color doesn't apply.
-        local combatSwatch = EllesmereUI.BuildColorSwatch(ciRgn, ciRgn:GetFrameLevel() + 5,
-            function()
-                local cc = SGetSupported("combatIndicatorCustomColor")
-                cc = cc or { r=1, g=1, b=1 }
-                return cc.r, cc.g, cc.b, 1
-            end,
-            function(r, g, b)
-                UNIT_DB_MAP[optState.selectedUnit]().combatIndicatorCustomColor = { r=r, g=g, b=b }
-                ReloadAndUpdate(); UpdatePreview()
-            end, false, 20)
-        combatSwatch:SetPoint("RIGHT", ciRgn._lastInline or ciRgn._control, "LEFT", -8, 0)
-        ciRgn._lastInline = combatSwatch
-        local combatSwatchBlock = CreateFrame("Frame", nil, combatSwatch)
-        combatSwatchBlock:SetAllPoints()
-        combatSwatchBlock:SetFrameLevel(combatSwatch:GetFrameLevel() + 10)
-        combatSwatchBlock:EnableMouse(true)
-        combatSwatchBlock:Hide()
-        local function UpdateSwatchVisibility()
-            local colorMode = SValSupported("combatIndicatorColor", "custom")
-            local style = SValSupported("combatIndicatorStyle", "class")
-            -- All custom combat icons (combat0..5) are shown as-is, so the custom-
-            -- color swatch doesn't apply to them.
-            local isRawIcon = style:find("^combat%d") and true or false
-            local usable = colorMode == "custom" and style ~= "none" and not isRawIcon
-            combatSwatch:SetAlpha(usable and 1 or 0.3)
-            if usable then combatSwatchBlock:Hide() else combatSwatchBlock:Show() end
+        if not EllesmereUI._prebuilding then
+            local combatSwatch = EllesmereUI.BuildColorSwatch(ciRgn, ciRgn:GetFrameLevel() + 5,
+                function()
+                    local cc = SGetSupported("combatIndicatorCustomColor")
+                    cc = cc or { r=1, g=1, b=1 }
+                    return cc.r, cc.g, cc.b, 1
+                end,
+                function(r, g, b)
+                    UNIT_DB_MAP[optState.selectedUnit]().combatIndicatorCustomColor = { r=r, g=g, b=b }
+                    ReloadAndUpdate(); UpdatePreview()
+                end, false, 20)
+            combatSwatch:SetPoint("RIGHT", ciRgn._lastInline or ciRgn._control, "LEFT", -8, 0)
+            ciRgn._lastInline = combatSwatch
+            local combatSwatchBlock = CreateFrame("Frame", nil, combatSwatch)
+            combatSwatchBlock:SetAllPoints()
+            combatSwatchBlock:SetFrameLevel(combatSwatch:GetFrameLevel() + 10)
+            combatSwatchBlock:EnableMouse(true)
+            combatSwatchBlock:Hide()
+            local function UpdateSwatchVisibility()
+                local colorMode = SValSupported("combatIndicatorColor", "custom")
+                local style = SValSupported("combatIndicatorStyle", "class")
+                -- All custom combat icons (combat0..5) are shown as-is, so the custom-
+                -- color swatch doesn't apply to them.
+                local isRawIcon = style:find("^combat%d") and true or false
+                local usable = colorMode == "custom" and style ~= "none" and not isRawIcon
+                combatSwatch:SetAlpha(usable and 1 or 0.3)
+                if usable then combatSwatchBlock:Hide() else combatSwatchBlock:Show() end
+            end
+            UpdateSwatchVisibility()
+            RegisterWidgetRefresh(UpdateSwatchVisibility)
         end
-        UpdateSwatchVisibility()
-        RegisterWidgetRefresh(UpdateSwatchVisibility)
     end
     end -- _showAbsorbsCombat
 
@@ -3117,7 +3275,7 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
           disabled=raidMarkerOff, disabledTooltip="Raid Marker",
           getValue=function() return SValSupported("raidMarkerSize", 28) end,
           setValue=function(v) SSetSupported("raidMarkerSize", v) end });  y = y - h
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = sharedAddRow4._rightRegion
         local rmPosValues = { ["left"]="Left", ["center"]="Center", ["right"]="Right" }
         local rmPosOrder  = { "left", "center", "right" }
@@ -3229,7 +3387,7 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
               setValue=function(v) SSetSupported("leaderIndicatorSize", v) end });  y = y - h
         SApplySupport(sharedAddRow5._leftRegion, "leaderIndicatorEnabled")
         SApplySupport(sharedAddRow5._rightRegion, "leaderIndicatorSize")
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = sharedAddRow5._rightRegion
             local leaderPosValues = { ["topleft"]="Top Left", ["topright"]="Top Right", ["bottomleft"]="Bottom Left", ["bottomright"]="Bottom Right", ["portrait"]="Portrait" }
             local leaderPosOrder = { "topleft", "topright", "bottomleft", "bottomright", "portrait" }
@@ -3341,7 +3499,7 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
               setValue=function(v) eliteSet("eliteIndicatorSize", v) end });  y = y - h
         SApplySupport(eliteRow._leftRegion, "eliteIndicatorEnabled")
         SApplySupport(eliteRow._rightRegion, "eliteIndicatorSize")
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(eliteRow._leftRegion, { disabled = eliteIndOff, disabledTooltip = "Elite/Rare Indicator",
                 title = "Elite/Rare Indicator",
                 rows = {
@@ -3352,7 +3510,7 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
                 },
             })
         end
-        if not EllesmereUI._prebuilding then
+        do
             local elitePosValues = { ["topleft"]="Top Left", ["topright"]="Top Right", ["bottomleft"]="Bottom Left", ["bottomright"]="Bottom Right", ["portrait"]="Portrait" }
             local elitePosOrder = { "topleft", "topright", "bottomleft", "bottomright", "portrait" }
             local function stockStyle() return EllesmereUI.BlizzStyle.Get("unitframes") end
@@ -3394,70 +3552,72 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
         parent._ufEliteRow = eliteRow
     end
 
-    -- Row 5c: Faction Indicator (mode + filters cog) | Icon Size (+ position cog).
-    -- Player and target. On the player frame it is a PvP-flagged indicator
-    -- (PvP Flag defaults to Flagged Only there); Opposite Faction and Players
-    -- Only are target-only.
+    -- Row 5c: Faction/PvP Indicator | Icon Size (+ position cog). Player and
+    -- target. The dropdown is a view over the two saved keys, nothing migrated:
+    -- Never = factionIndicatorMode "off"; the other three are factionIndicatorPvP
+    -- ("only" / "dim" / "ignore"), a pick of one turning an off mode on (an
+    -- unset PvP key reads When PvP Flagged on the player, Dim on the target, as
+    -- the runtime defaults do). Target only, in the cog: Opposite Faction Only
+    -- (mode "opposite") and Players Only.
     if optState.selectedUnit == "player" or optState.selectedUnit == "target" then
         local isTarget = optState.selectedUnit == "target"
         local function factionIndOff()
             return SValSupported("factionIndicatorMode", "off") == "off"
         end
-        local modeValues, modeOrder
-        if isTarget then
-            modeValues = { off = "Off", always = "Always", opposite = "Opposite Faction" }
-            modeOrder = { "off", "always", "opposite" }
-        else
-            modeValues = { off = "Off", always = "On" }
-            modeOrder = { "off", "always" }
-        end
+        local pvpDefault = isTarget and "dim" or "only"
+        local showValues = { off = "Never", only = "When PvP Flagged", dim = "Always (Dim Unflagged)", ignore = "Always" }
+        local showOrder = { "off", "only", "dim", "ignore" }
         local factionRow
         factionRow, h = W:DualRow(parent, y,
-            { type="dropdown", text="Faction Indicator", values=modeValues, order=modeOrder,
+            { type="dropdown", text="Faction/PvP Indicator", values=showValues, order=showOrder,
               getValue=function()
-                  local v = SValSupported("factionIndicatorMode", "off")
-                  if not isTarget and v == "opposite" then v = "always" end
-                  return v
+                  -- Both keys are read every time (the Spec Overrides marks).
+                  local mode = SValSupported("factionIndicatorMode", "off")
+                  local pvp = SValSupported("factionIndicatorPvP", pvpDefault)
+                  if mode == "off" then return "off" end
+                  if pvp == "only" or pvp == "dim" then return pvp end
+                  return "ignore" -- the runtime draws any other value undimmed
               end,
               setValue=function(v)
-                  SSetSupported("factionIndicatorMode", v)
+                  if v == "off" then
+                      SSetSupported("factionIndicatorMode", "off")
+                  else
+                      -- An on mode (Opposite Faction Only included) is kept.
+                      if factionIndOff() then SDB().factionIndicatorMode = "always" end
+                      SSetSupported("factionIndicatorPvP", v)
+                  end
                   EllesmereUI:RefreshPage()
               end },
             { type="slider", text="Faction Icon Size", min=8, max=48, step=1,
-              disabled=factionIndOff, disabledTooltip="Faction Indicator",
+              disabled=factionIndOff, disabledTooltip="Faction/PvP Indicator",
               getValue=function() return SValSupported("factionIndicatorSize", 18) end,
               setValue=function(v) SSetSupported("factionIndicatorSize", v) end });  y = y - h
         SApplySupport(factionRow._leftRegion, "factionIndicatorMode")
         SApplySupport(factionRow._rightRegion, "factionIndicatorSize")
-        if not EllesmereUI._prebuilding then
-            local pvpValues = { dim = "Dim Unflagged", only = "Flagged Only", ignore = "Ignore" }
-            local pvpOrder = { "dim", "only", "ignore" }
-            local pvpDefault = isTarget and "dim" or "only"
-            local rows = {
-                { type="dropdown", label="PvP Flag", values=pvpValues, order=pvpOrder,
-                  get=function() return SValSupported("factionIndicatorPvP", pvpDefault) end,
-                  set=function(v) SSetSupported("factionIndicatorPvP", v) end },
-            }
-            if isTarget then
-                rows[#rows + 1] = { type="toggle", label="Players Only",
-                  tooltip="Hide the faction badge on faction NPCs such as guards.",
-                  get=function() return SValSupported("factionIndicatorPlayersOnly", false) == true end,
-                  set=function(v) SSetSupported("factionIndicatorPlayersOnly", v) end }
-            end
-            EllesmereUI.BuildInlineCog(factionRow._leftRegion, { disabled = factionIndOff, disabledTooltip = "Faction Indicator",
-                title = "Faction Indicator",
-                rows = rows,
+        if isTarget then
+            EllesmereUI.BuildInlineCog(factionRow._leftRegion, { disabled = factionIndOff, disabledTooltip = "Faction/PvP Indicator",
+                title = "Faction/PvP Indicator",
+                rows = {
+                    { type="toggle", label="Opposite Faction Only",
+                      tooltip="Show the badge only on units of the other faction.",
+                      get=function() return SValSupported("factionIndicatorMode", "off") == "opposite" end,
+                      set=function(v) SSetSupported("factionIndicatorMode", v and "opposite" or "always") end },
+                    { type="toggle", label="Players Only",
+                      tooltip="Hide the faction badge on faction NPCs such as guards.",
+                      get=function() return SValSupported("factionIndicatorPlayersOnly", false) == true end,
+                      set=function(v) SSetSupported("factionIndicatorPlayersOnly", v) end },
+                },
             })
         end
-        if not EllesmereUI._prebuilding then
+        do
             local factionPosValues = { ["topleft"]="Top Left", ["topright"]="Top Right", ["bottomleft"]="Bottom Left", ["bottomright"]="Bottom Right", ["portrait"]="Portrait" }
             local factionPosOrder = { "topleft", "topright", "bottomleft", "bottomright", "portrait" }
-            EllesmereUI.BuildInlineCog(factionRow._rightRegion, { disabled = factionIndOff, disabledTooltip = "Faction Indicator",
-                title = "Faction Indicator Settings",
+            EllesmereUI.BuildInlineCog(factionRow._rightRegion, { disabled = factionIndOff, disabledTooltip = "Faction/PvP Indicator",
+                title = "Faction/PvP Indicator Settings",
                 rows = {
                     { type="dropdown", label="Icon Style",
                       values=EllesmereUI.FACTION_ART_LABELS, order=EllesmereUI.FACTION_ART_ORDER,
-                      get=function() return SValSupported("factionIndicatorStyle", "pvp") end,
+                      get=function() return SValSupported("factionIndicatorStyle", "crest") end,
                       set=function(v) SSetSupported("factionIndicatorStyle", v) end },
                     { type="dropdown", label="Position", values=factionPosValues, order=factionPosOrder,
                       get=function() return SValSupported("factionIndicatorPosition", "topright") end,
@@ -3471,21 +3631,68 @@ function ns.UFO_BuildExtrasSection(parent, y, ctx)
                 },
             })
         end
-        -- Size only: the player's mode list (Off/On) differs from the target's
-        -- (with Opposite Faction), so the mode has no clean cross-frame copy.
+        -- Size only: the dropdown is two keys with per-frame defaults, and
+        -- Opposite Faction Only is the target's alone.
         if not EllesmereUI._prebuilding then
             BuildLeaderSync(factionRow._rightRegion, "factionIndicatorSize", 18,
                 "Apply Faction Icon Size to all Frames")
         end
-        ns._ufAddPvEye(factionRow._leftRegion, "faction", "faction indicator")
+        ns._ufAddPvEye(factionRow._leftRegion, "faction", "faction/PvP indicator")
         parent._ufFactionRow = factionRow
+
+        -- Row 5d (player only: the countdown is the player's own): PvP Flagged
+        -- Timer, the side of the badge its text sits on | Timer Text Size (+ X/Y
+        -- cog). Off by default (None); needs the indicator.
+        if not isTarget then
+            local function timerOff()
+                return factionIndOff() or SValSupported("factionIndicatorTimer", "none") == "none"
+            end
+            local function timerTip()
+                return factionIndOff() and "Faction/PvP Indicator" or "PvP Flagged Timer"
+            end
+            local timerRow
+            timerRow, h = W:DualRow(parent, y,
+                { type="dropdown", text="PvP Flagged Timer",
+                  tooltip="Time left before your PvP flag drops, beside the Faction/PvP Indicator.",
+                  values={ none = "None", left = "Left", right = "Right", top = "Top", bottom = "Bottom" },
+                  order={ "none", "left", "right", "top", "bottom" },
+                  disabled=factionIndOff, disabledTooltip="Faction/PvP Indicator",
+                  getValue=function() return SValSupported("factionIndicatorTimer", "none") end,
+                  setValue=function(v)
+                      SSetSupported("factionIndicatorTimer", v)
+                      EllesmereUI:RefreshPage()
+                  end },
+                { type="slider", text="Timer Text Size", min=6, max=40, step=1,
+                  disabled=timerOff, disabledTooltip=timerTip,
+                  getValue=function() return SValSupported("factionIndicatorTimerSize", 12) end,
+                  setValue=function(v) SSetSupported("factionIndicatorTimerSize", v) end });  y = y - h
+            SApplySupport(timerRow._leftRegion, "factionIndicatorTimer")
+            SApplySupport(timerRow._rightRegion, "factionIndicatorTimerSize")
+            EllesmereUI.BuildInlineCog(timerRow._rightRegion, { disabled = timerOff, disabledTooltip = timerTip,
+                title = "PvP Flagged Timer Settings",
+                rows = {
+                    { type="slider", label="X Offset", min=-200, max=200, step=1,
+                      get=function() return SValSupported("factionIndicatorTimerX", 0) end,
+                      set=function(v) SSetSupported("factionIndicatorTimerX", v) end },
+                    { type="slider", label="Y Offset", min=-200, max=200, step=1,
+                      get=function() return SValSupported("factionIndicatorTimerY", 0) end,
+                      set=function(v) SSetSupported("factionIndicatorTimerY", v) end },
+                },
+            })
+            ns._ufAddPvEye(timerRow._leftRegion, "pvpTimer", "PvP flagged timer")
+            parent._ufPvpTimerRow = timerRow
+        end
     end
 
-    -- Row 6: Rested Indicator | blank (player only): Quality of Life's EXTRAS
-    -- row mirrored, the same account-wide settings (EllesmereUI.RestedIndicatorCfg).
+    -- Row 6: Rested Indicator | Self Ping Only (player only). Rested mirrors
+    -- Quality of Life's EXTRAS row (EllesmereUI.RestedIndicatorCfg).
     if optState.selectedUnit == "player" then
         local restRow
-        restRow, h = W:DualRow(parent, y, EllesmereUI.RestedIndicatorCfg(), EllesmereUI.BlankRowCfg())
+        restRow, h = W:DualRow(parent, y, EllesmereUI.RestedIndicatorCfg(),
+            { type="toggle", text="Self Ping Only",
+              tooltip="Pinging anywhere on the player frame pings you, as the portrait does, instead of calling out your health.",
+              getValue=function() return db.profile.player.pingSelfOnly == true end,
+              setValue=function(v) db.profile.player.pingSelfOnly = v end })
         y = y - h
         EllesmereUI.BuildRestedIndicatorCog(restRow._leftRegion)
     end

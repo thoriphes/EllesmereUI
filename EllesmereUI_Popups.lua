@@ -147,7 +147,7 @@ end
 
 -- Announcement action button, 38 tall: primary is bright, secondary dim. opts: w;
 -- secondary; hoverA (secondary border alpha on hover); hoverRGB {r,g,b} (secondary
--- hovers to that colour instead, border alpha 0.95); square (the square outline,
+-- hovers to that color instead, border alpha 0.95); square (the square outline,
 -- for a window that is square by design). The caller anchors it.
 function EllesmereUI.MakeActionButton(parent, font, text, r, g, b, opts)
     local secondary, hoverRGB = opts.secondary, opts.hoverRGB
@@ -188,8 +188,8 @@ function EllesmereUI.MakeActionButton(parent, font, text, r, g, b, opts)
 end
 
 -- Fading popup button (confirm and input popups): 125x27; text and border lerp from the
--- default to the hover colours over 0.1s. Exposes btn._lbl, btn._resetAnim and
--- btn._setColors (new colours, same argument order as the defaults below).
+-- default to the hover colors over 0.1s. Exposes btn._lbl, btn._resetAnim and
+-- btn._setColors (new colors, same argument order as the defaults below).
 -- square (optional): the square outline, for a window that is square by design.
 function EllesmereUI.MakePopupButton(parent, anchorPoint, anchorTo, anchorRef, xOff, yOff, defR, defG, defB, defA, hovR, hovG, hovB, hovA, bDefR, bDefG, bDefB, bDefA, bHovR, bHovG, bHovB, bHovA, square)
     local FADE_DUR = 0.1
@@ -232,7 +232,7 @@ function EllesmereUI.MakePopupButton(parent, anchorPoint, anchorTo, anchorRef, x
 
     btn._lbl = lbl
     btn._resetAnim = function() progress = 0; target = 0; Apply(0); btn:SetScript("OnUpdate", nil) end
-    -- Replaces the default and hover colours and repaints at the current hover progress.
+    -- Replaces the default and hover colors and repaints at the current hover progress.
     btn._setColors = function(...)
         defR, defG, defB, defA, hovR, hovG, hovB, hovA,
             bDefR, bDefG, bDefB, bDefA, bHovR, bHovG, bHovB, bHovA = ...
@@ -263,6 +263,7 @@ EllesmereUI._onScaleChanged[#EllesmereUI._onScaleChanged + 1] = RefreshPopupScal
 -------------------------------------------------------------------------------
 --  Custom Confirmation Popup  (matches EllesmereUI aesthetic)
 --  Usage:  EllesmereUI:ShowConfirmPopup({ title, message, confirmText, cancelText, onConfirm, onCancel })
+--          confirmClick = a Blizzard button the confirm clicks securely; confirmGate() false skips it.
 -------------------------------------------------------------------------------
 local confirmPopup
 
@@ -618,7 +619,7 @@ function EllesmereUI:ShowConfirmPopup(opts)
     local overflowH = math.max(0, textH - 44)
 
     -- Optional type-to-confirm gate (lazy, like the macro overlay): the user must type the given
-    -- word (case-insensitive) before confirm accepts clicks. NOT supported with confirmMacro (secure overlay clicks cannot be gated).
+    -- word (case-insensitive) before confirm accepts clicks. NOT supported with confirmMacro/confirmClick (secure overlay clicks cannot be gated).
     local typeH = 0
     popup._typeGateOn = nil
     popup._padGate = nil
@@ -741,9 +742,10 @@ function EllesmereUI:ShowConfirmPopup(opts)
         if opts.onCancel then opts.onCancel() end
     end)
 
-    -- Macro overlay: a protected action (/logout) needs a hardware event routed
-    -- through InsecureActionButtonTemplate.
-    if opts.confirmMacro then
+    -- Action overlay: a protected action (confirmMacro: a macro text; confirmClick:
+    -- a click on a Blizzard button) needs a hardware event routed through
+    -- InsecureActionButtonTemplate, which acts only out of combat.
+    if opts.confirmMacro or opts.confirmClick then
         if not popup._macroOverlay then
             local ov = CreateFrame("Button", "EUIConfirmMacroOverlay", popup._confirmBtn, "InsecureActionButtonTemplate")
             ov:SetAllPoints(popup._confirmBtn)
@@ -756,6 +758,12 @@ function EllesmereUI:ShowConfirmPopup(opts)
             -- Forward hover visuals to the real button underneath
             ov:SetScript("OnEnter", function() popup._confirmBtn:GetScript("OnEnter")(popup._confirmBtn) end)
             ov:SetScript("OnLeave", function() popup._confirmBtn:GetScript("OnLeave")(popup._confirmBtn) end)
+            -- confirmGate false: the action is dropped for this click. Cleared
+            -- first, so a gate that raises leaves no action armed.
+            ov:SetScript("PreClick", function(self)
+                self:SetAttribute("type", nil)
+                if not self._gate or self._gate() then self:SetAttribute("type", self._type) end
+            end)
             -- Stored callback, not a new hook per ShowConfirmPopup call (they accumulate).
             ov:HookScript("OnClick", function()
                 popup._dimmer:Hide()
@@ -764,8 +772,10 @@ function EllesmereUI:ShowConfirmPopup(opts)
             popup._macroOverlay = ov
         end
         local ov = popup._macroOverlay
-        ov:SetAttribute("type", "macro")
+        ov._type = opts.confirmMacro and "macro" or "click"
         ov:SetAttribute("macrotext", opts.confirmMacro)
+        ov:SetAttribute("clickbutton", opts.confirmClick)
+        ov._gate = opts.confirmGate
         ov._postAction = opts.onConfirm
         ov:Show()
         -- Hide the normal confirm click so it doesn't double-fire
@@ -940,7 +950,7 @@ end
 --          in previewColor) and a hint line. complete(text, cursor) returns
 --          items { text, label, desc, detail }, from, to: a suggestion list under the input
 --          (Up/Down select, Tab inserts, Esc closes it). messageSize sets the message size,
---          messageColor { r, g, b[, a] } its colour (a red note). warning adds an
+--          messageColor { r, g, b[, a] } its color (a red note). warning adds an
 --          orange line under the input, redWarning a red one below it. numeric takes digits
 --          only. validate(text) runs on a confirm: a message it returns shows in red under
 --          the input and keeps the popup open. checkbox (a label) adds a box above the
@@ -1334,10 +1344,10 @@ function EllesmereUI:ShowInputPopup(opts)
     popup._info._tip = opts.infoTooltip
     popup._info._tipOpts = opts.infoTooltipOpts
     popup._info:SetShown(opts.infoTooltip ~= nil)
-    -- Optional colour swatch left of the input (opts.swatch = { get, onClick,
+    -- Optional color swatch left of the input (opts.swatch = { get, onClick,
     -- tooltip }), built on its first use. It is painted from get() -> r, g, b
     -- as the popup shows and each time the caller's onClick(swatch, repaint)
-    -- calls repaint(). The caller opens the colour picker, and an open one
+    -- calls repaint(). The caller opens the color picker, and an open one
     -- closes with the popup: before a confirm runs its callback, and when the
     -- popup is dismissed (so the picker's own cancel comes first).
     local sw = opts.swatch

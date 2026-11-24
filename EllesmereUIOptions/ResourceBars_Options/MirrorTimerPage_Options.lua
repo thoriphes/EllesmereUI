@@ -4,7 +4,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Resource Bars options: the OTHER BARS section at the bottom of the Cast
 --  Bar page (Breath, Fatigue, Feign Death and the countdowns). The bars are
 --  drawn like the Player Cast Bar (EUI_ResourceBars_MirrorTimer.lua), so a
---  bar's own settings are its switch, its fill colour and, in its cog, the
+--  bar's own settings are its switch, its fill color and, in its cog, the
 --  Low Warning.
 -------------------------------------------------------------------------------
 local ns = EllesmereUI._ModuleNS["EllesmereUIResourceBars"]
@@ -44,10 +44,9 @@ function ns.ERB_BuildTimerBarRows(parent, y)
             end }
     end
 
-    -- The Low Warning cog, nearest the switch, and the fill colour swatch left
+    -- The Low Warning cog, nearest the switch, and the fill color swatch left
     -- of it, on the bar's half of the row.
     local function Extras(rgn, K)
-        if EllesmereUI._prebuilding then return end
         local id = K.id
         local off = function() local c = C(id); return not (c and c.enabled) end
         EllesmereUI.BuildInlineCog(rgn, { title = K.name, disabled = off, disabledTooltip = K.name, rows = {
@@ -61,6 +60,7 @@ function ns.ERB_BuildTimerBarRows(parent, y)
               get = function() local c = C(id); return c and c.lowWarnAt or 30 end,
               set = function(v) local c = C(id); if c then c.lowWarnAt = v; Refresh() end end },
         } })
+        if EllesmereUI._prebuilding then return end
         EllesmereUI.BuildInlineSwatches(rgn, {
             { tooltip = "Fill Color", hasAlpha = true, disabledTooltip = K.name, disabled = off,
               getValue = function()
