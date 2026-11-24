@@ -292,13 +292,49 @@ end
 ns._cachedTargetPlate = nil
 ns._cachedFocusPlate  = nil
 
--- Value (1/0) of the class-colour CVar for the friendly player names Blizzard draws.
--- Name-only mode follows Class Colored Health Bar (its White / Class swatches). In
--- full-plate mode Blizzard draws only the protected instance plates, and Class
--- Colored Names turns it on as well so those names match ours.
+-- Name Color: whether friendly players' names take the class color in a style
+-- (nameOnly: Name Only, else the health bar plates). friendlyNameColorMode is
+-- "class" or "custom"; while it is unset each style reads a key of its own, Name
+-- Only the Class Colored Health Bar key (classColorFriendly) and the health bar
+-- plates Class Colored Names (friendlyNameClassColor).
+function ns.FriendlyNameClass(db, nameOnly)
+    local mode = db and db.friendlyNameColorMode
+    if mode == "class" then return true end
+    if mode == "custom" then return false end
+    if nameOnly then return not db or db.classColorFriendly ~= false end
+    return db ~= nil and db.friendlyNameClassColor == true
+end
+
+-- Whether the player stands inside a dungeon, raid, scenario, arena or
+-- battleground. GetInstanceInfo reports the zone, not the group: a group in
+-- the open world reads "none".
+function ns.InFriendlyInstance()
+    local _, iType = GetInstanceInfo()
+    return iType == "party" or iType == "raid" or iType == "scenario" or iType == "arena" or iType == "pvp"
+end
+
+-- Whether friendly players show as Name Only right now: the Name Only style, or
+-- the Nameplate style with Name Only in Instances while inside an instance.
+function ns.FriendlyNameOnlyNow(db)
+    if db.friendlyNameOnly ~= false then return true end
+    return db.friendlyNameOnlyInInstances == true and ns.InFriendlyInstance()
+end
+
+-- Value (1/0) of the class-color CVar for the friendly player names Blizzard draws
+-- (Name Only's names, and the protected instance plates of the health bar style):
+-- the Name Color pick. While that is unset: on with Class Colored Health Bar, and in
+-- the health bar style with Class Colored Names as well, so those names match ours.
 function ns.FriendlyNameClassCVar(db)
-    local on = db.classColorFriendly ~= false
-        or (db.friendlyNameOnly == false and db.friendlyNameClassColor == true)
+    local mode = db.friendlyNameColorMode
+    local on
+    if mode == "class" or mode == "custom" then
+        on = mode == "class"
+    else
+        -- The saved style, not ns.FriendlyNameOnlyNow: under Name Only in
+        -- Instances the Nameplate style's names keep their own color rule.
+        on = db.classColorFriendly ~= false
+            or (db.friendlyNameOnly == false and db.friendlyNameClassColor == true)
+    end
     return on and 1 or 0
 end
 
@@ -319,11 +355,11 @@ local function SetupAuraCVars()
     end
     do
         local db = p or defaults
-        local nameOnly = (db.friendlyNameOnly ~= false)
+        local nameOnly = ns.FriendlyNameOnlyNow(db)
         local showPlayers = (db.showFriendlyPlayers ~= false)
         local showNPCs = (db.showFriendlyNPCs == true)
         -- Friendly player CVars are written ONLY while EUI manages friendly player nameplates;
-        -- with "Show EUI Friendly Player Nameplates" off we relinquish them entirely to
+        -- under the Blizzard Default Friendly Nameplate Style we relinquish them entirely to
         -- Blizzard's own settings. Friendly NPC and enemy pet CVars are always managed.
         if showPlayers then
             EllesmereUI.SetCVar("nameplateShowOnlyNameForFriendlyPlayerUnits", nameOnly and 1 or 0, "EllesmereUINameplates")
@@ -347,7 +383,10 @@ local function SetupAuraCVars()
             EllesmereUI.SetCVar("ShowClassColorInFriendlyNameplate", (db.classColorFriendly ~= false) and 1 or 0, "EllesmereUINameplates")
         end
         EllesmereUI.SetCVar("ShowClassColorInNameplate", 1, "EllesmereUINameplates")
-        EllesmereUI.SetCVar("nameplateSize", 3, "EllesmereUINameplates")
+        -- Blizzard Nameplate Size (the Friendly Nameplate Settings cog): Blizzard reads it at load, so a change applies on reload.
+        local npSize = tonumber(db.nameplateSize) or 3
+        if npSize < 1 or npSize > 5 then npSize = 3 end
+        EllesmereUI.SetCVar("nameplateSize", math.floor(npSize + 0.5), "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateShowAll", 1, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateMinScale", 1, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateOverlapH", 1, "EllesmereUINameplates")
@@ -358,7 +397,8 @@ local function SetupAuraCVars()
         EllesmereUI.SetCVar("nameplateMaxAlphaDistance", 40, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateMinAlpha", 0.6, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateMinAlphaDistance", -100000, "EllesmereUINameplates")
-        EllesmereUI.SetCVar("nameplateMaxDistance", 60, "EllesmereUINameplates")
+        -- Forever caps this cvar at 45; a higher value shortens its plate range
+        EllesmereUI.SetCVar("nameplateMaxDistance", EllesmereUI.IS_FOREVER and 45 or 60, "EllesmereUINameplates")
         EllesmereUI.SetCVar("nameplateMaxScale", 1, "EllesmereUINameplates")
         -- Neutralize Blizzard's selected-target scaling: the EUI plate is a child of the base
         -- nameplate, so Blizzard's scaling shows through our own SetScale (min/max pinned to 1
@@ -380,17 +420,9 @@ local function SetupAuraCVars()
     end
     -- Apply stacking state via the Midnight bitfield CVar.
     ns.RefreshStackingMotion()
+    -- One sizing path: the hitbox pass.
     local function ApplyNamePlateClickArea()
-        if InCombatLockdown() then return end
-        local db = p or defaults
-        local sx = (db.hitboxScaleX or 100) / 100
-        if C_NamePlate and C_NamePlate.SetNamePlateSize then
-            C_NamePlate.SetNamePlateSize(GetHealthBarWidth() * sx, ns.NP_HitboxHeight(db))
-        end
-        if C_NamePlateManager and C_NamePlateManager.SetNamePlateHitTestInsets and Enum and Enum.NamePlateType then
-            C_NamePlateManager.SetNamePlateHitTestInsets(Enum.NamePlateType.Enemy, -10000, -10000, -10000, -10000)
-            C_NamePlateManager.SetNamePlateHitTestInsets(Enum.NamePlateType.Friendly, -10000, -10000, -10000, -10000)
-        end
+        ns.RefreshHitboxSize()
     end
     ApplyNamePlateClickArea()
     -- Prevent Blizzard resetting nameplate sizes on display changes (jitter).
@@ -431,6 +463,36 @@ local function SetupAuraCVars()
         end)
     end
     ns.ApplyNamePlateClickArea = ApplyNamePlateClickArea
+end
+
+--- Pet and minion nameplate CVars: the two pet toggles' own, never the login or
+--- zone-in pass. Those CVars default ON in the client, and EUI never owned the
+--- minion ones, so writing them on every login (or 0 in every instance) hid
+--- minion plates for nearly everyone. Only a toggle's click calls it, and an
+--- unchosen toggle (nil) is never written. kind: "friendly", "enemy", or nil
+--- for both.
+function ns.ApplyPetCVars(kind)
+    -- Nameplate CVars are protected in combat: run that toggle's write when it
+    -- ends (one queued write per side, so flipping both in a fight lands both).
+    if InCombatLockdown() then
+        local key = kind == "friendly" and "ApplyPetCVarsFriendly"
+            or kind == "enemy" and "ApplyPetCVarsEnemy" or "ApplyPetCVars"
+        ns.CombatQueue.Defer(key, function() ns.ApplyPetCVars(kind) end)
+        return
+    end
+    local db = p or defaults
+    if kind ~= "enemy" and db.showFriendlyPets ~= nil then
+        local v = db.showFriendlyPets == true and 1 or 0
+        EllesmereUI.SetCVar("nameplateShowFriendlyPlayerMinions", v, "EllesmereUINameplates")
+        EllesmereUI.SetCVar("nameplateShowFriendlyMinions", v, "EllesmereUINameplates")
+        EllesmereUI.SetCVar("nameplateShowFriendlyPets", v, "EllesmereUINameplates")
+        EllesmereUI.SetCVar("UnitNameFriendlyMinionName", v, "EllesmereUINameplates")
+    end
+    -- Enemy pets only: the enemy minion plates and their name CVar are the
+    -- client's own, as they were before this option existed.
+    if kind ~= "friendly" and db.showEnemyPets ~= nil then
+        EllesmereUI.SetCVar("nameplateShowEnemyPets", db.showEnemyPets == true and 1 or 0, "EllesmereUINameplates")
+    end
 end
 
 I.NotifyCastEnded, I.NotifyCastStarted = NotifyCastEnded, NotifyCastStarted

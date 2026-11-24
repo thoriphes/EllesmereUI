@@ -29,9 +29,11 @@ end
 
 --------------------------------------------------------------------------------
 --  Fonts (module surface "mythicTimer": family/outline/shadow are global,
---  only sizes are per-bar settings).
+--  only sizes are per-bar settings). A bar's target text names a player, so
+--  the bar texts take a font family (Cyrillic, Korean and Chinese names
+--  draw); no plain SetFont may reach them after it.
 --------------------------------------------------------------------------------
-local function SetFSFont(fs, size) EllesmereUI.ApplyModuleFont(fs, nil, size, "mythicTimer") end
+local function SetFSFont(fs, size) EllesmereUI.ApplyModuleFontFamily(fs, nil, size, "mythicTimer") end
 
 --------------------------------------------------------------------------------
 --  State: two bar objects, built lazily. `bars.target` / `bars.focus`.
@@ -127,7 +129,9 @@ local function BuildBarChrome(which, parent)
     bar.shieldFrame = CreateFrame("Frame", nil, holder)
     bar.shieldFrame:SetPoint("CENTER", holder, "LEFT", 0, 0)
     bar.shieldFrame:SetFrameLevel(holder:GetFrameLevel() + 5)
-    bar.shieldFrame:Hide()
+    -- Shown at alpha 0: the cast color pass shows the shield by its alpha
+    -- alone (an uninterruptible cast).
+    bar.shieldFrame:SetAlpha(0)
     bar.shield = bar.shieldFrame:CreateTexture(nil, "OVERLAY")
     bar.shield:SetAllPoints()
     bar.shield:SetAtlas("nameplates-InterruptShield")
@@ -922,7 +926,7 @@ end
 --  sample). Plain SetValue on a bar with no armed timer -- nothing reads
 --  units.
 --------------------------------------------------------------------------------
--- The static content alone: icon, texts, colour, fill. Shared by the on-screen
+-- The static content alone: icon, texts, color, fill. Shared by the on-screen
 -- preview (the live bar) and the options header sample (a chrome-only bar).
 local function PaintSampleCast(bar, which, tf)
     bar.icon:SetTexture(134400)

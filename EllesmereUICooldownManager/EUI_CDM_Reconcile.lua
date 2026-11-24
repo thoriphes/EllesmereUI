@@ -111,6 +111,50 @@ function ns.ReseedAssignedSpellsFromLiveIcons(cdUtilOnly)
     local ghostList = ghostSd and ghostSd.assignedSpells
     local FindVar = ns.FindVariantIndexInList
 
+    -- A slot can show another spell than its own (the active seal in WoW
+    -- Forever's Seals slot, Wither in an Immolate slot): it is placed when its
+    -- OWN spell (cooldownInfo.spellID, the frame cache's baseSpellID) is on a
+    -- bar, the rule of the import hide pass (ns.MigrateSpecToBarFilterModelV6).
+    -- Returns this bar's index of the own spell, true for another bar or the
+    -- hidden list, nil when no bar lists it or the frame shows its own spell.
+    -- The rank keys of the other bars' spells (WoW Forever, typed custom IDs
+    -- aside) are read on the first slot that needs them.
+    local ownerNames
+    local function OwnPlacement(fc, sid, list)
+        local own = fc and not fc.replacesCd and fc.baseSpellID
+        if type(own) ~= "number" or (issecretvalue and issecretvalue(own)) or own <= 0
+           or own == sid then
+            return nil
+        end
+        local at = FindVar and FindVar(list, own)
+        if at then return at end
+        if ownerOf and ns.ResolveVariantValue and ns.ResolveVariantValue(ownerOf, own) then return true end
+        local RankName = ns.CDMRankName
+        if RankName then
+            if ownerNames == nil then
+                ownerNames = {}
+                local bsAll = aprof and aprof.barSpells
+                if bsAll then
+                    for k, bsd in pairs(bsAll) do
+                        if k ~= GHOST_CD_BAR_KEY
+                           and type(bsd) == "table" and type(bsd.assignedSpells) == "table" then
+                            for _, csid in ipairs(bsd.assignedSpells) do
+                                local n = type(csid) == "number" and csid > 0
+                                    and not (bsd.customSpellIDs and bsd.customSpellIDs[csid])
+                                    and RankName(csid)
+                                if n then ownerNames[n] = true end
+                            end
+                        end
+                    end
+                end
+            end
+            local n = RankName(own)
+            if n and ownerNames[n] then return true end
+        end
+        if ghostList and FindVar and FindVar(ghostList, own) then return true end
+        return nil
+    end
+
     -- Cd-claimed collided-buff slots (cd-claim markers in assignedSpells, see ns.CdClaimMarker)
     -- are tracked by COOLDOWN ID, not by the shared spellID. Materializing such an icon's shared
     -- spellID here would, at the next route rebuild, drag the UNCLAIMED twin onto the claiming bar
@@ -228,9 +272,18 @@ function ns.ReseedAssignedSpellsFromLiveIcons(cdUtilOnly)
                     if type(sid) == "number" and sid ~= 0 then
                         -- FindVar handles negatives by exact scan internally, and variant matching is a strict superset of exact equality for stored positives -- no exact fallback needed.
                         local at = FindVar and FindVar(sd.assignedSpells, sid)
+                        -- A slot placed by its own spell (OwnPlacement above):
+                        -- its own entry is its slot here; listed elsewhere, nothing is added.
+                        local ownPlaced
+                        if not at and sid > 0 then
+                            ownPlaced = OwnPlacement(fc, sid, sd.assignedSpells)
+                            if type(ownPlaced) == "number" then at = ownPlaced end
+                        end
                         if at then
                             -- Already has a slot (any variant form, or a custom trinket/item marker): advance the cursor so the next NEW spell lands after it, matching on-screen order.
                             insertPos = at
+                        elseif ownPlaced then
+                            -- The slot is listed under its own spell on another bar or hidden.
                         elseif sid > 0 then
                             -- Never materialize a hidden (ghosted) spell, or a spell a DIFFERENT bar already owns (variant-aware).
                             local owner = ownerOf and ns.ResolveVariantValue
@@ -312,6 +365,37 @@ do
     end
 end
 
+-- Import protection. The profile import writes, per imported spec, the set of
+-- spell IDs its layout places (aprof._importKeep). An entry of that set is
+-- never dropped by the two automatic passes below until Blizzard tracks it:
+-- a layout imported before its Blizzard layout is picked keeps its spells,
+-- and once Blizzard tracks a spell the normal rules judge it again. An entry
+-- is matched by its base spell on both sides (the options normalize pass
+-- rewrites stored entries to their base) and, on WoW Forever, by rank name.
+-- Both functions walk the small set, and only for an entry about to be
+-- dropped or just seen tracked; a spec with no set costs one table read.
+local function ImportKeepKey(keep, id)
+    if keep[id] then return id end
+    local NormalizeToBase, RankName = ns.NormalizeToBase, ns.CDMRankName
+    local nb = NormalizeToBase(id)
+    local rn = RankName and RankName(id)
+    for k in pairs(keep) do
+        if k == nb or NormalizeToBase(k) == nb then return k end
+        if rn and RankName(k) == rn then return k end
+    end
+    return nil
+end
+
+-- Blizzard tracks the entry: its protection ends (every key that names it).
+local function ImportKeepRelease(aprof, keep, id)
+    local k = ImportKeepKey(keep, id)
+    while k do
+        keep[k] = nil
+        k = ImportKeepKey(keep, id)
+    end
+    if not next(keep) then aprof._importKeep = nil end
+end
+
 --- ns.ReconcileAssignedSpellDrops(barKey): single resident implementation of
 --- the 3-way keep/drop pass (formerly inline in the options panel's
 --- EnsureAssignedSpells). Interactive options edits call this directly;
@@ -364,7 +448,10 @@ function ns.ReconcileAssignedSpellDrops(barKey)
     local NormalizeToBase = ns.NormalizeToBase
     local ResolveToLive   = ns.ResolveToLive
 
-    local displayed
+    -- WoW Forever: an entry listed under another rank of a shown spell is
+    -- shown too (ns.CDMRankName), as the presence check that kept it found it.
+    local RankName = ns.CDMRankName
+    local displayed, displayedNames
     for _, e in ipairs(ns.EnumerateCDMViewerSpells(false)) do
         local sid = e.sid
         if type(sid) == "number" and sid > 0 then
@@ -373,6 +460,11 @@ function ns.ReconcileAssignedSpellDrops(barKey)
             displayed[NormalizeToBase(sid)] = true
             local ov = ResolveToLive(sid)
             if ov then displayed[ov] = true end
+            local n = RankName and RankName(sid)
+            if n then
+                displayedNames = displayedNames or {}
+                displayedNames[n] = true
+            end
         end
     end
     if not (displayed and next(displayed)) then return sd end
@@ -522,8 +614,15 @@ function ns.ReconcileAssignedSpellDrops(barKey)
         end
     end
 
-    -- WoW Forever's full catalogue set, built on first need (see below).
-    local foreverListed
+    -- WoW Forever's full catalogue set and default-hidden set, built on first
+    -- need (see below). A catalogue it cannot read keeps the spell (fails open).
+    local foreverListed, defaultHidden
+    local function DefaultHidden(id)
+        if not EllesmereUI.IS_FOREVER then return false end
+        if defaultHidden == nil then defaultHidden = ns.CDMDefaultHiddenSet() or false end
+        return not defaultHidden or ns.CDMIsDefaultHidden(defaultHidden, id)
+    end
+    local importKeep = aprof._importKeep
     local writeIdx = 1
     for readIdx = 1, #sd.assignedSpells do
         local id = sd.assignedSpells[readIdx]
@@ -538,7 +637,10 @@ function ns.ReconcileAssignedSpellDrops(barKey)
            and not (sdurs and sdurs[id])
            and not (groups and groups[id])
            and not (hosted and hosted[id]
-                    and not (hostedMarkerFor and hostedMarkerFor[id])) then
+                    and not (hostedMarkerFor and hostedMarkerFor[id]))
+           -- Drawn by an aura icon of ours (a registered provider's spell ID):
+           -- user-added like a racial, never "owned but not displayed".
+           and not (ns.CDM_AuraIconKeeps and ns.CDM_AuraIconKeeps(id)) then
             -- Plain Blizzard cooldown. Keep if still displayed OR if the
             -- player no longer HAS the spell (talented out): a talented-out
             -- cooldown must hold its rank so it returns to the SAME slot
@@ -547,14 +649,17 @@ function ns.ReconcileAssignedSpellDrops(barKey)
             -- genuinely user-cleared -> drop.
             local shown = displayed[id] or displayed[NormalizeToBase(id)]
                           or displayed[ResolveToLive(id)]
+                          or (displayedNames ~= nil and displayedNames[RankName(id) or false] == true)
             -- IsPlayerSpell is guarded (nil in some contexts): if
             -- unavailable, `have` is falsy so the spell is treated as
             -- untalented (kept unless the catalog says otherwise).
             local have = IsPlayerSpell and (IsPlayerSpell(id)
                          or IsPlayerSpell(NormalizeToBase(id))
                          or IsPlayerSpell(ResolveToLive(id)))
+            local tracked = false
             if shown then
                 keep = true
+                tracked = true
             elseif catalogSet
                    and (catalogSet[id] or catalogSet[NormalizeToBase(id)]
                         or catalogSet[ResolveToLive(id)]) then
@@ -562,6 +667,11 @@ function ns.ReconcileAssignedSpellDrops(barKey)
                 -- untalented, conditionally pooled, or a BASE id whose
                 -- tracked cooldown is a talent override the player dropped.
                 -- Hold rank.
+                keep = true
+                tracked = true
+            elseif DefaultHidden(id) then
+                -- WoW Forever: in Not Displayed by Blizzard's default, not by
+                -- the player: it holds its slot until displayed.
                 keep = true
             elseif have then
                 -- Owned but no longer tracked: the user cleared it from
@@ -588,6 +698,16 @@ function ns.ReconcileAssignedSpellDrops(barKey)
                 -- rank as the safe fallback so a transient gap never wipes
                 -- an untalented assignment.
                 keep = true
+            end
+            -- An imported layout's spell holds its place until Blizzard
+            -- tracks it (ImportKeepKey above); tracked, it is judged as any
+            -- other from the next pass on.
+            if importKeep then
+                if tracked then
+                    ImportKeepRelease(aprof, importKeep, id)
+                elseif not keep and ImportKeepKey(importKeep, id) then
+                    keep = true
+                end
             end
         elseif sd.nativeItems and sd.nativeItems[id] and ns.IsItemPresetKey(id) then
             -- An entry the reseed listed for Blizzard's own item row: it goes
@@ -756,7 +876,7 @@ function ns.CDMGetProviderDisplayData(provider)
     local ordered = displayData.orderedCooldownIDs
     local infoByID = displayData.cooldownInfoByID
     if type(ordered) ~= "table" or type(infoByID) ~= "table" then return nil, nil end
-    return ordered, infoByID
+    return ordered, infoByID, displayData.cooldownDefaultsByID
 end
 
 -- Active BLIZZARD CDM layout id (the user's "preset"), not to be confused with
@@ -938,6 +1058,65 @@ function ns.CDMForeverListedSet()
     end
     if not next(set) then return nil end
     return set
+end
+
+-- WoW Forever: which cooldown and utility entries are in Not Displayed only by
+-- Forever's catalogue default (current category hidden and equal to the
+-- default), keyed by spell id, base and live forms and rank name: true for
+-- those, false for every other cooldown entry, so a key two entries share never
+-- reads as default-hidden. Blizzard saves no category equal to its default, so
+-- an entry the player showed and hid again reads as default-hidden too. nil off
+-- Forever or while the catalogue is not readable. Read with ns.CDMIsDefaultHidden.
+function ns.CDMDefaultHiddenSet()
+    if not EllesmereUI.IS_FOREVER then return nil end
+    local settings = _G.CooldownViewerSettings
+    if not settings or type(settings.GetDataProvider) ~= "function" then return nil end
+    local okP, provider = pcall(settings.GetDataProvider, settings)
+    if not okP or type(provider) ~= "table" then return nil end
+    local _, infoByID, defaultsByID = ns.CDMGetProviderDisplayData(provider)
+    if not infoByID then return nil end
+    local set = {}
+    -- cooldownDefaultsByID is Blizzard's internal table, not an API: without it
+    -- no entry reads as default-hidden, and an entry it lacks is left out.
+    if type(defaultsByID) ~= "table" then return set end
+    local evc = Enum.CooldownViewerCategory
+    local hidden = evc.HiddenActive
+    local NormalizeToBase, ResolveToLive, RankName = ns.NormalizeToBase, ns.ResolveToLive, ns.CDMRankName
+    local function Mark(k, dh)
+        if k ~= nil and set[k] ~= false then set[k] = dh end
+    end
+    local function Add(v, dh)
+        if _IsUsableSID(v) then
+            Mark(v, dh)
+            Mark(NormalizeToBase(v), dh)
+            Mark(ResolveToLive(v), dh)
+            Mark(RankName and RankName(v), dh)
+        end
+    end
+    for cdID, info in pairs(infoByID) do
+        local def = defaultsByID[cdID]
+        local defCat = def and def.category
+        if defCat == evc.Essential or defCat == evc.Utility or defCat == hidden then
+            local dh = info.category == hidden and defCat == hidden
+            Add(info.spellID, dh)
+            Add(info.overrideSpellID, dh)
+            if type(info.linkedSpellIDs) == "table" then
+                for _, lid in ipairs(info.linkedSpellIDs) do Add(lid, dh) end
+            end
+        end
+    end
+    return set
+end
+
+--- True when a stored spell id is a default-hidden entry of `set`
+--- (ns.CDMDefaultHiddenSet): by id, base or live form, by rank name only when
+--- no cooldown entry lists the id.
+function ns.CDMIsDefaultHidden(set, id)
+    local v = set[id]
+    if v == nil then v = set[ns.NormalizeToBase(id)] end
+    if v == nil then v = set[ns.ResolveToLive(id)] end
+    if v == nil and ns.CDMRankName then v = set[ns.CDMRankName(id) or false] end
+    return v == true
 end
 
 -------------------------------------------------------------------------------
@@ -1154,7 +1333,13 @@ function ns.ReconcileBuffFamilyDrops(barKey)
                     end
                 end
             end
-            if vouched and not anyPresent and not unseen then
+            -- An imported layout's buff holds its place until Blizzard tracks
+            -- it (ImportKeepKey above).
+            local importKeep = prof._importKeep
+            if importKeep and anyPresent then
+                ImportKeepRelease(prof, importKeep, id)
+            elseif vouched and not anyPresent and not unseen
+                   and not (importKeep and ImportKeepKey(importKeep, id)) then
                 keep = false
                 dropped = true
             end
@@ -1206,6 +1391,9 @@ function ns.RepopulateFromBlizzard(fromRequest)
         if id < 0 then return true end
         if sd.customSpellIDs and sd.customSpellIDs[id] then return true end
         if _myRacialsSet and _myRacialsSet[id] and not racialMoves then return true end
+        -- Drawn by an aura icon of ours (a registered provider's spell ID): no
+        -- Blizzard frame would bring it back.
+        if ns.CDM_AuraIconKeeps and ns.CDM_AuraIconKeeps(id) then return true end
         -- A positive id carrying a stored duration is one of OUR injected preset/custom buffs
         -- (Bloodlust/Heroism, potions, Time Spiral, custom buff IDs). Blizzard-tracked buffs are
         -- never written into assignedSpells with a duration, so this can only be a user-added entry -- preserve it. Presets predate the customSpellIDs flag, so the flag alone is not enough.
@@ -1257,6 +1445,12 @@ function ns.RepopulateFromBlizzard(fromRequest)
     if ghostSD then
         FilterListPreservingUserAdded(ghostSD, ghostSD.assignedSpells)
         FilterSetPreservingUserAdded(ghostSD, ghostSD.removedSpells)
+    end
+    -- The player asked for Blizzard's layout: nothing of an import is held any more.
+    do
+        local spR = ns.GetActiveSpecProfiles and ns.GetActiveSpecProfiles()
+        local profR = spR and spR[specKey]
+        if profR then profR._importKeep = nil end
     end
     -- Ghost buff bar removed: buff visibility managed by Blizzard CDM.
 
@@ -1315,10 +1509,10 @@ end
 --  spec's icons by then) once Blizzard has loaded its saved layouts, never
 --  during combat. A profile installer that writes
 --  Blizzard CDM layouts calls it before its ReloadUI. Requests are kept per
---  character, by the game's own spec IDs, in EllesmereUIDB.cdmRepopulatePending.
+--  character, by the game's own spec IDs, in its roster entry's cdmRepopulatePending.
 --  EllesmereUI.GetCDMRepopulateStatus([specID]) tells the installer how a
 --  request went: "pending" while queued, then "done" with the time and the
---  Blizzard layout ID the run read (EllesmereUIDB.cdmRepopulateDone, cleared by
+--  Blizzard layout ID the run read (cdmRepopulateDone, cleared by
 --  a new request for that spec), or nil when no run finished.
 -------------------------------------------------------------------------------
 local function LiveSpecID()
@@ -1353,21 +1547,18 @@ function EllesmereUI.RequestCDMRepopulate(specIDs)
         end
     end
     if #ids == 0 then return false end
-    local pending = EllesmereUIDB.cdmRepopulatePending or {}
-    EllesmereUIDB.cdmRepopulatePending = pending
-    local charKey = ns.GetCharKey()
-    local mine = pending[charKey] or {}
-    pending[charKey] = mine
+    local char = EllesmereUI.CharEntry(true)
+    if not char then return false end
+    local mine = char.cdmRepopulatePending or {}
+    char.cdmRepopulatePending = mine
     -- A new request's status starts over: an older run's record never stands
     -- in for this one.
-    local done = EllesmereUIDB.cdmRepopulateDone
-    local runs = done and done[charKey]
+    local runs = char.cdmRepopulateDone
     for _, id in ipairs(ids) do
         mine[id] = true
         if runs then runs[id] = nil end
     end
-    if runs and not next(runs) then done[charKey] = nil end
-    if done and not next(done) then EllesmereUIDB.cdmRepopulateDone = nil end
+    if runs and not next(runs) then char.cdmRepopulateDone = nil end
     return true
 end
 
@@ -1378,11 +1569,11 @@ function EllesmereUI.GetCDMRepopulateStatus(specID)
     if not EllesmereUIDB then return nil end
     if specID == nil then specID = LiveSpecID() end
     if not IsSpecID(specID) then return nil end
-    local charKey = ns.GetCharKey()
-    local pending = EllesmereUIDB.cdmRepopulatePending
-    if pending and pending[charKey] and pending[charKey][specID] then return "pending" end
-    local done = EllesmereUIDB.cdmRepopulateDone
-    local run = done and done[charKey] and done[charKey][specID]
+    local char = EllesmereUI.CharEntry()
+    if not char then return nil end
+    local pending = char.cdmRepopulatePending
+    if pending and pending[specID] then return "pending" end
+    local run = char.cdmRepopulateDone and char.cdmRepopulateDone[specID]
     if run then return "done", run.time, run.layoutID end
     return nil
 end
@@ -1393,10 +1584,8 @@ end
 -- defaults (a new character's first login can reach the final pass first),
 -- so the request waits for the data-loaded wake in EUI_CDM_Lifecycle.lua.
 function ns.RunQueuedRepopulate()
-    local pending = EllesmereUIDB and EllesmereUIDB.cdmRepopulatePending
-    if not pending then return end
-    local charKey = ns.GetCharKey()
-    local mine = pending[charKey]
+    local char = EllesmereUIDB and EllesmereUI.CharEntry()
+    local mine = char and char.cdmRepopulatePending
     if not mine then return end
     local id = LiveSpecID()
     if not id or not mine[id] then return end
@@ -1410,14 +1599,11 @@ function ns.RunQueuedRepopulate()
     end
     -- Taken off the queue before it runs, so a failure can never repeat it.
     mine[id] = nil
-    if not next(mine) then pending[charKey] = nil end
-    if not next(pending) then EllesmereUIDB.cdmRepopulatePending = nil end
+    if not next(mine) then char.cdmRepopulatePending = nil end
     -- Recorded only once the run finished (GetCDMRepopulateStatus).
     if ns.RepopulateFromBlizzard(true) then
-        local done = EllesmereUIDB.cdmRepopulateDone or {}
-        EllesmereUIDB.cdmRepopulateDone = done
-        local runs = done[charKey] or {}
-        done[charKey] = runs
+        local runs = char.cdmRepopulateDone or {}
+        char.cdmRepopulateDone = runs
         runs[id] = { time = time(), layoutID = ns.GetActiveCDMLayoutID() }
     end
 end

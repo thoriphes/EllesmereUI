@@ -91,6 +91,11 @@ initFrame:SetScript("OnEvent", function(self)
     if p.classColorNames == true then
         ECHAT.ApplyClassColorNames(true)
     end
+    ECHAT.ApplyChatterClassColor()
+    -- Uninstall EUI: the recorder puts the CVar back; the kept value goes too.
+    EllesmereUI.OnUninstall(function()
+        if EllesmereUIDB then EllesmereUIDB.chatClassColorWas = nil end
+    end)
     if ECHAT.EngineIntegrateAll then ECHAT.EngineIntegrateAll() end
     -- Owned tab strip: hides Blizzard's strip, builds ours from the same
     -- window storage, and starts mirroring selection/flash from the engine.
@@ -125,8 +130,18 @@ initFrame:SetScript("OnEvent", function(self)
         return false, WrapURLs(msg), ...
     end
     for _, ev in ipairs(URL_EVENTS) do
-        ChatFrame_AddMessageEventFilter(ev, UrlFilter)
+        ChatFrameUtil.AddMessageEventFilter(ev, UrlFilter)
     end
+
+    ---------------------------------------------------------------------------
+    --  2d. A system message with no text is dropped. WoW Forever sends them,
+    --      and an empty line shows as a blank row (a bare timestamp under
+    --      Timestamp All Messages).
+    ---------------------------------------------------------------------------
+    ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, msg)
+        if issecretvalue and issecretvalue(msg) then return false end
+        return msg == ""
+    end)
 
     ---------------------------------------------------------------------------
     --  3. Temporary window (whisper) detection.
@@ -404,9 +419,10 @@ initFrame:SetScript("OnEvent", function(self)
 
     ---------------------------------------------------------------------------
     --  6. Idle fade: dims chat after N seconds of inactivity. Resets on player
-    --     chat in a shown window (the selected tab or an undocked window), an
-    --     incoming whisper, edit box focus/typing, or the cursor entering the
-    --     chat area (event-driven, no polling).
+    --     chat in a shown window (the selected tab or an undocked window; the
+    --     kinds of lines ticked under Also Wake On too), an incoming whisper,
+    --     edit box focus/typing, or the cursor entering the chat area
+    --     (event-driven, no polling).
     ---------------------------------------------------------------------------
     do
         local idleTimer = nil
@@ -491,8 +507,9 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Chat lines: the display engine's tail sees each line in the window
         -- Blizzard put it in, after its own channel, message-group and filter
-        -- checks, so player chat (CHAT_MSG_EVENTS) wakes the fade only when
-        -- that window is shown. Inside Blizzard's chat handler the observer
+        -- checks, so player chat (CHAT_MSG_EVENTS) and the lines of a ticked
+        -- Also Wake On group wake the fade only when that window is shown.
+        -- Inside Blizzard's chat handler the observer
         -- only reads and shows a frame of ours; the reset runs on its next
         -- OnUpdate, outside that handler.
         local wakeFrame = CreateFrame("Frame")
@@ -501,10 +518,45 @@ initFrame:SetScript("OnEvent", function(self)
             self:Hide()
             OnActiveMessage()
         end)
-        local function WakeOnChat(cf, event)
-            if event == nil or wakeFrame:IsShown() then return end
-            if issecretvalue and issecretvalue(event) then return end
-            if CHAT_MSG_EVENTS[event] and cf:IsShown() then wakeFrame:Show() end
+
+        -- Also Wake On groups (cfg.idleFadeWake) on top of CHAT_MSG_EVENTS: the
+        -- event names, and the chat type ids of lines Blizzard adds with no
+        -- event name. With no group checked these stay CHAT_MSG_EVENTS and nil.
+        local _wakeEvents, _wakeTypeIDs = CHAT_MSG_EVENTS, nil
+        function ECHAT.ApplyIdleFadeWake()
+            local sel = ECHAT.DB().idleFadeWake
+            local events, ids
+            if sel then
+                for _, g in ipairs(I.IDLE_WAKE_GROUPS) do
+                    if sel[g.key] then
+                        if not events then
+                            events, ids = {}, {}
+                            for e in pairs(CHAT_MSG_EVENTS) do events[e] = true end
+                        end
+                        for _, t in ipairs(g.types) do
+                            events["CHAT_MSG_" .. t] = true
+                            local info = ChatTypeInfo[t]
+                            if info and info.id then ids[info.id] = true end
+                        end
+                    end
+                end
+            end
+            _wakeEvents, _wakeTypeIDs = events or CHAT_MSG_EVENTS, ids
+        end
+
+        -- A line that does not wake ends at the table lookup: the frame is
+        -- asked only for one that does (most lines carry no event name, and
+        -- with no group ticked those return before any call).
+        local function WakeOnChat(cf, event, chatTypeID)
+            local hit
+            if event ~= nil then
+                if issecretvalue and issecretvalue(event) then return end
+                hit = _wakeEvents[event]
+            elseif _wakeTypeIDs and chatTypeID ~= nil then
+                if issecretvalue and issecretvalue(chatTypeID) then return end
+                hit = _wakeTypeIDs[chatTypeID]
+            end
+            if hit and not wakeFrame:IsShown() and cf:IsShown() then wakeFrame:Show() end
         end
         SetMessageWake = function(on)
             if ECHAT.EngineSetIdleObserver then
@@ -737,6 +789,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Start the initial timer
+        ECHAT.ApplyIdleFadeWake()
         ECHAT.ResetIdleTimer()
     end
 
@@ -807,7 +860,7 @@ initFrame:SetScript("OnEvent", function(self)
                         if cf then ECHAT.SeatStockBackground(cf) end
                     end
                 end
-                -- The stored window colour, re-read once settled.
+                -- The stored window color, re-read once settled.
                 if ECHAT.SB_SyncBackdrop then ECHAT.SB_SyncBackdrop(true) end
             end)
         end)
@@ -874,11 +927,21 @@ initFrame:SetScript("OnEvent", function(self)
         ECHAT.ApplyFonts()
         if ECHAT.RefreshVisibility then ECHAT.RefreshVisibility() end
         -- The new profile's idle fade settings (and whether chat lines wake it).
+        if ECHAT.ApplyIdleFadeWake then ECHAT.ApplyIdleFadeWake() end
         if ECHAT.ResetIdleTimer then ECHAT.ResetIdleTimer() end
         -- The passes above can build panel chrome (borders, the tab-band
         -- extension) that did not exist when the house editor opened.
         ECHAT.ApplyPanelHost()
         ECHAT.ApplyWhisperMute()
+        -- Class Colored Names: the new profile's two choices (the message
+        -- names repaint the shown lines only when they changed).
+        local _ccfg = ECHAT.DB()
+        local _ccn = (_ccfg and _ccfg.classColorNames == true) or false
+        if _ccn ~= (ECHAT._ccnApplied or false) then
+            ECHAT.ApplyClassColorNames(_ccn)
+            if ECHAT.EngineQueueRebuildAll then ECHAT.EngineQueueRebuildAll() end
+        end
+        ECHAT.ApplyChatterClassColor()
     end
 
     ---------------------------------------------------------------------------

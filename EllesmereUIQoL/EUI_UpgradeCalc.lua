@@ -24,7 +24,7 @@ end
 
 -- ── SEASON UPDATE: replace all values in Data.tracks each new season. ────────
 -- Per track: crestName (tooltip display name),
--- hexColor (UI tint, can stay if the crest colour is unchanged), currID (currency
+-- hexColor (UI tint, can stay if the crest color is unchanged), currID (currency
 -- ID from Blizzard — check Wowhead or /dump C_CurrencyInfo.GetCurrencyInfo(id)),
 -- ranks (ilvl at each of the 6 upgrade ranks, lowest to highest).
 -- Add or remove tracks from Data.trackOrder to match the season's track list.
@@ -239,7 +239,7 @@ local function ForEachTooltipLine(lines, fn)
     end
 end
 
--- Strip WoW inline colour codes from a string.
+-- Strip WoW inline color codes from a string.
 local function Plain(s)
     return s and (s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) or ""
 end
@@ -261,7 +261,7 @@ end
 Calc._tipCache = {}   -- [link] = { track, rank, maxRank, isCrafted, craftBand, craftMaxIlvl, isVoidforged, ascendant }
 
 -- "Made by <name>" as a Lua pattern, built from the client's own global string
--- so it matches on every locale. Colour codes are stripped first because the
+-- so it matches on every locale. Color codes are stripped first because the
 -- lines we test have already been through Plain(). Falls back to the enUS literal.
 local CREATED_BY_PATTERN = Plain(ITEM_CREATED_BY or "Made by %s")
     :gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
@@ -646,7 +646,7 @@ local TILE_ROW_W = TILE_COLS * TILE_W + (TILE_COLS - 1) * TILE_GAP  -- 559
 local QUEUE_X_OFF    = TILE_ROW_W + 16                                    -- 575
 local QUEUE_W        = FRAME_W - 20 - QUEUE_X_OFF                        -- 265
 
--- Per-track RGB accent colours used on tile left-edge bars
+-- Per-track RGB accent colors used on tile left-edge bars
 local TRACK_RGB = {
     Adventurer = {0.12, 1.0,  0.0 },
     Veteran    = {0.0,  0.44, 0.87},
@@ -861,7 +861,7 @@ for i = 1, 18 do
     local bg = SolidTex(btn, "BACKGROUND", 1, 1, 1, 0.05)
     bg:SetAllPoints(btn)
     btn.bg = bg
-    -- Left accent bar (3 px, track colour)
+    -- Left accent bar (3 px, track color)
     local accentBar = SolidTex(btn, "BORDER", 0.5, 0.5, 0.5, 1)
     PP.Point(accentBar, "TOPLEFT",    btn, "TOPLEFT",    0, 0)
     PP.Point(accentBar, "BOTTOMLEFT", btn, "BOTTOMLEFT", 0, 0)
@@ -1549,7 +1549,7 @@ PopulateGear = function()
             PP.Point(btn, "TOPLEFT", cc, "TOPLEFT", tx, ty)
             btn:Show()
 
-            -- Tile background colour by upgrade gap
+            -- Tile background color by upgrade gap
             if entry.isAtMax then
                 btn.bg:SetColorTexture(0.1, 0.4, 0.1, 0.2)
             elseif type(entry.max) == "number" and (entry.max - entry.ilvl) >= 10 then
@@ -1558,7 +1558,7 @@ PopulateGear = function()
                 btn.bg:SetColorTexture(0.5, 0.35, 0.05, 0.2)
             end
 
-            -- Left accent bar: track colour
+            -- Left accent bar: track color
             local rgb = (entry.trackKey and TRACK_RGB[entry.trackKey])
                    or TRACK_RGB[entry.trackName]
                    or {0.4, 0.4, 0.4}
@@ -1841,28 +1841,17 @@ _firstRunEvt:SetScript("OnEvent", function(self)
         })
         _euicProfileRef = profileDB.profile
         -- Per-character queue, scan cache and crest offsets are ACCOUNT data
-        -- keyed by character name: profiles get shared, so holding this in the
+        -- in the character roster: profiles get shared, so holding this in the
         -- profile put the player's character names and realms into every
         -- export string. Options stay in the profile (they are settings); the
-        -- per-character state moves top-level. The old profile copy is dropped
+        -- per-character state moves to the roster. The old profile copy is dropped
         -- rather than migrated -- on anyone who imported a profile it holds the
         -- exporter's characters, and this state rebuilds from the next scan.
         local store = _euicProfileRef
         store.chars = nil
-        -- Throwaway fallback if the parent DB is somehow absent: the session
-        -- still works, nothing persists, and the global is never assigned
-        -- here (a pre-SavedVariables call could shadow the real table).
-        local acct = type(EllesmereUIDB) == "table" and EllesmereUIDB or {}
-        local chars = acct.qolUpgradeCalcChars
-        if type(chars) ~= "table" then
-            chars = {}
-            acct.qolUpgradeCalcChars = chars
-        end
-        local charKey = EllesmereUI.CharKey(" - ", chars)
-        chars[charKey]          = chars[charKey]        or {}
-        local charStore         = chars[charKey]
-        charStore.upgradeCalc   = charStore.upgradeCalc or {}
-        local db                = charStore.upgradeCalc
+        -- Throwaway fallback while the DB or GUID is absent: the session
+        -- still works and nothing persists.
+        local db = EllesmereUI.CharData("upgradeCalc", true) or {}
         db.cache                = db.cache              or { slots = {}, ts = 0 }
         db.calibrated           = db.calibrated         or false
         db.queue                = db.queue              or {}

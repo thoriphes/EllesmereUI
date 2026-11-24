@@ -18,7 +18,7 @@ local PoolGen = EllesmereUI._Pool.Gen
 local PP = EllesmereUI.PanelPP
 local SolidTex = EllesmereUI.SolidTex
 local MakeFont = EllesmereUI.MakeFont
-local MakeBorder = EllesmereUI.MakeBorder
+local MakeRoundedBorder = EllesmereUI.MakeRoundedBorder
 local RowBg = EllesmereUI.RowBg
 local MakeDropdownArrow = EllesmereUI.MakeDropdownArrow
 local RegisterWidgetRefresh = EllesmereUI.RegisterWidgetRefresh
@@ -176,7 +176,7 @@ function EllesmereUI.BuildKeybindButton(parent, opts)
     end
     local bg = SolidTex(btn, "BACKGROUND", DD_BG_R, DD_BG_G, DD_BG_B, DD_BG_A)
     bg:SetAllPoints()
-    btn._border = MakeBorder(btn, 1, 1, 1, DD_BRD_A, pp)
+    btn._border = MakeRoundedBorder(btn, 1, 1, 1, DD_BRD_A, bg)
     local lbl = MakeFont(btn, opts.font or 12, nil, 1, 1, 1)
     lbl:SetAlpha(DD_TXT_A)
     lbl:SetPoint("CENTER")
@@ -600,16 +600,22 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
             ApplyDisabledState()
 
         elseif t == "labeledButton" then
-            -- Standard left label, button anchored right
+            -- Standard left label, button anchored right. buttonText may be a
+            -- function: the page refresh reads it again (a label that swaps).
             local btn = CreateFrame("Button", nil, region)
             PP.Size(btn, cfg.width or 180, 32)
             PP.Point(btn, "RIGHT", region, "RIGHT", -SIDE_PAD, 0)
             btn:SetFrameLevel(frame:GetFrameLevel() + 2)
-            MakeStyledButton(btn, cfg.buttonText or cfg.text or "", 13, RB_COLOURS, cfg.onClick)
+            local textFn = type(cfg.buttonText) == "function" and cfg.buttonText or nil
+            local text0 = textFn and (textFn() or "") or (cfg.buttonText or cfg.text or "")
+            local _, _, btnLbl = MakeStyledButton(btn, text0, 13, RB_COLOURS, cfg.onClick)
             controlFrame = btn
             controlAnchor = btn
             AddControlDisabledTooltip(btn, cfg)
-            RegisterWidgetRefresh(function() ApplyDisabledState() end)
+            RegisterWidgetRefresh(function()
+                if textFn then btnLbl:SetText(EllesmereUI.L(textFn() or "")) end
+                ApplyDisabledState()
+            end)
             ApplyDisabledState()
 
         elseif t == "multiSwatch" then
@@ -621,7 +627,8 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
             local leftmostSwatch
             for i = #swatches, 1, -1 do
                 local sc = swatches[i]
-                local swatch, updateSwatch = BuildColorSwatch(region, frame:GetFrameLevel() + 2, sc.getValue, sc.setValue, sc.hasAlpha)
+                local swatch, updateSwatch = BuildColorSwatch(region, frame:GetFrameLevel() + 2,
+                    sc.getValue, sc.setValue, sc.hasAlpha, nil, sc.bindPicker)
                 PP.Point(swatch, "RIGHT", region, "RIGHT", anchorX, 0)
                 anchorX = anchorX - SWATCH_SZ - SWATCH_GAP
                 leftmostSwatch = swatch
@@ -711,7 +718,7 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
                 box:SetJustifyH(centered and "CENTER" or "LEFT")
                 box:SetTextInsets(10, 10, 0, 0)
                 boxBg:SetColorTexture(0, 0, 0, 0.5)
-                MakeBorder(box, 1, 1, 1, 0.2)
+                MakeRoundedBorder(box, 1, 1, 1, 0.2, boxBg)
                 if cfg.placeholder then
                     local ph = box:CreateFontString(nil, "ARTWORK")
                     ph:SetFont(EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
@@ -731,6 +738,7 @@ function WidgetFactory:DualRow(parent, yOffset, leftCfg, rightCfg)
                 box:SetJustifyH("CENTER")
                 box:SetTextInsets(4, 4, 0, 0)
                 boxBg:SetColorTexture(0.12, 0.12, 0.12, 0.85)
+                EllesmereUI.RoundBody(box, boxBg)
             end
             local function RefreshInput()
                 if box:HasFocus() then return end
@@ -1000,8 +1008,8 @@ function WidgetFactory:TripleRow(parent, yOffset, leftCfg, midCfg, rightCfg, spl
                     local off = cfg.disabled()
                     label:SetAlpha(1)
                     -- Gray the button label when the current value is disabled,
-                    -- through the text colour's alpha (the label's resting alpha);
-                    -- _valueDimA keeps the hover colours on that alpha too.
+                    -- through the text color's alpha (the label's resting alpha);
+                    -- _valueDimA keeps the hover colors on that alpha too.
                     if cfg.disabledValues then
                         local curVal = cfg.getValue()
                         local dimA = cfg.disabledValues(curVal) and 0.15 or nil
@@ -1435,8 +1443,8 @@ function WidgetFactory:WideDropdown(parent, title, yOffset, values, getValue, se
     ddBtn:SetFrameLevel(frame:GetFrameLevel() + 1)
     local bg = SolidTex(ddBtn, "BACKGROUND", DD_BG_R, DD_BG_G, DD_BG_B, DD_BG_A)
     bg:SetAllPoints()
-    local brd = MakeBorder(ddBtn, 1, 1, 1, DD_BRD_A, PP)
-    -- Resting alpha on the text colour, the channel the hover colours write.
+    local brd = MakeRoundedBorder(ddBtn, 1, 1, 1, DD_BRD_A, bg)
+    -- Resting alpha on the text color, the channel the hover colors write.
     local ddLbl = MakeFont(ddBtn, 13, nil, 1, 1, 1, DD_TXT_A)
     ddLbl:SetPoint("LEFT", ddBtn, "LEFT", 14, 0)
     local arrow = MakeDropdownArrow(ddBtn, 14, PP)
@@ -1452,7 +1460,7 @@ function WidgetFactory:WideDropdown(parent, title, yOffset, values, getValue, se
         ddLbl:SetText(DDResolveLabel(values, order, getValue()))
         if disabledValuesFn then
             -- A disabled current value rests greyed; _valueDimA keeps the
-            -- hover colours on that alpha too.
+            -- hover colors on that alpha too.
             local dimA = disabledValuesFn(getValue()) and 0.15 or nil
             ddBtn._valueDimA = dimA
             ddLbl:SetTextColor(1, 1, 1, dimA or DD_TXT_A)

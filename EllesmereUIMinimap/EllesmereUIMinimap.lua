@@ -4,7 +4,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Custom minimap skin and layout for EllesmereUI.
 -------------------------------------------------------------------------------
 local ADDON_NAME = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.NewFrameData and EllesmereUI.PadTaintStandDown) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.NewFrameData and EllesmereUI.PadGamepadUI and EllesmereUI.SetFontFamily and EllesmereUI.MakeRoundedBorder) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the friends tooltip's names and notes take font families through SetFontFamily, and the tracking button reads WoW Forever's Gamepad interface style through PadGamepadUI, and the micro menu takes the parent's rounded outline through MakeRoundedBorder)
 local ns = select(2, ...)
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
@@ -74,7 +74,7 @@ local defaults = {
             diffTextSize      = 12,
             diffTextOffsetX   = 0,
             diffTextOffsetY   = 0,
-            -- Accented Text: which elements colour their descriptions (clock AM/PM =
+            -- Accented Text: which elements color their descriptions (clock AM/PM =
             -- fpsColorClockAMPM); diffTextReactive (tier) and diffTextAccent (flat) are mutually exclusive.
             fpsColorSuffix    = true,
             diffTextAccent    = false,
@@ -136,6 +136,7 @@ local defaults = {
             btnRowSpacing        = 0,
             btnRowDistance       = 0,
             flyoutGrowDir        = "auto",   -- Grow Tooltip/Popup: auto/up/down/left/right
+            flyoutAsList         = false,    -- flyout as a one-column list with button names
             elementRowPosition   = "tlDown", -- tlDown = original corner + direction
             elementRowSpacing    = 0,
             elementRowDistance   = 0,
@@ -176,8 +177,8 @@ local function GetBorderColor(cfg)
     return cfg.borderR, cfg.borderG, cfg.borderB, cfg.borderA or 1
 end
 
--- Border colour precedence (3 swatches): borderUseClassColor > useClassColor (legacy) >
--- borderColor > legacy borderR/G/B, so pre-style users keep their colour until they touch the new controls. Clock/zone edge boxes share this precedence.
+-- Border color precedence (3 swatches): borderUseClassColor > useClassColor (legacy) >
+-- borderColor > legacy borderR/G/B, so pre-style users keep their color until they touch the new controls. Clock/zone edge boxes share this precedence.
 local function GetBorderStyleColor(cfg)
     if cfg.borderUseClassColor and EllesmereUI.GetClassColor then
         local cc = EllesmereUI.GetClassColor(select(2, UnitClass("player")))
@@ -191,9 +192,9 @@ local function GetBorderStyleColor(cfg)
     return GetBorderColor(cfg)
 end
 
--- The clock and zone Edge Box fill: the border colour above, or black under
--- a square frame on the Forever client (its bronze frame takes no colour, and
--- the border colour rows are hidden there). An EBS field.
+-- The clock and zone Edge Box fill: the border color above, or black under
+-- a square frame on the Forever client (its bronze frame takes no color, and
+-- the border color rows are hidden there). An EBS field.
 function EBS._EdgeBoxColor(cfg)
     if EBS._fvSquare then return 0, 0, 0 end
     return GetBorderStyleColor(cfg)

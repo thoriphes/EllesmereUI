@@ -56,21 +56,6 @@ do
 end
 
 -------------------------------------------------------------------------------
--- Gamepad interface style: Blizzard's SmartNavigation drives the tracker from
--- secure code, so where that navigation can still be tainted
--- (EllesmereUI.PadTaintStandDown) watch list edits (whose synchronous handlers
--- rewrite its navigation and can empty a list under D-pad focus) and the
--- recolors in the block hover hook stand down. Decided once logged in; a later
--- style switch stands the tools down too and asks for a reload, once.
--------------------------------------------------------------------------------
-local standDown, styleAsked
-local function StandDown()
-    if standDown == nil then standDown = EllesmereUI.PadTaintStandDown() end
-    return standDown
-end
-EQT.QuestToolsStandDown = StandDown
-
--------------------------------------------------------------------------------
 -- Quest sorting, filtering and zone auto-track. The tracker lists watched
 -- quests in watch-index order, so editing the watch list sorts and filters
 -- it without touching the tracker. Blizzard's zone-change distance sort is
@@ -87,27 +72,37 @@ local logUpdatePending = false
 local instancePass = false  -- one pass on entering a dungeon; see CanEditWatches
 local selfEdit = false      -- inside our own watch edit: its events are ours
 local sortIDs, sortGroup, sortKey, sortKey2, sortRank = {}, {}, {}, {}, {}
+local distKey = {}  -- Distance sort keys, held while moving and in combat
 local watched = {}
 local updated, completeSeen = {}, {}  -- QUEST_WATCH_UPDATE probe
 
 -- The pass's quest log snapshot: one GetInfo per entry per pass.
 local logList = {}                                           -- every entry, log order
-local logInfo, logHeader, logZone, logIndex = {}, {}, {}, {}  -- by questID
+local logInfo, logHeader, logIndex = {}, {}, {}  -- by questID
 local passZone, passInInstance, passInstance
 
-local function Exp() return Cfg("questWatchExperimental") == true and not StandDown() end
+-- The custom tracker (Custom.lua) sorts, filters and auto-tracks its own list
+-- with no watch edits, so the tools need no experimental switch there.
+local function Exp()
+    if ns.UseCustomTracker() then return true end
+    return Cfg("questWatchExperimental") == true
+end
 -- Quest Log Order is the base mode (a saved "default", the retired Blizzard
--- order mode, reads as it).
+-- order mode, reads as it). Distance is custom tracker only: Blizzard's is
+-- sorted by watch edits, which drop the super-track.
 local function SortMode()
     local m = Cfg("questSortMode")
     if m == nil or m == "default" then return "log" end
+    if m == "distance" and not ns.UseCustomTracker() then return "log" end
     return m
 end
 local function SortCompleted() return Cfg("questSortCompleted") or "mixed" end
 -- Secondary key; ignored when the primary is already unique per quest.
 local function SortThenBy()
     if SortMode() == "log" then return "none" end
-    return Cfg("questSortThenBy") or "none"
+    local m = Cfg("questSortThenBy") or "none"
+    if m == "distance" and not ns.UseCustomTracker() then return "none" end
+    return m
 end
 -- The tools keep the watch list sorted while they are on.
 local function SortOn() return Exp() end
@@ -130,23 +125,19 @@ local charDB
 local function CharDB()
     if charDB then return charDB end
     if not EllesmereUIDB then EllesmereUIDB = {} end
-    local all = EllesmereUIDB.questWatchChars
-    if type(all) ~= "table" then all = {}; EllesmereUIDB.questWatchChars = all end
-    local guid = UnitGUID("player")
-    local sv = all[guid]
-    if type(sv) ~= "table" then sv = {}; all[guid] = sv end
+    local kept = EllesmereUI.CharData("questWatch", true)
+    local sv = kept or {} -- GUID unread: a throwaway with the same sets, not cached
     for _, k in ipairs(CHAR_SETS) do
         if type(sv[k]) ~= "table" then sv[k] = {} end
     end
-    charDB = sv
+    charDB = kept
     return sv
 end
 
 -- Leftovers from a feature that was turned off still need undoing. Reads only.
 local function HasLeftovers()
-    local all = EllesmereUIDB and EllesmereUIDB.questWatchChars
-    local sv = type(all) == "table" and all[UnitGUID("player")]
-    if type(sv) ~= "table" then return false end
+    local sv = EllesmereUI.CharData("questWatch")
+    if not sv then return false end
     for _, k in ipairs(CHAR_SETS) do
         if type(sv[k]) == "table" and next(sv[k]) ~= nil then return true end
     end
@@ -154,7 +145,6 @@ local function HasLeftovers()
 end
 
 local function WatchesActive()
-    if StandDown() then return false end
     return SortOn() or FilterOn() or AutoOn() or HasLeftovers()
 end
 
@@ -167,21 +157,21 @@ local function FillWatched()
 end
 
 local function Snapshot()
-    wipe(logList); wipe(logInfo); wipe(logHeader); wipe(logZone); wipe(logIndex)
+    wipe(logList); wipe(logInfo); wipe(logHeader); wipe(logIndex)
     passZone = GetRealZoneText()
     passInInstance = IsInInstance()
     passInstance = passInInstance and GetInstanceInfo() or nil
-    local title, headerIdx = nil, 0
+    local title
     for i = 1, C_QuestLog.GetNumQuestLogEntries() do
         local info = C_QuestLog.GetInfo(i)
         if info then
             logList[#logList + 1] = info
             if info.isHeader then
-                title, headerIdx = info.title, i
+                title = info.title
             elseif info.questID then
                 local questID = info.questID
                 logInfo[questID], logHeader[questID] = info, title
-                logZone[questID], logIndex[questID] = headerIdx, i
+                logIndex[questID] = i
             end
         end
     end
@@ -319,9 +309,22 @@ local TYPE_RANK = {
     [QC.Questline] = 5, [QC.Normal] = 6, [QC.Recurring] = 7,
 }
 
+-- Zone sort keys by quest log header ("1" + the lowercased name), built once
+-- per header: zone names are a fixed set.
+local zoneSortKey = {}
+
 local function SortKeyFor(mode, questID, rank)
     if mode == "zone" then
-        return logZone[questID] or 0
+        -- Current zone first, then A-Z: the log's own header order moves with the map.
+        local header = logHeader[questID]
+        if not header then return "2" end
+        if header == passZone or (passInInstance and header == passInstance) then return "0" end
+        local key = zoneSortKey[header]
+        if not key then
+            key = "1" .. header:lower()
+            zoneSortKey[header] = key
+        end
+        return key
     elseif mode == "progress" then
         -- Most complete first: negated share of all objective counts.
         if C_QuestLog.IsComplete(questID) then return -1 end
@@ -350,35 +353,57 @@ local function SortKeyFor(mode, questID, rank)
     elseif mode == "name" then
         local info = logInfo[questID]
         return info and info.title and info.title:lower() or ""
+    elseif mode == "distance" then
+        -- Nearest first; quests with no distance (another continent) last.
+        -- Held while moving, so the list moves when the player stops, and in
+        -- combat, where the item buttons cannot follow a re-sort.
+        if distKey[questID] == nil or not (IsPlayerMoving() or InCombatLockdown()) then
+            local distSq, onContinent = C_QuestLog.GetDistanceSqToQuest(questID)
+            distKey[questID] = onContinent and distSq or math.huge
+        end
+        return distKey[questID]
     elseif mode == "none" then
         return 0
     end
     return rank
 end
 
+-- Sorts a quest ID list in place; list order is the rank. Reads the pass's
+-- log snapshot.
+local function SortList(ids, mode, completed, thenBy)
+    wipe(sortGroup); wipe(sortKey); wipe(sortKey2); wipe(sortRank)
+    -- A pass that reads every distance afresh starts clean, so a quest that left
+    -- the list does not come back later with the distance it had then.
+    if (mode == "distance" or thenBy == "distance") and not (IsPlayerMoving() or InCombatLockdown()) then
+        wipe(distKey)
+    end
+    for i, questID in ipairs(ids) do
+        sortRank[questID] = i
+        local group = 1
+        if completed ~= "mixed" then
+            local done = C_QuestLog.IsComplete(questID) == true
+            group = ((completed == "top") == done) and 1 or 2
+        end
+        sortGroup[questID] = group
+        sortKey[questID] = SortKeyFor(mode, questID, i)
+        sortKey2[questID] = SortKeyFor(thenBy, questID, i)
+    end
+    table.sort(ids, CompareQuests)
+end
+
 -- mode / completed / thenBy: the settings' choices, or the restore pass's
 -- plain quest log order.
 local function ApplySort(mode, completed, thenBy)
-    wipe(sortGroup); wipe(sortKey); wipe(sortKey2); wipe(sortRank)
     local count = 0
     for i = 1, C_QuestLog.GetNumQuestWatches() do
         local questID = C_QuestLog.GetQuestIDForQuestWatchIndex(i)
         if questID then
             count = count + 1
             sortIDs[count] = questID
-            sortRank[questID] = count
-            local group = 1
-            if completed ~= "mixed" then
-                local done = C_QuestLog.IsComplete(questID) == true
-                group = ((completed == "top") == done) and 1 or 2
-            end
-            sortGroup[questID] = group
-            sortKey[questID] = SortKeyFor(mode, questID, count)
-            sortKey2[questID] = SortKeyFor(thenBy, questID, count)
         end
     end
     for i = #sortIDs, count + 1, -1 do sortIDs[i] = nil end
-    table.sort(sortIDs, CompareQuests)
+    SortList(sortIDs, mode, completed, thenBy)
 
     -- AddQuestWatch inserts at the top, so re-add the out-of-place head in
     -- reverse; the already-correct tail is left alone.
@@ -406,6 +431,47 @@ local function ApplySort(mode, completed, thenBy)
             if questID ~= sortIDs[n] then sortStuck = true; return end
         end
     end
+end
+
+-- Read-only access for the custom tracker: snapshot the log once per pass,
+-- then area, filter and sort against it. No watch edits.
+function EQT.QuestLogSnapshot()
+    Snapshot()
+    return logList, logHeader
+end
+EQT.QuestInArea = InArea
+function EQT.IsQuestFiltered(questID)
+    return FilterOn() and IsFiltered(questID, C_SuperTrack.GetSuperTrackedQuestID())
+end
+function EQT.AutoTrackOn() return AutoOn() end
+EQT.SortUses = SortUses
+-- The custom tracker's stop check: reads every listed quest's distance afresh
+-- (kept as the held distances) and answers whether the nearest-first order of
+-- any two of them changed, or one had none held: only then does a re-sort show
+-- anything. Out of combat only (in combat the held distances must stay).
+local probeOld = {}
+function EQT.DistanceOrderMoved(ids)
+    local n, moved = #ids, false
+    for i = 1, n do
+        local questID = ids[i]
+        local old = distKey[questID]
+        probeOld[i] = old
+        if old == nil then moved = true end
+        local distSq, onContinent = C_QuestLog.GetDistanceSqToQuest(questID)
+        distKey[questID] = onContinent and distSq or math.huge
+    end
+    if moved then return true end
+    for i = 1, n - 1 do
+        local oa, na = probeOld[i], distKey[ids[i]]
+        for j = i + 1, n do
+            local ob, nb = probeOld[j], distKey[ids[j]]
+            if (oa < ob) ~= (na < nb) or (ob < oa) ~= (nb < na) then return true end
+        end
+    end
+    return false
+end
+function EQT.SortQuestList(ids)
+    SortList(ids, SortMode(), SortCompleted(), SortThenBy())
 end
 
 -- Watch list edits fire QUEST_WATCH_LIST_CHANGED synchronously, so Blizzard's
@@ -443,8 +509,6 @@ end
 local function ApplyWatches()
     watchPending = false
     selfEdit = false
-    -- A pass queued before a style switch stood the tools down.
-    if StandDown() then return end
     if not CanEditWatches() then
         instancePass = false
         if MapOpen() and not mapDeferred then
@@ -483,24 +547,6 @@ function QueueWatches()
     C_Timer.After(0, ApplyWatches)
 end
 
--- A style switch since login: the tools stand down until a reload.
-local function StyleCheck()
-    if styleAsked or EllesmereUI.PadTaintStandDown() == StandDown() then return end
-    styleAsked = true
-    standDown = true
-    EQT.ApplyQuestWatches()
-    -- The Gamepad style's D-pad cannot reach the popup, so chat says it too.
-    -- A confirm, not RequestReload: an event cannot reload, its click can.
-    EllesmereUI.PrintError(EllesmereUI.L("The interface style changed. Type /reload so the quest tracker matches it."))
-    EllesmereUI:ShowConfirmPopup({
-        title       = EllesmereUI.L("Reload Required"),
-        message     = EllesmereUI.L("The interface style changed. Reload so the quest tracker matches it."),
-        confirmText = EllesmereUI.L("Reload Now"),
-        cancelText  = EllesmereUI.L("Later"),
-        reload      = true,
-    })
-end
-
 -- QUEST_WATCH_UPDATE fires before the log holds the new counts, so the probe
 -- waits for the QUEST_LOG_UPDATE that follows it, and a pass runs only when
 -- a quest turned complete or back (or Progress sorts the list).
@@ -526,9 +572,6 @@ local function OnWatchEvent(_, event, arg1)
         local inInstance, kind = IsInInstance()
         instancePass = inInstance and kind == "party"
         QueueWatches()
-    elseif event == "INPUT_DEVICE_INTERFACE_TRANSITION" then
-        -- The style is read one frame after the transition event.
-        C_Timer.After(0, StyleCheck)
     else
         QueueWatches()
     end
@@ -557,6 +600,8 @@ end
 local function FilterToggleTip()
     return Cfg("filterEnabled") and "Quest Filters On" or "Quest Filters Off"
 end
+-- The custom tracker draws the same button on its own header (Custom.lua).
+EQT.FilterToggleTip = FilterToggleTip
 
 local function ApplyFilterToggle()
     local want = Exp() and Cfg("filterHeaderToggle") == true
@@ -593,6 +638,11 @@ end
 
 -- Options / profile entry point.
 function EQT.ApplyQuestWatches()
+    -- The custom tracker keeps its own list; the watch list is left alone.
+    if ns.UseCustomTracker() then
+        if EQT.RefreshCustom then EQT.RefreshCustom() end
+        return
+    end
     ApplyBlizzardSort()
     ApplyFilterToggle()
     -- The tools turned off (or a profile without them): the next pass puts
@@ -600,7 +650,7 @@ function EQT.ApplyQuestWatches()
     local sortOn = SortOn()
     if sortWasOn and not sortOn then restoreOrder = true end
     sortWasOn = sortOn
-    if sortOn or StandDown() then restoreOrder = false end
+    if sortOn then restoreOrder = false end
     local on = WatchesActive()
     if not watchFrame then
         if not (on or restoreOrder) then return end
@@ -633,10 +683,6 @@ function EQT.ApplyQuestWatches()
     if FilterCfg("filterTrivial") then watchFrame:RegisterEvent("PLAYER_LEVEL_UP") end
     -- New quests are not always auto-watched by Blizzard.
     if AutoOn() then watchFrame:RegisterEvent("QUEST_ACCEPTED") end
-    if not (C_EventUtils and C_EventUtils.IsEventValid
-            and not C_EventUtils.IsEventValid("INPUT_DEVICE_INTERFACE_TRANSITION")) then
-        watchFrame:RegisterEvent("INPUT_DEVICE_INTERFACE_TRANSITION")
-    end
     QueueWatches()
 end
 
@@ -700,7 +746,8 @@ local function ProgressOn()
         or Cfg("announceProgress")
 end
 
--- Party or instance group only; never raids, never in chat lockdown.
+-- A finished objective, with a quest link. Party or instance group only; never
+-- raids, never in chat lockdown.
 local function Announce(questID, text)
     if not Cfg("announceProgress") or not text or text == "" then return end
     if IsInRaid() then return end
@@ -709,8 +756,8 @@ local function Announce(questID, text)
     elseif IsInGroup(LE_PARTY_CATEGORY_HOME) then chatType = "PARTY"
     else return end
     if C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown() then return end
-    local title = C_QuestLog.GetTitleForQuestID(questID) or ""
-    C_ChatInfo.SendChatMessage("[EUI] " .. title .. ": " .. text, chatType)
+    local quest = GetQuestLink(questID) or C_QuestLog.GetTitleForQuestID(questID) or ""
+    C_ChatInfo.SendChatMessage("[EUI] " .. quest .. ": " .. text, chatType)
 end
 
 -- Records the quest's current counts. Returns false when it has no data yet.
@@ -732,15 +779,14 @@ local function CheckQuest(questID)
     local objDone = false
     for i, obj in ipairs(objectives) do
         local n = obj.numFulfilled or 0
-        if prev[i] and n > prev[i] then
+        if prev[i] and n > prev[i] and obj.finished then
             Announce(questID, obj.text)
-            if obj.finished then objDone = true end
+            objDone = true
         end
         prev[i] = n
     end
     local done = C_QuestLog.IsComplete(questID) == true
     if done and not prev.done then
-        Announce(questID, QUEST_COMPLETE or "Complete")
         PlaySoundKey(Cfg("soundQuest"))
     elseif objDone then
         PlaySoundKey(Cfg("soundObjective"))
@@ -850,6 +896,8 @@ local function ProgressRGB(f)
     return r1 + (r2 - r1) * f, g1 + (g2 - g1) * f, b1 + (b2 - b1) * f
 end
 
+EQT.ProgressRGB = ProgressRGB
+
 -- Back to Blizzard's color.
 local function Restore(fs)
     local style = fs.colorStyle
@@ -868,7 +916,7 @@ function EQT.ColorObjectiveLines(block)
     if not lines then return end
     local progress, dim = Cfg("objProgressColor"), Cfg("objDimCompleted")
     local questID = type(block.id) == "number" and block.id
-    if not ((progress or dim) and questID) or StandDown() or EllesmereUI.PadTaintStandDown() then
+    if not ((progress or dim) and questID) then
         if next(colored) == nil then return end
         for _, line in pairs(lines) do
             local fs = line.Text

@@ -324,8 +324,8 @@ end
 
 -------------------------------------------------------------------------------
 --  Style memo: every setting the paint reads, resolved once. A settings write
---  clears it (ApplyStyle); a global font, outline, accent or colour-palette
---  (class colours) change rebuilds it.
+--  clears it (ApplyStyle); a global font, outline, accent or color-palette
+--  (class colors) change rebuilds it.
 --  Frames and rows stamp the table they were painted with, so a new table
 --  restyles each of them once.
 -------------------------------------------------------------------------------
@@ -397,9 +397,12 @@ local function Style()
     return dm
 end
 
--- nil textFont / textFlag leave the module's font and outline to ApplyModuleFont.
+-- nil textFont / textFlag leave the module's font and outline to
+-- ApplyModuleFontFamily. The title and rows show players' and mobs' names, so
+-- every text here takes a font family (Cyrillic, Korean and Chinese names draw in
+-- the client's own faces); every font write to them goes through here.
 local function Font(fs, size, dm)
-    EUI.ApplyModuleFont(fs, dm.textFont, size, "essentials", dm.textFlag)
+    EUI.ApplyModuleFontFamily(fs, dm.textFont, size, "essentials", dm.textFlag)
 end
 
 local function PaintText(fs, color)
@@ -588,7 +591,7 @@ local function ApplyChrome(dm, s)
         header.line:SetShown(size > 0 and not Look.stock and not dm.headerSeparatorOn)
     end
     Font(s.title, dm.hdrFontSize, dm)
-    -- A look may colour the accented title its own way (WoW Forever's gold).
+    -- A look may color the accented title its own way (WoW Forever's gold).
     PaintText(s.title, dm.hdrTextUseAccent ~= false and (Look.titleColor or dm.accent) or dm.hdrTextColor)
     local source = s.sourceBtn
     Font(source.label, dm.hdrFontSize, dm)
@@ -754,7 +757,7 @@ end
 
 -- Paints one row, touching only what changed since its last paint: the style
 -- (fonts, texture, borders), the entry's identity (unit or sample, roster
--- generation: class, icons, own stripe, name), who holds aggro (colours), and
+-- generation: class, icons, own stripe, name), who holds aggro (colors), and
 -- the numbers (fill and value text).
 local function PaintRow(row, e, dm, top, gen)
     local restyle = row._style ~= dm
@@ -1503,7 +1506,7 @@ CreateWindow = function()
         lastHeight = height
         Repaint()
     end)
-    -- An accent change repaints the title and accent-coloured bars.
+    -- An accent change repaints the title and accent-colored bars.
     EUI.RegAccent({ type = "callback", fn = function()
         if frame:IsShown() then RequestUpdate() end
         RefreshSettingsPreview()

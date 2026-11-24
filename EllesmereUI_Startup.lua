@@ -350,13 +350,16 @@ do
     local function TryRealFont(path)
         local f = _G.CombatTextFont
         if not f then return nil end
-        return (pcall(f.SetFont, f, path, 120, ""))
+        -- 64 is the height Blizzard declares for this font (SystemFont_World);
+        -- Blizzard_CombatText sets the drawn height itself.
+        return (pcall(f.SetFont, f, path, 64, ""))
     end
 
     local function ApplyCombatTextFont()
         local db = EllesmereUIDB
         local saved = db and db.fctFont
         if not saved or type(saved) ~= "string" or saved == "" then return end
+        if not EllesmereUI.CombatTextFontCoversLocale(saved) then return end
         local fontPath = saved
         local smName = saved:match("^smf:(.+)")
         if smName then

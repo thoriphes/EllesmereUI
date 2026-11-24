@@ -28,8 +28,12 @@ I.startSharedTickerSetters[#I.startSharedTickerSetters + 1] = function(v) StartS
 local _sharedTicker
 I.sharedTickerSetters[#I.sharedTickerSetters + 1] = function(v) _sharedTicker = v end
 
+-- Every meter text (rows, headers, the breakdown tooltip) can show a player's
+-- name, so each takes a font family: Cyrillic, Korean and Chinese names draw in
+-- the client's own faces where the chosen font has no such letters. Every font
+-- write to these strings goes through here (a plain SetFont would pin the face).
 local function SetDMFont(fs, size, flagsOverride, fontOverride)
-    EllesmereUI.ApplyModuleFont(fs, fontOverride, size, "damageMeters", flagsOverride)
+    EllesmereUI.ApplyModuleFontFamily(fs, fontOverride, size, "damageMeters", flagsOverride)
 end
 
 -- Accent color helper
@@ -40,7 +44,7 @@ local function GetAccentRGB()
            EUI.DEFAULT_ACCENT_G or 210/255,
            EUI.DEFAULT_ACCENT_B or 157/255
 end
--- A header title's "Use Accent" colour: WoW Forever's gold under the variant
+-- A header title's "Use Accent" color: WoW Forever's gold under the variant
 -- (its kit carries no EllesmereUI accent), the accent otherwise.
 function ns.DMTitleRGB()
     if ns.DMForever() then local c = ns.DM_FV.gold; return c.r, c.g, c.b end
@@ -270,9 +274,7 @@ local function StripRealm(name, src, attacker)
     return ShortName(name, mode)
 end
 
-local function IsSecret(v)
-    return issecretvalue ~= nil and issecretvalue(v)
-end
+local IsSecret = EUI.IsSecret
 
 -- Is this bar the local player's? isLocalPlayer is documented NeverSecret, so
 -- the read is legal mid-combat -- but a doc being wrong must degrade to "not
@@ -551,7 +553,7 @@ end
 -- and sorted again. Mid-combat the names and amounts are secret, so Lua can
 -- neither key a table by them nor add them up: the entries pass through in the
 -- engine's order and reach the screen only through the text and bar setters.
--- The class and spec icon never read secret, which keeps the icon and colour.
+-- The class and spec icon never read secret, which keeps the icon and color.
 local _enemyByName = {}
 local function AggregateEnemyPlayers(srcData, duration, rows)
     local spells = srcData and srcData.combatSpells
@@ -707,6 +709,21 @@ local function BuildPlayerTargets(playerName, session, sessionID, maxTargets)
 
     return list
 end
+
+-- Pet spells read "Spell (Pet)" as in Blizzard's meter. A secret pet name
+-- (combat) can't be told from the empty one, so it keeps the plain spell name;
+-- the format is handed plain strings only (the spell name tested too).
+local function SpellEntryLabel(spellName, creatureName)
+    if not spellName then return creatureName end
+    local pet = EUI.PlainString(creatureName)
+    if pet and not IsSecret(spellName) and DAMAGE_METER_SPELL_ENTRY_CREATURE then
+        return DAMAGE_METER_SPELL_ENTRY_CREATURE:format(spellName, pet)
+    end
+    return spellName
+end
+I.SpellEntryLabel = SpellEntryLabel
+-- On ns as well: CreateDMWindow sits at the 60-upvalue cap and already holds ns.
+ns._SpellEntryLabel = SpellEntryLabel
 
 I._srcKeyGuid, I.AbbrevNumber = _srcKeyGuid, AbbrevNumber
 I.AggregateEnemyPlayers, I.AppendDMSharedMedia = AggregateEnemyPlayers, AppendDMSharedMedia

@@ -20,6 +20,7 @@ local function BP() return (EUI._bagsDB and EUI._bagsDB.profile) or _emptyP end
 
 local ROW_H, ICON_SIZE, COL_GAP = 24, 20, 6
 local function RowH() return BP().bagListRowHeight or ROW_H end
+local function IconSize() return math.min(ICON_SIZE, RowH() - 4) end
 local COLHDR_H = 20
 local SECTION_H, SUBSECTION_H = 22, 18
 local ROUND_MASK = "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask"
@@ -286,7 +287,9 @@ end
 local function SetRoundIcon(btn, round)
     if (btn._lvRound or false) == round then return end
     btn._lvRound = round
+    local slotMask = btn._textOverlay._fvIconMask
     if round then
+        if slotMask then btn._lvIcon:RemoveMaskTexture(slotMask) end
         if not btn._lvMask then
             btn._lvMask = btn:CreateMaskTexture()
             btn._lvMask:SetTexture(ROUND_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
@@ -296,6 +299,7 @@ local function SetRoundIcon(btn, round)
         if btn.Cooldown then btn.Cooldown:SetSwipeTexture(ROUND_MASK) end
     else
         btn._lvIcon:RemoveMaskTexture(btn._lvMask)
+        if slotMask then btn._lvIcon:AddMaskTexture(slotMask) end
         if btn.Cooldown then btn.Cooldown:SetSwipeTexture("Interface\\Buttons\\WHITE8X8") end
     end
 end
@@ -303,18 +307,26 @@ end
 -- Collapsed sections, keyed by category _defaultName, "junk", or
 -- "<section key>/<subtype>" for sub-sections. Saved in the profile.
 -- Shift-click on a top-level section collapses or expands all of them.
+-- A virtual category's ("Virtual:...") state lasts the session: nothing of it is saved.
+local _virtualCollapsed = {}
+local function IsCollapsed(key)
+    return _virtualCollapsed[key] or (BP().bagListCollapsed or _emptyP)[key] == true
+end
+local function SetCollapsed(set, key, v)
+    if key:find("^Virtual:") then _virtualCollapsed[key] = v else set[key] = v end
+end
 local function ToggleCollapsed(self)
     local p = BP()
     local set = p.bagListCollapsed
     if not set then set = {}; p.bagListCollapsed = set end
     if IsShiftKeyDown() and not self._sub then
-        local collapse = not set[self._key] or nil
+        local collapse = not IsCollapsed(self._key) or nil
         for i = 1, _sectionsUsed do
             local s = _sections[i]
-            if not s._sub then set[s._key] = collapse end
+            if not s._sub then SetCollapsed(set, s._key, collapse) end
         end
     else
-        set[self._key] = not set[self._key] or nil
+        SetCollapsed(set, self._key, not IsCollapsed(self._key) or nil)
     end
     Refresh()
 end
@@ -705,7 +717,13 @@ end
 -------------------------------------------------------------------------------
 --  Render
 -------------------------------------------------------------------------------
-local function RenderRow(btn, data, cols, rowW, x, y, stripe)
+-- Reagent Bag Icon on, read once per RenderListView pass for every RenderRow
+local reagentBadgeOn = false
+
+-- dim: a pinned item in a OneBag / MultiBag bag section while Dim Items in
+-- OneBag/MultiBag is on (the grid's search-miss alpha). reagentSection: a
+-- Reagent Bag section (no Reagent Bag Icon there).
+local function RenderRow(btn, data, cols, rowW, x, y, stripe, dim, reagentSection)
     -- Bags and bank share the column tables at their own row widths: a bank
     -- batch painted after a bags refresh re-lays them out for its width.
     if rowW ~= _lastRowW then LayoutColumns(rowW) end
@@ -715,8 +733,12 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
     parent:SetPoint("TOPLEFT", x, y)
     parent:SetID(data.bag)
     btn:SetID(data.slot)
+    -- For the cooldown-only pass (see RenderButton in the Grid file).
+    btn._cdItem = true
+    btn._cdS, btn._cdD = data._cdStart, data._cdDuration
     parent:Show()
     btn:Show()
+    btn:SetAlpha(dim and 0.2 or 1)
     btn._stripe:SetShown(stripe and BP().bagListHideStripes ~= true)
 
     local info = data.info
@@ -727,7 +749,7 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
         local cx, cw = _colX[id], _colW[id]
         if id == "icon" then
             local icon = btn._lvIcon
-            local isz = math.min(ICON_SIZE, RowH() - 4)
+            local isz = IconSize()
             icon:SetSize(isz, isz)
             icon:ClearAllPoints()
             icon:SetPoint("LEFT", btn, "LEFT", cx, 0)
@@ -740,6 +762,10 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
             -- Junk Item Visuals' Desaturate greys grey items and Junk Marker junk
             icon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems == true
                 and (q == 0 or EUI_CategoryManager:IsJunk(info.itemID, q))) or false)
+            -- Mark mode shows the Junk Marker's coin on the row's icon
+            if EUI_Bags._junkMode or btn._junkCoin then
+                ns.PaintJunkCoin(btn, EUI_Bags._junkMode and EUI_CategoryManager:IsJunk(info.itemID, q) or false)
+            end
             if EUI._BagsItemUnusable(data.bag, data.slot, data.itemLink, info.itemID) then
                 icon:SetVertexColor(1, 0.1, 0.1)
             else
@@ -747,13 +773,15 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
             end
             icon:Show()
             -- Quality Item Border: square icons only
-            if not round and BP().bagQualityBorder ~= false then
-                local ov = btn._textOverlay
-                if not ov._brdT then ns.CreateInsetBorder(ov) end
+            local ov = btn._textOverlay
+            if not round and (BP().bagQualityBorder ~= false or ns.BagsForever()) then
+                if not (ov._brdT or ov._fvSlotBorder) then ns.CreateInsetBorder(ov, true, icon) end
                 local r, g, b = ns.QualityBorderColor(q)
                 ns.SetInsetBorderColor(ov, r, g, b, 1)
-            elseif btn._textOverlay._brdT then
-                ns.SetInsetBorderColor(btn._textOverlay, 0, 0, 0, 0)
+                if ov._fvSlotBorder then ns.SetForeverSlotQuestBorder(ov, data._isQuest, data._isQuestStarter) end
+            elseif ov._brdT or ov._fvSlotBorder then
+                ns.SetInsetBorderColor(ov, 0, 0, 0, 0)
+                if ov._fvQuestBorder then ov._fvQuestBorder:Hide() end
             end
         else
             local fs = GetCell(btn, id)
@@ -780,7 +808,15 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
                     local tc = data._giTrackColor
                     if tc then fs:SetTextColor(tc.r, tc.g, tc.b) end
                 elseif id == "count" then
-                    text = data._lvCount > 1 and data._lvCount or ""
+                    -- Recent Items picked-up proxy: "OLD+N" with a green "+N",
+                    -- or "+N" in green when nothing was carried before
+                    if data._recentGained then
+                        local full, short = ns.RecentGainedText(data._lvCount, data._recentCarried)
+                        text = full or short
+                        if not full then fs:SetTextColor(GREEN_FONT_COLOR:GetRGB()) end
+                    else
+                        text = data._lvCount > 1 and data._lvCount or ""
+                    end
                 elseif id == "sell" then
                     text = data._lvSell > 0 and C_CurrencyInfo.GetCoinTextureString(data._lvSell) or ""
                 end
@@ -798,19 +834,21 @@ local function RenderRow(btn, data, cols, rowW, x, y, stripe)
         end
     end
     btn._textOverlay:SetShown(btn._lvIcon:IsShown())
+    if reagentBadgeOn or btn._reagentBadge then
+        -- only while the icon column shows (the badge sits on the row icon); a Recent Items
+        -- picked-up entry stands for every stack of its item, in any bag: no badge
+        ns.PaintReagentBadge(btn, reagentBadgeOn and data.bag == 5 and not data._recentGained
+            and not reagentSection and btn._lvIcon:IsShown(),
+            btn._lvIcon, IconSize())
+    end
     EUI_Bags.RunItemOverlays(btn, data)
     -- Tooltip requery after the slot re-assignment (see RenderButton)
     if GameTooltip:IsOwned(btn) and btn.UpdateTooltip then btn:UpdateTooltip() end
 end
 ns.RenderListRow = RenderRow
 
--- Mark mode: the row pool it hit-tests, and the one row it toggled
+-- Mark mode: the row pool it hit-tests
 ns.ListRows = _rows
-function ns.ListPaintJunk(btn, info)
-    local q = info.quality or 1
-    btn._lvIcon:SetDesaturated(info.isLocked or (BP().bagDesaturateJunkItems == true
-        and (q == 0 or EUI_CategoryManager:IsJunk(info.itemID, q))) or false)
-end
 
 -- Re-pins each host's rows (the bags and the bank) after its level moved (ns.PinItemPool)
 function ns.ResyncListRowLevels()
@@ -829,8 +867,10 @@ local function RenderEmptyRow(btn, cols, d, rowW, x, y, stripe)
     parent:SetPoint("TOPLEFT", x, y)
     parent:SetID(d.bag)
     btn:SetID(d.slot)
+    btn._cdItem = nil
     parent:Show()
     btn:Show()
+    btn:SetAlpha(1)
     btn._stripe:SetShown(stripe and BP().bagListHideStripes ~= true)
     btn._lvIcon:Hide()
     for _, fs in pairs(btn._cells) do fs:Hide() end
@@ -867,7 +907,7 @@ local function PlaceSection(key, label, count, x, y, w, sub)
     s._label:SetText(label)
     s._count:SetText(count)
     s._key, s._sub = key, sub
-    local collapsed = (BP().bagListCollapsed or _emptyP)[key] == true
+    local collapsed = IsCollapsed(key) and true or false
     -- Arrow points right when collapsed, down when open
     s._arrow:SetRotation(collapsed and math.pi or math.pi / 2)
     if s._clearBtn then
@@ -883,18 +923,23 @@ end
 -- allItems (All Items view: honour Hide in All Items), pinned (pinned set:
 -- duplicate pinned items into a Pinned section at the top), slotView ("one" =
 -- OneBag, "multi" = MultiBag: bag sections in slot order like the grid),
--- recent (recent itemID set: Recent section in slot views), recentOnly (the
--- Recent Items tab: every item in that one section, newest first), emptySlots
+-- recent (non-nil: a Recent section, EUI_Bags.IsRecentEntry), recentOnly (the
+-- Recent Items tab: every item in that one section, newest first), reagentView
+-- (the Reagent Bag tab's category index for categorized reagents), emptySlots
 -- (slot views: empty slots as rows; nil while searching).
 function ns.RenderListView(items, opts)
     local child = EUI_Bags._scrollChild
     local cats = EUI_CategoryManager:GetCategories()
     local hidden = opts.allItems and BP().bagHiddenInAllItems or _emptyP
     local rowW = opts.rowW
+    reagentBadgeOn = ns.ReadReagentBadge()
 
     -- Bucket: section key (category index, "pinned" or "junk") -> sub label -> items.
     -- Slot views key sections by bag ID (0-5), or "main" for OneBag's bags 0-4.
     local slotView = opts.slotView
+    -- A virtual view (EUI_CategoryManager:RegisterVirtualView): sections by its
+    -- groups. Its collapse flags last the session ("Virtual:" keys).
+    local view = opts.view
     -- One Junk section: the Junk category (under its own name) while the Junk
     -- Marker is on, else every grey item
     local junkOn = EUI_CategoryManager:IsJunkMarkerEnabled()
@@ -934,26 +979,71 @@ function ns.RenderListView(items, opts)
         if slotView == "one" and bag ~= 5 and not (special and special[bag]) then return "main" end
         return bag
     end
-    local pinnedSet, recentSet = opts.pinned, opts.recent
-    if not slotView then items = ns.MergeDuplicates(items) end
+    local pinnedSet, recentOn = opts.pinned, opts.recent ~= nil
+    -- The Recent section is built apart, from the unmerged items, when only some
+    -- copies of an item list (New Items Only, Show Picked-Up Amount) or picked-up
+    -- amounts show: picked, ns.RecentGainedItems, merged, as in the grid. In a
+    -- view Refresh has marked the picks (_vgRec). Slot views merge nothing.
+    local gainedOn = BP().bagRecentShowGained == true
+    local recentItems
+    if (gainedOn and (recentOn or opts.recentOnly))
+        or (recentOn and not slotView and BP().bagRecentNewOnly and next(EUI_Bags._recentCopies)) then
+        recentItems = {}
+        for _, d in ipairs(items) do
+            if d.info and d.itemLink and (opts.recentOnly or not d._pinnedOnly
+                and (view and d._vgRec or not view and EUI_Bags.IsRecentEntry(d))) then
+                recentItems[#recentItems + 1] = d
+            end
+        end
+        if gainedOn then recentItems = ns.RecentGainedItems(recentItems) end
+        if not slotView then recentItems = ns.MergeDuplicates(recentItems) end
+    end
+    -- The Recent Items tab with its own Recent list: the main loop would add
+    -- nothing there (no Pinned or Recent sections on that tab)
+    local mainLoop = not (opts.recentOnly and recentItems and not pinnedSet)
+    if mainLoop and not slotView then items = ns.MergeDuplicates(items) end
     -- Group Gear by Slot: the gear categories' sub-sections are equip slots,
     -- in place of Split by Type
     local gearSlots = not slotView and ns.ArmorySlotGroupingEnabled()
-    for _, d in ipairs(items) do
+    for _, d in ipairs(mainLoop and items or _emptyP) do
         local ci = d.categoryIndex
         local cat = ci and cats[ci]
         if d.info and d.itemLink then
             StampItem(d)
-            if pinnedSet and ns.IsItemPinned(pinnedSet, d.itemLink, d.info.itemID) then
+            -- In a view, Refresh has marked (_vgPin, _vgRec) the items the Pinned and
+            -- Recent sections repeat
+            if pinnedSet and (not view or d._vgPin) and ns.IsItemPinned(pinnedSet, d.itemLink, d.info.itemID) then
                 Add("pinned", "", d)
             end
-            if recentSet and recentSet[d.info.itemID] and not d._pinnedOnly then
+            if recentOn and not recentItems and (not view or d._vgRec) and not d._pinnedOnly
+                and EUI_Bags.IsRecentEntry(d) then
                 Add("recent", "", d)
             end
             if opts.recentOnly then
-                Add("recent", "", d)
+                if not recentItems then Add("recent", "", d) end
+            elseif opts.reagentView then
+                -- the bag's own tab with categorized reagents: one section, its Split
+                -- by Type sub-sections and junk routed as in a category's section
+                if junkOn and cat and cat.isJunk or (not junkOn and d._lvQuality == 0) then
+                    Add("junk", "", d)
+                else
+                    Add(opts.reagentView, d._lvSub, d)
+                end
             elseif slotView then
                 Add(BagKey(d.bag), "", d)
+            elseif view then
+                -- a virtual view: the group's position, "Other" (0) after the groups, and
+                -- our own Junk section for what the provider is never offered. As in All
+                -- Items the item is in its section too, except a pinned one hidden in its
+                -- category
+                if not d._vgOnly then
+                    if d._vgJunk then
+                        Add("junk", "", d)
+                    else
+                        local vg = d._vg
+                        Add((vg and vg > 0) and vg or (#view.groups + 1), "", d)
+                    end
+                end
             elseif cat and not (opts.allItems and d._pinnedOnly)
                 and not hidden[cat._defaultName] and not (cat.groupName and hidden[cat.groupName]) then
                 local key = (junkOn and cat.isJunk or (not junkOn and d._lvQuality == 0)) and "junk" or ci
@@ -968,6 +1058,13 @@ function ns.RenderListView(items, opts)
             end
         end
     end
+    if recentItems then
+        for _, d in ipairs(recentItems) do
+            -- copies show other counts, and a pick may be merged away in the main list
+            StampItem(d)
+            Add("recent", "", d)
+        end
+    end
     if slotView and opts.emptySlots then
         for _, d in ipairs(opts.emptySlots) do
             local b = GetBucket(BagKey(d.bag))
@@ -980,8 +1077,11 @@ function ns.RenderListView(items, opts)
             sl[#sl + 1] = d
         end
     end
-    -- Pinned first, category (or bag) order, Junk last
-    local RANK = { pinned = -2, recent = -1, main = 0, junk = math.huge }
+    -- Pinned first, category (or bag) order, Junk after the last saved category
+    -- (virtual categories follow it, as in the grid and the sidebar); in a virtual
+    -- view Junk follows the view's last section
+    local RANK = { pinned = -2, recent = -1, main = 0,
+        junk = view and (#view.groups + 2) or (EUI_CategoryManager:GetSavedCount() + 0.5) }
     table.sort(order, function(a, b)
         return (RANK[a.key] or a.key) < (RANK[b.key] or b.key)
     end)
@@ -1008,6 +1108,10 @@ function ns.RenderListView(items, opts)
         if b.key == "junk" then label, secKey = junkLabel, "junk"
         elseif b.key == "pinned" then label, secKey = pinnedLabel, "pinned"
         elseif b.key == "recent" then label, secKey = recentLabel, "recent"
+        elseif view then
+            -- a group's section, or "Other" (the position after the last group)
+            local g = view.groups[b.key]
+            label, secKey = g and g.name or view.otherName, g and g.key or view.otherKey
         elseif b.key == "main" then
             local total = 0
             for bag = 0, 4 do
@@ -1027,6 +1131,11 @@ function ns.RenderListView(items, opts)
             s._line:SetPoint("RIGHT", ns.ShowRecentClearButton(s), "LEFT", -6, 0)
         end
         y = y - h
+        -- Reagent Bag sections: the Reagent Bag tab (reagentView), OneBag / MultiBag
+        -- bag sections (bag 5 only in its own) and the category
+        local reag = reagentBadgeOn and (opts.reagentView ~= nil
+            or (slotView and b.key ~= "pinned" and b.key ~= "recent")
+            or (not slotView and not view and type(b.key) == "number" and cats[b.key] and cats[b.key].isReagentBag))
         table.sort(b.subList, SubCompare)
         for _, sl in ipairs(b.subList) do
             if collapsed then break end
@@ -1043,7 +1152,8 @@ function ns.RenderListView(items, opts)
                     _rowsUsed = _rowsUsed + 1
                     btn:GetParent():SetParent(child)
                     if d.info then
-                        RenderRow(btn, d, cols, rowW, x, y, i % 2 == 0)
+                        RenderRow(btn, d, cols, rowW, x, y, i % 2 == 0,
+                            d._pinDim and b.key ~= "pinned" and b.key ~= "recent", reag)
                     else
                         RenderEmptyRow(btn, cols, d, rowW, x, y, i % 2 == 0)
                     end

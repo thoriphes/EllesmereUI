@@ -22,6 +22,17 @@ local GetSettingsForUnit, UnitToSettingsKey = I.GetSettingsForUnit, I.UnitToSett
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
+-- True while the game withholds this unit's identity (inside instances: a
+-- unit that is neither player-controlled nor in the group). A model refuses
+-- such a unit (PlayerModel:SetUnit needs the identity), so the 3D lanes
+-- stand down for it. An answer that cannot be read counts as withheld.
+local ShouldUnitIdentityBeSecret = C_Secrets and C_Secrets.ShouldUnitIdentityBeSecret
+local function IdentityHidden(unit)
+    if not ShouldUnitIdentityBeSecret then return false end
+    local hidden = ShouldUnitIdentityBeSecret(unit)
+    return issecretvalue(hidden) or hidden == true
+end
+
 local UF_ICONS_PATH = "Interface\\AddOns\\EllesmereUI\\media\\icons\\"
 local CLASS_FULL_SPRITE_BASE = UF_ICONS_PATH .. "class-full\\"
 local CLASS_FULL_COORDS = EllesmereUI.CLASS_ICON_SPRITE_COORDS
@@ -110,7 +121,9 @@ end
 
 -- Mirror angles (degrees) for playable-race models, whether used by a player or NPC.
 -- Non-playable NPC models are excluded.
--- Unlisted/missing/restricted IDs stay normal; never infer facing from unit type.
+-- Unlisted/missing/restricted IDs stay normal. A 3D model turns only by this
+-- list; a 2D portrait flips for every player (forms included) and, for an NPC,
+-- by this list.
 do
     local mirrorAngles -- Built only when portrait mirroring first needs a model ID.
     local function GetMirrorAngle(id)
@@ -181,6 +194,9 @@ do
         Resolve(model, key)
     end
     function ns.UF_CanMirrorPortrait2D(model, unit, onReady)
+        -- No model for a unit whose identity is withheld: its portrait stays
+        -- unflipped, and the model is left as it is.
+        if IdentityHidden(unit) then return false end
         -- IDs may be secret: only type() and issecretvalue() ever test them.
         local guid = UnitGUID(unit)
         local key = (not issecretvalue(guid)) and guid or nil
@@ -189,7 +205,7 @@ do
             if v ~= nil then return v end
             -- This unit's load is still in flight: take the answer if it is in.
             if model._mirPending == key then
-                if type(model:GetModelFileID()) == "nil" then return false end
+                if type((model:GetModelFileID())) == "nil" then return false end
                 model._mirReady = nil
                 return Resolve(model, key)
             end
@@ -251,6 +267,24 @@ end
 -- runs only after a real repaint: 2D heals what SetPortraitTexture resets, 3D
 -- re-applies zoom after SetUnit -- nothing to heal without a repaint.
 -- fallback: the class lane's resolved non-player fallback, when the painter has it.
+-- A model mirrors its frame's alpha by hand; the mirrored value is kept so a
+-- UIParent fade (EllesmereUI.UIScaledAlpha) can scale it again on change.
+do
+    local mirrored = setmetatable({}, { __mode = "k" })
+    local listening = false
+    local function Reapply()
+        for m, a in pairs(mirrored) do m:SetAlpha(EllesmereUI.UIScaledAlpha(a)) end
+    end
+    function ns.UF_SetModelAlpha(model, a)
+        mirrored[model] = a
+        if not listening then
+            listening = true
+            EllesmereUI.OnUIAlphaChanged(Reapply)
+        end
+        model:SetAlpha(EllesmereUI.UIScaledAlpha(a))
+    end
+end
+
 local PortraitOverride  -- forward declaration; painter registrations below the definition
 local SwapPortraitMode  -- forward declaration; the portrait painter swaps through it
 function PortraitOverride(self, event, evtUnit, fallback)
@@ -300,12 +334,13 @@ function PortraitOverride(self, event, evtUnit, fallback)
         -- with guid and availability both reading unchanged, field-traced).
         -- Models only: 2D textures survive Hide/Show.
         or (event == "Show" and isModel)
-    -- A changed model can also change 2D mirror eligibility, including class
-    -- mode's NPC fallback: drop the cached answer and repaint, only when opted in.
+    -- A changed model can also change an NPC's 2D mirror eligibility, including
+    -- class mode's NPC fallback: drop the cached answer and repaint, only when
+    -- opted in. A player's flip never depends on the model.
     if event == "UNIT_MODEL_CHANGED" and not isModel then
         local uk = UnitToSettingsKey(self._euiBaseUnit or u)
         local us = uk and db.profile[uk]
-        if us and us.portraitMirror and not ns.UF_Blizz() then
+        if us and us.portraitMirror and not ns.UF_Blizz() and not UnitIsPlayer(u) then
             ns.UF_ForgetPortraitMirror(u)
             hasStateChanged = true
         end
@@ -319,21 +354,36 @@ function PortraitOverride(self, event, evtUnit, fallback)
     end
     if hasStateChanged then
         if isModel then
-            if not isAvailable then
-                element:SetCamDistanceScale(0.25)
-                element:SetPortraitZoom(0)
-                element:SetPosition(0, 0, 0.25)
+            -- A model refuses a unit whose identity the game withholds (an
+            -- enemy inside an instance), and the refused call leaves nothing
+            -- to draw: that unit's 2D portrait stands in on the backdrop's 2D
+            -- texture, and the model comes back with the next unit it can show.
+            local stand = element.backdrop and element.backdrop._2d
+            if stand and isAvailable and IdentityHidden(u) then
                 element:ClearModel()
-                element:SetModel([[Interface\Buttons\TalkToMeQuestionMark.m2]])
+                element:Hide()
+                SetPortraitTexture(stand, u, stand._blizzNoMask)
+                if stand.PostUpdate then stand:PostUpdate(u) end
+                stand:Show()
             else
-                local uKey3d = UnitToSettingsKey(self._euiBaseUnit or u)
-                local uS3d = uKey3d and db.profile[uKey3d]
-                local camScale = ((uS3d and uS3d.portrait3dZoom) or 100) / 100
-                element:ClearModel()
-                element:SetUnit(u)
-                element:SetPortraitZoom(1)
-                element:SetPosition(0, 0, 0)
-                element:SetCamDistanceScale(camScale)
+                if stand then stand:Hide() end
+                element:Show()
+                if not isAvailable then
+                    element:SetCamDistanceScale(0.25)
+                    element:SetPortraitZoom(0)
+                    element:SetPosition(0, 0, 0.25)
+                    element:ClearModel()
+                    element:SetModel([[Interface\Buttons\TalkToMeQuestionMark.m2]])
+                else
+                    local uKey3d = UnitToSettingsKey(self._euiBaseUnit or u)
+                    local uS3d = uKey3d and db.profile[uKey3d]
+                    local camScale = ((uS3d and uS3d.portrait3dZoom) or 100) / 100
+                    element:ClearModel()
+                    element:SetUnit(u)
+                    element:SetPortraitZoom(1)
+                    element:SetPosition(0, 0, 0)
+                    element:SetCamDistanceScale(camScale)
+                end
             end
         elseif element.isClass then
             -- Class sprite lane: the engine painter is the single portrait
@@ -401,8 +451,13 @@ function PortraitOverride(self, event, evtUnit, fallback)
         element.state = isAvailable
     end
     if hasStateChanged and element.PostUpdate then
-        return element:PostUpdate(u, hasStateChanged)
+        element:PostUpdate(u, hasStateChanged)
     end
+    -- For the engine's same-frame collapse: only a model reload closes the
+    -- portrait channel for the frame. A 2D paint is one texture call, and its
+    -- art comes with UNIT_PORTRAIT_UPDATE, which can follow UNIT_MODEL_CHANGED
+    -- in the same frame (a shapeshift sends both).
+    return isModel and hasStateChanged
 end
 
 -- Portraits: PortraitOverride was already the complete painter (GUID/state
@@ -414,7 +469,7 @@ ns.Engine.SetPainter("portrait", function(frame, unit, event)
         -- before the paint so both read the same unit (no 2D flash between).
         local swap, fb = ns.UF_ClassFallbackNeedsSwap(frame, unit)
         if swap then SwapPortraitMode(frame, true) end
-        PortraitOverride(frame, event or "ForceUpdate", unit, fb)
+        return PortraitOverride(frame, event or "ForceUpdate", unit, fb)
     end
 end)
 -- Element ForceUpdate stamp: the settings code refreshes portraits through
@@ -504,6 +559,10 @@ function ns.UF_AttachEngineFrame(frame, unit, polled)
         ns.Engine.AttachPolled(frame, unit, channels)
     else
         ns.Engine.Attach(frame, unit, channels)
+    end
+    ns.UF_SyncBorderColor(frame, unit)
+    if frame._euiTextClassification then
+        ns.Engine.SetChannelOn(frame, "textclassification", true)
     end
     -- Opt-in heal prediction joins its channel here when the unit has it on.
     if frame.HealthPrediction and ns.UF_HEAL_PRED_UNITS[unit] then
@@ -860,10 +919,10 @@ end
 -- unit's settings, shape = its resolved shape; s == nil hides both. Nothing
 -- exists until a first non-default value. The ring is laid out from the host
 -- size (Outer Ring Size percent, minus a 4px inset, edges snapped by PP.Point)
--- and tinted with the frame border colour, which the hover path recolours in
+-- and tinted with the frame border color, which the hover path recolors in
 -- place. The ring's geometry is memoized on the texture (ring key, frame
 -- Border Style, ring size, host width and height, pixel grid) and its tint on
--- the colour (border r, g, b, alpha), so the per-target class-colour re-run
+-- the color (border r, g, b, alpha), so the per-target class-color re-run
 -- only compares. The Portrait Dragon is its own pass (ns.UF_PortraitDragon).
 function ns.UF_PortraitExtras(host, s, shape)
     local round = s and ns.UF_ROUND_SHAPES[shape]
@@ -972,6 +1031,90 @@ function ns.UF_SetClassPortraitPoints(tex, host, zoom, insetX, insetY)
     PP.Point(tex, "BOTTOMRIGHT", host, "BOTTOMRIGHT", -insetX, insetY)
 end
 
+-- A 3D portrait in a detached shape. The model is a child frame of the
+-- portrait host, so it draws over every texture of the host whatever their
+-- draw layers, and a model takes no mask. While fit is on (3D Portrait Below
+-- Border, the unit's portrait3dBelowBorder, on a 3D portrait with a shape
+-- ring) the ring rests on a holder two levels over the host, one over the
+-- model: a child of the host, so the host's shape mask still clips it.
+-- The cast icon overlay (Show Icon on Portrait) takes the ring while the icon
+-- shows and hands it back to host._ringHome. The model is laid inside the
+-- ring: each edge one pixel under the ring's solid band (its inner edge is
+-- where 2D art shows uncovered), never outside the mask's opening (about 12
+-- of its 128 texels in), and laid again when the host resizes. A round or
+-- angled shape still shows the model's corners past the ring. Fit off (the
+-- default): the ring stays on the host and the model fills the host, drawing
+-- over the ring. host = the live backdrop or the options preview frame; model
+-- may be nil.
+local function ShapeModelEdge(len, shape, size)
+    local exp = 7 - size
+    local unmasked = ns.UF_UNMASKED_RING[shape]
+    local inner
+    if unmasked then
+        local ri = unmasked - exp
+        inner = ri + 9 / 128 * (len - 2 * ri)
+    else
+        inner = -exp + (MASK_INSETS[shape] or 17) / 128 * (len + 2 * exp)
+    end
+    local mi = (size >= 1) and 1 or 0
+    local open = mi + 12 / 128 * (len - 2 * mi)
+    if inner - 1 > open then return inner - 1 end
+    return open
+end
+local function LayShapeModel(host, model, fit, shape, size)
+    local ix, iy = 0, 0
+    if fit then
+        local w, h = host:GetWidth(), host:GetHeight()
+        if w < 1 then w = 46 end
+        if h < 1 then h = 46 end
+        ix, iy = ShapeModelEdge(w, shape, size), ShapeModelEdge(h, shape, size)
+    end
+    model:ClearAllPoints()
+    PP.Point(model, "TOPLEFT", host, "TOPLEFT", ix, -iy)
+    PP.Point(model, "BOTTOMRIGHT", host, "BOTTOMRIGHT", -ix, iy)
+end
+-- The holder's OnSizeChanged: a host resized outside the shape pass. A hidden
+-- ring means the shape or the detached mode went away (those passes lay the
+-- model out themselves).
+local function ShapeModelResized(holder)
+    local host = holder._host
+    local ring = host and host._shapeBorderTex
+    if holder._fit and ring and ring:IsShown() then
+        LayShapeModel(host, holder._model, true, holder._shape, holder._size)
+    end
+end
+function ns.UF_PortraitShapeModel(host, ring, model, fit, shape, size)
+    fit = (fit and model and ring) and true or false
+    local holder = host._ringLift
+    if fit and not holder then
+        holder = POOL.CreateFrame("Frame", nil, host)
+        holder:SetAllPoints(host)
+        host._ringLift = holder
+    end
+    local home = host
+    if holder then
+        holder._fit = fit or nil
+        if fit then
+            holder._host, holder._model, holder._shape, holder._size = host, model, shape, size
+            if holder:GetScript("OnSizeChanged") ~= ShapeModelResized then
+                holder:SetScript("OnSizeChanged", ShapeModelResized)
+            end
+            local strata = host:GetFrameStrata()
+            if holder:GetFrameStrata() ~= strata then holder:SetFrameStrata(strata) end
+            local lvl = host:GetFrameLevel() + 2
+            if holder:GetFrameLevel() ~= lvl then holder:SetFrameLevel(lvl) end
+            home = holder
+        end
+    end
+    host._ringHome = (home ~= host) and home or nil
+    if ring then
+        local at = ring:GetParent()
+        local castOverlay = host._castIconOverlay
+        if at ~= home and not (castOverlay and at == castOverlay) then ring:SetParent(home) end
+    end
+    if model then LayShapeModel(host, model, fit, shape, size) end
+end
+
 -- Apply a detached portrait shape (mask + border overlay) to a portrait backdrop;
 -- creates the mask/border textures on first call, then updates them.
 --   backdrop  : the portrait backdrop frame
@@ -1003,7 +1146,7 @@ local function ApplyDetachedPortraitShape(backdrop, uSettings, unitToken)
             -- Dark mode: always the player's own class color.
             local _, classToken = UnitClass("player")
             if classToken then
-                local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classToken]
+                local c = EllesmereUI.GetClassColor(classToken)
                 if c then bR, bG, bB = c.r, c.g, c.b end
             end
         elseif unitToken and UnitExists(unitToken) then
@@ -1011,7 +1154,7 @@ local function ApplyDetachedPortraitShape(backdrop, uSettings, unitToken)
             -- for NPCs, tapped grey).
             local _, classToken = UnitClass(unitToken)
             if UnitIsPlayer(unitToken) and not issecretvalue(classToken) and classToken then
-                local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classToken]
+                local c = EllesmereUI.GetClassColor(classToken)
                 if c then bR, bG, bB = c.r, c.g, c.b end
             elseif UnitIsTapDenied and UnitIsTapDenied(unitToken) then
                 bR, bG, bB = 0.6, 0.6, 0.6
@@ -1029,7 +1172,7 @@ local function ApplyDetachedPortraitShape(backdrop, uSettings, unitToken)
             -- Fallback: player class color.
             local _, classToken = UnitClass("player")
             if classToken then
-                local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classToken]
+                local c = EllesmereUI.GetClassColor(classToken)
                 if c then bR, bG, bB = c.r, c.g, c.b end
             end
         end
@@ -1144,7 +1287,7 @@ local function ApplyDetachedPortraitShape(backdrop, uSettings, unitToken)
     -- === TGA BORDER OVERLAY ===
     -- Geometry (anchors, mask attach, art) re-applies only when one of its
     -- inputs changes -- shape, border size step, pixel grid, mask object -- so
-    -- the per-target class-colour re-run only recolours. A shape listed in
+    -- the per-target class-color re-run only recolors. A shape listed in
     -- ns.UF_UNMASKED_RING (Pixels Circle) keeps its ring art outside the mask,
     -- inset from the backdrop by that many px at Size 7; each step below 7
     -- moves it 1px outward, as the size step expands every other shape's art.
@@ -1205,16 +1348,24 @@ local function ApplyDetachedPortraitShape(backdrop, uSettings, unitToken)
         ns.UF_SetClassPortraitPoints(backdrop._class, backdrop,
             uSettings and uSettings.portraitClassZoom, classInset + oL, classInset - oT)
     end
-    if backdrop._3d then
-        -- 3D models ignore SetClipsChildren, so keep them inside the backdrop
-        -- bounds. Art scale is not applied to 3D (camera zoom is fixed).
-        backdrop._3d:ClearAllPoints()
-        PP.Point(backdrop._3d, "TOPLEFT", backdrop, "TOPLEFT", 0, 0)
-        PP.Point(backdrop._3d, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", 0, 0)
-    end
+    -- 3D Portrait Below Border (off by default): a 3D portrait sits inside
+    -- the ring and under it; off, it fills the backdrop and draws over the
+    -- ring (art scale is not applied to 3D: camera zoom is fixed).
+    local artMode = (uSettings and uSettings.portraitMode) or db.profile.portraitMode or "2d"
+    local below = artMode == "3d" and uSettings ~= nil and uSettings.portrait3dBelowBorder == true
+    ns.UF_PortraitShapeModel(backdrop, sbt, backdrop._3d, below, shape, rawBorderSize)
 
     -- Outer Ring / Inner Shadow (round shapes); nothing built while off.
     ns.UF_PortraitExtras(backdrop, uSettings, shape)
+end
+-- Whether a frame shows its portrait, the frame layout's rule: a stock style
+-- always carries one, otherwise Portrait Mode and Show Portrait decide. An
+-- indicator set to Portrait centres on it only while it shows, never on a
+-- hidden backdrop (the options preview places them the same way).
+function ns.UF_PortraitShown(s)
+    if ns.UF_Blizz() then return true end
+    local pStyle = (s and s.portraitStyle) or db.profile.portraitStyle or "attached"
+    return pStyle ~= "none" and not (s and s.showPortrait == false)
 end
 local function CreatePortrait(frame, side, frameHeight, unit)
     local portraitHeight = frameHeight or 46
@@ -1423,9 +1574,12 @@ local function CreatePortrait(frame, side, frameHeight, unit)
         -- when the flip state changes (the first on-to-off pass restores the
         -- creation crop). Never under a stock style (its full-art coords
         -- stand), and the unavailable question mark always reads unflipped.
+        -- A player always flips, shapeshift forms and transforms included
+        -- (UnitIsPlayer is never secret); only an NPC asks the model lookup.
         local mir = (uS2 and uS2.portraitMirror and not ns.UF_Blizz()
             and not (hasStateChanged and self.state == false)
-            and ns.UF_CanMirrorPortrait2D(EnsureModel3D(), u, MirrorReady)) and true or false
+            and (UnitIsPlayer(u)
+                or ns.UF_CanMirrorPortrait2D(EnsureModel3D(), u, MirrorReady))) and true or false
         if mir ~= (self._mirrored or false) then
             self._mirrored = mir
             if mir then
@@ -1499,7 +1653,7 @@ function SwapPortraitMode(frame, painting)
         if not bd._3d then return end
         -- A model ignores parent alpha: take the body's current fade until
         -- the visibility pass mirrors it.
-        bd._3d:SetAlpha((frame._visWrap or frame):GetAlpha())
+        ns.UF_SetModelAlpha(bd._3d, (frame._visWrap or frame):GetAlpha())
         bd._3d:Show()
         bd._3d.backdrop = bd
         bd._3d.is2D = false

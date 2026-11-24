@@ -123,10 +123,11 @@ local function SetupOptionsPanel()
         -- other callers -- styles changed by overrides, profile switch, or
         -- import land here.
         RealiseClassPowerStyle()
-        -- Threat watchers: a profile switch or spec override changes the
-        -- saved toggles without calling their setters.
+        -- Threat watchers and the targeting sounds: a profile switch or spec
+        -- override changes the saved toggles without calling their setters.
         ns.SyncPlayerThreat()
         if ns.SyncThreatPct then ns.SyncThreatPct() end
+        ns.UF_SyncTargetSounds()
     end
     reloadThrottle:SetScript("OnUpdate", function(self)
         self:Hide()
@@ -174,6 +175,9 @@ local function SetupOptionsPanel()
         -- each one: keep its solid strips one level over it, as when built.
         local strips = PP.GetBorders(border)
         if strips then strips:SetFrameLevel(border:GetFrameLevel() + 1) end
+        local owner = border:GetParent()
+        EllesmereUI.PreviewAuraCorners(owner, owner._icon, owner._cd, border,
+            not (ns.UF_Blizz and ns.UF_Blizz()) and settings.auraBorderCornerRadius, settings.auraBorderTexture, settings.auraBorderSize)
     end
     local function AttachFakeDebuffs(frame)
         -- Hide the holder until it is laid out again below, so size, anchor and
@@ -263,8 +267,7 @@ local function SetupOptionsPanel()
         if simple then
             showCD = settings.simpleDebuffShowCooldownText
             cdSize = settings.simpleDebuffCooldownTextSize or 14
-            cdOffX = settings.simpleDebuffCooldownTextOffsetX or 0
-            cdOffY = settings.simpleDebuffCooldownTextOffsetY or 0
+            cdOffX, cdOffY = ns.GetBossSimpleCdTextOffset(settings, false)
         else
             showCD = settings.debuffShowCooldownText
             cdSize = settings.debuffCooldownTextSize or 10

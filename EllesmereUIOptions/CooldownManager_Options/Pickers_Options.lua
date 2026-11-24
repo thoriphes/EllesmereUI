@@ -17,6 +17,77 @@ if not ns then return end  -- module disabled: no options page
 local CreateFrame = EllesmereUI._Pool.CreateFrame
 local PoolKept, PoolGen = EllesmereUI._Pool.Kept, EllesmereUI._Pool.Gen
 
+-- WoW Forever: the rank keys of the spells every other bar of the active spec
+-- lists (Hidden CDs and typed custom IDs aside, as the hide pass leaves them
+-- out), read into the holder { barKey = this bar } the first time a slot needs them.
+local function OtherBarRankNames(holder)
+    local set = holder.set
+    if set then return set end
+    set = {}
+    holder.set = set
+    local RankName = ns.CDMRankName
+    local sp = ns.GetActiveSpecProfiles and ns.GetActiveSpecProfiles()
+    local sk = ns.GetActiveSpecKey and ns.GetActiveSpecKey()
+    local bsAll = sp and sk and sp[sk] and sp[sk].barSpells
+    if RankName and type(bsAll) == "table" then
+        for k, bsd in pairs(bsAll) do
+            if k ~= holder.barKey and k ~= "__ghost_cd"
+               and type(bsd) == "table" and type(bsd.assignedSpells) == "table" then
+                for _, sid in ipairs(bsd.assignedSpells) do
+                    local n = type(sid) == "number" and sid > 0
+                        and not (bsd.customSpellIDs and bsd.customSpellIDs[sid]) and RankName(sid)
+                    if n then set[n] = true end
+                end
+            end
+        end
+    end
+    return set
+end
+
+-- A slot can show another spell than its own (the active seal in WoW Forever's
+-- Seals slot, Wither in an Immolate slot). Such a slot is placed when its OWN
+-- spell (cooldownInfo.spellID) is on a bar, the rule of the import hide pass
+-- (ns.MigrateSpecToBarFilterModelV6): the spell it shows is never listed for it.
+-- Returns where the own spell sits when it differs from the shown spell: this
+-- bar's index, true for another bar (other: their variant set; names: the
+-- OtherBarRankNames holder on WoW Forever) or the hidden list, nil when no bar
+-- lists it.
+local function SlotOwnPlacement(own, shown, list, other, names, ghostList)
+    if type(own) ~= "number" or (issecretvalue and issecretvalue(own)) or own <= 0 then return nil end
+    if own == shown or ns.NormalizeToBase(own) == shown then return nil end
+    local FindVar = ns.FindVariantIndexInList
+    local at = list and FindVar(list, own)
+    if at then return at end
+    if other and ns.ResolveVariantValue(other, own) then return true end
+    local RankName = names and ns.CDMRankName
+    local n = RankName and RankName(own)
+    if n and OtherBarRankNames(names)[n] then return true end
+    if ghostList and FindVar(ghostList, own) then return true end
+    return nil
+end
+
+-- The own spell of a live icon: its frame cache (ResolveFrameSpellID's base,
+-- the cooldownInfo.spellID), else the cooldown info itself. nil for a frame
+-- that stands in for another slot (Replace with Buff).
+local function LiveIconOwnSpell(icon)
+    local fc = ns._ecmeFC and ns._ecmeFC[icon]
+    if fc and fc.replacesCd then return nil end
+    local own = fc and fc.baseSpellID
+    if own == nil and type(icon.cooldownID) == "number" and C_CooldownViewer
+       and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+        local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(icon.cooldownID)
+        own = info and info.spellID
+    end
+    return own
+end
+
+-- The own spell of a Blizzard settings catalogue row (its cooldownInfo.spellID).
+local function RowOwnSpell(cdID)
+    local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+    local info = gci and type(cdID) == "number" and gci(cdID)
+    return info and info.spellID
+end
+
 -- Ensure assignedSpells is populated from live icons if nil; shared by spell picker, preview, and all add/remove handlers.
 local function EnsureAssignedSpells(barKeyE)
     local env = ns._CDMO_OptEnv
@@ -44,6 +115,11 @@ local function EnsureAssignedSpells(barKeyE)
             end
         end
         local seen = {}
+        -- WoW Forever: one entry per spell, whatever its rank (ns.CDMRankName):
+        -- the first one listed stays where it is, a later rank of it goes.
+        local RankName = ns.CDMRankName
+        local seenRank = RankName and {}
+        local rankCut = false
         local writeIdx = 1
         for readIdx = 1, #sd.assignedSpells do
             local raw = sd.assignedSpells[readIdx]
@@ -57,12 +133,19 @@ local function EnsureAssignedSpells(barKeyE)
                 end
             end
             if not seen[sid] then
-                seen[sid] = true
-                sd.assignedSpells[writeIdx] = sid
-                writeIdx = writeIdx + 1
+                local name = seenRank and not (customN and customN[sid]) and RankName(sid)
+                if name and seenRank[name] then
+                    rankCut = true
+                else
+                    seen[sid] = true
+                    if name then seenRank[name] = true end
+                    sd.assignedSpells[writeIdx] = sid
+                    writeIdx = writeIdx + 1
+                end
             end
         end
         for i = writeIdx, #sd.assignedSpells do sd.assignedSpells[i] = nil end
+        if rankCut then ns._spellOrderDirty = true end
     end
     -- Append any live-bar spells missing from assignedSpells so the preview always
     -- matches the player's CDM bars (e.g. after re-talenting). EXCEPTION: skip while an
@@ -101,6 +184,8 @@ local function EnsureAssignedSpells(barKeyE)
         -- spell on cooldowns, and appending it here creates a both-state the route map
         -- must arbitrate. Claimed set built from the active spec's STORED bars, not the live route map (momentarily stale during the swap).
         local claimedElsewhere
+        -- WoW Forever: their rank keys, read only for a slot's own spell (OtherBarRankNames).
+        local claimedNames = ns.CDMRankName and { barKey = barKeyE }
         do
             local sp = ns.GetActiveSpecProfiles and ns.GetActiveSpecProfiles()
             local sk = ns.GetActiveSpecKey and ns.GetActiveSpecKey()
@@ -165,11 +250,19 @@ local function EnsureAssignedSpells(barKeyE)
                 if _sid > 0 then _sid = NormalizeToBase(_sid) end
                 -- FindVar handles negatives by exact scan internally; variant matching is a superset of exact for positives.
                 local at = FindVar and FindVar(sd.assignedSpells, _sid)
+                -- A slot placed by its own spell (SlotOwnPlacement above): its
+                -- own entry is its slot here; listed elsewhere, nothing is added.
+                local ownPlaced
+                if not at and _sid > 0 and FindVar then
+                    ownPlaced = SlotOwnPlacement(LiveIconOwnSpell(icon), _sid, sd.assignedSpells,
+                        claimedElsewhere, claimedNames, ghostList)
+                    if type(ownPlaced) == "number" then at = ownPlaced end
+                end
                 if at then
                     -- Already has a slot (any variant form, or a custom trinket/item
                     -- marker): advance the cursor so the next NEW spell lands after it, matching on-screen order.
                     insertPos = at
-                elseif _sid > 0
+                elseif _sid > 0 and not ownPlaced
                    and not (removed and removed[_sid])
                    and not (ghostList and FindVar and FindVar(ghostList, _sid))
                    and not (claimedElsewhere and ns.ResolveVariantValue and ns.ResolveVariantValue(claimedElsewhere, _sid)) then
@@ -236,6 +329,7 @@ local function EnsureAssignedSpells(barKeyE)
                 local ghostListM = ghostSdM and ghostSdM.assignedSpells
                 -- Spells the user placed on ANY other bar keep their home.
                 local claimedM
+                local claimedNamesM = ns.CDMRankName and { barKey = barKeyE }
                 do
                     local bsAll = aprofM and aprofM.barSpells
                     if bsAll and ns.StoreVariantValue then
@@ -273,12 +367,16 @@ local function EnsureAssignedSpells(barKeyE)
                                 isKnownM = false
                             end
                         end
+                        -- Last: the row's own spell placed on a bar places the
+                        -- row (SlotOwnPlacement), whatever spell it shows.
                         if type(nsid) == "number" and nsid > 0
                            and not isKnownM
                            and not FindVar(list, nsid)
                            and not (removed and (removed[nsid] or removed[ce.sid]))
                            and not (ghostListM and FindVar(ghostListM, nsid))
-                           and not (claimedM and ns.ResolveVariantValue and ns.ResolveVariantValue(claimedM, nsid)) then
+                           and not (claimedM and ns.ResolveVariantValue and ns.ResolveVariantValue(claimedM, nsid))
+                           and not SlotOwnPlacement(RowOwnSpell(ce.cdID), nsid, list,
+                                claimedM, claimedNamesM, ghostListM) then
                             local pos
                             for cj = ci - 1, 1, -1 do
                                 local prevSid = NormalizeToBase(catalog[cj].sid)
@@ -395,6 +493,12 @@ local function ShowCustomSpellIDPopup(barKey, onAdded, withCharges)
         validate = function(text)
             local sid = SpellOf(text)
             if not sid then return EllesmereUI.L("Enter a valid spell ID") end
+            -- Ahead of the spell check: some potion item ids name no spell.
+            local bdPick = barKey and ns.barDataByKey and ns.barDataByKey[barKey]
+            if bdPick and (bdPick.barType == "buffs" or bdPick.barType == "custom_buff")
+               and ns.PotionPresetForTypedID(sid) then
+                return EllesmereUI.L("Pick this potion from the preset list")
+            end
             if not C_Spell.GetSpellName(sid) then return EllesmereUI.L("Unknown spell ID") end
             -- Variant-aware, mirroring AddTrackedSpell's own dedup. An exact-only
             -- check lets a variant-duplicate through, which AddTrackedSpell then
@@ -463,7 +567,7 @@ local function ShowCustomItemIDPopup(barKey, onAdded)
         popup:EnableMouse(true)
         local popBg = popup:CreateTexture(nil, "BACKGROUND")
         popBg:SetAllPoints(); popBg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
 
         local title = popup:CreateFontString(nil, "OVERLAY")
         title:SetFont(FONT_PATH, 14, GetCDMOptOutline())
@@ -483,7 +587,7 @@ local function ShowCustomItemIDPopup(barKey, onAdded)
         editBox:SetJustifyH("CENTER")
         local ebBg = editBox:CreateTexture(nil, "BACKGROUND")
         ebBg:SetAllPoints(); ebBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(editBox, 1, 1, 1, 0.12, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(editBox, 1, 1, 1, 0.12, ebBg)
 
         local placeholder = editBox:CreateFontString(nil, "ARTWORK")
         placeholder:SetFont(FONT_PATH, 12, GetCDMOptOutline())
@@ -509,7 +613,7 @@ local function ShowCustomItemIDPopup(barKey, onAdded)
         addBtn:SetPoint("BOTTOMRIGHT", popup, "BOTTOM", -4, 16)
         local addBg = addBtn:CreateTexture(nil, "BACKGROUND")
         addBg:SetAllPoints(); addBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(addBtn, ar, ag, ab, 0.3, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(addBtn, ar, ag, ab, 0.3, addBg)
         local addLbl = addBtn:CreateFontString(nil, "OVERLAY")
         addLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         addLbl:SetPoint("CENTER"); addLbl:SetText(EllesmereUI.L("Add"))
@@ -523,7 +627,7 @@ local function ShowCustomItemIDPopup(barKey, onAdded)
         cancelBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", 4, 16)
         local cBg = cancelBtn:CreateTexture(nil, "BACKGROUND")
         cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
-        EllesmereUI.MakeBorder(cancelBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(cancelBtn, 1, 1, 1, 0.10, cBg)
         local cLbl = cancelBtn:CreateFontString(nil, "OVERLAY")
         cLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         cLbl:SetPoint("CENTER"); cLbl:SetText(EllesmereUI.L("Cancel"))
@@ -618,7 +722,7 @@ local function ShowEquipmentSlotPopup(barKey, onAdded)
         popup:EnableMouse(true)
         local popBg = popup:CreateTexture(nil, "BACKGROUND")
         popBg:SetAllPoints(); popBg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
 
         local title = popup:CreateFontString(nil, "OVERLAY")
         title:SetFont(FONT_PATH, 14, GetCDMOptOutline())
@@ -638,7 +742,7 @@ local function ShowEquipmentSlotPopup(barKey, onAdded)
         editBox:SetJustifyH("CENTER")
         local ebBg = editBox:CreateTexture(nil, "BACKGROUND")
         ebBg:SetAllPoints(); ebBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(editBox, 1, 1, 1, 0.12, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(editBox, 1, 1, 1, 0.12, ebBg)
 
         local placeholder = editBox:CreateFontString(nil, "ARTWORK")
         placeholder:SetFont(FONT_PATH, 12, GetCDMOptOutline())
@@ -686,7 +790,7 @@ local function ShowEquipmentSlotPopup(barKey, onAdded)
         addBtn:SetPoint("BOTTOMRIGHT", popup, "BOTTOM", -4, 16)
         local addBg = addBtn:CreateTexture(nil, "BACKGROUND")
         addBg:SetAllPoints(); addBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(addBtn, ar, ag, ab, 0.3, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(addBtn, ar, ag, ab, 0.3, addBg)
         local addLbl = addBtn:CreateFontString(nil, "OVERLAY")
         addLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         addLbl:SetPoint("CENTER"); addLbl:SetText(EllesmereUI.L("Add"))
@@ -700,7 +804,7 @@ local function ShowEquipmentSlotPopup(barKey, onAdded)
         cancelBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", 4, 16)
         local cBg = cancelBtn:CreateTexture(nil, "BACKGROUND")
         cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
-        EllesmereUI.MakeBorder(cancelBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(cancelBtn, 1, 1, 1, 0.10, cBg)
         local cLbl = cancelBtn:CreateFontString(nil, "OVERLAY")
         cLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         cLbl:SetPoint("CENTER"); cLbl:SetText(EllesmereUI.L("Cancel"))
@@ -811,7 +915,7 @@ local function ShowBuffBarPicker(anchorFrame, targetBarKey, onChanged)
 
     local bgTex = menu:CreateTexture(nil, "BACKGROUND")
     bgTex:SetAllPoints(); bgTex:SetColorTexture(mBgR, mBgG, mBgB, mBgA)
-    EllesmereUI.MakeBorder(menu, 1, 1, 1, mBrdA, EllesmereUI.PP)
+    EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, mBrdA, bgTex, nil, true)
 
     local inner = CreateFrame("Frame", nil, menu)
     inner:SetWidth(menuW)
@@ -879,7 +983,9 @@ local function ShowBuffBarPicker(anchorFrame, targetBarKey, onChanged)
     end
 
     -- Custom Spell ID entry -- add an arbitrary buff by spell ID, tracked
-    -- as a real aura (12.1 engine slot; no duration asked). Entries that
+    -- as a real aura (12.1 engine slot; no duration asked). A one-spell
+    -- potion's buff or item id is refused here and turned into its cast-timed
+    -- preset if already saved (ns.AdoptPotionCustomEntries). Entries that
     -- carry a stored duration are legacy cast-timer customs and keep that
     -- path untouched. Its own section at the top, matching the CD/utility
     -- picker.
@@ -1065,7 +1171,7 @@ local function ShowBuffBarPicker(anchorFrame, targetBarKey, onChanged)
     -- Scroll if needed
     if mH + 4 > MAX_H then
         local sf = CreateFrame("ScrollFrame", nil, menu)
-        sf:SetPoint("TOPLEFT"); sf:SetPoint("BOTTOMRIGHT")
+        sf:SetPoint("TOPLEFT", 0, -1); sf:SetPoint("BOTTOMRIGHT", 0, 1)
         sf:SetFrameLevel(menu:GetFrameLevel() + 1)
         sf:EnableMouseWheel(true)
         sf:SetScrollChild(inner)
@@ -1090,10 +1196,12 @@ local function ShowBuffBarPicker(anchorFrame, targetBarKey, onChanged)
     menu:Show()
 end
 
--- Buff picker targeting a CD/UTILITY bar. A buff placed here is a custom injected
--- spell (always-shown icon) with an aura-driven Active State; ns.AddBuffToCDUtilBar
--- wires the injection and the gold aura overlay together. Lists the class's
--- CDM-trackable buffs plus a Custom Spell ID entry; no durations, item or preset rows.
+-- Buff picker targeting a CD/UTILITY bar. A buff placed here is HOSTED
+-- (ns.AddBuffToCDUtilBar): Blizzard's own buff frame is diverted onto the bar, or a
+-- greyed placeholder holds its slot while the aura is down. A Custom Spell ID
+-- Blizzard does not track has no such frame, so an aura icon of ours draws it
+-- (EUI_CDM_AuraIcons.lua). Lists the class's CDM-trackable buffs plus a Custom
+-- Spell ID entry; no durations, item or preset rows.
 -- onPicked(spellID, collidedCdID) = selection mode ("Replace with Buff"): every
 -- catalog buff is listed, a "None" row clears, one click picks and closes, nothing is
 -- hosted and there is no Custom Spell ID row (a replacement needs a Blizzard viewer
@@ -1157,7 +1265,7 @@ local function ShowBuffToCDPicker(anchorFrame, targetBarKey, onChanged, onPicked
 
     local bgTex = menu:CreateTexture(nil, "BACKGROUND")
     bgTex:SetAllPoints(); bgTex:SetColorTexture(mBgR, mBgG, mBgB, mBgA)
-    EllesmereUI.MakeBorder(menu, 1, 1, 1, mBrdA, EllesmereUI.PP)
+    EllesmereUI.MakeRoundedBorder(menu, 1, 1, 1, mBrdA, bgTex, nil, true)
 
     local inner = CreateFrame("Frame", nil, menu)
     inner:SetWidth(menuW)
@@ -1310,7 +1418,7 @@ local function ShowBuffToCDPicker(anchorFrame, targetBarKey, onChanged, onPicked
 
     if mH + 4 > MAX_H then
         local sf = CreateFrame("ScrollFrame", nil, menu)
-        sf:SetPoint("TOPLEFT"); sf:SetPoint("BOTTOMRIGHT")
+        sf:SetPoint("TOPLEFT", 0, -1); sf:SetPoint("BOTTOMRIGHT", 0, 1)
         sf:SetFrameLevel(menu:GetFrameLevel() + 1)
         sf:EnableMouseWheel(true)
         sf:SetScrollChild(inner)
@@ -1360,7 +1468,7 @@ local function ShowDurationPopup(currentVal, onConfirm)
         popup:EnableMouse(true)
         local popBg = popup:CreateTexture(nil, "BACKGROUND")
         popBg:SetAllPoints(); popBg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
         popup._dimmer = dimmer
 
         local title = popup:CreateFontString(nil, "OVERLAY")
@@ -1386,7 +1494,7 @@ local function ShowDurationPopup(currentVal, onConfirm)
         durBox:SetJustifyH("CENTER")
         local durBg = durBox:CreateTexture(nil, "BACKGROUND")
         durBg:SetAllPoints(); durBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(durBox, 1, 1, 1, 0.12, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(durBox, 1, 1, 1, 0.12, durBg)
         popup._durBox = durBox
 
         local ar, ag, ab = EllesmereUI.GetAccentColor()
@@ -1395,7 +1503,7 @@ local function ShowDurationPopup(currentVal, onConfirm)
         okBtn:SetPoint("BOTTOMRIGHT", popup, "BOTTOM", -4, 16)
         local okBg = okBtn:CreateTexture(nil, "BACKGROUND")
         okBg:SetAllPoints(); okBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(okBtn, ar, ag, ab, 0.3, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(okBtn, ar, ag, ab, 0.3, okBg)
         local okLbl = okBtn:CreateFontString(nil, "OVERLAY")
         okLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         okLbl:SetPoint("CENTER"); okLbl:SetText(EllesmereUI.L("Save"))
@@ -1408,7 +1516,7 @@ local function ShowDurationPopup(currentVal, onConfirm)
         cancelBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", 4, 16)
         local cBg = cancelBtn:CreateTexture(nil, "BACKGROUND")
         cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
-        EllesmereUI.MakeBorder(cancelBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(cancelBtn, 1, 1, 1, 0.10, cBg)
         local cLbl = cancelBtn:CreateFontString(nil, "OVERLAY")
         cLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         cLbl:SetPoint("CENTER"); cLbl:SetText(EllesmereUI.L("Cancel"))
@@ -1465,7 +1573,7 @@ local function ShowAlphaPopup(currentPct, onConfirm, title, hint)
         popup:EnableMouse(true)
         local popBg = popup:CreateTexture(nil, "BACKGROUND")
         popBg:SetAllPoints(); popBg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
         popup._dimmer = dimmer
 
         local titleFS = popup:CreateFontString(nil, "OVERLAY")
@@ -1491,7 +1599,7 @@ local function ShowAlphaPopup(currentPct, onConfirm, title, hint)
         box:SetJustifyH("CENTER")
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
         boxBg:SetAllPoints(); boxBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(box, 1, 1, 1, 0.12, boxBg)
         popup._box = box
 
         local ar, ag, ab = EllesmereUI.GetAccentColor()
@@ -1500,7 +1608,7 @@ local function ShowAlphaPopup(currentPct, onConfirm, title, hint)
         okBtn:SetPoint("BOTTOMRIGHT", popup, "BOTTOM", -4, 16)
         local okBg = okBtn:CreateTexture(nil, "BACKGROUND")
         okBg:SetAllPoints(); okBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(okBtn, ar, ag, ab, 0.3, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(okBtn, ar, ag, ab, 0.3, okBg)
         local okLbl = okBtn:CreateFontString(nil, "OVERLAY")
         okLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         okLbl:SetPoint("CENTER"); okLbl:SetText(EllesmereUI.L("Save"))
@@ -1513,7 +1621,7 @@ local function ShowAlphaPopup(currentPct, onConfirm, title, hint)
         cancelBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", 4, 16)
         local cBg = cancelBtn:CreateTexture(nil, "BACKGROUND")
         cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
-        EllesmereUI.MakeBorder(cancelBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(cancelBtn, 1, 1, 1, 0.10, cBg)
         local cLbl = cancelBtn:CreateFontString(nil, "OVERLAY")
         cLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         cLbl:SetPoint("CENTER"); cLbl:SetText(EllesmereUI.L("Cancel"))
@@ -1572,7 +1680,7 @@ local function ShowThresholdSecondsPopup(currentVal, onConfirm, title, hint)
         popup:EnableMouse(true)
         local popBg = popup:CreateTexture(nil, "BACKGROUND")
         popBg:SetAllPoints(); popBg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
         popup._dimmer = dimmer
 
         local title = popup:CreateFontString(nil, "OVERLAY")
@@ -1598,7 +1706,7 @@ local function ShowThresholdSecondsPopup(currentVal, onConfirm, title, hint)
         box:SetJustifyH("CENTER")
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
         boxBg:SetAllPoints(); boxBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(box, 1, 1, 1, 0.12, boxBg)
         popup._box = box
 
         local ar, ag, ab = EllesmereUI.GetAccentColor()
@@ -1607,7 +1715,7 @@ local function ShowThresholdSecondsPopup(currentVal, onConfirm, title, hint)
         okBtn:SetPoint("BOTTOMRIGHT", popup, "BOTTOM", -4, 16)
         local okBg = okBtn:CreateTexture(nil, "BACKGROUND")
         okBg:SetAllPoints(); okBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(okBtn, ar, ag, ab, 0.3, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(okBtn, ar, ag, ab, 0.3, okBg)
         local okLbl = okBtn:CreateFontString(nil, "OVERLAY")
         okLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         okLbl:SetPoint("CENTER"); okLbl:SetText(EllesmereUI.L("Save"))
@@ -1620,7 +1728,7 @@ local function ShowThresholdSecondsPopup(currentVal, onConfirm, title, hint)
         cancelBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", 4, 16)
         local cBg = cancelBtn:CreateTexture(nil, "BACKGROUND")
         cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
-        EllesmereUI.MakeBorder(cancelBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(cancelBtn, 1, 1, 1, 0.10, cBg)
         local cLbl = cancelBtn:CreateFontString(nil, "OVERLAY")
         cLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         cLbl:SetPoint("CENTER"); cLbl:SetText(EllesmereUI.L("Cancel"))
@@ -1680,7 +1788,7 @@ ns.ShowCDMCustomIconPopup = function(currentID, onConfirm)
         popup:EnableMouse(true)
         local popBg = popup:CreateTexture(nil, "BACKGROUND")
         popBg:SetAllPoints(); popBg:SetColorTexture(0.077, 0.068, 0.058, 1)
-        EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(popup, 1, 1, 1, 0.15, popBg)
         popup._dimmer = dimmer
 
         local title = popup:CreateFontString(nil, "OVERLAY")
@@ -1706,7 +1814,7 @@ ns.ShowCDMCustomIconPopup = function(currentID, onConfirm)
         box:SetJustifyH("CENTER")
         local boxBg = box:CreateTexture(nil, "BACKGROUND")
         boxBg:SetAllPoints(); boxBg:SetColorTexture(0.060, 0.049, 0.037, 1)
-        EllesmereUI.MakeBorder(box, 1, 1, 1, 0.12, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(box, 1, 1, 1, 0.12, boxBg)
         popup._box = box
 
         -- Live preview of the typed ID (question mark for empty/unknown;
@@ -1728,7 +1836,7 @@ ns.ShowCDMCustomIconPopup = function(currentID, onConfirm)
         okBtn:SetPoint("BOTTOMRIGHT", popup, "BOTTOM", -4, 16)
         local okBg = okBtn:CreateTexture(nil, "BACKGROUND")
         okBg:SetAllPoints(); okBg:SetColorTexture(ar, ag, ab, 0.15)
-        EllesmereUI.MakeBorder(okBtn, ar, ag, ab, 0.3, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(okBtn, ar, ag, ab, 0.3, okBg)
         local okLbl = okBtn:CreateFontString(nil, "OVERLAY")
         okLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         okLbl:SetPoint("CENTER"); okLbl:SetText(EllesmereUI.L("Save"))
@@ -1741,7 +1849,7 @@ ns.ShowCDMCustomIconPopup = function(currentID, onConfirm)
         cancelBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", 4, 16)
         local cBg = cancelBtn:CreateTexture(nil, "BACKGROUND")
         cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
-        EllesmereUI.MakeBorder(cancelBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
+        EllesmereUI.MakeRoundedBorder(cancelBtn, 1, 1, 1, 0.10, cBg)
         local cLbl = cancelBtn:CreateFontString(nil, "OVERLAY")
         cLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
         cLbl:SetPoint("CENTER"); cLbl:SetText(EllesmereUI.L("Cancel"))

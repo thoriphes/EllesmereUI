@@ -16,7 +16,7 @@ local GetItemInfo = C_Item.GetItemInfo
 local EUI = EllesmereUI
 
 local _bankRouted, BP, GetFont, IsGearItem = I._bankRouted, I.BP, I.GetFont, I.IsGearItem
-local NormalizePinKey, bagSlots = I.NormalizePinKey, I.bagSlots
+local NormalizePinKey, PinnedItems, bagSlots = I.NormalizePinKey, I.PinnedItems, I.bagSlots
 local itemSlots, reagentSlots = I.itemSlots, I.reagentSlots
 local CreateInsetBorder, SetInsetBorderColor = I.CreateInsetBorder, I.SetInsetBorderColor
 
@@ -90,9 +90,8 @@ local function SlotMiddleClick(self, button)
         if EUI_Bags.RefreshInventory then EUI_Bags:RefreshInventory() end
         return
     end
-    if not EllesmereUIDB then EllesmereUIDB = {} end
-    if not EllesmereUIDB.bagPinnedItems then EllesmereUIDB.bagPinnedItems = {} end
-    local pinned = EllesmereUIDB.bagPinnedItems
+    local pinned = PinnedItems(true)
+    if not pinned then return end
     local itemLink = C_Container.GetContainerItemLink(bagID, slotID)
     local isGear = IsGearItem(itemLink)
     -- Pin key is the normalized itemID+bonusIDs identity (distinguishes
@@ -202,6 +201,7 @@ local function GetOrCreateReagentSlot(idx)
         btn.IconMask:ClearAllPoints()
         btn.IconMask:SetSize(0.001, 0.001)
     end
+    ns.UnmaskItemButton(btn)
 
     if btn.Cooldown then
         local cdText = btn.Cooldown:GetRegions()
@@ -210,7 +210,7 @@ local function GetOrCreateReagentSlot(idx)
         end
     end
 
-    CreateInsetBorder(btn)
+    CreateInsetBorder(btn, true)
     SetInsetBorderColor(btn, 0.25, 0.25, 0.25, 1)
 
     -- Text overlay: above the cooldown swipe, so counts and item levels stay visible
@@ -263,7 +263,7 @@ function EUI_Bags:WarmSlotPool(msBudget)
         EUI_Bags._poolShort = true
     elseif listMode then
         -- Pinned and Recent repeat their items as extra rows
-        local pinned = EllesmereUIDB and EllesmereUIDB.bagPinnedItems
+        local pinned = PinnedItems()
         if pinned then for _ in pairs(pinned) do total = total + 1 end end
         if EUI_Bags._recentItems then
             for _ in pairs(EUI_Bags._recentItems) do total = total + 1 end
@@ -312,7 +312,7 @@ local function GetOrCreateBagSlot(idx)
     EllesmereUI.ApplyIconTextFont(btn.Count, GetFont(), BP().bagCountFontSize or 11, "bags")
     btn.Count:SetPoint("BOTTOMRIGHT", -2, 2)
     btn.Count:SetTextColor(1, 1, 1)
-    CreateInsetBorder(btn)
+    CreateInsetBorder(btn, true)
     SetInsetBorderColor(btn, 0.25, 0.25, 0.25, 1)
 
     -- Drag-and-drop: equip a bag into this slot, or swap it with the
@@ -620,13 +620,21 @@ do
     -- search is clear again or no window shows (the next open reads the
     -- settled result).
     local searchWatch
+    -- The search the layout hold last saw: a new one releases both windows
+    local holdSearch = ""
     local function OnSearchUpdate(self)
         local bank = _G.EUI_BankFrame
         if EUI_Bags._appliedSearch == "" or not (EUI_Bags:IsVisible() or (bank and bank:IsVisible())) then
             self:UnregisterEvent("INVENTORY_SEARCH_UPDATE")
         end
-        if EUI_Bags:IsVisible() then EUI_Bags:RefreshInventory() end
+        if EUI_Bags._appliedSearch ~= holdSearch then
+            holdSearch = EUI_Bags._appliedSearch
+            ns.Hold.Release("bags")
+            ns.Hold.Release("bank")
+        end
+        if EUI_Bags:IsVisible() then ns.Hold.events.bags = true; EUI_Bags:RefreshInventory() end
         if BP().detachReagentBag and EUI_BagsReagent:IsVisible() then EUI_BagsReagent:RefreshInventory() end
+        if bank and bank:IsVisible() then ns.Hold.events.bank = true end
         ns.RefreshOpenBank()
     end
 
@@ -707,7 +715,14 @@ end
 -- Quality Item Border: the item's quality color while the option is on (every
 -- display), else the neutral grey an unknown quality gets.
 function ns.QualityBorderColor(quality)
-    local c = BP().bagQualityBorder ~= false and ITEM_QUALITY_COLORS[quality]
+    local c
+    if BP().bagQualityBorder ~= false then
+        if ns.BagsForever() and ColorManager and ColorManager.GetColorDataForBagItemQuality then
+            c = ColorManager.GetColorDataForBagItemQuality(quality)
+        else
+            c = ITEM_QUALITY_COLORS[quality]
+        end
+    end
     if c then return c.r, c.g, c.b end
     return 0.25, 0.25, 0.25
 end

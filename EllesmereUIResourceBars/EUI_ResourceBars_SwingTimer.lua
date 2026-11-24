@@ -43,7 +43,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --
 -- Everything is gated on the swing API and the engine timer it feeds: on retail
 -- this file returns right below and nothing below exists. Off by default = no
--- frame children, no events, no timers.
+-- frame children, no events, no timers. A druid form switched off, or talent
+-- conditions that do not hold, park it the same way (RuledOut).
 
 local _, ns = ...
 local EllesmereUI = _G.EllesmereUI
@@ -62,7 +63,7 @@ local IMMEDIATE = Enum.StatusBarInterpolation.Immediate
 local UNLOCK_KEY = "ERB_SwingTimer"
 local MO_KEY     = "swing"   -- ERB._moEligible slot for the shared mouseover poll
 
--- Display order, top to bottom. `key` is the colour-key prefix in the store
+-- Display order, top to bottom. `key` is the color-key prefix in the store
 -- (mhR/mhG/... ohR/... rR/..., and mhSparkR/... for the spark), `show` the
 -- per-row toggle key, `melee` the rows the Auto Attack state colors, `queue` the
 -- row a queued attack always lands on (Main Hand).
@@ -74,8 +75,8 @@ local ROWS = {
 
 -- On-next-swing attacks: EllesmereUI.FOREVER_NEXT_SWING (Warrior Heroic Strike
 -- / Cleave, Druid Maul, Hunter Raptor Strike). While one is queued the melee
--- rows take that attack's colour and carry its name, so the swing that will
--- consume it is visible. Colours: `key` is the colour-key prefix in the store
+-- rows take that attack's color and carry its name, so the swing that will
+-- consume it is visible. Colors: `key` is the color-key prefix in the store
 -- (queueR/G/B/A, queueCleaveR/...), r/g/b its fallback; Cleave has its own,
 -- every other attack shares "queue". Names resolve once per session and only
 -- for a class that has one: ACTIONBAR_UPDATE_STATE storms in combat and is
@@ -92,7 +93,7 @@ local QUEUE_COLORS = {
 }
 
 -- Attack State Full, On: while a row's auto attack is on, its fill takes the On
--- colour (melee rows: Auto Attack; Ranged: the auto-repeat shot, Shoot or
+-- color (melee rows: Auto Attack; Ranged: the auto-repeat shot, Shoot or
 -- Auto Shot). The on/off edges are events; START_AUTOREPEAT_SPELL fires on the
 -- press, so a shot queued behind a cast already reads as on. AUTO_ATTACK and
 -- the action slot scan seed the state the edges missed (enable, /reload
@@ -101,7 +102,7 @@ local ACTIVE_COLOR    = { r = 0.047, g = 0.824, b = 0.616 }
 local AUTO_ATTACK     = 6603
 local MAX_ACTION_SLOT = 180
 
--- Attack State Full, Waiting: the colour of a waiting row (attack on, no swing
+-- Attack State Full, Waiting: the color of a waiting row (attack on, no swing
 -- running: its timer ran out, the attack started out of range or behind a
 -- cast, or moving holds the shot).
 local PENDING_COLOR = { r = 0.659, g = 0.502, b = 0.949 }
@@ -133,11 +134,12 @@ shell:Hide()
 -- stacked on screen; a combined off hand takes no slot), live (rows mid-swing),
 -- rangeOn[swingType] = bool, sample (unlock mode preview on), moHooked,
 -- unlockHooked, lastH (frame height last laid out), queueSpells (this class's
--- on-next-swing attacks: id, colour key + fallback, resolved name), queued (the
+-- on-next-swing attacks: id, color key + fallback, resolved name), queued (the
 -- entry painted, false = none), meleeOn / repeatOn (auto attack / auto-repeat
 -- on, from the edges), seeded (both read since the highlight came on), active
 -- (the state painted), aimClass (this class's AIM_CLASS),
--- moveEvents / moving (the movement edges registered / the player moving).
+-- moveEvents / moving (the movement edges registered / the player moving),
+-- ruled (the form or talents ruled the timer out at the last apply, RuledOut).
 -- Per row, _rtt (the latency read for its swing) and, on a guide row, _aimAt
 -- (its Stop by point), _aiming and _aimFrom (an aim phase running, and from
 -- when).
@@ -153,6 +155,26 @@ local function P()
     local db = ERB and ERB.db
     local p = db and db.profile
     return p and p.swingTimer or nil
+end
+
+local _, playerClass = UnitClass("player")
+
+-- Forms and talents (the Visibility row's Forms and Talents cog): true while the
+-- druid's current form is switched off (barDisabledForms, the per-form map the
+-- other bars use) or the talent conditions saved for the player's class do not
+-- hold (classTalentConditions[class], the Talent Conditions picker's list; per
+-- class, so one profile serves every class). Ruled out, the timer stands down
+-- like switched off (ns.ST_Apply).
+local function RuledOut(cfg)
+    if _G._ERB_BarHiddenByForm(cfg) then return true end
+    local byClass = cfg.classTalentConditions
+    local conds = byClass and byClass[playerClass]
+    return conds ~= nil and not EllesmereUI.TalentConditionsHold(conds)
+end
+
+local function HasTalentConds(cfg)
+    local byClass = cfg.classTalentConditions
+    return byClass ~= nil and byClass[playerClass] ~= nil
 end
 
 -- The look the rows wear: the Resource Bars row of Global Settings > Style
@@ -277,9 +299,9 @@ local function RowColor(cfg, def)
     return cfg[k .. "R"] or 1, cfg[k .. "G"] or 1, cfg[k .. "B"] or 1, cfg[k .. "A"] or 1
 end
 
--- Spark tint: the row's own spark colour once set, else white. A combined off
--- hand's spark is its whole display: unset, it takes the row's fill colour.
--- unset: the tint it has without a colour of its own.
+-- Spark tint: the row's own spark color once set, else white. A combined off
+-- hand's spark is its whole display: unset, it takes the row's fill color.
+-- unset: the tint it has without a color of its own.
 local function SparkColor(cfg, def, merged, unset)
     local k = def.key .. "Spark"
     local r = not unset and cfg[k .. "R"]
@@ -578,7 +600,7 @@ local function NetLatency()
     return ms and ms / 1000
 end
 
--- Attack State: Queued Only (the default) colours a queued on-next-swing
+-- Attack State: Queued Only (the default) colors a queued on-next-swing
 -- attack; Full adds On and Waiting. Movement Guide (Segments or Wind-Up Bar):
 -- GO on every row, smoothed swing timing, and on a guide row (the Ranged row of
 -- a wand or Auto Shot class) STILL as a segment or as its own phase.
@@ -645,8 +667,15 @@ local SyncTimeText
 
 -- The auto attack and auto-repeat edges are tracked while a feature reads them:
 -- Attack State Full, or the Movement Guide for a wand or Auto Shot class.
+-- Idle Behavior "Hidden per Type" (hideWhenIdle with idleHidePerType): a row
+-- is drawn only while its own attack is on or its swing runs, and gives up its
+-- slot otherwise, so the stack closes up. The whole timer still hides while no
+-- swing runs (hideWhenIdle).
+local function PerType(cfg)
+    return (cfg.hideWhenIdle and cfg.idleHidePerType == true) and true or false
+end
 local function TracksAttack(cfg)
-    return StateFull(cfg) or (GuideOn(cfg) and S.aimClass) or false
+    return StateFull(cfg) or (GuideOn(cfg) and S.aimClass) or PerType(cfg)
 end
 
 -- The row's attack is on right now (melee rows: Auto Attack; Ranged: the
@@ -665,7 +694,7 @@ local function ShouldWait(row, cfg)
         and (StateFull(cfg) or GuideRow(row, cfg)) and true or false
 end
 
--- Idle render: empty (background) by default, full of the fill colour with
+-- Idle render: empty (background) by default, full of the fill color with
 -- idleShowFill. The time text is blank (no "0.0"). This is also the disarm:
 -- the bar timer is re-armed on a finished duration, whose terminal state is
 -- static (RemainingTime paints empty, ElapsedTime full: the GCD bar's idle
@@ -680,6 +709,7 @@ local function IdleRow(row, cfg)
     if row._live then
         row._live = nil
         S.live = S.live - 1
+        S.stackDirty = true
         UpdateSpark(row, cfg)
     end
     row._end = nil
@@ -695,6 +725,9 @@ end
 
 -- Defined below the waiting state; ArmEdges schedules it at a swing's edges.
 local EndEdge
+-- Defined with the layout: restacks the rows after a row went live or idle or
+-- an attack went on or off (S.stackDirty), under Hidden per Type alone.
+local FlushStack
 
 -- A deadline that fires a frame early still counts as its edge: the countdown
 -- already reads blank in a swing's last 0.05s.
@@ -836,6 +869,7 @@ local function StartRow(row, dur, cfg)
     if not row._live then
         row._live = true
         S.live = S.live + 1
+        S.stackDirty = true
         UpdateSpark(row, cfg)
     end
     local obj = row._durObj
@@ -847,7 +881,7 @@ local function StartRow(row, dur, cfg)
     if cfg.hideWhenIdle and S.live == 1 and ns.ST_UpdateVisibility then ns.ST_UpdateVisibility() end
 end
 
--- Waiting (attack on, no swing running): parked full, in the Waiting colour
+-- Waiting (attack on, no swing running): parked full, in the Waiting color
 -- under Attack State Full, else the row's own. Entered from a finished swing or
 -- from idle (a guide row also from a shot held by moving); the row counts as
 -- live (Hide When Idle keeps it) but has no deadline. The next swing
@@ -860,6 +894,7 @@ local function EnterWaiting(row, cfg)
     if not row._live then
         row._live = true
         S.live = S.live + 1
+        S.stackDirty = true
     end
     local obj = row._durObj
     obj:SetTimeFromStart(GetTime() - 1, 1)
@@ -875,7 +910,7 @@ end
 
 -- Aim phase: the half second a wand or Auto Shot needs the player still, plus
 -- one latency, as its own fill from `from` to the predicted shot `to`, in the
--- Still colour: a Wind-Up row's every swing from Stop by, and any guide row's
+-- Still color: a Wind-Up row's every swing from Stop by, and any guide row's
 -- restart after a held shot. It runs opposite to the swing so the two join
 -- (Deplete Fill: the reload drains, the aim fills), with GO at its end.
 local function EnterAim(row, cfg, from, to)
@@ -886,6 +921,7 @@ local function EnterAim(row, cfg, from, to)
     if not row._live then
         row._live = true
         S.live = S.live + 1
+        S.stackDirty = true
     end
     local obj = row._durObj
     obj:SetTimeFromStart(from, to - from)
@@ -932,16 +968,17 @@ function EndEdge()
         end
     end
     if not running and cfg.hideWhenIdle and ns.ST_UpdateVisibility then ns.ST_UpdateVisibility() end
+    if S.stackDirty then FlushStack(cfg) end
 end
 
 -------------------------------------------------------------------------------
 --  Layout + look
 -------------------------------------------------------------------------------
 
--- Fill colour: the row's own (or class) colour; the On colour while its auto
--- attack is on (Attack State Full); the queued attack's own colour on a melee
+-- Fill color: the row's own (or class) color; the On color while its auto
+-- attack is on (Attack State Full); the queued attack's own color on a melee
 -- row while an on-next-swing attack is queued (not with Attack State Off); the
--- Still colour (opaque) in an aim phase; the Waiting colour while the row waits
+-- Still color (opaque) in an aim phase; the Waiting color while the row waits
 -- under Attack State Full (each wins over the ones before). A combined
 -- off-hand row paints no fill: its bar keeps running under its spark, unseen.
 function ApplyRowFill(row, cfg)
@@ -964,7 +1001,7 @@ function ApplyRowFill(row, cfg)
         fR, fG, fB, fA = cfg.aimR or c.r, cfg.aimG or c.g, cfg.aimB or c.b, 1
     elseif q then
         local k = q.key
-        -- Unset per-ability colour: the shared Queued colour (older profiles).
+        -- Unset per-ability color: the shared Queued color (older profiles).
         if q.shared and cfg[k .. "R"] == nil then k = q.shared end
         fR, fG, fB, fA = cfg[k .. "R"] or q.r, cfg[k .. "G"] or q.g, cfg[k .. "B"] or q.b, cfg[k .. "A"] or 1
     elseif act then
@@ -1092,24 +1129,52 @@ end
 -- Stack the applicable rows and size the frame to them; a combined off-hand
 -- row is laid over the Main Hand row instead of taking a slot. Returns true
 -- when the frame height changed (anchored neighbours need a nudge).
+-- Hidden per Type: whether a row is drawn now. Its attack on (a row between
+-- two swings keeps its slot) or its swing running; the two hands of a combined
+-- row count as one.
+local function RowDrawn(row)
+    if row._live or AttackOn(row._def) then return true end
+    local oh = S.byType[SWING.OffHand]
+    if oh and oh._merged and row._def.melee then
+        local mh = S.byType[SWING.MainHand]
+        return ((mh and mh._live) or oh._live) and true or false
+    end
+    return false
+end
+
 local function Layout(cfg)
     local h = cfg.height or 12
     local sp = RowGap(cfg)
     local w = cfg.width or 220
+    -- Unlock Mode's sample draws every row.
+    local perType = PerType(cfg) and not S.sample
     local idx = 0
     for i = 1, #S.rows do
         local row = S.rows[i]
         if row:IsShown() then
-            row:ClearAllPoints()
-            if row._merged then
-                row:SetAllPoints(S.byType[SWING.MainHand])
-            else
-                row:SetPoint("TOPLEFT", shell, "TOPLEFT", 0, -idx * (h + sp))
-                row:SetSize(w, h)
-                idx = idx + 1
+            -- A row that is not drawn keeps running (a swing brings it back):
+            -- it only turns invisible and gives up its slot.
+            local drawn = not perType or RowDrawn(row)
+            if drawn ~= (row._drawn ~= false) then
+                row._drawn = drawn
+                row:SetAlpha(drawn and 1 or 0)
+            end
+            if drawn then
+                row:ClearAllPoints()
+                if row._merged then
+                    row:SetAllPoints(S.byType[SWING.MainHand])
+                else
+                    row:SetPoint("TOPLEFT", shell, "TOPLEFT", 0, -idx * (h + sp))
+                    row:SetSize(w, h)
+                    idx = idx + 1
+                end
             end
         end
     end
+    S.stackDirty = nil
+    -- Nothing drawn (the timer itself is hidden then): the frame keeps the
+    -- size of its last stack, so what is anchored to it stays put.
+    if perType and idx == 0 and S.shown then return false end
     S.shown = idx
     local n = math.max(idx, 1)
     local totalH = n * h + (n - 1) * sp
@@ -1117,6 +1182,16 @@ local function Layout(cfg)
     local changed = S.lastH ~= nil and S.lastH ~= totalH
     S.lastH = totalH
     return changed
+end
+
+-- Hidden per Type alone: the rows restack after a row went live or idle or an
+-- attack went on or off, and what is anchored to the frame hears a new height.
+function FlushStack(cfg)
+    S.stackDirty = nil
+    if not (cfg and S.built and PerType(cfg)) then return end
+    if Layout(cfg) and EllesmereUI.NotifyElementResized then
+        EllesmereUI.NotifyElementResized(UNLOCK_KEY)
+    end
 end
 
 -- Stock styles: the row's stock frame round its bar (the Blizzard Style panel
@@ -1461,6 +1536,19 @@ shell:SetScript("OnEvent", function(self, event, a1, a2, a3)
     end
 end)
 
+-- Hidden per Type: one restack per event, after everything the event changed.
+-- The attack edges change which rows are drawn without any row going live.
+local STACK_EDGE = {
+    START_AUTOREPEAT_SPELL = true, STOP_AUTOREPEAT_SPELL = true,
+    PLAYER_ENTER_COMBAT = true, PLAYER_LEAVE_COMBAT = true,
+    PLAYER_DEAD = true, PLAYER_ENTERING_WORLD = true,
+}
+shell:HookScript("OnEvent", function(_, event)
+    if not (S.stackDirty or STACK_EDGE[event]) then return end
+    local cfg = P()
+    if cfg and cfg.enabled then FlushStack(cfg) end
+end)
+
 local function RegisterEvents()
     if S.events then return end
     S.events = true
@@ -1581,49 +1669,9 @@ local function Teardown()
     EllesmereUI.SetElementVisibility(shell, false)
 end
 
--- Visibility pass: runs from the main file's UpdateVisibility on every edge it
--- sees (combat, target, group, zone, custom conditional) and from the swing
--- edges hideWhenIdle cares about.
-function ns.ST_UpdateVisibility()
-    if not S.built then return end
-    local cfg = P()
-    local ERB = ns.ERB
-    if not (cfg and cfg.enabled and ERB) then return end
-    local vis
-    if EllesmereUI._unlockActive then
-        vis = true
-    else
-        vis = not ERB._inVehicle and ns.ShouldShowBar(cfg)
-        if vis and cfg.hideWhenIdle and S.live == 0 then vis = false end
-    end
-    ERB._moEligible = ERB._moEligible or {}
-    ERB._moEligible[MO_KEY] = (vis == "mouseover")
-    EllesmereUI.SetElementVisibility(shell, vis == true)
-end
-
--- The colour a row's spark paints (by colour key), for the options swatch;
--- unset = true gives the tint it has without a colour of its own.
-function ns.ST_SparkColor(key, unset)
-    local cfg = P()
-    if not cfg then return 1, 1, 1, 1 end
-    for i = 1, #ROWS do
-        if ROWS[i].key == key then
-            local row = S.rows[i]
-            return SparkColor(cfg, ROWS[i], row and row._merged, unset)
-        end
-    end
-    return 1, 1, 1, 1
-end
-
-function ns.ST_Apply()
-    local cfg = P()
-    if not cfg or not cfg.enabled then
-        Teardown()
-        return
-    end
-    EnsureBuilt()
-    shell:SetFrameStrata(cfg.frameStrata or "MEDIUM")
-    shell:Show()
+-- A running timer's events and attack state: the full apply and a resume
+-- after a park both start here.
+local function Arm(cfg)
     RegisterEvents()
     ApplyQueueEvents(cfg)
     ApplyActiveEvents(cfg)
@@ -1637,24 +1685,19 @@ function ns.ST_Apply()
         SeedActive()
     end
     ApplyMoveEvents(cfg)
-    -- Size and stack the rows BEFORE styling them: the textured border is a
-    -- BackdropTemplate nine-slice keyed on first setup, and set up on a 0x0
-    -- row it never paints (cast/GCD bars size first for the same reason).
-    RefreshRows(cfg)
-    ApplyPosition(cfg)
-    ApplyLook(cfg)
-    PaintQueue(cfg)
-    PaintActive(cfg)
-    -- Every row takes its paint here on every apply, always by re-arming the
-    -- bar timer, never by a plain SetValue: a parked timer keeps painting its
-    -- terminal state and SetValue does not repaint it (the GCD bar's idle
-    -- recipe). Unlock movers up: a full bar with a sample time. A row
-    -- mid-swing: its running swing (or Wind-Up reload / aim phase) again, in
-    -- the direction now configured (unlock exit, a Deplete Fill or Movement
-    -- Guide change). A row whose attack is on: parked
-    -- full (waiting), also when the option just came on mid-attack. Otherwise
-    -- the idle render, so a Show Fill Color When Idle change shows at once, not
-    -- at the next swing's end.
+end
+
+-- Every row takes its paint here on every apply, always by re-arming the
+-- bar timer, never by a plain SetValue: a parked timer keeps painting its
+-- terminal state and SetValue does not repaint it (the GCD bar's idle
+-- recipe). Unlock movers up: a full bar with a sample time. A row
+-- mid-swing: its running swing (or Wind-Up reload / aim phase) again, in
+-- the direction now configured (unlock exit, a Deplete Fill or Movement
+-- Guide change). A row whose attack is on: parked
+-- full (waiting), also when the option just came on mid-attack. Otherwise
+-- the idle render, so a Show Fill Color When Idle change shows at once, not
+-- at the next swing's end.
+local function PaintRows(cfg)
     for i = 1, #S.rows do
         local row = S.rows[i]
         local obj = row._durObj
@@ -1696,6 +1739,110 @@ function ns.ST_Apply()
             IdleRow(row, cfg)
         end
     end
+end
+
+-- Back from a park (a shapeshift or talent edit that no longer rules the timer
+-- out): events and the row state come back. The rows kept their spot and look
+-- while parked (a settings change made then runs the full apply, which styles
+-- them), so only rows that came back are restyled.
+local function Resume(cfg)
+    Arm(cfg)
+    if RefreshRows(cfg) then RestyleMarked(cfg) end
+    PaintQueue(cfg)
+    PaintActive(cfg)
+    PaintRows(cfg)
+    -- The rows took their state after the stack was laid out.
+    FlushStack(cfg)
+end
+
+-- Visibility pass: runs from the main file's UpdateVisibility on every edge it
+-- sees (combat, target, group, zone, shapeshift, the debounced pass after a
+-- talent edit, custom conditional) and from the swing edges hideWhenIdle cares
+-- about. A form or talent change that moves the gate (RuledOut) parks the timer
+-- (Teardown) or resumes it; Unlock Mode keeps it running either way, and
+-- leaving Unlock Mode runs the full apply, which parks it while ruled out.
+function ns.ST_UpdateVisibility()
+    if not S.built then return end
+    local cfg = P()
+    local ERB = ns.ERB
+    if not (cfg and cfg.enabled and ERB) then return end
+    local ruled = RuledOut(cfg)
+    if ruled ~= (S.ruled or false) then
+        -- Set first: the row edges below can run this pass again.
+        S.ruled = ruled
+        if not EllesmereUI._unlockActive then
+            if ruled then Teardown() else Resume(cfg) end
+        end
+    end
+    local vis
+    if EllesmereUI._unlockActive then
+        vis = true
+    elseif S.ruled then
+        vis = false
+    else
+        vis = not ERB._inVehicle and ns.ShouldShowBar(cfg)
+        if vis and cfg.hideWhenIdle and S.live == 0 then vis = false end
+    end
+    ERB._moEligible = ERB._moEligible or {}
+    ERB._moEligible[MO_KEY] = (vis == "mouseover")
+    EllesmereUI.SetElementVisibility(shell, vis == true)
+end
+
+-- The color a row's spark paints (by color key), for the options swatch;
+-- unset = true gives the tint it has without a color of its own.
+function ns.ST_SparkColor(key, unset)
+    local cfg = P()
+    if not cfg then return 1, 1, 1, 1 end
+    for i = 1, #ROWS do
+        if ROWS[i].key == key then
+            local row = S.rows[i]
+            return SparkColor(cfg, ROWS[i], row and row._merged, unset)
+        end
+    end
+    return 1, 1, 1, 1
+end
+
+-- Talent edits (Resource Bars' TRAIT_CONFIG_UPDATED / PLAYER_TALENT_UPDATE)
+-- and the apply after each loading screen (a login read can come before the
+-- talent data is in): the shared talent check's cache is read again, by the
+-- debounced visibility pass after an edit and by that apply.
+function ns.ST_TalentChanged()
+    local cfg = P()
+    if cfg and cfg.enabled and HasTalentConds(cfg) then EllesmereUI.TalentCondInvalidate() end
+end
+
+function ns.ST_Apply()
+    local cfg = P()
+    if not cfg or not cfg.enabled then
+        S.ruled = nil
+        Teardown()
+        return
+    end
+    S.ruled = RuledOut(cfg)
+    -- Ruled out by form or talents (outside Unlock Mode, which shows it with its
+    -- sample): laid out and styled as usual, so anchored elements keep their
+    -- spot and a resume needs no restyle, then parked like switched off (no
+    -- events, every row idle, alpha 0).
+    local park = S.ruled and not EllesmereUI._unlockActive
+    EnsureBuilt()
+    shell:SetFrameStrata(cfg.frameStrata or "MEDIUM")
+    shell:Show()
+    if not park then Arm(cfg) end
+    -- Size and stack the rows BEFORE styling them: the textured border is a
+    -- BackdropTemplate nine-slice keyed on first setup, and set up on a 0x0
+    -- row it never paints (cast/GCD bars size first for the same reason).
+    RefreshRows(cfg)
+    ApplyPosition(cfg)
+    ApplyLook(cfg)
+    if park then
+        Teardown()
+        return
+    end
+    PaintQueue(cfg)
+    PaintActive(cfg)
+    PaintRows(cfg)
+    -- The rows took their state after the stack was laid out.
+    FlushStack(cfg)
     ns.ST_UpdateVisibility()
 end
 
@@ -1775,6 +1922,9 @@ function ns.ST_MakeUnlockElement(MK, Rebuild)
         -- The mover resizes the whole stack; the per-row height is what is stored.
         setHeight = function(_, h)
             local cfg = P(); if not cfg then return end
+            -- A spec layout holds the stack height of the character that saved
+            -- it, whose row count can differ; the row height is the profile's.
+            if EllesmereUI._unlockLayerApplying then return end
             local n = ShownCount()
             local sp = RowGap(cfg)
             local v = PP.Snap(math.max((h - (n - 1) * sp) / n, 4))

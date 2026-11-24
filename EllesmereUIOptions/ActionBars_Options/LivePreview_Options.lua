@@ -529,8 +529,8 @@ local function BuildLivePreview(parent, yOff)
                     if not blizzAB and (square or zoom > 0 or btnShape == "cropped") then
                         local z = zoom
                         if btnShape == "cropped" then
-                            -- Preserve aspect ratio: trim top/bottom by 10%
-                            icon:SetTexCoord(z, 1 - z, z + 0.10, 1 - z - 0.10)
+                            -- 80% as tall as wide: the top and bottom are cut, the art keeps its proportions
+                            icon:SetTexCoord(z, 1 - z, 0.1 + 0.8 * z, 0.9 - 0.8 * z)
                         else
                             icon:SetTexCoord(z, 1 - z, z, 1 - z)
                         end
@@ -738,7 +738,7 @@ local function BuildLivePreview(parent, yOff)
                     if icon.SetTexCoord then
                         local z = zoom
                         if btnShape == "cropped" then
-                            icon:SetTexCoord(z, 1 - z, z + 0.10, 1 - z - 0.10)
+                            icon:SetTexCoord(z, 1 - z, 0.1 + 0.8 * z, 0.9 - 0.8 * z)
                         else
                             if z > 0 or square then
                                 icon:SetTexCoord(z, 1 - z, z, 1 - z)
@@ -780,6 +780,16 @@ local function BuildLivePreview(parent, yOff)
                         ctText = realBtn.Count:GetText() or ""
                     end
                     countFS:SetText(ctText)
+                    -- Charge Numbers: while the bar hides a kind of count, the
+                    -- sample takes the live count's alpha, which the runtime
+                    -- sets by the count's kind (passed through as it reads,
+                    -- never compared); otherwise it shows in full.
+                    if realBtn and realBtn.Count and (settings.hideChargeCount
+                        or settings.hideStackCount or settings.hideItemCount) then
+                        countFS:SetAlpha(realBtn.Count:GetAlpha())
+                    else
+                        countFS:SetAlpha(1)
+                    end
                 end
                 EllesmereUI.ApplyIconTextFont(countFS, fontPath, scaledCTSize, "actionBars")
                 countFS:SetTextColor(ctColor.r, ctColor.g, ctColor.b)

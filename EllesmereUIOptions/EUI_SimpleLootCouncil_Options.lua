@@ -142,7 +142,13 @@ initFrame:SetScript("OnEvent", function(self)
 
 
 
+    local function Unlocked() return false end
+    local sectionLock = Unlocked
+
+
+
     local function Cfg(row)
+        local refused = sectionLock
         local cfg = { type = row.type, text = row.text, tooltip = row.tooltip,
             values = row.values, order = row.order, inputWidth = row.inputWidth,
             min = row.min, max = row.max, step = row.step, valueSnap = row.valueSnap,
@@ -159,7 +165,7 @@ initFrame:SetScript("OnEvent", function(self)
             return row.getValue()
         end
         cfg.setValue = function(value)
-            if not LockReason() then row.setValue(value) end
+            if not LockReason() and not refused() then row.setValue(value) end
             Invalidate()
         end
 
@@ -246,6 +252,7 @@ initFrame:SetScript("OnEvent", function(self)
     end
     local function ChecksDecorator(row)
         local items = ChecksItems(row)
+        local refused = sectionLock
         local function Get(key)
             if row.lockedValue and row.locked and select(2, row.locked()) then
                 return row.lockedValue(key)
@@ -266,7 +273,8 @@ initFrame:SetScript("OnEvent", function(self)
                 region:GetFrameLevel() + 2, items, Get,
                 function(key, value)
 
-                    if not ChecksReason(row) and not (row.locked and select(2, row.locked())) and (value or not row.exclusive) then row.setValue(key, value) end
+                    if not ChecksReason(row) and not (row.locked and select(2, row.locked())) and not refused()
+                        and (value or not row.exclusive) then row.setValue(key, value) end
                     Invalidate()
                 end, nil, nil, nil, nil, nil,
                 ChecksLock({ emptyLabel = "None", noAllLabel = row.exclusive }, row))
@@ -376,6 +384,19 @@ initFrame:SetScript("OnEvent", function(self)
         return row
     end
     local function SugOpen() return sugPopup ~= nil and sugPopup:IsShown() end
+
+    local function SugPlace(p, b, count)
+        p.selected = 0
+        SugPaint(p)
+        local own, base = b:GetEffectiveScale(), _G.UIParent:GetEffectiveScale()
+        if type(own) == "number" and type(base) == "number" and base > 0 and own > 0 then
+            p:SetScale(own / base)
+        end
+        p:SetSize(b:GetWidth(), count * SUG_ROW_H + 8)
+        p:ClearAllPoints()
+        p:SetPoint("TOPLEFT", b, "BOTTOMLEFT", 0, -2)
+        p:Show()
+    end
     local function CloseSuggestions()
         if sugPopup then
             sugPopup:Hide()
@@ -435,6 +456,77 @@ initFrame:SetScript("OnEvent", function(self)
         addBox:SetPoint("LEFT", addHolder, "LEFT", 20, 0)
         addHolder:Show()
         return addBox
+    end
+
+
+
+    local PROMOTE_BOX_W, PROMOTE_H = 200, 28
+    local promoteHolder, promoteBox, promoteHint, promoteCover
+    local promoteHandlers = {}
+    local function PromoteHint()
+        promoteHint:SetShown(promoteBox:GetText() == "" and not promoteBox:HasFocus())
+    end
+    local function PromoteBox(block, y, hintText)
+        if not promoteHolder then
+            promoteHolder = _G.CreateFrame("Frame", nil, block)
+            promoteBox = _G.CreateFrame("EditBox", nil, promoteHolder)
+            promoteBox:SetAllPoints(promoteHolder)
+            promoteBox:SetAutoFocus(false)
+            promoteBox:SetAltArrowKeyMode(false)
+            EllesmereUI.ApplyModuleFont(promoteBox, EllesmereUI.EXPRESSWAY, 11, nil, "")
+            promoteBox:SetTextColor(1, 1, 1, 0.9)
+            promoteBox:SetJustifyH("LEFT")
+            promoteBox:SetTextInsets(10, 10, 0, 0)
+            local bg = promoteBox:CreateTexture(nil, "BACKGROUND")
+            bg:SetAllPoints()
+            bg:SetColorTexture(0, 0, 0, 0.5)
+            EllesmereUI.MakeBorder(promoteBox, 1, 1, 1, 0.2)
+
+            promoteHint = EllesmereUI.MakeFont(promoteBox, 11, nil, 1, 1, 1)
+            promoteHint:SetAlpha(0.35)
+            promoteHint:SetJustifyH("CENTER")
+            promoteHint:SetPoint("CENTER", promoteBox, "CENTER", 0, 0)
+            promoteBox:SetScript("OnEnterPressed", function()
+                if promoteHandlers.enter then promoteHandlers.enter() end
+            end)
+            promoteBox:HookScript("OnArrowPressed", function(b, key)
+                if promoteHandlers.arrow then promoteHandlers.arrow(b, key) end
+            end)
+            promoteBox:SetScript("OnEscapePressed", function(b)
+                CloseSuggestions()
+                b:ClearFocus()
+            end)
+            promoteBox:SetScript("OnHide", CloseSuggestions)
+            promoteBox:SetScript("OnTextChanged", function(b, userInput)
+                PromoteHint()
+                if promoteHandlers.typed then promoteHandlers.typed(b, userInput) end
+            end)
+            promoteBox:SetScript("OnEditFocusGained", function(b)
+                PromoteHint()
+                if promoteHandlers.focus then promoteHandlers.focus(b) end
+            end)
+            promoteBox:SetScript("OnEditFocusLost", PromoteHint)
+
+            promoteCover = _G.CreateFrame("Frame", nil, promoteHolder)
+            promoteCover:SetAllPoints(promoteHolder)
+            promoteCover:EnableMouse(true)
+            promoteCover:SetScript("OnEnter", function(self)
+                if promoteHandlers.disabledTip then
+                    EllesmereUI.ShowWidgetTooltip(self, promoteHandlers.disabledTip)
+                end
+            end)
+            promoteCover:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+        end
+        promoteHolder:SetParent(block)
+        promoteHolder:ClearAllPoints()
+        EllesmereUI.PanelPP.Size(promoteHolder, PROMOTE_BOX_W, PROMOTE_H)
+        EllesmereUI.PanelPP.Point(promoteHolder, "TOP", block, "TOP", 0, y)
+        promoteHolder:SetFrameLevel(block:GetFrameLevel() + 1)
+        promoteCover:SetFrameLevel(promoteHolder:GetFrameLevel() + 6)
+        promoteHint:SetText(hintText)
+        PromoteHint()
+        promoteHolder:Show()
+        return promoteBox, promoteCover, promoteHolder
     end
 
 
@@ -621,7 +713,8 @@ initFrame:SetScript("OnEvent", function(self)
     local RANK_ROW_H, RANK_VISIBLE = 36, 7
 
     local COUNCIL_CELL_W, COUNCIL_CELL_H, COUNCIL_MAX_LINES, COUNCIL_BOTTOM = 150, 22, 3, 18
-    local ML_LABEL_Y, ML_NAME_Y, DIVIDER_Y, LIST_Y = 18, 36, 80, 106
+
+    local ML_LABEL_Y, ML_NAME_Y, PROMOTE_Y, DIVIDER_Y, LIST_Y = 18, 36, 72, 116, 142
 
     local function CouncilColumns(width)
         return math.max(2, math.min(6, math.floor((width - 80) / COUNCIL_CELL_W)))
@@ -679,6 +772,12 @@ initFrame:SetScript("OnEvent", function(self)
         local T, Format = slc.Locale.Text, slc.Locale.Format
         local refreshes = {}
         local function OnRefresh(fn) refreshes[#refreshes + 1] = fn end
+
+
+        local function CloseColourPicker()
+            local popup = EllesmereUI._colorPickerPopup
+            if popup and popup:IsShown() then popup:Hide() end
+        end
 
         local covers = {}
         if not prebuild then lockCovers[pageName] = covers end
@@ -951,6 +1050,103 @@ initFrame:SetScript("OnEvent", function(self)
 
             local gray = S.Flatten({ 1, 1, 1, 0.45 })
             local noteGray = S.ColorStart(gray)
+            local promote = lootMaster.promote
+
+
+
+
+            local clearButton = CreateFrame("Button", nil, block)
+            PP.Size(clearButton, 16, 16)
+            PP.Point(clearButton, "LEFT", mlNote, "RIGHT", 6, 0)
+            clearButton:SetFrameLevel(block:GetFrameLevel() + 5)
+            local clearIcon = clearButton:CreateTexture(nil, "OVERLAY")
+            clearIcon:SetAllPoints()
+            clearIcon:SetTexture(ICONS .. "eui-close.png")
+            clearButton:SetAlpha(0.6)
+            clearButton:Hide()
+            clearButton:SetScript("OnEnter", function(self)
+                if self.usable then self:SetAlpha(1) end
+                EllesmereUI.ShowWidgetTooltip(self, self.usable and self.tip or promote.disabledTip)
+            end)
+            clearButton:SetScript("OnLeave", function(self)
+                self:SetAlpha(self.usable and 0.6 or 0.25)
+                EllesmereUI.HideWidgetTooltip()
+            end)
+            clearButton:SetScript("OnClick", function(self)
+                EllesmereUI.HideWidgetTooltip()
+                if not self.usable then return end
+                if self.clearsActive then
+                    local slash = _G.SlashCmdList and _G.SlashCmdList.SIMPLELOOTCOUNCIL
+                    if slash then slash("lootmaster clear") end
+                else
+                    lootMaster.forget()
+                end
+                Invalidate()
+            end)
+
+
+
+
+            local box, cover, holder = PromoteBox(block, -PROMOTE_Y, T["Promote new Loot Master"])
+            box:SetText("")
+            local offered = {}
+            local function Promote(name)
+                CloseSuggestions()
+                offered = {}
+                name = (name or ""):trim()
+                if name == "" or not promote.enabled() then return end
+                if promote.apply(name) then box:SetText("") end
+                box:ClearFocus()
+                Invalidate()
+            end
+            local function Offer(b)
+                CloseSuggestions()
+                offered = promote.suggest((b:GetText() or ""):trim(), SUGGEST_MAX)
+                if #offered == 0 or not promote.enabled() then return end
+                local p = SugPopup()
+                p.owner = b
+                p.onPick = function(entry) Promote(entry.fullName) end
+                for index, entry in ipairs(offered) do
+                    local row = SugRow(p, index)
+                    row.entry = entry
+                    row.label:SetText(ClassText(entry.classFile, (tostring(entry.name):gsub("|", "||"))))
+                    row:Show()
+                end
+                for index = #offered + 1, #p.rows do
+                    p.rows[index].entry = nil
+                    p.rows[index]:Hide()
+                end
+                SugPlace(p, b, #offered)
+            end
+            promoteHandlers.disabledTip = promote.disabledTip
+            promoteHandlers.focus = Offer
+            promoteHandlers.typed = function(b, userInput) if userInput then Offer(b) end end
+            promoteHandlers.arrow = function(_, key)
+                if not SugOpen() or sugPopup.owner ~= box or #offered == 0 then return end
+                local p = sugPopup
+                if key == "UP" then
+                    p.selected = p.selected == 0 and #offered or math.max(p.selected - 1, 1)
+                elseif key == "DOWN" then
+                    p.selected = p.selected == 0 and 1 or math.min(p.selected + 1, #offered)
+                else
+                    return
+                end
+                SugPaint(p)
+            end
+            promoteHandlers.enter = function()
+                local entry = SugOpen() and sugPopup.owner == box and offered[sugPopup.selected]
+                Promote(entry and entry.fullName or box:GetText())
+            end
+            OnRefresh(function()
+                local enabled = promote.enabled() and true or false
+                holder:SetAlpha(enabled and 1 or 0.45)
+                box:EnableMouse(enabled)
+                cover:SetShown(not enabled)
+                if not enabled then
+                    box:ClearFocus()
+                    if SugOpen() and sugPopup.owner == box then CloseSuggestions() end
+                end
+            end)
 
 
             local headHolder = CreateFrame("Frame", nil, block)
@@ -998,10 +1194,12 @@ initFrame:SetScript("OnEvent", function(self)
                 local master = lootMaster.fullName()
                 mlName:SetText(master and PlayerText(master)
                     or S.Colorize(S.color.textFaint, lootMaster.unknown))
-                local note
+                local note, clearTip, active
                 if slc.IsLootPromoted() and UnitIsGroupLeader("player") then
-                    note = S.Colorize(gray, T["(Promoted)"])
+                    note, active = S.Colorize(gray, T["(Promoted)"]), true
+                    clearTip = T["Clear Loot Master promotion"]
                 elseif lootMaster.stored() then
+                    clearTip = T["Clear stored auto-promotion"]
 
                     local kept = slc.db.lootMasterKept
                     local record = slc.Player:Get(kept.guid or kept.name)
@@ -1009,6 +1207,11 @@ initFrame:SetScript("OnEvent", function(self)
                     note = S.Colorize(gray, Format(T["(%s stored)"], Format(T["%s auto-promotion"], who)))
                 end
                 mlNote:SetText(note or "")
+                local usable = promote.enabled() and true or false
+                clearButton.tip, clearButton.usable = clearTip, usable
+                clearButton.clearsActive = active
+                clearButton:SetAlpha(usable and 0.6 or 0.25)
+                clearButton:SetShown(note ~= nil)
             end)
             OnRefresh(function()
                 local entries, count = CouncilMembers(inForce, PlayerText, RankText)
@@ -1072,6 +1275,7 @@ initFrame:SetScript("OnEvent", function(self)
 
 
         function custom.responses(spec)
+            local refused = sectionLock
             for index, built in ipairs(spec.list()) do
 
 
@@ -1081,7 +1285,10 @@ initFrame:SetScript("OnEvent", function(self)
                     inputStyle = "popup", inputWidth = 180, noCapture = true,
                     getValue = function() return entry.text or "" end,
 
-                    setValue = function(text) spec.setName(index, text) Invalidate() end },
+                    setValue = function(text)
+                        if not refused() then spec.setName(index, text) end
+                        Invalidate()
+                    end },
                     function(region)
 
                         if region._label then region._label:SetText("") end
@@ -1100,7 +1307,9 @@ initFrame:SetScript("OnEvent", function(self)
 
                         EllesmereUI.BuildInlineSwatches(region, { {
                             getValue = function() return entry.r or 0.8, entry.g or 0.8, entry.b or 0.8, 1 end,
-                            setValue = function(r, g, b) spec.setColour(entry, r, g, b) end,
+                            setValue = function(r, g, b)
+                                if refused() then CloseColourPicker() else spec.setColour(entry, r, g, b) end
+                            end,
                         } })
 
                         local swatch = region._lastInline
@@ -1132,7 +1341,7 @@ initFrame:SetScript("OnEvent", function(self)
                                 EllesmereUI.HideWidgetTooltip()
                             end)
                             auto:SetScript("OnClick", function()
-                                if spec.sessionLocked() then return end
+                                if refused() then return end
                                 spec.setAutoroll(entry, not (entry.autoroll == true))
                                 Paint()
                                 Invalidate()
@@ -1146,11 +1355,11 @@ initFrame:SetScript("OnEvent", function(self)
                         end
                         local requirement = spec.deleteRequirement
                         local delete = EllesmereUI.BuildInlineButton(region, spec.confirmDelete().accept, function()
-                            if requirement() then return end
+                            if refused() or requirement() then return end
                             local copy = spec.confirmDelete()
                             S.Confirm({ title = copy.title, body = copy.body, accept = copy.accept,
                                 onAccept = function()
-                                    if spec.remove(index) then Invalidate() end
+                                    if not refused() and spec.remove(index) then Invalidate() end
                                 end })
                         end, { width = 70, disabled = function() return requirement() ~= nil end,
                             disabledTooltip = requirement, rawTooltip = true })
@@ -1173,6 +1382,7 @@ initFrame:SetScript("OnEvent", function(self)
             end
             if #spec.list() < spec.max then
                 Place({ type = "button", text = spec.addText, noCapture = true, onClick = function()
+                    if refused() then return end
                     local accent = EllesmereUI.ELLESMERE_GREEN
                     local index = spec.add(accent.r, accent.g, accent.b)
                     if index then
@@ -1228,6 +1438,7 @@ initFrame:SetScript("OnEvent", function(self)
 
         function custom.council(spec)
             if prebuild then return end
+            local refused = sectionLock
             local status = Note("", 0.85)
             OnRefresh(function()
                 local good, warn = S.ColorStart(S.Flatten(S.color.good)), S.ColorStart(S.Flatten(S.color.warn))
@@ -1241,7 +1452,7 @@ initFrame:SetScript("OnEvent", function(self)
             local function AddTyped()
                 CloseSuggestions()
                 local name = box:GetText():trim()
-                if name == "" then return end
+                if name == "" or refused() then return end
 
                 if TryPride(name) then
                     box:SetText("")
@@ -1286,16 +1497,7 @@ initFrame:SetScript("OnEvent", function(self)
                     p.rows[index].entry = nil
                     p.rows[index]:Hide()
                 end
-                p.selected = 0
-                SugPaint(p)
-                local own, base = b:GetEffectiveScale(), _G.UIParent:GetEffectiveScale()
-                if type(own) == "number" and type(base) == "number" and base > 0 and own > 0 then
-                    p:SetScale(own / base)
-                end
-                p:SetSize(b:GetWidth(), #shown * SUG_ROW_H + 8)
-                p:ClearAllPoints()
-                p:SetPoint("TOPLEFT", b, "BOTTOMLEFT", 0, -2)
-                p:Show()
+                SugPlace(p, b, #shown)
             end
             local function Typed(b, userInput)
                 if not userInput then return end
@@ -1362,7 +1564,7 @@ initFrame:SetScript("OnEvent", function(self)
                         end
                     elseif entry.pending then
 
-                        label:SetText(ClassText(entry.classFile, entry.fullName or entry.guid or "?",
+                        label:SetText(ClassText(entry.classFile, slc.Player:DisplayName(entry.fullName or entry.guid or "?"),
                             S.Flatten(S.color.textFaint)))
                     else
                         local short = ClassText(entry.classFile, Ambiguate(entry.fullName or "?", "short"))
@@ -1385,7 +1587,7 @@ initFrame:SetScript("OnEvent", function(self)
                 end)
                 row:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
                 EllesmereUI.BuildInlineButton(row, T["Remove"], function()
-                    if not entry then return end
+                    if not entry or refused() then return end
                     spec.remove(entry)
                     councilDirty = true
                     Invalidate()
@@ -1397,6 +1599,7 @@ initFrame:SetScript("OnEvent", function(self)
 
 
         function custom.councilRanks(spec)
+            local refused = sectionLock
             if not prebuild then
                 Note(S.Colorize(S.color.accent, spec.heading:upper()), 0.85)
                 for _, hint in ipairs(spec.hints()) do Note(hint) end
@@ -1440,6 +1643,7 @@ initFrame:SetScript("OnEvent", function(self)
                     btn:SetScript("OnEnter", function() hovering = true Paint() end)
                     btn:SetScript("OnLeave", function() hovering = false Paint() end)
                     btn:SetScript("OnClick", function()
+                        if refused() then return end
                         spec.setEmpowered(name, not spec.isEmpowered(name))
                         Paint()
 
@@ -1548,6 +1752,12 @@ initFrame:SetScript("OnEvent", function(self)
         for _, section in ipairs(sections) do
             _, h = W:SectionHeader(parent, section.title:upper(), y);  y = y - h
             local rowsTop = y
+            sectionLock = Unlocked
+            if (section.id == "council" or section.id == "master" or section.id == "voting") and section.locked then
+                sectionLock = function() return section.locked() ~= nil end
+            elseif section.id == "responses" then
+                sectionLock = Schema.Row("responses").sessionLocked
+            end
             for _, row in ipairs(section.rows) do
                 if row.hidden and row.hidden() then
 
@@ -1579,10 +1789,11 @@ initFrame:SetScript("OnEvent", function(self)
 
             if section.id == "responses" and not prebuild and y < rowsTop then
                 local spec = Schema.Row("responses")
-                LockCover(rowsTop, y, spec.sessionLockedText, spec.sessionLocked)
+                LockCover(rowsTop, y, spec.sessionLockedText, spec.sessionLocked, CloseColourPicker)
             end
         end
 
+        sectionLock = Unlocked
         if prebuild then return math.abs(y) end
 
 

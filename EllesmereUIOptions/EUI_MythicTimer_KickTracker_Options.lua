@@ -241,7 +241,7 @@ ns._KT_BuildPage = function(pageName, parent, yOffset)
         warn:SetSpacing(4)
         warn:SetWidth(parent:GetWidth() - pad * 2)
         warn:SetText(EllesmereUI.L("Like all current kick trackers, this feature is experimental and may stop working if\nBlizzard decides to hotfix the workaround that makes this possible."))
-        EllesmereUI.PP.Point(warn, "TOPLEFT", parent, "TOPLEFT", pad, y - 10)
+        EllesmereUI.PanelPP.Point(warn, "TOPLEFT", parent, "TOPLEFT", pad, y - 10)
         y = y - 10 - math.ceil(warn:GetStringHeight()) - 2
     end
 
@@ -270,7 +270,7 @@ ns._KT_BuildPage = function(pageName, parent, yOffset)
             rgn, 220, rgn:GetFrameLevel() + 2, WhereItems(),
             WhereGet, WhereSet,
             nil, nil, nil, nil, nil, { disabled = Off, disabledTooltip = REQ, emptyLabel = "All" })
-        EllesmereUI.PP.Point(whereDD, "RIGHT", rgn, "RIGHT", -20, 0)
+        EllesmereUI.PanelPP.Point(whereDD, "RIGHT", rgn, "RIGHT", -20, 0)
         rgn._control = whereDD
         rgn._lastInline = nil
         EllesmereUI.RegisterWidgetRefresh(whereRefresh)
@@ -336,9 +336,9 @@ ns._KT_BuildPage = function(pageName, parent, yOffset)
               values=POSITION_VALUES, order=POSITION_ORDER,
               getValue=function() return Get("anchor", "LEFT") end,
               setValue=SetPosition });  y = y - h
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(row._rightRegion, { tip = "Position Offsets",
-                title = "Position Offsets", icon = EllesmereUI.DIRECTIONS_ICON,
+                title = "Position Offsets",
                 disabled = PlatesOff, disabledTooltip = REQ_PLATES,
                 rows = {
                     { type="slider", label="X Offset", min=-100, max=100, step=1,
@@ -385,10 +385,12 @@ ns._KT_BuildPage = function(pageName, parent, yOffset)
                 function(key) return Get(key, key ~= "desaturate") == true end,
                 function(key, v) Set(key, v and true or false) end,
                 nil, nil, nil, nil, nil, { disabled = PlatesOff, disabledTooltip = REQ_PLATES, emptyLabel = "None" })
-            EllesmereUI.PP.Point(fxDD, "RIGHT", fxRgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(fxDD, "RIGHT", fxRgn, "RIGHT", -20, 0)
             fxRgn._control = fxDD
             fxRgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(fxRefresh)
+        end
+        do
             EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Timer Settings",
                 title = "Cooldown Timer",
                 disabled = function() return PlatesOff() or Get("showTimer", true) ~= true end,
@@ -521,22 +523,24 @@ ns._KT_BuildPage = function(pageName, parent, yOffset)
               disabled=BarsOff, disabledTooltip=REQ_BARS,
               getValue=function() return Get("barIncludeSelf", true) == true end,
               setValue=function(v) Set("barIncludeSelf", v and true or false) end });  y = y - h
+        local elRgn = row._leftRegion
         if not EllesmereUI._prebuilding then
             -- Display Elements: the checkbox dropdown over its four keys, in
             -- place of the row's placeholder dropdown, and its cog beside it:
             -- the icon's side and one text size for the name and the timer
             -- (the Fonts page sets the two apart).
-            local elRgn = row._leftRegion
             if elRgn._control then elRgn._control:Hide() end
             local elDD, elRefresh = EllesmereUI.BuildVisOptsCBDropdown(
                 elRgn, 220, elRgn:GetFrameLevel() + 2, BAR_ELEMENTS,
                 function(key) return Get(key, true) == true end,
                 function(key, v) Set(key, v and true or false) end,
                 nil, nil, nil, nil, nil, { disabled = BarsOff, disabledTooltip = REQ_BARS, emptyLabel = "None" })
-            EllesmereUI.PP.Point(elDD, "RIGHT", elRgn, "RIGHT", -20, 0)
+            EllesmereUI.PanelPP.Point(elDD, "RIGHT", elRgn, "RIGHT", -20, 0)
             elRgn._control = elDD
             elRgn._lastInline = nil
             EllesmereUI.RegisterWidgetRefresh(elRefresh)
+        end
+        do
             EllesmereUI.BuildInlineCog(elRgn, { tip = "Element Settings",
                 title = "Display Elements",
                 disabled = BarsOff,

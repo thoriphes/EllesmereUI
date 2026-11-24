@@ -157,7 +157,7 @@ do
     end
 
     local function InstallHook()
-        if hooked or EllesmereUI.BlizzSkinPadStandDown() then return end
+        if hooked then return end
         hooked = true
         EnsureCursorFrame()
         -- Stop the tracker when the tooltip closes; ApplyCursorAnchor reshows it.
@@ -170,7 +170,7 @@ do
         if GameTooltip.FadeOut then
             hooksecurefunc(GameTooltip, "FadeOut", function(self)
                 if self ~= GameTooltip then return end
-                if EllesmereUIDB and EllesmereUIDB.tooltipAnchorCursor then
+                if EllesmereUIDB and EllesmereUIDB.tooltipAnchorCursor and EllesmereUIDB.customTooltips ~= false then
                     self:Hide()
                 end
             end)

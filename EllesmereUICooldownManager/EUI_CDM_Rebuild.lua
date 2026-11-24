@@ -695,12 +695,56 @@ local function StableKeybindsEnabled()
 end
 ns.CDMStableKeybindsEnabled = StableKeybindsEnabled
 
+-- A page swap in live mode. The live scan reads the page from the Action Bars
+-- frames, whose state driver applies it a frame after the page event fires, so
+-- with Action Bars loaded the bars' own page edge (their "state-page" write,
+-- after _onstate-page has set actionpage) rebuilds the cache, on the next
+-- frame; without them the event does (GetBonusBarOffset reads the new bonus
+-- bar at once). A swap never waits for the slot-storm debounce: the spells the
+-- new page brings would show no key until it ran. The hooks go in at the first
+-- live rebuild that finds each bar; stable mode ignores them.
+local _PAGE_EDGE_BARS = { "EABBar_MainBar", "EABBar_Bar9", "EABBar_Bar10" }
+local _pageEdgeHooked = {}
+local _pageFlush = CreateFrame("Frame")
+_pageFlush:Hide()
+_pageFlush:SetScript("OnUpdate", function(self)
+    self:Hide()
+    if not StableKeybindsEnabled() then UpdateCDMKeybinds() end
+end)
+local function OnBarAttributeChanged(_, name)
+    -- Runs inside the state driver's secure pass: only queue the rebuild (the
+    -- flush reads the setting itself, so a mode changed since the last rebuild
+    -- cannot drop or add one).
+    if name == "state-page" then _pageFlush:Show() end
+end
+local function HookBarPageEdges()
+    for i = 1, #_PAGE_EDGE_BARS do
+        local barName = _PAGE_EDGE_BARS[i]
+        if not _pageEdgeHooked[barName] then
+            local f = _G[barName]
+            if f then
+                _pageEdgeHooked[barName] = true
+                f:HookScript("OnAttributeChanged", OnBarAttributeChanged)
+            end
+        end
+    end
+end
+-- The page events' route in live mode (EUI_CDM_Events.lua). A bar built since
+-- the last rebuild is hooked here, at the event, ahead of the page edge the
+-- state driver writes on its next update.
+function ns.CDMKeybindPageSwap()
+    HookBarPageEdges()
+    if _pageEdgeHooked.EABBar_MainBar then return end
+    _pageFlush:Show()
+end
+
 local function RebuildKeybindCache()
     wipe(_cdmKeybindCache)
     wipe(_cdmKeybindRank)
     -- Latch the mode for this whole rebuild so the multi-page scan and the
     -- macro body scan can never disagree about it mid-pass.
     _stableMode = StableKeybindsEnabled()
+    if not _stableMode then HookBarPageEdges() end
     for _, def in ipairs(_barBindingDefs) do
         for i = 1, 12 do
             local key = GetBindingKey(def.prefix .. i)
@@ -869,6 +913,8 @@ BuildAllCDMBars = function()
     ns.RescanActiveGlowFlag()     -- set the Active State Glow gate (once) before refresh
     ns.RescanTalentCondFlag()     -- set the Talent Conditions gate (once) before refresh
     ns.RescanStanceBarFlag()      -- set the Stance Bar gate (once) before refresh
+    -- WoW Forever: the Swing Timer swipe gate (EUI_CDM_ForeverSwingSweep.lua).
+    if ns.RescanSwingSweepFlag then ns.RescanSwingSweepFlag() end
 
     local p = ECME.db.profile
 
@@ -1011,10 +1057,6 @@ BuildAllCDMBars = function()
     -- Every full rebuild re-evaluates the FocusKick demand gate, so assigning the first kick spell (or removing the last) flips the feature family on/off live.
     if ns.RefreshFocusKickProxies then ns.RefreshFocusKickProxies() end
 
-    -- WoW Forever: the anti-clip glow (a bar's Pandemic Glow there) listens to
-    -- your casts only while a bar uses it (EUI_CDM_ForeverAntiClip.lua).
-    if ns.CDM_AntiClipSync then ns.CDM_AntiClipSync() end
-
     -- Match pads follow each bar's border settings: a bar whose pad changed is
     -- re-pushed through its matches once, deferred (compare-only here).
     if EllesmereUI.MatchPadChanged then
@@ -1124,7 +1166,15 @@ function ns.NormalizeRacialAssignments()
                     -- (the custom-bar copy when one exists, see keeperList).
                     kept = true
                 elseif not activePresent and not kept then
-                    -- No active racial anywhere: promote this foreign one.
+                    -- No active racial anywhere: promote this foreign one. Its
+                    -- per-icon settings (the profile's Custom Active State entry)
+                    -- follow the slot when this character's racial has none of
+                    -- its own; an entry it already has is left as it is.
+                    local cas = p.customActiveStates
+                    if cas and type(cas[sid]) == "table" and cas[active] == nil then
+                        cas[active] = EllesmereUI.Lite.DeepCopy(cas[sid])
+                        ns._cdmResGen = (ns._cdmResGen or 0) + 1
+                    end
                     list[i] = active
                     kept = true
                     ns._spellOrderDirty = true

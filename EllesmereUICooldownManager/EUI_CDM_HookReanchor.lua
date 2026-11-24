@@ -24,6 +24,7 @@ local IsRouteMapBuilt, ResolveCDIDToBar = I.IsRouteMapBuilt, I.ResolveCDIDToBar
 local ResolveFrameSpellID, ResolveSpellSettings = I.ResolveFrameSpellID, I.ResolveSpellSettings
 local IsFrameIncluded, CategorizeFrame = I.IsFrameIncluded, I.CategorizeFrame
 local DecorateFrame, _trinketFrames = I.DecorateFrame, I._trinketFrames
+local WatchParkedIcon = I.WatchParkedIcon
 local _trinketItemCache, ApplySpellDesaturation = I._trinketItemCache, I.ApplySpellDesaturation
 local GetOrCreateTrinketFrame = I.GetOrCreateTrinketFrame
 local UpdateTrinketCooldown, UpdateTrinketFrame = I.UpdateTrinketCooldown, I.UpdateTrinketFrame
@@ -221,6 +222,20 @@ local function CollectAndReanchor()
                                 repSID = (dedupKey and ns._buffReplaceTargetCd[dedupKey])
                                     or ns._buffReplaceTarget[displaySID]
                                     or (baseSID and ns._buffReplaceTarget[baseSID]) or nil
+                                -- The mapping can name another form of this buff's slot
+                                -- than the one it shows (WoW Forever: a rank the character
+                                -- has outgrown or not reached): the slot's linked spells,
+                                -- asked only on a bar that holds a replacement.
+                                if not repSID and ns._buffReplaceBars[targetBar] then
+                                    local sfc = _ecmeFC[frame]
+                                    local linked = sfc and sfc.linkedSpellIDs
+                                    if linked then
+                                        for li = 1, #linked do
+                                            local t = ns._buffReplaceTarget[linked[li]]
+                                            if t then repSID = t; break end
+                                        end
+                                    end
+                                end
                             end
                             if dedupKey and not barSeen[dedupKey] then
                                 if frame:IsShown() then
@@ -501,6 +516,13 @@ local function CollectAndReanchor()
                                                 fc.barKey = targetBar
                                                 fc.spellID = realSID
                                                 fc.isHostedBuff = true
+                                                -- The slot's own base spell and rank list (the viewer
+                                                -- frame's cache), read by the order lookup alone
+                                                -- (OrderKeyFor): realSID is only the rank the slot
+                                                -- shows now, and the marker may name another one.
+                                                local sfc = _ecmeFC[frame]
+                                                fc.slotBase = baseSID
+                                                fc.slotLinked = sfc and sfc.linkedSpellIDs or nil
                                             else
                                                 if not barLists[targetBar] then barLists[targetBar] = {} end
                                                 barLists[targetBar][#barLists[targetBar] + 1] =
@@ -1148,19 +1170,34 @@ local function CollectAndReanchor()
     -- "Replace with Buff": an active replacement frame and the cooldown it stands
     -- in for share one slot identity, so drop the cooldown's own frame from this
     -- pass. It takes the unclaimed park in Phase 4 and returns on the reanchor
-    -- the buff frame's own OnActiveStateChanged already queues at falloff.
+    -- the buff frame's own OnActiveStateChanged already queues at falloff. A
+    -- buff hosted on the same bar is never the cooldown's frame, whatever spell
+    -- it carries (a spell's own aura, Lunar Beam beside its cooldown), so it
+    -- stays.
     if ns._cdmAnyBuffReplace and ns._replacedByBar then
         for bk, targets in pairs(ns._replacedByBar) do
             local frames = next(targets) and cdFrames[bk]
             if frames then
                 for i = #frames, 1, -1 do
                     local fc = _ecmeFC[frames[i]]
-                    if fc and not fc.replacesCd and fc.spellID then
+                    if fc and not fc.replacesCd and not fc.isHostedBuff and fc.spellID then
                         local hit = targets[fc.spellID]
                             or (fc.baseSpellID and targets[fc.baseSpellID])
                         if not hit then
                             for t in pairs(targets) do
                                 if ns.IsVariantOf(fc.spellID, t) then hit = true; break end
+                            end
+                        end
+                        -- WoW Forever: each rank is a spell of its own, so a
+                        -- replacement saved under another rank of the slot's
+                        -- spell (the bar's list entry) matches by the rank key
+                        -- (ns.CDMRankName, nil off Forever).
+                        if not hit and ns.CDMRankName then
+                            local rk = ns.CDMRankName(fc.spellID)
+                            if rk then
+                                for t in pairs(targets) do
+                                    if ns.CDMRankName(t) == rk then hit = true; break end
+                                end
                             end
                         end
                         if hit then table.remove(frames, i) end
@@ -1323,6 +1360,37 @@ local function CollectAndReanchor()
                             -- <= -100, so -sid would otherwise be taken as an itemID and
                             -- fed to GetItemCooldown, which errors outside int32 range
                             -- (cd-claim markers are -(CD_CLAIM_MARKER_BASE + cooldownID)).
+                            -- One exception: a custom buff spell ID (the Add Buff menu's
+                            -- Custom Spell ID) for which no hosted Blizzard frame or
+                            -- placeholder reached this bar has nothing to divert, so an
+                            -- aura icon of ours draws it (EUI_CDM_AuraIcons.lua). Only
+                            -- hosted-buff frames count: the same spell's COOLDOWN frame
+                            -- here is the other form, so the global claim set (cooldowns
+                            -- and linked ids included) cannot decide it.
+                            local hSid = ns.HostedBuffMarkerToSpell and ns.HostedBuffMarkerToSpell(sid)
+                            if hSid and sd and sd.customSpellIDs and sd.customSpellIDs[hSid]
+                               and ns.CDM_AuraIconForBuff then
+                                local ovr = _FindOverride and _FindOverride(hSid)
+                                local base = C_Spell and C_Spell.GetBaseSpell and C_Spell.GetBaseSpell(hSid)
+                                local claimed = false
+                                for fi = 1, #frames do
+                                    local hfc = _ecmeFC[frames[fi]]
+                                    local hs = hfc and hfc.isHostedBuff and hfc.spellID
+                                    if hs and (hs == hSid or hs == ovr or hs == base) then
+                                        claimed = true
+                                        break
+                                    end
+                                end
+                                local af = not claimed and ns.CDM_AuraIconForBuff(barKey, hSid)
+                                if af then
+                                    frames[#frames + 1] = af
+                                    local fc = FC(af)
+                                    fc.barKey = barKey; fc.spellID = hSid
+                                    -- Ranked by its marker slot and resolved as the
+                                    -- hosted buff it is.
+                                    fc.isHostedBuff = true
+                                end
+                            end
                         elseif sid and ns.SlotIDFromKey(sid) and _globalClaimSet[sid] then
                             -- Native-first, injection-fallback (the racial rule
                             -- below, applied to equipment): Blizzard's own cooldown
@@ -1454,13 +1522,40 @@ local function CollectAndReanchor()
                                 local base = C_Spell.GetBaseSpell(sid)
                                 if base and base > 0 and _globalClaimSet[base] then hasClaim = true end
                             end
-                            if not hasClaim then
+                            -- An entry an aura icon of ours draws (EUI_CDM_AuraIcons.lua:
+                            -- a registered provider's spell ID), native-first like a racial.
+                            local auraF = not hasClaim and ns.CDM_AuraIconFor
+                                and ns.CDM_AuraIconFor(barKey, sid)
+                            if auraF then
+                                frames[#frames + 1] = auraF
+                                local fc = FC(auraF)
+                                fc.barKey = barKey; fc.spellID = sid
+                            elseif not hasClaim then
                                 local isRacial = ns._myRacialsSet and ns._myRacialsSet[sid]
                                 local isCustomSpell = sd and sd.customSpellIDs and sd.customSpellIDs[sid]
+                                -- WoW Forever: the highest rank of a typed spell this
+                                -- character knows, when that is not the typed rank.
+                                local liveSID
                                 -- Keep saved placement, but do not inject an unlearned talent.
                                 if isCustomSpell then
-                                    isCustomSpell = ns.IsSpellInPlayerBook(sid, false)
+                                    local inBook = ns.IsSpellInPlayerBook(sid, false)
+                                    isCustomSpell = inBook
                                         or C_SpellBook.IsSpellKnownOrInSpellBook(sid, Enum.SpellBookSpellBank.Pet, false)
+                                    -- A typed ID stands for every rank of its spell
+                                    -- (ns.CDMRankFamily: WoW Forever only): the icon
+                                    -- shows and reads the highest rank the character
+                                    -- knows, whether the typed rank is not known yet or
+                                    -- is outgrown. A rank a Blizzard frame already
+                                    -- shows stays Blizzard's; a pet's typed spell keeps
+                                    -- its own ID (the families hold no pet spellbook).
+                                    if not isRacial and ns.CDMRankFamily and (inBook or not isCustomSpell) then
+                                        local fam = ns.CDMRankFamily(sid)
+                                        local kr = fam and fam.known
+                                        if kr and kr ~= sid and not _globalClaimSet[kr] then
+                                            liveSID = kr
+                                            isCustomSpell = true
+                                        end
+                                    end
                                 end
                                 -- FRAMES AS TRUTH (native-first, injection-fallback): a racial
                                 -- with a LIVE Blizzard frame anywhere is a regular native
@@ -1506,7 +1601,7 @@ local function CollectAndReanchor()
                                         if f.SetMouseClickEnabled then f:SetMouseClickEnabled(false) end
                                         f:SetScript("OnEnter", function(self)
                                             local ffc = _ecmeFC[self]
-                                            local spid = ffc and ffc.spellID
+                                            local spid = self._rankSID or (ffc and ffc.spellID)
                                             local bd2 = ffc and ffc.barKey and barDataByKey[ffc.barKey]
                                             if not bd2 or not bd2.showTooltip then return end
                                             -- Honor the global "Show Tooltips" mode (Blizzard Skin).
@@ -1527,10 +1622,36 @@ local function CollectAndReanchor()
                                         _presetFrames[fkey] = f
                                         _RegisterPresetLive(f, fkey)
                                     end
-                                    local spInfo = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(sid)
+                                    -- The rank the frame shows and reads its state from:
+                                    -- the typed ID, or (WoW Forever) the rank the character
+                                    -- knows. The tooltip, the 10 Hz pass and the cooldown
+                                    -- events read it (_rankSID, _cachedPresetSID); the bar
+                                    -- order and the settings stay on the typed ID.
+                                    if (liveSID or f._rankSID) and f._rankSID ~= liveSID then
+                                        f._rankSID = liveSID
+                                        f._cachedPresetSID = liveSID or sid
+                                        f._racialCdDirty = true
+                                        f._cdPushArm = true
+                                        -- The readers keyed by the typed ID follow the
+                                        -- rank: the state rules and the Active State
+                                        -- (ns._cdmRankOf, EllesmereUICdmFakeActive.lua)
+                                        -- and an armed range check.
+                                        local rankOf = ns._cdmRankOf
+                                        if liveSID and not rankOf then
+                                            rankOf = {}
+                                            ns._cdmRankOf = rankOf
+                                        end
+                                        if rankOf then
+                                            rankOf[sid] = liveSID
+                                            if ns.FakeActive_RankChanged then ns.FakeActive_RankChanged(sid) end
+                                        end
+                                        if f._rangeOpted then ns.SyncCustomSpellRange(f) end
+                                    end
+                                    local shownSID = liveSID or sid
+                                    local spInfo = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(shownSID)
                                     if spInfo and spInfo.iconID and f._tex then f._tex:SetTexture(spInfo.iconID) end
                                     if not f._cdSet or f._racialCdDirty then
-                                        local durObj = C_Spell.GetSpellCooldownDuration and C_Spell.GetSpellCooldownDuration(sid)
+                                        local durObj = C_Spell.GetSpellCooldownDuration and C_Spell.GetSpellCooldownDuration(shownSID)
                                         if durObj and f._cooldown.SetCooldownFromDurationObject then
                                             f._cooldown:SetCooldownFromDurationObject(durObj, true)
                                         end
@@ -1540,7 +1661,7 @@ local function CollectAndReanchor()
                                         -- swipe the same way the 10Hz pass does.
                                         -- barKey is passed explicitly: the frame's
                                         -- cache entry is only stamped further down.
-                                        ApplyPresetGCDSwipe(f, sid, nil, barKey)
+                                        ApplyPresetGCDSwipe(f, shownSID, nil, barKey)
                                         f._cdSet = true; f._racialCdDirty = false
                                     end
                                     frames[#frames + 1] = f
@@ -1606,6 +1727,21 @@ local function CollectAndReanchor()
                     if not key and fc and fc.linkedSpellIDs then
                         for _, lid in ipairs(fc.linkedSpellIDs) do
                             if lid and lid > 0 and map[lid] then key = map[lid]; break end
+                        end
+                    end
+                    -- A hosted-buff placeholder carries only the rank its slot shows now.
+                    -- Its slot's base spell and rank list (stamped where the placeholder
+                    -- is made) reach an entry saved under another rank, as the live
+                    -- frame's own base and linked ids do above. Without them a
+                    -- placeholder has no place once a new rank is trained (WoW
+                    -- Forever): it sits at the bar's end until the buff is up.
+                    if not key and fc and (fc.slotBase or fc.slotLinked) then
+                        local sb = fc.slotBase
+                        if sb and sb > 0 then key = map[sb] end
+                        if not key and fc.slotLinked then
+                            for _, lid in ipairs(fc.slotLinked) do
+                                if lid and lid > 0 and map[lid] then key = map[lid]; break end
+                            end
                         end
                     end
                     return key
@@ -2204,6 +2340,10 @@ local function CollectAndReanchor()
                 frame:ClearAllPoints()
                 frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -10000, 10000)
                 if efd then efd._parkGuard = nil end
+                -- A frame never claimed has no SetPoint hook of DecorateFrame's:
+                -- give it the park's own, or Blizzard's next layout leaves it in
+                -- the viewer's grid, catching hover there.
+                WatchParkedIcon(frame)
                 if frame.Cooldown and frame.Cooldown.SetDrawSwipe then
                     frame.Cooldown:SetDrawSwipe(false)
                 end
@@ -2238,6 +2378,24 @@ local function CollectAndReanchor()
             pf:ClearAllPoints()
             pf:Hide()
         end
+    end
+    -- Our aura icons level their slots on the frames this pass placed
+    -- (EUI_CDM_AuraIcons.lua).
+    if ns.CDM_AuraIconsPlaced then ns.CDM_AuraIconsPlaced() end
+    -- WoW Forever: buff icons Blizzard draws without a timer
+    -- (EUI_CDM_ForeverLinkedAura.lua).
+    if ns.CDM_LinkedAuraPlaced then ns.CDM_LinkedAuraPlaced() end
+    -- Buff stacks on cooldown icons (EUI_CDM_CdBuffStacks.lua).
+    if ns.CDM_CdBuffStacksPlaced then ns.CDM_CdBuffStacksPlaced() end
+    -- An override's range tint follows its spell onto the frame Blizzard
+    -- gave it this time (EUI_CDM_Rotation.lua).
+    if ns.ReapplyOverrideRanges then ns.ReapplyOverrideRanges() end
+    -- A settings apply asked for one buff ticker pass after the placement it
+    -- queued (_ECME_Apply): the placeholders shown here take Desaturate Off CD.
+    if ns._btDirtyOnPlace then
+        ns._btDirtyOnPlace = nil
+        ns._btDirty = true
+        if ns.ArmBuffTicker then ns.ArmBuffTicker() end
     end
 
     if not ns._initialReanchorDone then ns._initialReanchorDone = true end
@@ -2275,7 +2433,11 @@ local function CollectAndReanchor()
         -- and on Blizzard settings-panel close (in-place layout edits). Keyed
         -- by spec + active Blizzard layout id: a spell tracked only on a
         -- layout switched to later in the session must still get its pass.
-        if ns.ReseedAssignedSpellsFromLiveIcons and prof
+        -- Never before Blizzard has loaded its saved layouts (ns._cdmDataLoaded):
+        -- until then its viewers show the class defaults, and a default spell or
+        -- racial written into a bar here keeps that bar over the player's own
+        -- layout. The data-loaded wake queues the reanchor that runs it.
+        if ns.ReseedAssignedSpellsFromLiveIcons and prof and ns._cdmDataLoaded
            and prof._barFilterModelV6 and not prof._importGhostMode then
             ns._reseededSpecsSession = ns._reseededSpecsSession or {}
             local layoutID = ns.GetActiveCDMLayoutID and ns.GetActiveCDMLayoutID()
@@ -2403,6 +2565,8 @@ local function CollectAndReanchor()
         for bk in pairs(ns._missingFlipBars) do ns.QueueShiftLayout(bk) end
         wipe(ns._missingFlipBars)
     end
+    -- WoW Forever: the Swing Timer swipe follows the icons this pass placed.
+    if ns.CDM_SwingSweepSync then ns.CDM_SwingSweepSync() end
 end
 
 -- Also Show Below (EllesmereUICdmHooks.lua): a deadline or the buff ticker

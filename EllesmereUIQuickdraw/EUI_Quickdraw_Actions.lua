@@ -26,6 +26,34 @@ local WORLD_MARKER_ENGINE, SetUsableSlots = I.WORLD_MARKER_ENGINE, I.SetUsableSl
 -- the forward declaration ChildSlots reads through.
 local UsableSlots
 
+-- Forever gives each spell rank its own id; resolve to the highest known one, as /cast does.
+-- Kept per stored id until the next push (PushAllPalettes wipes it, and SPELLS_CHANGED
+-- requests one); a lookup made before the spell's data loaded is not kept.
+local TopRank
+do
+    local memo = {}
+    function ns.WipeRankCache() wipe(memo) end
+    TopRank = function(id)
+        if not EllesmereUI.IS_FOREVER or type(id) ~= "number" then return id end
+        local hit = memo[id]
+        if hit then return hit end
+        local info = C_Spell.GetSpellInfo(id)
+        local top = info and C_Spell.GetSpellInfo(info.name)
+        if not top then return id end
+        local out = id
+        if top.spellID ~= id and C_SpellBook.IsSpellKnown(top.spellID) then out = top.spellID end
+        memo[id] = out
+        return out
+    end
+end
+
+-- The spell a spell entry casts: exactly its stored rank when picked from a
+-- lower one (slot.rankPinned, Forever only), the highest known rank otherwise.
+local function SlotRank(slot)
+    if slot.rankPinned and EllesmereUI.IS_FOREVER and type(slot.id) == "number" then return slot.id end
+    return TopRank(slot.id)
+end
+
 -------------------------------------------------------------------------------
 --  Dynamic Rez
 --
@@ -60,6 +88,16 @@ local REZ_BY_CLASS = {
     DEATHKNIGHT = { battle = 61999 },
     WARLOCK     = { battle = 20707 },
 }
+-- WoW Forever: the vanilla spells, every rank ID listed (rank 1 first).
+if EllesmereUI.IS_FOREVER then
+    REZ_BY_CLASS = {
+        PRIEST  = { single = { 2006, 2010, 10880, 10881, 20770 } },
+        PALADIN = { single = { 7328, 10322, 10324, 20772, 20773 } },
+        SHAMAN  = { single = { 2008, 20609, 20610, 20776, 20777 } },
+        DRUID   = { single = { 437138, 1237948, 1237949, 1237950, 1237951 },
+                    battle = { 20484, 20739, 20742, 20747, 20748 } },
+    }
+end
 
 -- battle, single, group for this character, any of them nil. Filtered by what
 -- is actually in the spellbook, because the macro below picks a branch by
@@ -79,20 +117,29 @@ local REZ_BY_CLASS = {
 -- requests a push for the usability filter -- so a talent swap, a spec change,
 -- levelling into a rez and the spellbook warming up after login all rebuild it
 -- with no registration of its own.
+local function RezKnown(id, bank)
+    if not id then return nil end
+    -- A rank list (Forever) answers with the first rank in the book.
+    if type(id) == "table" then
+        for i = 1, #id do
+            local hit = RezKnown(id[i], bank)
+            if hit then return hit end
+        end
+        return nil
+    end
+    if C_SpellBook.IsSpellInSpellBook and bank
+       and not C_SpellBook.IsSpellInSpellBook(id, bank, true) then
+        return nil
+    end
+    return id
+end
+
 local function RezKit()
     local _, class = UnitClass("player")
     local kit = class and REZ_BY_CLASS[class]
     if not kit then return nil end
     local bank = Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player
-    local function Known(id)
-        if not id then return nil end
-        if C_SpellBook.IsSpellInSpellBook and bank
-           and not C_SpellBook.IsSpellInSpellBook(id, bank, true) then
-            return nil
-        end
-        return id
-    end
-    return Known(kit.battle), Known(kit.single), Known(kit.group)
+    return RezKnown(kit.battle, bank), RezKnown(kit.single, bank), RezKnown(kit.group, bank)
 end
 
 -- A corpse worth casting the single-target rez at. UnitIsDeadOrGhost rather
@@ -248,8 +295,8 @@ do
 -- Is this one spell id in either of this character's books, player or pet?
 local function KnownForm(sid)
     return (sid and sid > 0)
-        and (IsPlayerSpell(sid)
-             or (C_SpellBook and C_SpellBook.IsSpellKnownOrInSpellBook
+        and (C_SpellBook.IsSpellKnown(sid)
+             or (C_SpellBook.IsSpellKnownOrInSpellBook
                  and C_SpellBook.IsSpellKnownOrInSpellBook(sid)))
         or false
 end
@@ -288,6 +335,12 @@ local function SlotUsable(slot)
         return GetMacroInfo(slot.name or slot.id) ~= nil
     elseif k == "outfit" then
         return ns.OutfitInfo(slot) ~= nil
+    elseif k == "equipmentset" then
+        return ns.EquipmentSetInfo(slot) ~= nil
+    elseif k == "emote" then
+        -- A token this client has no command for: saved on another build, or
+        -- by an emote since retired. It would fire nothing.
+        return ns.EmoteCommand(slot) ~= nil
     elseif k == "panel" then
         -- The one kind whose availability is the CLIENT's rather than the
         -- character's: Housing arrived in 12.0 and the Shop is not in every
@@ -306,12 +359,25 @@ local function SlotUsable(slot)
     return true
 end
 
+-- Nested palette slots inside a nest fire nothing (one level), so they never count.
+local function NestOffersAny(child)
+    local palette = ReadPalette(child)
+    if not palette then return false end
+    local cp = I.PA(child)
+    local all = cp and cp.hideUnusable == false
+    for _, slot in ipairs(palette.slots) do
+        if slot.kind ~= "palette" and (all or SlotUsable(slot)) then return true end
+    end
+    return false
+end
+
 -- The entries of the palette this character can use ("Hide Unavailable
 -- Actions"). A view, never a mutation: returns the stored array itself while
 -- nothing is filtered, and a fresh dense array otherwise -- the stored slots
 -- keep every entry for the characters that CAN use them. A nested palette
--- that does not load in this spec (Assign to Spec) is left out whatever the
--- setting says; with it off, everything else stays.
+-- that does not load in this spec (Assign to Spec), or that would open with
+-- nothing this character can use under its own setting, is left out whatever
+-- this palette's setting says; with it off, everything else stays.
 function UsableSlots(palette, p)
     local slots = palette and palette.slots
     if not slots then return slots end
@@ -324,7 +390,7 @@ function UsableSlots(palette, p)
         local keep
         if slot.kind == "palette" then
             local child = ChildIndex(slot)
-            keep = not child or ns.PaletteActive(child)
+            keep = not child or (ns.PaletteActive(child) and NestOffersAny(child))
         else
             keep = all or SlotUsable(slot)
         end
@@ -364,7 +430,7 @@ local function ResolveAction(slot, p)
 
     if k == "spell" then
         if type(slot.id) ~= "number" then return nil end
-        return "spell", "spell", slot.id
+        return "spell", "spell", SlotRank(slot)
 
     elseif k == "dynamicprofession" then
         -- Resolved to the CURRENT position's spell every time the
@@ -392,6 +458,11 @@ local function ResolveAction(slot, p)
         local info = ns.OutfitInfo(slot)
         if not info then return nil end
         return "outfit", "outfit-index", info.playerFacingOutfitIndex
+
+    elseif k == "equipmentset" then
+        local name = ns.EquipmentSetInfo(slot)
+        if not name then return nil end
+        return "equipmentset", "equipmentset", name
 
     elseif k == "macro" then
         -- Stored by name so reordering the macro list doesn't repoint the
@@ -538,6 +609,14 @@ local function ResolveAction(slot, p)
         -- that keeps a cycle predictable.
         local steps = CycleSteps(k)
         return "macro", "macrotext", steps[CycleNext(slot)], "macro"
+
+    elseif k == "emote" then
+        -- The client's own command for the token, in the client's language;
+        -- see the Emotes block in EUI_Quickdraw_Slots.lua. Aimed at the target
+        -- when there is one, exactly as the typed command would be.
+        local text = ns.EmoteCommand(slot)
+        if not text then return nil end
+        return "macro", "macrotext", text, "macro"
     end
 
     return nil
@@ -654,8 +733,18 @@ local function SlotDisplay(slot)
     local k = slot.kind
 
     if k == "spell" then
-        local info = C_Spell.GetSpellInfo(slot.id)
-        if info then return info.iconID or QUESTION_MARK, info.name end
+        local id = SlotRank(slot)
+        local info = C_Spell.GetSpellInfo(id)
+        if info then
+            local name = info.name
+            -- A pinned rank is named with it ("Shadow Bolt (Rank 3)"); nothing
+            -- else tells it from the entry that follows the highest rank.
+            if slot.rankPinned and EllesmereUI.IS_FOREVER then
+                local sub = C_Spell.GetSpellSubtext(id)
+                if sub and sub ~= "" then name = name .. " (" .. sub .. ")" end
+            end
+            return info.iconID or QUESTION_MARK, name
+        end
 
     elseif k == "item" then
         if type(slot.id) ~= "number" then return QUESTION_MARK, slot.name end
@@ -685,6 +774,10 @@ local function SlotDisplay(slot)
         return ns.OutfitIcon(info) or ns.OutfitIcon(slot) or QUESTION_MARK,
                (info and info.name) or slot.name or "Outfit"
 
+    elseif k == "equipmentset" then
+        local name, icon = ns.EquipmentSetInfo(slot)
+        return icon or slot.icon or QUESTION_MARK, name or slot.name or "Equipment Set"
+
     elseif k == "macro" then
         local nameOrIndex = slot.name or slot.id
         local name, icon = GetMacroInfo(nameOrIndex)
@@ -700,6 +793,10 @@ local function SlotDisplay(slot)
         -- slot.icon may be a { atlas = ... } table (the Pings preset stores
         -- one verbatim); SetIconTexture/ApplyIconCrop render both forms.
         return slot.icon or QUESTION_MARK, slot.name or "Macro"
+
+    elseif k == "emote" then
+        -- One glyph for every emote; PaintCell writes the name onto it.
+        return ns.EMOTE_ICON, ns.EmoteName(slot) or "Emote"
 
     elseif k == "dynamicrez" then
         -- The spell it would cast, not a fixed emblem: the entry is worth
@@ -878,7 +975,7 @@ ns.SlotDisplay = SlotDisplay
 local function SlotSpellID(slot)
     if not slot then return nil end
     if slot.kind == "spell" then
-        return type(slot.id) == "number" and slot.id or nil
+        return type(slot.id) == "number" and SlotRank(slot) or nil
     elseif slot.kind == "dynamicrez" then
         return Rez.SpellNow()
     elseif slot.kind == "dynamicprofession" then
@@ -1059,9 +1156,20 @@ local USABILITY_TINT = {
 -- palette is exactly what that produced. The toy box itself draws no
 -- usability tint -- Blizzard_ToyBox.lua desaturates only UNCOLLECTED toys --
 -- and the cooldown swipe already tells the one thing a toy has to tell.
+-- The kinds that can carry a tint: every kind with a branch below. Any other
+-- answers nil at once, and a live menu re-reads only these (SlotHasTint, the
+-- tint watch in EUI_Quickdraw_Live.lua). A new branch adds its kind here.
+local TINT_KINDS = { spell = true, dynamicrez = true, item = true, outfit = true,
+                     equipmentset = true, mount = true, lastmount = true, randommount = true }
+
+local function SlotHasTint(slot)
+    return slot ~= nil and TINT_KINDS[slot.kind] == true
+end
+
 local function SlotUsability(slot)
     if not slot then return nil end
     local k = slot.kind
+    if not TINT_KINDS[k] then return nil end
 
     if k == "spell" or k == "dynamicrez" then
         local id = SlotSpellID(slot)
@@ -1088,6 +1196,9 @@ local function SlotUsability(slot)
     elseif k == "outfit" then
         return InCombatLockdown() and "UNUSABLE" or nil
 
+    elseif k == "equipmentset" then
+        if InCombatLockdown() or not ns.EquipmentSetInfo(slot) then return "UNUSABLE" end
+
     elseif k == "mount" or k == "lastmount" or k == "randommount" then
         -- The Mount Journal's own answer, the one behind its Summon button's
         -- "You can't mount here" line, indoors counted (checkIndoors): plain
@@ -1098,6 +1209,8 @@ local function SlotUsability(slot)
         -- indoors or in combat -- the test the last-mount entry falls back to
         -- before a mount is tracked, or when the journal answers nothing (its
         -- getter may return nothing).
+        -- The journal still answers usable on a flight path, so ask the taxi.
+        if UnitOnTaxi("player") then return "UNUSABLE" end
         if k == "randommount" then
             return (IsIndoors() or InCombatLockdown()) and "UNUSABLE" or nil
         end
@@ -1129,6 +1242,10 @@ local function SlotFromCursor()
         -- that would store a slot number as a spellID and silently create a
         -- slot that casts the wrong thing.
         if type(c) ~= "number" then return nil end
+        -- A lower rank than the highest known one is kept as that rank.
+        if EllesmereUI.IS_FOREVER and TopRank(c) ~= c then
+            return { kind = "spell", id = c, rankPinned = true }
+        end
         return { kind = "spell", id = c }
 
     elseif cursorType == "item" then
@@ -1181,5 +1298,6 @@ I.FireInsecure, I.ResolveAction, I.Rez = FireInsecure, ResolveAction, Rez
 I.Hearth = Hearth
 I.SlotCooldown, I.SlotCount, I.SlotDisplay = SlotCooldown, SlotCount, SlotDisplay
 I.SlotUsability, I.USABILITY_TINT, I.usableMemo = SlotUsability, USABILITY_TINT, usableMemo
+I.SlotHasTint = SlotHasTint
 I.UsableSlots = UsableSlots
 I.broken = false

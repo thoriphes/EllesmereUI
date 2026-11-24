@@ -218,7 +218,7 @@ local bgOverlay = EUI_Bank:CreateTexture(nil, "BACKGROUND", nil, 1)
 bgOverlay:SetAllPoints()
 bgOverlay:SetColorTexture(0, 0, 0, 0.25)
 EUI_Bank._bg, EUI_Bank._bgOverlay = bgAtlas, bgOverlay  -- background color/opacity
-EUI.MakeBorder(EUI_Bank, 1, 1, 1, 0.15, EUI.PP)
+EUI_Bank._flatBorder = EUI.MakeBorder(EUI_Bank, 1, 1, 1, 0.15, EUI.PP)._frame
 
 -------------------------------------------------------------------------------
 --  Header
@@ -313,6 +313,7 @@ end
 local function UnlockBankSort()
     if not bankSortLocked then return end
     bankSortLocked = false
+    ns.Hold.EndSort("bank")
     sortBtn:EnableMouse(true)
     sortBtn.icon:SetAlpha(0.9)
 end
@@ -329,6 +330,8 @@ sortBtn:SetScript("OnClick", function()
     if bankSortLocked then return end
     PlaySound(SOUNDKIT.UI_BAG_SORTING_01)
     LockBankSort()
+    -- A held layout ends at once (no gaps); no hold until UnlockBankSort
+    if ns.Hold.BeginSort("bank") then EUI_Bank:RefreshBank() end
     -- Bank cleanup is Blizzard's, and it reads the same fill-direction setting
     -- the bags module's MultiBag sort uses. Right-to-left starts at the first
     -- container (our top); clearing it packs items into the last slots instead.
@@ -351,6 +354,7 @@ end)
 
 -- Close button (created after search/sort so it renders on top)
 local close = CreateFrame("Button", nil, header)
+EUI_Bank._closeBtn = close  -- Junk Marker mode lets a click on it through
 close:SetSize(12, 12)
 close:SetPoint("RIGHT", header, "RIGHT", -9, 0)
 close.icon = close:CreateTexture(nil, "OVERLAY")
@@ -372,6 +376,7 @@ do
     hdrSep:SetPoint("BOTTOMLEFT", header, "BOTTOMLEFT", 0, 0)
     hdrSep:SetPoint("BOTTOMRIGHT", header, "BOTTOMRIGHT", 0, 0)
     hdrSep:SetColorTexture(0.15, 0.15, 0.15, 1)
+    header.separator = hdrSep
 end
 
 -------------------------------------------------------------------------------
@@ -396,6 +401,7 @@ if EUI.IS_FOREVER then
     EUI.PanelPP.CreateBorder(bagsWin, 0.1, 0.1, 0.1, 1, 1, "OVERLAY", 7)
 
     local bagsBtn = CreateFrame("Button", nil, header)
+    EUI_Bank._bagsBtn = bagsBtn
     bagsBtn:SetSize(24, 24)
     bagsBtn:SetPoint("RIGHT", sortBtn, "LEFT", -6, 0)
     bagsBtn.icon = bagsBtn:CreateTexture(nil, "ARTWORK")
@@ -438,7 +444,7 @@ if EUI.IS_FOREVER then
         EllesmereUI.ApplyIconTextFont(btn.Count, GetFont(), BP().bagCountFontSize or 11, "bags")
         btn.Count:SetPoint("BOTTOMRIGHT", -2, 2)
         btn.Count:SetTextColor(1, 1, 1)
-        ns.CreateInsetBorder(btn)
+        ns.CreateInsetBorder(btn, true)
         btn:SetScript("OnClick", PickupBag)
         btn:SetScript("OnDragStart", PickupBag)
         btn:SetScript("OnReceiveDrag", PickupBag)
@@ -500,7 +506,13 @@ if EUI.IS_FOREVER then
         for i = n + 1, #slots do slots[i]:Hide() end
         bagsWin:SetSize(math.max(n, 1) * (SLOT_SIZE + SPACING) + 16, SLOT_SIZE + 20)
     end
-    bagsWin:SetScript("OnShow", RefreshBankBags)
+    bagsWin:SetScript("OnShow", function(self)
+        if not self._foreverStyled and ns.SkinForeverBagWindow(self, winBg) then
+            self._foreverStyled = true
+            EUI.PanelPP.HideBorder(self)
+        end
+        RefreshBankBags()
+    end)
 end
 
 -------------------------------------------------------------------------------
@@ -522,6 +534,8 @@ do
     ftrSep:SetPoint("TOPLEFT", footer, "TOPLEFT", 0, 0)
     ftrSep:SetPoint("TOPRIGHT", footer, "TOPRIGHT", 0, 0)
     ftrSep:SetColorTexture(0.15, 0.15, 0.15, 1)
+    footer.bg, footer.separator = ftrBg, ftrSep
+    EUI_Bank.Footer = footer
 
     -- Shared formatting
     local GOLD_ICON = "|TInterface\\MoneyFrame\\UI-GoldIcon:14:14:0:0|t"
@@ -545,6 +559,7 @@ do
     SetBankFont(playerGold, 11)
     playerGold:SetPoint("LEFT", footer, "LEFT", 10, 0)
     playerGold:SetTextColor(1, 1, 1)
+    footer.playerGold = playerGold
 
     local playerHitbox = CreateFrame("Frame", nil, footer)
     playerHitbox:SetPoint("TOPLEFT", playerGold, "TOPLEFT", -4, 4)
@@ -619,7 +634,6 @@ do
     withdrawMoneyBtn:SetPoint("RIGHT", depositMoneyBtn, "LEFT", -8, 0)
 
     local function ShowMoneyPopup(title, onAccept)
-        if not EUI.ShowInputPopup then return end
         EUI:ShowInputPopup({
             title = EllesmereUI.L(title),
             message = EllesmereUI.L("Enter an amount:"),
@@ -634,14 +648,12 @@ do
     end
 
     withdrawMoneyBtn:SetScript("OnClick", function()
-        if not C_Bank or not C_Bank.CanWithdrawMoney then return end
         if not C_Bank.CanWithdrawMoney(Enum.BankType.Account) then return end
         ShowMoneyPopup("Withdraw from Warbank", function(copper)
             C_Bank.WithdrawMoney(Enum.BankType.Account, copper)
         end)
     end)
     depositMoneyBtn:SetScript("OnClick", function()
-        if not C_Bank or not C_Bank.CanDepositMoney then return end
         if not C_Bank.CanDepositMoney(Enum.BankType.Account) then return end
         ShowMoneyPopup("Deposit to Warbank", function(copper)
             C_Bank.DepositMoney(Enum.BankType.Account, copper)
@@ -669,7 +681,6 @@ do
         self._label:SetTextColor(r, g, b, 1)
     end)
     depositItemsBtn:SetScript("OnClick", function(self)
-        if not C_Bank or not C_Bank.AutoDepositItemsIntoBank then return end
         local bankType = self._bankType
         if bankType then
             C_Bank.AutoDepositItemsIntoBank(bankType)
@@ -682,7 +693,9 @@ do
         warbandGold:SetText(FormatGold(GL.WarbandMoney() or 0))
     end
 
-    function EUI_Bank:UpdateDepositButton(isWarband)
+    -- The footer's right side for the view on screen. noTab: the bank has no tab
+    -- yet, so there is nothing to deposit items into.
+    function EUI_Bank:UpdateDepositButton(isWarband, noTab)
         if isWarband then
             depositItemsLabel:SetText(EllesmereUI.L("Deposit Warbound Items"))
             depositItemsBtn._bankType = Enum.BankType.Account
@@ -693,9 +706,24 @@ do
         local r, g, b = GetAccentRGB()
         depositItemsLabel:SetTextColor(r, g, b, 1)
         depositItemsBtn:SetWidth(depositItemsLabel:GetStringWidth() + 16)
-        depositItemsBtn:Show()
-        withdrawMoneyBtn:Show()
-        depositMoneyBtn:Show()
+        depositItemsBtn:SetShown(not noTab and C_Bank.DoesBankTypeSupportAutoDeposit(depositItemsBtn._bankType))
+        -- Warband gold and its buttons only where the client has a usable Warband bank
+        -- (WoW Forever has none); without them the item button takes the right edge.
+        -- Shown, hidden and re-anchored only when that answer changes.
+        local acct = Enum.BankType.Account
+        local moneyOk = (C_Bank.CanViewBank(acct) and C_Bank.DoesBankTypeSupportMoneyTransfer(acct)) and true or false
+        if moneyOk == footer._moneyOk then return end
+        footer._moneyOk = moneyOk
+        withdrawMoneyBtn:SetShown(moneyOk)
+        depositMoneyBtn:SetShown(moneyOk)
+        warbandGold:SetShown(moneyOk)
+        warbandHitbox:SetShown(moneyOk)
+        depositItemsBtn:ClearAllPoints()
+        if moneyOk then
+            depositItemsBtn:SetPoint("RIGHT", withdrawMoneyBtn, "LEFT", -8, 0)
+        else
+            depositItemsBtn:SetPoint("RIGHT", warbandGold, "RIGHT", 0, 0)
+        end
     end
 end
 
@@ -714,10 +742,14 @@ EUI_Bank:SetScript("OnMouseUp", function(self, button)
     if self._moving then
         self:StopMovingOrSizing()
         self._moving = nil
-        -- Save position
-        local point, _, relPoint, x, y = self:GetPoint(1)
-        if point then
-            BP().bankPosition = { point = point, relativePoint = relPoint, x = x, y = y }
+        if ns.WindowCornerOn() then
+            ns.SaveWindowCorner(self, "bankPosition")
+        else
+            -- The point the game left the window on
+            local point, _, relPoint, x, y = self:GetPoint(1)
+            if point then
+                BP().bankPosition = { point = point, relativePoint = relPoint, x = x, y = y }
+            end
         end
     end
 end)
@@ -748,7 +780,7 @@ local function EnsureBankTabConfigFrame()
     local headerBTC = CreateFrame("Frame", nil, EUI_BankTabConfigFrame)
     headerBTC:SetPoint("TOPLEFT", EUI_BankTabConfigFrame, "TOPLEFT", 0, 0)
     headerBTC:SetPoint("TOPRIGHT", EUI_BankTabConfigFrame, "TOPRIGHT", 0, 0)
-    headerBTC:SetHeight(HEADER_H)
+    headerBTC:SetHeight(35)
     local hdrBgBTC = headerBTC:CreateTexture(nil, "BACKGROUND", nil, 1)
     hdrBgBTC:SetAllPoints(); hdrBgBTC:SetColorTexture(0, 0, 0, 0.5)
 
@@ -849,7 +881,7 @@ local function EnsureBankTabConfigFrame()
         btn:SetPoint("TOPLEFT", assignToTabFrame, "TOPLEFT", xOffset, yOffset)
         btn:SetFrameLevel(assignToTabFrame:GetFrameLevel() + 2)
 
-        local box, _, _, cbApply = EUI.BuildCheckboxControl(btn, assignToTabFrame:GetFrameLevel() + 2)
+        local box, _, _, cbApply = EUI.BuildCheckboxControl(btn, assignToTabFrame:GetFrameLevel() + 2, EUI.PP)
         PP.Point(box, "LEFT", btn, "LEFT", 0, 0)
 
         local label = EUI.MakeFont(btn, 14, nil, EUI.TEXT_WHITE.r, EUI.TEXT_WHITE.g, EUI.TEXT_WHITE.b)
@@ -1018,9 +1050,13 @@ end
 --  Sidebar
 -------------------------------------------------------------------------------
 local sidebar = CreateFrame("Frame", nil, EUI_Bank)
-sidebar:SetPoint("TOPLEFT", EUI_Bank, "TOPLEFT", 0, -HEADER_H)
+sidebar._leftInset = 0
+local function GetBankSidebarContentWidth()
+    return GetBankSidebarWidth() - sidebar._leftInset
+end
+sidebar:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, 0)
 sidebar:SetPoint("BOTTOMLEFT", EUI_Bank, "BOTTOMLEFT", 0, FOOTER_H)
-sidebar:SetWidth(GetBankSidebarWidth())
+sidebar:SetWidth(GetBankSidebarContentWidth())
 local sidebarBg = sidebar:CreateTexture(nil, "BACKGROUND", nil, 2)
 sidebarBg:SetAllPoints(); sidebarBg:SetColorTexture(0, 0, 0, 0.25)
 
@@ -1033,6 +1069,7 @@ do
     sidebarSep:SetPoint("TOPRIGHT", sidebar, "TOPRIGHT", 0, 0)
     sidebarSep:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", 0, 0)
     sidebarSep:SetColorTexture(0.15, 0.15, 0.15, 1)
+    sidebar.separator = sidebarSep
 end
 
 -- Secure purchase buttons: inherit BankPanelPurchaseButtonScriptTemplate so
@@ -1082,31 +1119,31 @@ function EUI_Bank:RepinIconLevels()
 end
 
 -- Sidebar header: "Tabs" label + collapse arrow
-local SIDEBAR_HDR_H = 24
 local sidebarHdr, collapseBtn, UpdateBankCollapseArrow = ns.CreateSidebarHeader(sidebar, EllesmereUI.L("Tabs"), "bankSidebarCollapsed")
 
+-- With Anchor to Nearest Corner a window parked on the right keeps its right
+-- edge by its anchor. Without it, a window right of the screen's middle is
+-- shifted by what its right edge moved (nothing when its own anchor held it).
 collapseBtn:SetScript("OnClick", function()
-    -- Determine which edge to preserve based on screen position
-    local center = EUI_Bank:GetCenter()
-    local screenW = UIParent:GetWidth()
-    local onRightSide = center and screenW and (center > screenW / 2)
-    local oldWidth = onRightSide and EUI_Bank:GetWidth() or nil
+    local oldRight
+    if not ns.WindowCornerOn() then
+        local center = EUI_Bank:GetCenter()
+        local screenW = UIParent:GetWidth()
+        if center and screenW and center > screenW / 2 then oldRight = EUI_Bank:GetRight() end
+    end
 
     BP().bankSidebarCollapsed = not BP().bankSidebarCollapsed
     UpdateBankCollapseArrow()
-    sidebar:SetWidth(GetBankSidebarWidth())
+    sidebar:SetWidth(GetBankSidebarContentWidth())
     EUI_Bank:RefreshBank()
 
-    -- Shift frame by width difference to preserve right edge
-    if onRightSide and oldWidth then
-        local newWidth = EUI_Bank:GetWidth()
-        local shift = oldWidth - newWidth
-        if math.abs(shift) > 0.5 then
-            local point, rel, relPoint, x, y = EUI_Bank:GetPoint()
-            EUI_Bank:ClearAllPoints()
-            EUI_Bank:SetPoint(point, rel, relPoint, x + shift, y)
-            BP().bankPosition = { point = point, relativePoint = relPoint, x = x + shift, y = y }
-        end
+    local newRight = oldRight and EUI_Bank:GetRight()
+    if newRight and math.abs(oldRight - newRight) > 0.5 then
+        local shift = oldRight - newRight
+        local point, rel, relPoint, x, y = EUI_Bank:GetPoint()
+        EUI_Bank:ClearAllPoints()
+        EUI_Bank:SetPoint(point, rel, relPoint, x + shift, y)
+        BP().bankPosition = { point = point, relativePoint = relPoint, x = x + shift, y = y }
     end
 end)
 
@@ -1114,10 +1151,10 @@ end)
 local sidebarSF = CreateFrame("ScrollFrame", nil, sidebar)
 EUI_Bank._sidebarSF = sidebarSF  -- an alt's tabs get drawn over this
 sidebarSF:SetPoint("TOPLEFT", sidebarHdr, "BOTTOMLEFT", 0, 0)
-sidebarSF:SetSize(GetBankSidebarWidth(), GetBankHeight() - HEADER_H - FOOTER_H - SIDEBAR_HDR_H)
+sidebarSF:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", 0, 0)
 sidebarSF:EnableMouseWheel(true)
 local sidebarChild = CreateFrame("Frame", nil, sidebarSF)
-sidebarChild:SetSize(GetBankSidebarWidth(), 1)
+sidebarChild:SetSize(GetBankSidebarContentWidth(), 1)
 sidebarSF:SetScrollChild(sidebarChild)
 
 local SIDEBAR_SCROLL_STEP = 28
@@ -1146,7 +1183,7 @@ sf:SetScrollChild(child)
 
 -- Track (always visible when content scrolls)
 local track, thumb, UpdateThumb = ns.AttachGridScrollbar(EUI_Bank, sf, false, true)
-track:SetPoint("TOPRIGHT", EUI_Bank, "TOPRIGHT", -1, -(HEADER_H + 1))
+track:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", -1, -1)
 track:SetPoint("BOTTOMRIGHT", EUI_Bank, "BOTTOMRIGHT", -1, FOOTER_H)
 
 EUI_Bank._scrollFrame = sf
@@ -1186,7 +1223,7 @@ if EUI.IS_FOREVER then
         msg:SetPoint("BOTTOM", prompt, "CENTER", 0, 14)
         msg:SetText(EllesmereUI.L("Your base bank slots come with a free bank tab. Open it once to start using your bank."))
         local g = EUI.ELLESMERE_GREEN
-        local visual = EUI.MakeActionButton(prompt, GetFont(), EllesmereUI.L("Open Bank Slots"), g.r, g.g, g.b, { w = 200 })
+        local visual = EUI.MakeActionButton(prompt, GetFont(), EllesmereUI.L("Open Bank Slots"), g.r, g.g, g.b, { w = 200, square = true })
         visual:SetPoint("TOP", prompt, "CENTER", 0, -6)
         visual:EnableMouse(false)
         -- The click goes to Blizzard's purchase button laid over the visual one.
@@ -1365,7 +1402,8 @@ end
 
 local function ProcessTransfer(srcBag, srcSlot)
     local loc = ItemLocation:CreateFromBagAndSlot(srcBag, srcSlot)
-    if not C_Item.DoesItemExist(loc) or C_Item.IsLocked(loc) then
+    if not C_Item.DoesItemExist(loc) then return true end -- slot emptied, discard
+    if C_Item.IsLocked(loc) then
         return false -- still locked, needs re-queue
     end
     local bank = _G.EUI_BankFrame
@@ -1469,7 +1507,11 @@ end
 
 -- A slot or row skipped in combat is filled by one refresh at combat end
 -- (RefreshBank returns while the bank is closed).
-local function RetryBankRefresh() EUI_Bank:RefreshBank() end
+local function RetryBankRefresh()
+    -- the skipped slots' items: an item-event pass, it may hold
+    if EUI_Bank:IsVisible() then ns.Hold.events.bank = true end
+    EUI_Bank:RefreshBank()
+end
 local function QueueBankRetry()
     ns.CombatQueue.Defer("bankRetry", RetryBankRefresh)
 end
@@ -1502,7 +1544,7 @@ local function GetOrCreateBankSlot(idx)
     -- Empty bg
     btn._emptyBg = btn:CreateTexture(nil, "BACKGROUND", nil, 1)
     btn._emptyBg:SetAllPoints()
-    btn._emptyBg:SetTexture("Interface\\AddOns\\EllesmereUIBags\\Media\\icon-bg.png")
+    ns.SetSlotBackgroundTexture(btn._emptyBg, true)
 
     _bankSlots[idx] = btn
     return btn
@@ -1512,6 +1554,7 @@ end
 --  List view (bankListView): rows from EllesmereUIBags_List.lua
 -------------------------------------------------------------------------------
 local _bankRows = {}
+EUI_Bank._bankRows = _bankRows  -- mark mode hit-tests the bank's rows too
 
 -- Latched on the first read after the profile loads, like EUI_Bags.IsListMode:
 -- switching needs a reload, so only one bank display builds per session.
@@ -1551,6 +1594,7 @@ end
 -- Returns the new layout and its bottom y.
 local function ToListLayout(layout, startX, listX)
     local ROW_H = ns.ListRowH()
+    local forever = ns.BagsForever()
     ns.ListSortSetup()
     -- Upgrade tracks only while the Track column shows or sorts the list
     local wantTrack = GetUpgradeTrack and ns.ListUsesColumn("track")
@@ -1570,6 +1614,9 @@ local function ToListLayout(layout, startX, listX)
         elseif info and info.hyperlink then
             local link = info.hyperlink
             local d = { bag = e.bagID, slot = e.slot, info = info, itemLink = link }
+            if forever then
+                d._isQuest, d._isQuestStarter = ns.GetSlotQuestFlags(e.bagID, e.slot)
+            end
             d._isGear = IsGearItem(link)
             if d._isGear then
                 d._giIlvl = GetItemLevelAtLocation(ItemLocation:CreateFromBagAndSlot(e.bagID, e.slot), link)
@@ -1623,9 +1670,12 @@ end
 -- a block in bands (EllesmereUIBags_Compact.lua), its label in the band above
 -- its first column. Returns the layout, its bottom y, and the px width it
 -- gives the grid (nil for the grid's own; see CompactPack's out.contentW).
+-- Filled in further down (RefreshBank's hold helpers); ToCompactLayout reads its keys
+local BankHold = {}
 local ToCompactLayout
 do
     local size, labelW, labelText, labelEntry = {}, {}, {}, {}
+    local planW  -- the planner's label widths while the hold is on, made on first use
     local out
     -- One label entry per pooled label, built once with every field and reused:
     -- it takes its group's header entry's place in the layout, so the header
@@ -1640,12 +1690,21 @@ do
         ns.CompactHideLabels(pool, 1)
         local n = ns.CompactSegmentLayout(layout, size, labelText, labelEntry)
         local bandH = ns.CompactBandHeight(LABEL_SIZE)
+        local holdKeys = BankHold.on and BankHold.keys
+        if holdKeys and not planW then planW = {} end
         local k = 0
         for g = 1, n do
             local text = labelText[g]
             if text then
                 k = k + 1
                 labelW[g] = ns.CompactMeasureLabel(ns.CompactLabel(pool, k, EUI_Bank), text, LABEL_SIZE)
+                if holdKeys then
+                    -- labelEntry[g] is still the group's header here
+                    local key, Hold = holdKeys[labelEntry[g].headerIdx], ns.Hold
+                    -- "Empty Slots (N)" grows while held: room for the view's slot count, plus a digit
+                    planW[g] = key and Hold.PlanW("bank", key, labelW[g], text, LABEL_SIZE,
+                        key == Hold.EMPTY and BankHold.digits + 1 or nil) or labelW[g]
+                end
                 local le = labelEntries[k]
                 if not le then
                     le = { isHeader = true, compact = true, headerIdx = k,
@@ -1655,9 +1714,10 @@ do
                 labelEntry[g] = le
             else
                 labelW[g] = 0
+                if holdKeys then planW[g] = 0 end
             end
         end
-        local _, _, bottomY = ns.CompactPack(size, labelW, n, columns, bandH, -6, out)
+        local _, _, bottomY = ns.CompactPack(size, holdKeys and planW or labelW, n, columns, bandH, -6, out)
         local cellX, cellY = out.cellX, out.cellY
         local li, ci = 0, 0
         for g = 1, n do
@@ -1815,11 +1875,20 @@ end
 -- single trailing bucket rather than landing under Unknown / Other.
 local function BuildBankBuckets(slotList, mode)
     local byKey, list = {}, {}
+    local setCats = mode == "set" and _G.EUI_CategoryManager:GetCategories()
     for _, s in ipairs(slotList) do
         local link = s._cachedInfo and s._cachedInfo.hyperlink
-        local k, label, isOther
+        local k, label, isOther, icon
         if not link then
             k, label, isOther = EXP_KEY_EMPTY, EllesmereUI.L("Empty Slots"), false
+        elseif setCats then
+            -- Nested set gear: one bucket per set, stamped by BuildCategoryBuckets
+            local sc = s._setIdx and setCats[s._setIdx]
+            if sc then
+                k, label, isOther, icon = s._setIdx, sc.name, false, sc.icon
+            else
+                k, label, isOther = "__other__", EllesmereUI.L("Other"), true
+            end
         elseif mode == "type" then
             k, label, isOther = GetSubTypeBucket(link)
         elseif mode == "slot" then
@@ -1830,7 +1899,7 @@ local function BuildBankBuckets(slotList, mode)
         end
         local b = byKey[k]
         if not b then
-            b = { key = k, label = label, isOther = isOther,
+            b = { key = k, label = label, isOther = isOther, icon = icon,
                   isEmpty = (link == nil), slots = {} }
             byKey[k] = b
             list[#list + 1] = b
@@ -1845,7 +1914,7 @@ local function BuildBankBuckets(slotList, mode)
         if a.isOther ~= b.isOther then return b.isOther end
         if a.isEmpty or a.isOther then return a.label < b.label end
         if mode == "type" then return a.label < b.label end
-        if mode == "slot" then return a.key < b.key end
+        if mode == "slot" or mode == "set" then return a.key < b.key end
         return a.key > b.key   -- expansion: newest first
     end)
     return list
@@ -1868,6 +1937,10 @@ local CATEGORY_DETAIL_MODE = {
 }
 
 local function DetailModeForCategory(cat)
+    -- Nested set gear splits by set, the way the bags nest them
+    if cat and cat.isSetGear and not cat.isEquipSet and _G.EUI_CategoryManager:FoldSetChildren(true) then
+        return "set"
+    end
     return CATEGORY_DETAIL_MODE[cat and cat._defaultName or ""]
 end
 
@@ -1886,9 +1959,21 @@ local function BuildCategoryBuckets(slotList)
     end
     CM:ClassifyAll(items)
     local cats = CM:GetCategories()
+    -- Nested set gear: set items go to Item Set Gear, each stamped with its set
+    local anchorIdx
+    if CM:FoldSetChildren(true) then
+        for i, c in ipairs(cats) do
+            if c.isSetGear and not c.isEquipSet then anchorIdx = i; break end
+        end
+    end
     local byCat = {}
     for _, d in ipairs(items) do
         local ci = d.categoryIndex
+        d._slotRef._setIdx = nil
+        if anchorIdx and ci and cats[ci] and cats[ci].isEquipSet then
+            d._slotRef._setIdx = ci
+            ci = anchorIdx
+        end
         if ci then
             local t = byCat[ci]
             if not t then t = {}; byCat[ci] = t end
@@ -1963,8 +2048,9 @@ local function BuildBankCategoryIndex(tabs, passes)
             local mode = DetailModeForCategory(cb.cat)
             if mode then
                 local bs = BuildBankBuckets(cb.slots, mode)
-                -- A single bucket is the whole category; no point offering it.
-                if #bs > 1 then idx.detailByKey[key] = bs end
+                -- A single bucket is the whole category; no point offering it,
+                -- except a set, which the bags list even when it is the only one.
+                if #bs > 1 or mode == "set" then idx.detailByKey[key] = bs end
             end
         end
     end
@@ -2078,9 +2164,7 @@ local _bankGripCfg = {
         UpdateThumb()
     end,
     finish = function() EUI_Bank:RefreshBank() end,
-    savePos = function(left, top)
-        BP().bankPosition = { point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = left, y = top }
-    end,
+    posKey = "bankPosition",
     reset = function()
         local p = BP()
         p.bankColumns, p.bankHeight, p.bankListWidth = nil, nil, nil
@@ -2091,7 +2175,12 @@ local _bankGripCfg = {
         local wg = EUI_Bank._warbandGoldText
         if not wg then return end
         wg:ClearAllPoints()
-        wg:SetPoint("RIGHT", wg:GetParent(), "RIGHT", -(8 + px), 0)
+        local footer = wg:GetParent()
+        if footer._coinBox then
+            wg:SetPoint("RIGHT", footer._coinBox, "RIGHT", -(5 + px), 0)
+        else
+            wg:SetPoint("RIGHT", footer, "RIGHT", -(8 + px), 0)
+        end
     end,
     isLocked = function() return BP().bankWindowLocked == true end,
     setLocked = function(v) BP().bankWindowLocked = v and true or false end,
@@ -2122,9 +2211,105 @@ ns.OnSlotMetrics(function(m)
     if RefreshBankBags then RefreshBankBags() end
 end)
 
+-- Keep Layout While Taking Items Out in OneBank / OneWarbank (EUI_Bags_Hold.lua): held groups are
+-- padded with real empty slots, so planner and renderer see ordinary slots; too few release the hold
+do
+    BankHold.on = false             -- this pass records or holds
+    BankHold.held = false           -- this pass holds
+    BankHold.short = false          -- a held group found too few empty slots
+    BankHold.digits = 1             -- digits of the view's slot count
+    local totals                    -- this pass's item totals
+    local levelBuckets, levelKeys   -- depth -> that level's buckets in held order; their group keys
+    local pads, padN, used, groupOut, restOut  -- pad candidates, how many handed out, which; outputs
+
+    -- tabs: the OneBank / OneWarbank view's tabs, else nil. Off without grouping and
+    -- with a search or sidebar selection (filled slots only: nothing to pad with)
+    function BankHold.Pass(tabs, hasSearch)
+        local hold = ns.Hold
+        BankHold.on, BankHold.held = false, false
+        if not hold.On("bank") then hold.BeginPass("bank"); return end
+        local p = BP()
+        if not tabs or hasSearch or _catSel or not (p.bankNestByExpansion or p.bankGroupByCategory) then
+            hold.Release("bank")
+            return
+        end
+        if not totals then
+            totals = {}
+            pads, used, groupOut, restOut = {}, {}, {}, {}
+            levelBuckets, levelKeys = { [0] = {}, {}, {} }, { [0] = {}, {}, {} }
+            BankHold.keys = {}  -- headerIdx -> group key, this pass
+        end
+        BankHold.on = true
+    end
+
+    -- Start of the grouped layout; returns the root key. slotList: every slot of the view
+    function BankHold.Begin(slotList, empties)
+        wipe(totals)
+        for _, sl in ipairs(slotList) do
+            local info = sl._cachedInfo
+            local id = info and info.itemID
+            if id then totals[id] = (totals[id] or 0) + (info.stackCount or 1) end
+        end
+        BankHold.held = ns.Hold.BeginPass("bank", totals)
+        BankHold.short = false
+        local digits, n = 1, #slotList
+        while n >= 10 do digits, n = digits + 1, n / 10 end
+        BankHold.digits = digits
+        wipe(BankHold.keys); wipe(pads); wipe(used)
+        -- pads: slots with no item info at all (a slot without a link is drawn
+        -- from its info, so it cannot stand in for a gap)
+        padN = 0
+        for _, sl in ipairs(empties) do
+            if sl._cachedInfo == nil then pads[#pads + 1] = sl end
+        end
+        return ""
+    end
+
+    -- One level's buckets in held order and their keys, in the arrays of depth (0-2, kept while
+    -- inner levels run). list: read only, nil for a held split without buckets; cats: categories
+    function BankHold.Level(pk, list, depth, cats)
+        local out, keys = ns.Hold.Buckets("bank", pk, list or ns.Hold.NONE, levelBuckets[depth], "slots",
+            cats and "cat" or "key", cats and "_defaultName")
+        local outKeys = levelKeys[depth]
+        for i = #keys + 1, #outKeys do outKeys[i] = nil end
+        for i, key in ipairs(keys) do outKeys[i] = key end
+        return out, outKeys
+    end
+
+    -- One group's slots: its items, then empty slots up to its held cells
+    function BankHold.Group(key, list)
+        local n = #list
+        local cells = ns.Hold.Cells("bank", key, n)
+        if cells <= n then return list end
+        local out = groupOut
+        wipe(out)
+        for i = 1, n do out[i] = list[i] end
+        for i = n + 1, cells do
+            padN = padN + 1
+            local sl = pads[padN]
+            -- too few: RefreshBank releases the hold and lays out again
+            if not sl then BankHold.short = true; break end
+            out[i], used[sl] = sl, true
+        end
+        return out
+    end
+
+    -- The empty slots no group took, in slot order, at "Empty Slots"' held size
+    function BankHold.Rest(empties)
+        local out = restOut
+        wipe(out)
+        for _, sl in ipairs(empties) do
+            if not used[sl] then out[#out + 1] = sl end
+        end
+        if ns.Hold.Cells("bank", ns.Hold.EMPTY, #out) > #out then BankHold.short = true end
+        return out
+    end
+end
+
 local BuildBankSidebar  -- defined further down
 function EUI_Bank:RefreshBank()
     if not EUI_Bank:IsVisible() then return end
+    local forever = ns.BagsForever()
     ns.ApplyWindowBackground(bgAtlas, bgOverlay)
     NotifyBankTypeForTSM()
     ns.ApplySlotMetrics()
@@ -2137,6 +2322,7 @@ function EUI_Bank:RefreshBank()
             -- Still build sidebar so purchase buttons are visible
             BuildBankSidebar()
             if UpdateBaseTabPrompt then UpdateBaseTabPrompt(true) end
+            EUI_Bank:UpdateDepositButton(false, true)
             return
         end
     end
@@ -2156,10 +2342,11 @@ function EUI_Bank:RefreshBank()
 
     -- Update sidebar and scroll frame widths
     local sidebarW = GetBankSidebarWidth()
-    sidebar:SetWidth(sidebarW)
+    sidebar:SetWidth(GetBankSidebarContentWidth())
+    local rightInset = forever and 7 or 1
     sf:ClearAllPoints()
     sf:SetPoint("TOPLEFT", EUI_Bank, "TOPLEFT", sidebarW, -HEADER_H)
-    sf:SetPoint("BOTTOMRIGHT", EUI_Bank, "BOTTOMRIGHT", -1, FOOTER_H)
+    sf:SetPoint("BOTTOMRIGHT", EUI_Bank, "BOTTOMRIGHT", -rightInset, FOOTER_H)
 
     local gridPadX = 10
     local COLUMNS = GetBankColumns()
@@ -2167,12 +2354,13 @@ function EUI_Bank:RefreshBank()
     -- List rows take the grip-set width, by default the default pitch's
     if EUI_Bank.IsListMode() then gridW = BP().bankListWidth or COLUMNS * LIST_PITCH end
     local startX = gridPadX + 5
+    local contentPad = gridPadX * 2 + SCROLLBAR_HIT_W + 1 - rightInset
 
     -- Set frame size BEFORE rendering so scroll frame has non-zero bounds
     local totalW = sidebarW + gridW + gridPadX * 2 + SCROLLBAR_HIT_W + 2
     EUI_Bank:SetWidth(totalW)
     EUI_Bank:SetHeight(GetBankHeight())
-    child:SetWidth(gridW + gridPadX * 2 + SCROLLBAR_HIT_W)
+    child:SetWidth(gridW + contentPad)
 
     -- Helper: check if a slot passes the search filter
     local function PassesSearch(bagID, slot)
@@ -2228,8 +2416,8 @@ function EUI_Bank:RefreshBank()
     end
 
     -- Header depth: 0 = expansion (or the outermost level in use), 1 = category,
-    -- 2 = the detail split inside a category.
-    local function EmitHeader(label, count, depth)
+    -- 2 = the detail split inside a category. key: the group's hold key; count: items, never pads.
+    local function EmitHeader(label, count, depth, key)
         headerIdx = headerIdx + 1
         local indent = depth * 12
         _layout[#_layout + 1] = {
@@ -2237,10 +2425,12 @@ function EUI_Bank:RefreshBank()
             label = label .. " (" .. count .. ")", name = label,
             x = startX + indent, y = curY, w = gridW - indent,
         }
+        if key then BankHold.keys[headerIdx] = key end
         curY = curY - (depth == 0 and 22 or 18)
     end
 
-    local function EmitSlots(list)
+    local function EmitSlots(list, key)
+        if key then list = BankHold.Group(key, list) end
         for vi, sl in ipairs(list) do
             local col = (vi - 1) % COLUMNS
             local row = math.floor((vi - 1) / COLUMNS)
@@ -2257,9 +2447,24 @@ function EUI_Bank:RefreshBank()
     -- One category, plus its detail split when it has one. A split that yields a
     -- single bucket is collapsed -- "Armor (1) > Chest (1)" is a header for
     -- nothing, and at three levels deep that noise adds up fast.
-    local function LayoutCategoryBucket(cb, depth)
-        EmitHeader(cb.label, #cb.slots, depth)
+    -- key: the category's group key while held; a held split keeps its buckets
+    local function LayoutCategoryBucket(cb, depth, key)
+        EmitHeader(cb.label, #cb.slots, depth, key)
         local mode = DetailModeForCategory(cb.cat)
+        if key then
+            local buckets = mode and BuildBankBuckets(cb.slots, mode)
+            local split = buckets ~= nil and #buckets >= 2
+            if ns.Hold.Mode("bank", key, split) or split then
+                local list, keys = BankHold.Level(key, buckets, depth + 1)
+                for i, b in ipairs(list) do
+                    EmitHeader(b.label, #b.slots, depth + 1, keys[i])
+                    EmitSlots(b.slots, keys[i])
+                end
+            else
+                EmitSlots(cb.slots, key)
+            end
+            return
+        end
         if not mode then
             EmitSlots(cb.slots)
             return
@@ -2276,7 +2481,7 @@ function EUI_Bank:RefreshBank()
     end
 
     -- classified: an already-stamped list to regroup, when the caller has one.
-    local function LayoutCategoryRun(slotList, depth, classified)
+    local function LayoutCategoryRun(slotList, depth, classified, pk)
         local cbs
         if classified then
             cbs = RegroupByCategory(classified, slotList)
@@ -2284,10 +2489,12 @@ function EUI_Bank:RefreshBank()
             cbs = BuildCategoryBuckets(slotList)
         end
         if not cbs then
-            EmitSlots(slotList)
+            EmitSlots(slotList, pk)
             return
         end
-        for _, cb in ipairs(cbs) do LayoutCategoryBucket(cb, depth) end
+        local keys
+        if pk then cbs, keys = BankHold.Level(pk, cbs, depth, true) end
+        for i, cb in ipairs(cbs) do LayoutCategoryBucket(cb, depth, keys and keys[i]) end
     end
 
     -- Grouped layout for OneBank / OneWarbank. Expansion is the outer level when
@@ -2312,23 +2519,31 @@ function EUI_Bank:RefreshBank()
             end
         end
 
+        local hk = BankHold.on and BankHold.Begin(slotList, empties)
         if byExp then
             local classified = byCat and ClassifyOnce(filled) or nil
-            for _, eb in ipairs(BuildBankBuckets(filled, "expansion")) do
-                EmitHeader(eb.label, #eb.slots, 0)
+            local ebs, eks = BuildBankBuckets(filled, "expansion"), nil
+            if hk then ebs, eks = BankHold.Level(hk, ebs, 0) end
+            for i, eb in ipairs(ebs) do
+                local ek = eks and eks[i]
+                EmitHeader(eb.label, #eb.slots, 0, ek)
                 if byCat then
-                    LayoutCategoryRun(eb.slots, 1, classified)
+                    LayoutCategoryRun(eb.slots, 1, classified, ek)
                 else
-                    EmitSlots(eb.slots)
+                    EmitSlots(eb.slots, ek)
                 end
             end
         else
-            LayoutCategoryRun(filled, 0)
+            LayoutCategoryRun(filled, 0, nil, hk)
         end
 
         if #empties > 0 and not BP().bankHideEmptyWhenNested then
-            EmitHeader(EllesmereUI.L("Empty Slots"), #empties, 0)
-            EmitSlots(empties)
+            -- held: the groups' pads may take every empty slot
+            local rest = hk and BankHold.Rest(empties) or empties
+            if #rest > 0 then
+                EmitHeader(EllesmereUI.L("Empty Slots"), #empties, 0, hk and ns.Hold.EMPTY)
+                EmitSlots(rest)
+            end
         end
     end
 
@@ -2376,7 +2591,7 @@ function EUI_Bank:RefreshBank()
             -- Without expansion headers a detail selection would render as a
             -- bare grid, so name what is on screen.
             if _catSel.detail or _catSel.group then
-                EmitHeader(_catSel.detail or _catSel.group, #slotList, 0)
+                EmitHeader(_catSel.detail or _G.EUI_CategoryManager:GroupDisplayName(_catSel.group), #slotList, 0)
                 if _catSel.detail then
                     EmitSlots(slotList)
                 else
@@ -2453,6 +2668,27 @@ function EUI_Bank:RefreshBank()
         _catIndex = nil
     end
     if _catSel and not _catIndex then _catSel = nil end
+    -- A category that is gone (Delete) or turned off, or a group with no member
+    -- that is on, shows nowhere
+    if _catSel then
+        local CM = _G.EUI_CategoryManager
+        local dc = BP().bagDisabledCategories
+        if _catSel.group then
+            if not CM:FirstOnMember(_catSel.group, dc) then _catSel = nil end
+        else
+            local found
+            for _, c in ipairs(CM:GetCategories()) do
+                if c._defaultName == _catSel.key then found = c; break end
+            end
+            if not found or CM:IsCategoryOff(found, dc) then _catSel = nil
+            elseif found.isEquipSet and CM:FoldSetChildren(true) then _catSel = nil end
+        end
+    end
+
+    -- The hold: OneBank and OneWarbank only; an off pass after an on pass ends it
+    if BankHold.on or BP().bankHoldLayout == true then
+        BankHold.Pass(_selectedView == -1 and charTabs or _selectedView == -3 and warbTabs or nil, hasSearch)
+    end
 
     if _catSel then
         LayoutSelectionSlots(GetSelectionSlots() or {})
@@ -2523,7 +2759,7 @@ function EUI_Bank:RefreshBank()
     if EUI_Bank.IsListMode() then
         -- Left / Right Gap: space between the list area edges and the rows
         local listX = BP().bagListGapL or 15
-        listRowW = math.max(100, gridW + gridPadX * 2 + SCROLLBAR_HIT_W - listX - (BP().bagListGapR or 23))
+        listRowW = math.max(100, gridW + contentPad - listX - (BP().bagListGapR or 23))
         _layout, curY = ToListLayout(_layout, startX, listX)
         listCols = ns.ListLayoutColumns(listRowW)
         local hdrH = ns.UpdateListHeaderBar(EUI_Bank, listCols, sidebarW, -HEADER_H, listX)
@@ -2546,7 +2782,7 @@ function EUI_Bank:RefreshBank()
             EUI_Bank._compactCols, EUI_Bank._compactW = COLUMNS, gridW
         end
         EUI_Bank:SetWidth(sidebarW + gridW + gridPadX * 2 + SCROLLBAR_HIT_W + 2)
-        child:SetWidth(gridW + gridPadX * 2 + SCROLLBAR_HIT_W)
+        child:SetWidth(gridW + contentPad)
     end
 
     -- Update deposit button based on current view
@@ -2580,10 +2816,13 @@ function EUI_Bank:RefreshBank()
             btn:SetItemButtonTexture(nil)
             btn:SetItemButtonCount(0)
             SetItemButtonDesaturated(btn, false)
+            if btn._junkCoin then btn._junkCoin:Hide() end
             if btn.icon then btn.icon:Hide() end
             btn._emptyBg:Show(); ns.PaintSlotBackground(btn._emptyBg, 0.35)
             btn:EnableMouse(true)
             SetInsetBorderColor(btn, 0, 0, 0, 0.3)
+            if btn._fvSlotBorder then ns.SetForeverSlotQuestBorder(btn, false)
+            else ns.SetInsetBorderThickness(btn, (EUI.PP and EUI.PP.mult) or 1) end
             if btn.Cooldown then btn.Cooldown:Clear() end
             if btn.ItemLevelText then btn.ItemLevelText:SetText("") end
             if btn.BindTypeText then btn.BindTypeText:SetText("") end
@@ -2593,11 +2832,14 @@ function EUI_Bank:RefreshBank()
             btn:EnableMouse(true)
             btn._emptyBg:Hide()
             if btn.icon then btn.icon:Show() end
-            btn:SetItemButtonTexture(info.iconFileID)
+            ns.SetSlotIcon(btn, info.iconFileID)
             btn:SetItemButtonCount(info.stackCount)
             local quality = info.quality or 1
-            SetItemButtonDesaturated(btn, info.isLocked or (desatJunk and (quality == 0
-                or (junkOn and _G.EUI_CategoryManager:IsJunk(info.itemID, quality)))) or false)
+            -- The mark is read only where it is drawn: Desaturate, or mark mode's coin
+            local marking = EUI_Bags._junkMode
+            local isJunk = (desatJunk or marking) and junkOn and _G.EUI_CategoryManager:IsJunk(info.itemID, quality) or false
+            SetItemButtonDesaturated(btn, info.isLocked or (desatJunk and (quality == 0 or isJunk)) or false)
+            if marking or btn._junkCoin then ns.PaintJunkCoin(btn, marking and isJunk or false) end
             local itemLink = C_Container.GetContainerItemLink(bagID, slot)
             if itemLink then btn:SetItemButtonQuality(quality, itemLink, false, false) end
             if btn.ProfessionQualityOverlay and btn.ProfessionQualityOverlay:IsShown() and btn._textOverlay then
@@ -2623,8 +2865,19 @@ function EUI_Bank:RefreshBank()
             end
             if btn.IconBorder then btn.IconBorder:Hide() end
             if btn.NormalTexture then btn.NormalTexture:SetAlpha(0) end
+            -- Quest items: gold border as in the bags, whatever Quality Item Border says
+            local isQuest, isStarter = ns.GetSlotQuestFlags(bagID, slot)
             local qr, qg, qb = ns.QualityBorderColor(quality)
-            SetInsetBorderColor(btn, qr, qg, qb, 1)
+            if btn._fvSlotBorder then
+                SetInsetBorderColor(btn, qr, qg, qb, 1)
+                ns.SetForeverSlotQuestBorder(btn, isQuest, isStarter)
+            else
+                local bpx = (EUI.PP and EUI.PP.mult) or 1
+                local qc = ns.QUEST_BORDER_COLOR
+                ns.SetInsetBorderThickness(btn, isQuest and bpx * 2 or bpx)
+                if isQuest then qr, qg, qb = qc.r, qc.g, qc.b end
+                SetInsetBorderColor(btn, qr, qg, qb, 1)
+            end
 
             -- One gear check + one GetItemInfo fetch shared by the bind-type
             -- and item-level texts
@@ -2730,6 +2983,7 @@ function EUI_Bank:RefreshBank()
                     hdr._label:SetTextColor(0.7, 0.7, 0.7)
                     hdr._line:SetColorTexture(0.7, 0.7, 0.7, 0.2)
                 end
+                if forever then ns.SetForeverBagSectionColors(hdr._label, hdr._line, d) end
                 hdr._label:SetText(entry.label)
                 hdr:Show()
                 end -- compact label vs grid header
@@ -2799,6 +3053,9 @@ function EUI_Bank:RefreshBank()
     -- Build sidebar
     BuildBankSidebar()
     ns.UpdateResizeGrip(EUI_Bank, EUI_Bank.IsListMode() and _bankListGripCfg or _bankGripCfg)
+
+    -- A held group outgrew its cells or found too few empty slots: lay out once more without the hold
+    if BankHold.held and ns.Hold.ReleaseOutgrown("bank", BankHold.short) then EUI_Bank:RefreshBank() end
 end
 
 -------------------------------------------------------------------------------
@@ -2827,7 +3084,7 @@ local function DragBlock(sel, scope)
     local group, i = sel.group, nil
     if not group then
         for ci, c in ipairs(cats) do if c._defaultName == sel.key then i = ci; break end end
-        if not i or cats[i].isJunk or cats[i].isEquipSet then return nil end
+        if not i or cats[i].isJunk or cats[i].isEquipSet or cats[i].isVirtual then return nil end
         group = cats[i].groupName
     end
     if scope == "top" then
@@ -2871,7 +3128,6 @@ local function DragVisuals(btn)
         bg:SetColorTexture(0, 0, 0, 0.6)
         dragGhost._icon = dragGhost:CreateTexture(nil, "ARTWORK")
         dragGhost._icon:SetSize(SIDEBAR_ICON_SIZE, SIDEBAR_ICON_SIZE)
-        dragGhost._icon:SetPoint("LEFT", 6, 0)
         dragGhost._label = dragGhost:CreateFontString(nil, "OVERLAY")
         SetBankFont(dragGhost._label, 11)
         dragGhost._label:SetPoint("LEFT", dragGhost._icon, "RIGHT", 6, 0)
@@ -2881,7 +3137,11 @@ local function DragVisuals(btn)
     dragGhost._icon:SetTexture(btn._icon:GetTexture())
     dragGhost._icon:SetTexCoord(btn._icon:GetTexCoord())
     dragGhost._label:SetText(btn._entryName or "")
-    dragGhost:SetWidth(math.max(dragGhost._label:GetStringWidth() + SIDEBAR_ICON_SIZE + 24, 80))
+    local collapsed = BP().bankSidebarCollapsed and ns.BagsForever()
+    ns.AnchorBagSidebarIcon(dragGhost._icon, collapsed, 6)
+    dragGhost._label:SetShown(not collapsed)
+    dragGhost:SetWidth(collapsed and btn:GetWidth()
+        or math.max(dragGhost._label:GetStringWidth() + SIDEBAR_ICON_SIZE + 24, 80))
     local r, g, b = GetAccentRGB()
     dragLine:SetColorTexture(r, g, b, 1)
 end
@@ -3006,10 +3266,9 @@ end
 
 function BuildBankSidebar()
     local collapsed = BP().bankSidebarCollapsed
-    local sidebarW = GetBankSidebarWidth()
+    local sidebarW = GetBankSidebarContentWidth()
     local y = 0
     local ar, ag, ab = GetAccentRGB()
-    sidebarSF:SetSize(sidebarW, GetBankHeight() - HEADER_H - FOOTER_H - SIDEBAR_HDR_H)
     sidebarChild:SetWidth(sidebarW)
     local btnIdx = 0
     -- While a category is selected no view or tab entry is current.
@@ -3126,12 +3385,7 @@ function BuildBankSidebar()
         btn:ClearAllPoints()
         btn:SetPoint("TOPLEFT", sidebarChild, "TOPLEFT", 0, y)
         btn:SetWidth(sidebarW)
-        btn._icon:ClearAllPoints()
-        if collapsed then
-            btn._icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-        else
-            btn._icon:SetPoint("LEFT", btn, "LEFT", 8, 0)
-        end
+        ns.AnchorBagSidebarIcon(btn._icon, collapsed, 8)
         btn._icon:SetTexture(133784)
         btn._icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
         btn._icon:SetDesaturated(false)
@@ -3172,12 +3426,7 @@ function BuildBankSidebar()
         btn:ClearAllPoints()
         btn:SetPoint("TOPLEFT", sidebarChild, "TOPLEFT", 0, y)
         btn:SetWidth(sidebarW)
-        btn._icon:ClearAllPoints()
-        if collapsed then
-            btn._icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-        else
-            btn._icon:SetPoint("LEFT", btn, "LEFT", 8 + (indent or 0) * 10, 0)
-        end
+        ns.AnchorBagSidebarIcon(btn._icon, collapsed, 8 + (indent or 0) * 10)
         if isAtlas and btn._icon.SetAtlas then
             btn._icon:SetAtlas(icon)
         else
@@ -3352,19 +3601,22 @@ function BuildBankSidebar()
             local bs = key and _catIndex.detailByKey[key]
             if not bs or collapsed then return end
             -- Expand only under the selected category, or under a selected group
-            -- that this category belongs to.
+            -- that this category belongs to. Nested sets always show, as in the bags.
             local open = _catSel and (_catSel.key == key
                 or (_catSel.group and _catSel.group == cat.groupName))
-            if not open then return end
+            if not open and DetailModeForCategory(cat) ~= "set" then return end
             for _, b in ipairs(bs) do
-                RenderSidebarEntry(nil, b.label, cat.icon or 134400, #b.slots,
-                    _catSel.key == key and _catSel.detail == b.label,
+                RenderSidebarEntry(nil, b.label, b.icon or cat.icon or 134400, #b.slots,
+                    _catSel and _catSel.key == key and _catSel.detail == b.label,
                     indent, { key = key, detail = b.label }, cat.isAtlas)
             end
         end
 
         local anyCat = false
         local renderedGroups = {}
+        -- A turned-off category holds nothing here (its items are the catch-all's)
+        -- and lends its group no icon
+        local dc = BP().bagDisabledCategories
         for _, cat in ipairs(cats) do
             -- Pinned / Recent / Reagent Bag / Special Bags are bag-side concepts with
             -- no bank equivalent; ClassifyItem never routes bank items to them anyway.
@@ -3376,14 +3628,14 @@ function BuildBankSidebar()
                         local total, firstCat = 0, nil
                         for _, mi in ipairs(members) do
                             local mc = cats[mi]
-                            if mc then
+                            if mc and not CM:IsCategoryOff(mc, dc) then
                                 total = total + CountFor(mc)
                                 if not firstCat then firstCat = mc end
                             end
                         end
                         if total > 0 then
                             if not anyCat then anyCat = true; ShowDivider("_catDivider") end
-                            RenderSidebarEntry(nil, cat.groupName,
+                            RenderSidebarEntry(nil, CM:GroupDisplayName(cat.groupName),
                                 (firstCat and firstCat.icon) or 134400, total,
                                 _catSel and _catSel.group == cat.groupName,
                                 0, { group = cat.groupName },
@@ -3490,11 +3742,23 @@ local function ScheduleBankRefresh()
     C_Timer.After(0.1, function()
         bankRefreshPending = false
         if EUI_Bank:IsVisible() then
+            -- an item-event pass: it may hold
+            ns.Hold.events.bank = true
             EUI_Bank:RefreshBank()
             if RefreshBankBags then RefreshBankBags() end
         end
     end)
 end
+-- A watched tooltip finished loading and changed an item's red tint: repaint.
+EUI_Bank._tintRetry = function()
+    if EUI_Bank:IsVisible() then ScheduleBankRefresh() end
+end
+
+-- Bags closed by hand: a later open is the player's, so it outlives the bank.
+-- Alt-Z also fires OnHide but leaves IsShown true.
+EUI_Bags:HookScript("OnHide", function(self)
+    if not self:IsShown() then EUI_Bank._autoOpenedBags = false end
+end)
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("BANKFRAME_OPENED")
@@ -3504,6 +3768,8 @@ eventFrame:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
 eventFrame:RegisterEvent("BANK_TABS_CHANGED")
 eventFrame:RegisterEvent("BANK_TAB_SETTINGS_UPDATED")
 eventFrame:RegisterEvent("PLAYER_ACCOUNT_BANK_TAB_SLOTS_CHANGED")
+-- A skill rank change can flip an item's unusable tint, which the bank draws too.
+eventFrame:RegisterEvent("SKILL_LINES_CHANGED")
 if EUI.IS_FOREVER then eventFrame:RegisterEvent("BAG_CONTAINER_UPDATE") end
 eventFrame:SetScript("OnEvent", function(_, event)
     if event == "BANKFRAME_OPENED" then
@@ -3537,6 +3803,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
         EUI_Bank:Show()
         EUI_Bank:Raise()
         EUI_Bank:RepinIconLevels()
+        ns.SettleWindowPos(EUI_Bank, "bankPosition")
         -- Controller cursor: scroll step buttons and a visible scrollbar,
         -- built only once a controller is in use.
         if EUI_Bank._padBuilt or EUI.PadInUse() then
@@ -3546,7 +3813,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
             ns.PadSidebarSync(sidebarHdr, sidebarSF, sidebarChild, "bankSidebarCollapsed", on)
         end
         -- Auto-open bags alongside bank if not already visible
-        if EUI_Bags and not EUI_Bags:IsVisible() then
+        if EUI_Bags and not EUI_Bags:IsVisible() and ns.BagAutoWindowOn("bagAutoOpenWindows", "bank") then
             EUI_Bags:Show()
             if EUI_Bags.RefreshInventory then EUI_Bags:RefreshInventory() end
             EUI_Bank._autoOpenedBags = true
@@ -3590,7 +3857,8 @@ eventFrame:SetScript("OnEvent", function(_, event)
         EUI_Bags.ClearSearch()
         EUI_Bank:Hide()
         -- Auto-close bags if we auto-opened them
-        if EUI_Bank._autoOpenedBags and EUI_Bags and EUI_Bags:IsVisible() then
+        if EUI_Bank._autoOpenedBags and EUI_Bags and EUI_Bags:IsVisible()
+            and ns.BagAutoWindowOn("bagAutoCloseWindows", "bank") then
             EUI_Bags:Hide()
         end
         EUI_Bank._autoOpenedBags = false
@@ -3632,7 +3900,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
         end
 
     elseif event == "BAG_UPDATE" or event == "PLAYERBANKSLOTS_CHANGED"
-        or event == "PLAYER_ACCOUNT_BANK_TAB_SLOTS_CHANGED" then
+        or event == "PLAYER_ACCOUNT_BANK_TAB_SLOTS_CHANGED" or event == "SKILL_LINES_CHANGED" then
         if EUI_Bank:IsVisible() then
             ScheduleBankRefresh()
         end
@@ -3671,6 +3939,8 @@ end
 EUI_Bank:SetScript("OnHide", function()
     -- The Compact display's grow-only width (RefreshBank)
     EUI_Bank._compactCols, EUI_Bank._compactW = nil, nil
+    -- A close ends the layout hold; every hide (Alt-Z too) closes the bank below
+    ns.Hold.Release("bank")
     if EUI_BankTabConfigFrame then
         EUI_BankTabConfigFrame:Hide()
     end
@@ -3688,6 +3958,45 @@ local loader = CreateFrame("Frame")
 loader:RegisterEvent("PLAYER_LOGIN")
 loader:SetScript("OnEvent", function(self)
     self:UnregisterAllEvents()
+    if ns.SkinForeverBagWindow(EUI_Bank, bgAtlas, bgOverlay, true, true) then
+        EUI_Bank._flatBorder:Hide()
+        header:SetPoint("TOPLEFT", EUI_Bank, "TOPLEFT", 1, -1)
+        header:SetPoint("TOPRIGHT", EUI_Bank, "TOPRIGHT", -1, -1)
+        ns.LayoutForeverBagHeader(header)
+        HEADER_H = header:GetHeight() + 1
+        local inset = ns.ForeverBagSidebarInset(EUI_Bank)
+        sidebar._leftInset = inset
+        sidebar:SetPoint("TOPLEFT", EUI_Bank, "TOPLEFT", inset, -header:GetHeight())
+        sidebar:SetPoint("BOTTOMLEFT", EUI_Bank, "BOTTOMLEFT", inset, FOOTER_H)
+        sidebar:SetWidth(GetBankSidebarContentWidth())
+        sidebarChild:SetWidth(GetBankSidebarContentWidth())
+        sf:SetPoint("TOPLEFT", EUI_Bank, "TOPLEFT", GetBankSidebarWidth(), -HEADER_H)
+        sf:SetPoint("BOTTOMRIGHT", EUI_Bank, "BOTTOMRIGHT", -7, FOOTER_H)
+        track:SetPoint("TOPRIGHT", EUI_Bank, "TOPRIGHT", -7, -HEADER_H)
+        track:SetPoint("BOTTOMRIGHT", EUI_Bank, "BOTTOMRIGHT", -7, FOOTER_H)
+        hdrBg:Hide()
+        header.separator:Hide()
+        sidebarBg:SetColorTexture(0.10, 0.065, 0.035, 0.45)
+        sidebar.separator:SetColorTexture(0.45, 0.33, 0.21, 0.85)
+
+        ns.SkinForeverBagTitle(title, itemCount)
+        ns.AddForeverBagPortrait(header, "Interface\\Icons\\INV_Misc_Coin_01")
+        ns.PositionForeverBagClose(close)
+
+        sortBtn:ClearAllPoints()
+        sortBtn:SetPoint("RIGHT", header, "TOPRIGHT", -9, header._foreverToolsY)
+        bankSearch:ClearAllPoints()
+        bankSearch:SetPoint("LEFT", header, "TOPLEFT", 45, header._foreverToolsY)
+        bankSearch:SetPoint("RIGHT", EUI_Bank._bagsBtn or sortBtn, "LEFT", -6, 0)
+        bankSearch:SetFont(GetFont(), 12, EUI.GetFontOutlineFlag("bags"))
+        EUI.PanelPP.HideBorder(bankSearch)
+        ns.SkinForeverBagSearch(bankSearch, searchBg, searchPlaceholder, searchClear)
+        local footer = EUI_Bank.Footer
+        ns.SkinForeverBagFooter(footer, footer.bg, footer.separator)
+        footer.playerGold:ClearAllPoints()
+        footer.playerGold:SetPoint("LEFT", footer._coinBox, "LEFT", 5, 0)
+        _bankGripCfg.inset(EUI_Bank._gripInset or 0)
+    end
     -- WoW Forever with the Gamepad interface style at login: Blizzard's bank
     -- keeps the D-pad navigation, so it goes back under its own parent.
     if EUI.IS_FOREVER and BankFrame and ns.PadUIStandDown() then

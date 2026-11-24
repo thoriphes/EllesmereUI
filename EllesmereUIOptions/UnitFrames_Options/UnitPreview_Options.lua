@@ -22,7 +22,7 @@ local PoolOwned = EllesmereUI._Pool.Owned
 function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     local env = ns._UFO_OptEnv
     local ApplyClassIconTexture_Preview, ApplyPreviewPortraitShape, BlizzPreviewScale, CLASS_FULL_COORDS = env.ApplyClassIconTexture_Preview, env.ApplyPreviewPortraitShape, env.BlizzPreviewScale, env.CLASS_FULL_COORDS
-    local GetUFOptOutline, PP, PREVIEW_FONT, ResolveBlizzPreview = env.GetUFOptOutline, env.PP, env.PREVIEW_FONT, env.ResolveBlizzPreview
+    local PP, PREVIEW_FONT, ResolveBlizzPreview = env.PP, env.PREVIEW_FONT, env.ResolveBlizzPreview
     local SOLID_BACKDROP, SetPVFont, _previewBuffIcons, _previewCreatureNames = env.SOLID_BACKDROP, env.SetPVFont, env._previewBuffIcons, env._previewCreatureNames
     local allPreviews, db, optState, unitSide = env.allPreviews, env.db, env.optState, env.unitSide
     -- Preview clamps the aura Y offset to this magnitude so a large offset
@@ -60,13 +60,12 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
 
     side = side or "left"
 
-    -- Mini frames (ToT/FoT/Pet) have no power bar, cast bar or auras at
-    -- runtime, so the preview draws none, except the pet's opt-in buffs and
-    -- debuffs (drawn while their Location is set) and, on WoW Forever, the
-    -- pet's power bar in the EUI look (the stock styles paint their own).
+    -- Mini frames (ToT/FoT/Pet) have no cast bar or auras at runtime, except
+    -- the pet's opt-in buffs and debuffs. Their EUI-look power bar is drawn
+    -- (ToT/FoT, and the pet on WoW Forever); stock styles paint their own.
     local isMiniPreview = (unitKey == "targettarget" or unitKey == "focustarget" or unitKey == "pet")
     local noPowerPreview = isMiniPreview
-        and not (unitKey == "pet" and ns.UF_PetHasPower and not ResolveBlizzPreview(unitKey, settings))
+        and not (ns.UF_MiniHasPower(unitKey) and not ResolveBlizzPreview(unitKey, settings))
     local noDebuffPreview = isMiniPreview and unitKey ~= "pet"
     local noCastbarPreview = isMiniPreview
 
@@ -298,7 +297,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 if portraitModel then portraitModel:Hide() end
                 portraitTex:Show()
                 SetPortraitTexture(portraitTex, "player")
-                mirror = mirror and ns.UF_CanMirrorPortrait2D(EnsurePreviewModel(), "player")
+                -- The sample is the player: a player's 2D portrait always flips.
                 if mirror then
                     portraitTex:SetTexCoord(0.85, 0.15, 0.15, 0.85)
                 else
@@ -333,12 +332,16 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         -- Custom fill color is skipped when class-colored. Boss preview is
         -- always hostile-red: the real boss frame never class-colors.
         local cFill = settings.customFillColor
-        local isClassColored = settings.healthClassColored and unitKey ~= "boss"
+        local isClassColored = settings.healthClassColored
         if isClassColored then
-            local _, classToken = UnitClass("player")
-            local cc = RAID_CLASS_COLORS[classToken]
-            if cc then hR, hG, hB = cc.r, cc.g, cc.b
-            else hR, hG, hB = 37/255, 193/255, 29/255 end
+            if unitKey == "boss" then
+                hR, hG, hB = 0.8, 0.2, 0.2
+            else
+                local _, classToken = UnitClass("player")
+                local cc = RAID_CLASS_COLORS[classToken]
+                if cc then hR, hG, hB = cc.r, cc.g, cc.b
+                else hR, hG, hB = 37/255, 193/255, 29/255 end
+            end
         elseif cFill then
             hR, hG, hB = cFill.r, cFill.g, cFill.b
         elseif unitKey == "player" then
@@ -481,10 +484,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             return n
         end
         -- literal: the Target content's padded prefix in place of the
-        -- separator ("" = none); plain: the name in the slot colour.
+        -- separator ("" = none); plain: the name in the slot color.
         local function _pvTargetSuffix(literal, plain)
             local _, ct = UnitClass("player")
-            local cc = ct and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
+            local cc = ct and EllesmereUI.GetClassColor(ct)
             local tgt = "Target"
             if cc and not plain then
                 tgt = string.format("%s%s|r", EllesmereUI.HexColor(cc.r, cc.g, cc.b), tgt)
@@ -527,13 +530,14 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         elseif content == "level" or content == "levelname" or content == "namelevel" then
             local lvl = UnitLevel("player")
             lvl = (type(lvl) == "number" and lvl > 0) and tostring(lvl) or "80"
+            local levelText = s and s.levelClassification and (lvl .. "+") or lvl
             -- Level Difficulty Color: sample as an attackable unit of your level.
             if s and s.levelDifficultyColor then
-                lvl = EllesmereUI.ColorText(lvl, EllesmereUI.GetLevelDifficultyColor(tonumber(lvl), true))
+                levelText = EllesmereUI.ColorText(levelText, EllesmereUI.GetLevelDifficultyColor(tonumber(lvl), true))
             end
-            if content == "level" then return lvl
-            elseif content == "levelname" then return lvl .. " | " .. _pvName()
-            else return _pvName() .. " | " .. lvl end
+            if content == "level" then return levelText
+            elseif content == "levelname" then return levelText .. " | " .. _pvName()
+            else return _pvName() .. " | " .. levelText end
         elseif content == "both" or content == "bothdash" or content == "curhpshort" or content == "healthshort" or content == "curmaxhp" or content == "perhp" or content == "perhpnosign" or content == "perhpnum" or content == "perhpnumdash" then
             local maxHP = UnitHealthMax("player") or 1
             local pct = optState._previewHealthPct or 0.70
@@ -553,18 +557,18 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         elseif content == "curpp" then
             local maxPP = UnitPowerMax("player") or 100
             local ppPct = optState._previewPowerPct or 0.85
-            return ns.AbbreviateNumbers(math.floor(maxPP * ppPct))
+            return ns.AbbreviateValue(math.floor(maxPP * ppPct), "power")
         elseif content == "curmaxpp" then
             local maxPP = UnitPowerMax("player") or 100
             local ppPct = optState._previewPowerPct or 0.85
-            return ns.AbbreviateNumbers(math.floor(maxPP * ppPct)) .. " / " .. ns.AbbreviateNumbers(maxPP)
+            return ns.AbbreviateValue(math.floor(maxPP * ppPct), "power") .. " / " .. ns.AbbreviateValue(maxPP, "power")
         elseif content == "curhp_curpp" then
             local maxHP = UnitHealthMax("player") or 1
             local pct = optState._previewHealthPct or 0.70
             local curHP = math.floor(maxHP * pct)
             local maxPP = UnitPowerMax("player") or 100
             local ppPct2 = optState._previewPowerPct or 0.85
-            return _pvAbbrev(curHP, "health") .. " | " .. ns.AbbreviateNumbers(math.floor(maxPP * ppPct2))
+            return _pvAbbrev(curHP, "health") .. " | " .. ns.AbbreviateValue(math.floor(maxPP * ppPct2), "power")
         elseif content == "perhp_perpp" then
             local pct = optState._previewHealthPct or 0.70
             local ppPct3 = optState._previewPowerPct or 0.85
@@ -601,15 +605,17 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 elseif key == "target" then v = "Target"
                 elseif key == "group" then v = "3"
                 elseif key == "level" then v = PreviewTextForContent("level", s, prefix)
+                elseif key == "classification" or key == "classification:abbr" then
+                    v = ns.UF_TextTags.schema.keys[key].sample
                 elseif key == "hp" then v = tostring(curHP)
                 elseif key == "hp:abr" then v = _pvAbbrev(curHP, "health")
                 elseif key == "hp:max" then v = tostring(maxHP)
                 elseif key == "hp:max:abr" then v = _pvAbbrev(maxHP, "maxHealth")
                 elseif key == "hp:pct" then v = _pvPct(optState._previewHealthPct or 0.70)
                 elseif key == "pp" then v = tostring(curPP)
-                elseif key == "pp:abr" then v = ns.AbbreviateNumbers(curPP)
+                elseif key == "pp:abr" then v = ns.AbbreviateValue(curPP, "power")
                 elseif key == "pp:max" then v = tostring(maxPP)
-                elseif key == "pp:max:abr" then v = ns.AbbreviateNumbers(maxPP)
+                elseif key == "pp:max:abr" then v = ns.AbbreviateValue(maxPP, "power")
                 elseif key == "pp:pct" then v = tostring(math.floor(ppPct * 100))
                 elseif key == "absorb" then v = PreviewTextForContent("absorb", s, prefix)
                 elseif key == "absorb:abr" then v = PreviewTextForContent("absorbshort", s, prefix)
@@ -627,10 +633,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     local function PreviewClassColor(fs, useCC, customR, customG, customB)
         if not fs then return end
         if useCC then
-            if unitKey == "player" then
+            if unitKey == "player" or unitKey == "pet" then
                 local _, cls = UnitClass("player")
                 if cls then
-                    local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[cls]
+                    local c = EllesmereUI.GetClassColor(cls)
                     if c then fs:SetTextColor(c.r, c.g, c.b); return end
                 end
             else
@@ -672,7 +678,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
 
 
         local ec = s.extraTextContent or "none"
-        extraFS:SetFont(PREVIEW_FONT, (s.extraTextSize or s.textSize or 12), GetUFOptOutline())
+        SetPVFont(extraFS, PREVIEW_FONT, (s.extraTextSize or s.textSize or 12))
         extraFS:ClearAllPoints()
         extraFS:SetWidth(0)
         if ec ~= "none" then
@@ -697,7 +703,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         end
 
         -- Each text position renders independently; Center does not hide Left/Right.
-        centerFS:SetFont(PREVIEW_FONT, csz, GetUFOptOutline())
+        SetPVFont(centerFS, PREVIEW_FONT, csz)
         centerFS:ClearAllPoints()
         if cc ~= "none" then
             centerFS:SetJustifyH("CENTER")
@@ -709,7 +715,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             centerFS:Hide()
         end
 
-        leftFS:SetFont(PREVIEW_FONT, lsz, GetUFOptOutline())
+        SetPVFont(leftFS, PREVIEW_FONT, lsz)
         leftFS:ClearAllPoints()
         if lc ~= "none" then
             leftFS:SetJustifyH("LEFT")
@@ -734,7 +740,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             leftFS:Hide()
         end
 
-        rightFS:SetFont(PREVIEW_FONT, rsz, GetUFOptOutline())
+        SetPVFont(rightFS, PREVIEW_FONT, rsz)
         rightFS:ClearAllPoints()
         if rc ~= "none" then
             rightFS:SetJustifyH("RIGHT")
@@ -1099,7 +1105,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local rsz = s.btbRightSize or 11
             local csz = s.btbCenterSize or 11
 
-            btbLeftFS:SetFont(PREVIEW_FONT, lsz, GetUFOptOutline())
+            SetPVFont(btbLeftFS, PREVIEW_FONT, lsz)
             btbLeftFS:ClearAllPoints()
             if lc ~= "none" then
                 btbLeftFS:SetJustifyH("LEFT")
@@ -1110,7 +1116,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 PreviewPowerColor(btbLeftFS, lc, s.btbLeftPowerColor, s.btbLeftCustomFormat)
             else btbLeftFS:Hide() end
 
-            btbRightFS:SetFont(PREVIEW_FONT, rsz, GetUFOptOutline())
+            SetPVFont(btbRightFS, PREVIEW_FONT, rsz)
             btbRightFS:ClearAllPoints()
             if rc ~= "none" then
                 btbRightFS:SetJustifyH("RIGHT")
@@ -1121,7 +1127,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 PreviewPowerColor(btbRightFS, rc, s.btbRightPowerColor, s.btbRightCustomFormat)
             else btbRightFS:Hide() end
 
-            btbCenterFS:SetFont(PREVIEW_FONT, csz, GetUFOptOutline())
+            SetPVFont(btbCenterFS, PREVIEW_FONT, csz)
             btbCenterFS:ClearAllPoints()
             if cc ~= "none" then
                 btbCenterFS:SetJustifyH("CENTER")
@@ -1602,6 +1608,13 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     local factionInd = combatIndHolder:CreateTexture(nil, "OVERLAY", nil, 6)
     factionInd:Hide()
     pf._factionIndicator = factionInd
+    -- PvP Flagged Timer sample beside it (player), behind its row's eye toggle.
+    if unitKey == "player" then
+        pf._pvPvpTimer = combatIndHolder:CreateFontString(nil, "OVERLAY", nil, 7)
+        pf._pvPvpTimer:SetTextColor(1, 1, 1)
+        pf._pvPvpTimer:SetWordWrap(false)
+        pf._pvPvpTimer:Hide()
+    end
     -- Raid marker / leader / elite previews, each behind its row's eye toggle
     -- (pf fields, not locals: this builder is long).
     pf._pvRaid = combatIndHolder:CreateTexture(nil, "OVERLAY", nil, 6)
@@ -1754,13 +1767,15 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         local lvOn = Lv and s.blizzShowLevel ~= false
         if lb then lb:SetShown((lvOn and B) and true or false) end
         if lvOn then
-            -- The name's font object (shadow) and face, as live. (A plain
-            -- call: `nf and nf:GetFont()` would keep only the face.)
+            -- The name's font object (shadow) and face, as live: a name on a
+            -- font family gives its roman member's face. (A plain call:
+            -- `nf and nf:GetFont()` would keep only the face.)
             local nf = pf._nameFS
             if nf then
-                local face, size, flags = nf:GetFont()
+                local fo = nf:GetFontObject()
+                local src = (fo and EllesmereUI._fontFamilySet[fo] and fo:GetFontObjectForAlphabet("roman")) or nf
+                local face, size, flags = src:GetFont()
                 if face then
-                    local fo = nf:GetFontObject()
                     if fo then lf:SetFontObject(fo) end
                     lf:SetFont(face, s.blizzLevelSize or size, flags)
                 end
@@ -1791,7 +1806,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         if pf._levelOv then pf._levelOv:SetShown(lvOn and true or false) end
 
         -- Health bar at the stock spot; horizontal fill (the stock track has
-        -- no vertical variant); colours, texture, gradient, opacity as set.
+        -- no vertical variant); colors, texture, gradient, opacity as set.
         health:ClearAllPoints()
         ns.UF_BlizzPoint(health, "TOPLEFT", barArea, "TOPLEFT", HB.x, -HB.y, mirror)
         health:SetSize(HB.w, HB.h)
@@ -1992,7 +2007,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         if G.name and leftFS:IsShown() then
             leftFS:ClearAllPoints()
             leftFS:SetJustifyH(G.name.justify or "LEFT")
-            ns.UF_BlizzPoint(leftFS, G.name.point, barArea, G.name.point, G.name.x, G.name.y, mirror)
+            local xOffset, yOffset = s.leftTextX or 0, s.leftTextY or 0
+            -- Keep the user's X offset screen-relative when UF_BlizzPoint mirrors it.
+            local x = G.name.x + (mirror and -xOffset or xOffset)
+            ns.UF_BlizzPoint(leftFS, G.name.point, barArea, G.name.point, x, G.name.y + yOffset, mirror)
             leftFS:SetWidth(G.name.w)
         end
 
@@ -2084,10 +2102,17 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     fr = castbar:CreateTexture(nil, "OVERLAY", nil, 2)
                     castbar._blizzFrame = fr
                 end
+                -- an icon nudged away from the bar keeps the art's reach on
+                -- that side, as the live bar does (ns.UF_CastIconSide)
+                local icoX, icoY
+                if unitKey == "player" then icoX, icoY = s.playerCastIconOffsetX, s.playerCastIconOffsetY
+                else icoX, icoY = s.castIconOffsetX, s.castIconOffsetY end
+                local reachL, reachR, reachT = ns.UF_CastChromeGeom(
+                    ns.UF_CastIconSide(castIconFrame and castIconFrame:IsShown(), onRight, icoX, icoY))
                 ns.UF_StockAtlas(fr, frAtlas)
                 fr:ClearAllPoints()
-                fr:SetPoint("TOPLEFT", castbar, "TOPLEFT", -2, 2)
-                fr:SetPoint("BOTTOMRIGHT", castbar, "BOTTOMRIGHT", 2, -2)
+                fr:SetPoint("TOPLEFT", castbar, "TOPLEFT", -reachL, reachT)
+                fr:SetPoint("BOTTOMRIGHT", castbar, "BOTTOMRIGHT", reachR, -2)
                 fr:Show()
             end
             if tbOn then
@@ -2101,7 +2126,8 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 tb:SetPoint("TOPLEFT", castbar, "BOTTOMLEFT", 0, 3)
                 tb:SetPoint("BOTTOMRIGHT", castbar, "BOTTOMRIGHT", 0, -13)
                 tb:Show()
-                local ox, oy = s.castSpellNameX or 0, s.castSpellNameY or 0
+                local _, _, _, nameY = ns.UF_CastChromeGeom()
+                local ox, oy = s.castSpellNameX or 0, (s.castSpellNameY or 0) + nameY
                 castNameFS2:ClearAllPoints()
                 if nameSide == "right" then
                     castNameFS2:SetJustifyH("RIGHT")
@@ -2181,21 +2207,34 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         local as = s
         if unitKey == "pet" then as = ns.UF_AuraSettings("pet") or s end
 
-        -- Aura preview: mirror the live shared aura border style.
+        -- Apply after the preview's icon sizes and fit scale settle.
+        local applyPreviewAuraBorder
         if unitKey == "player" or unitKey == "target" or unitKey == "focus" or unitKey == "boss" or unitKey == "pet" then
             -- Blizzard Style: the live frames draw no custom aura border, so
             -- the preview keeps the plain 1px edge and hides it too.
             local blizzAura = blizzG ~= nil
-            local function ApplyPreviewAuraBorder(icon)
-                if icon._iconTex then
-                    icon._iconTex:ClearAllPoints()
-                    local inset = (blizzAura or (as.auraBorderSize or 1) > 0) and 1 or 0
-                    PP.Point(icon._iconTex, "TOPLEFT", icon, "TOPLEFT", inset, -inset)
-                    PP.Point(icon._iconTex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -inset, inset)
+            local function layoutArt(icon, inset)
+                local rounded = icon.auraRound and icon.auraRound.on
+                -- The square fallback shows through the cut corners unless its fill is cleared.
+                if icon._previewRoundedArt ~= rounded then
+                    icon:SetBackdropColor(0, 0, 0, rounded and 0 or 1)
+                    icon._previewRoundedArt = rounded
                 end
+                local tex = icon._iconTex
+                tex:ClearAllPoints()
+                if rounded then
+                    tex:SetAllPoints(icon)
+                else
+                    PP.Point(tex, "TOPLEFT", icon, "TOPLEFT", inset, -inset)
+                    PP.Point(tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -inset, inset)
+                end
+            end
+            applyPreviewAuraBorder = function(icon)
                 local border = icon._euiAuraBorder
                 if blizzAura then
+                    EllesmereUI.PreviewAuraCorners(icon, icon._iconTex, icon._previewCD, border, 0)
                     if border then border:Hide() end
+                    layoutArt(icon, 1)
                     return
                 end
                 if not border then
@@ -2224,9 +2263,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     as.auraBorderTextureShiftX, as.auraBorderTextureShiftY,
                     "unitframes", as.auraBorderSize or 1, nil,
                     EllesmereUI.BorderPx(as.auraBorderSizePx, as.auraBorderSize or 1, as.auraBorderTexture or "solid"))
+                EllesmereUI.PreviewAuraCorners(icon, icon._iconTex, icon._previewCD, border,
+                    as.auraBorderCornerRadius, as.auraBorderTexture, as.auraBorderSize, 1)
+                layoutArt(icon, (as.auraBorderSize or 1) > 0 and 1 or 0)
             end
-            for i = 1, #buffIcons do ApplyPreviewAuraBorder(buffIcons[i]) end
-            for i = 1, #debuffIcons do ApplyPreviewAuraBorder(debuffIcons[i]) end
         end
 
         -- Donor settings for mini frames (border/texture inherit from the
@@ -2432,12 +2472,16 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             else
                 -- Custom fill skipped when class-colored; boss is always hostile-red.
                 local cFill = s.customFillColor
-                local isCC = s.healthClassColored and unitKey ~= "boss"
+                local isCC = s.healthClassColored
                 if isCC then
-                    local _, ct = UnitClass("player")
-                    local cc = RAID_CLASS_COLORS[ct]
-                    if cc then uHR, uHG, uHB = cc.r, cc.g, cc.b
-                    else uHR, uHG, uHB = 37/255, 193/255, 29/255 end
+                    if unitKey == "boss" then
+                        uHR, uHG, uHB = 0.8, 0.2, 0.2
+                    else
+                        local _, ct = UnitClass("player")
+                        local cc = RAID_CLASS_COLORS[ct]
+                        if cc then uHR, uHG, uHB = cc.r, cc.g, cc.b
+                        else uHR, uHG, uHB = 37/255, 193/255, 29/255 end
+                    end
                 elseif cFill then
                     uHR, uHG, uHB = cFill.r, cFill.g, cFill.b
                 elseif unitKey == "player" then
@@ -2710,12 +2754,12 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         -- Power percent text in preview
         if ppPreviewFS then
             local ppPos = s.powerPercentText or "none"
-            local ppFmt = s.powerTextFormat or "perpp"
+            local ppFmt = EllesmereUI.PowerTextFormat(s.powerTextFormat or "perpp")
             if ppPos ~= "none" and ppFmt ~= "none" and power then
                 local ppSz = s.powerPercentSize or 9
                 local ppOx = s.powerPercentX or 0
                 local ppOy = s.powerPercentY or 0
-                ppPreviewFS:SetFont(PREVIEW_FONT, ppSz, GetUFOptOutline())
+                SetPVFont(ppPreviewFS, PREVIEW_FONT, ppSz)
                 ppPreviewFS:ClearAllPoints()
                 if ph > 0 then
                     if ppPos == "left" then
@@ -2749,7 +2793,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 local ppPctVal = optState._previewPowerPct or 0.85
                 local ppPctRaw = math.floor(ppPctVal * 100)
                 local ppSuffix = (s.powerShowPercent == false) and "" or "%"
-                local ppCurFake = ns.AbbreviateNumbers(18200)
+                local ppCurFake = ns.AbbreviateValue(18200, "power")
                 local ppTxt
                 if ppFmt == "custom" then
                     ppTxt = PreviewTextForContent("custom", s, "powerText")
@@ -2758,7 +2802,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 elseif ppFmt == "curpp" then
                     ppTxt = ppCurFake
                 elseif ppFmt == "curmaxpp" then
-                    ppTxt = ppCurFake .. " / " .. ns.AbbreviateNumbers(22000)
+                    ppTxt = ppCurFake .. " / " .. ns.AbbreviateValue(22000, "power")
                 elseif ppFmt == "both" then
                     ppTxt = ppCurFake .. " | " .. ppPctRaw .. ppSuffix
                 else  -- "perpp"
@@ -2960,7 +3004,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 if castNameFS2 then
                     local spellName = (unitKey == "player") and (optState._previewCastSpell and optState._previewCastSpell.name or "Spell Name") or "Spell Name"
                     castNameFS2:SetText(spellName)
-                    castNameFS2:SetFont(PREVIEW_FONT, s.castSpellNameSize or 11, GetUFOptOutline())
+                    SetPVFont(castNameFS2, PREVIEW_FONT, s.castSpellNameSize or 11)
                     local snC = s.castSpellNameColor or { r=1, g=1, b=1 }
                     castNameFS2:SetTextColor(snC.r, snC.g, snC.b)
                     castNameFS2:ClearAllPoints()
@@ -2977,7 +3021,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 if castTimeFS then
                     local spCastTime = (optState._previewCastSpell and optState._previewCastSpell.castTime) or 3.0
                     castTimeFS:SetText(string.format("%.1f", spCastTime * (1 - (optState._previewCastFill or 0.6))))
-                    castTimeFS:SetFont(PREVIEW_FONT, s.castDurationSize or 10, GetUFOptOutline())
+                    SetPVFont(castTimeFS, PREVIEW_FONT, s.castDurationSize or 10)
                     local dtC = s.castDurationColor or { r=1, g=1, b=1 }
                     castTimeFS:SetTextColor(dtC.r, dtC.g, dtC.b)
                     castTimeFS:SetShown(showDur)
@@ -2986,11 +3030,12 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                         castTimeFS:SetWidth(pvTimerW)
                         castTimeFS:SetJustifyH(jh)
                         castTimeFS:ClearAllPoints()
-                        castTimeFS:SetPoint(pt, castbar, pt, xb + (s.castDurationX or 0), (s.castDurationY or 0))
+                        local _, _, _, _, timerY = ns.UF_CastChromeGeom()
+                        castTimeFS:SetPoint(pt, castbar, pt, xb + (s.castDurationX or 0), (s.castDurationY or 0) + timerY)
                     end
                 end
                 if castTargetFS then
-                    castTargetFS:SetFont(PREVIEW_FONT, s.castSpellTargetSize or 11, GetUFOptOutline())
+                    SetPVFont(castTargetFS, PREVIEW_FONT, s.castSpellTargetSize or 11)
                     local tsC = s.castSpellTargetColor or { r=1, g=1, b=1 }
                     castTargetFS:SetTextColor(tsC.r, tsC.g, tsC.b)
                     castTargetFS:SetShown(showTgt)
@@ -3744,8 +3789,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 if ns.GetBossSimpleDebuffMode(s) ~= "none" then
                     showCDText = s.simpleDebuffShowCooldownText
                     cdTextSize = s.simpleDebuffCooldownTextSize or 14
-                    cdTOffX = s.simpleDebuffCooldownTextOffsetX or 0
-                    cdTOffY = s.simpleDebuffCooldownTextOffsetY or 0
+                    cdTOffX, cdTOffY = ns.GetBossSimpleCdTextOffset(s, false)
                 else
                     showCDText = s.debuffShowCooldownText
                     cdTextSize = s.debuffCooldownTextSize or 10
@@ -3831,6 +3875,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         end
         local combinedScale = baseScale * fitScale
         pf:SetScale(combinedScale)
+        if applyPreviewAuraBorder then
+            for i = 1, #buffIcons do applyPreviewAuraBorder(buffIcons[i]) end
+            for i = 1, #debuffIcons do applyPreviewAuraBorder(debuffIcons[i]) end
+        end
 
         -- Recalculate border sizes after scale change so they stay pixel-perfect
         if border then
@@ -3966,9 +4014,17 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 sp and isAttached, EllesmereUI.BlizzStyle.Get("unitframes"), true,
                 (unitKey == "targettarget" or unitKey == "boss") and bds or nil)
         end
+        if (bds.borderClassColored or ns.UF_ClassificationBorderEnabled(bds, unitKey))
+            and not EllesmereUI.BlizzStyle.Get("unitframes") then
+            local r, g, b = ns.UF_ClassificationBorderColor(bds, unitKey, unitKey)
+            if not r and bds.borderClassColored then r, g, b = ns.UF_BorderColorSample(unitKey) end
+            -- Alpha as the live frame resolves it (a mini frame's Advanced
+            -- borderAlpha, else bds).
+            if r then ns.UF_TintFrameBorder(pf, border, r, g, b, PB("borderAlpha") or 1) end
+        end
         -- Color Custom Borders: while the Magic border copy shows, both
         -- separators are tinted Magic at full opacity in place, as the live
-        -- copies draw them (the two passes above reset the border colour
+        -- copies draw them (the two passes above reset the border color
         -- first), so the preview does not depend on copy-frame draw order
         -- inside the options panel.
         if pf._pvDispelBorder and pf._pvDispelBorder:IsShown() then
@@ -4116,8 +4172,10 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 combatInd:SetSize(ciSz, ciSz)
                 combatInd:ClearAllPoints()
                 -- "healthbar" is the stored value labeled "Center" in the dropdown;
-                -- "center" is a render alias for it.
-                if ciPos == "portrait" and portraitFrame and sp then
+                -- "center" is a render alias for it. Portrait follows the live
+                -- rule (ns.UF_PortraitShown): a stock style (blizzG) always
+                -- shows its portrait, whatever Portrait Mode says.
+                if ciPos == "portrait" and portraitFrame and (sp or blizzG) then
                     combatInd:SetPoint("CENTER", portraitFrame, "CENTER", ciOx, ciOy)
                 elseif ciPos == "textbar" then
                     combatInd:SetPoint("CENTER", btbFrame or pf, "CENTER", ciOx, ciOy)
@@ -4133,7 +4191,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 end
                 local _, classToken = UnitClass("player")
                 -- Custom combat icons (combat0..5) render untinted; Standard/Class
-                -- Theme are tinted by the colour mode below.
+                -- Theme are tinted by the color mode below.
                 if ciStyle:find("^combat%d") then
                     combatInd:SetTexture(COMBAT_MEDIA_P .. ciStyle .. ".tga")
                     combatInd:SetTexCoord(0, 1, 0, 1)
@@ -4167,9 +4225,13 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         -- Faction indicator preview, behind its row's eye toggle: your own faction
         -- on the player frame, the other faction on the target frame (what
         -- Opposite Faction shows).
+        -- The PvP Flagged Timer's eye shows the badge too: its sample sits beside it.
         if factionInd then
             local fMode = s.factionIndicatorMode or "off"
-            local fEye = ns._ufPvEyes and ns._ufPvEyes.faction
+            local fTimer = pf._pvPvpTimer
+            local fSide = fTimer and ns._ufPvEyes and ns._ufPvEyes.pvpTimer and s.factionIndicatorTimer
+            if fSide == "none" then fSide = nil end
+            local fEye = ns._ufPvEyes and (ns._ufPvEyes.faction or fSide)
             if (unitKey == "player" or unitKey == "target") and fMode ~= "off" and fEye then
                 local mine = UnitFactionGroup("player")
                 local fac = mine
@@ -4180,12 +4242,13 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 local fSz = s.factionIndicatorSize or 18
                 local fPos = s.factionIndicatorPosition or "topright"
                 local fOx, fOy = s.factionIndicatorX or 0, s.factionIndicatorY or 0
-                local fStyle = s.factionIndicatorStyle or "pvp"
+                local fStyle = s.factionIndicatorStyle or "crest"
                 -- The preview shows your own badge on both frames.
                 EllesmereUI.SetFactionArt(factionInd, fStyle, fac, EllesmereUI.FactionBadgeFor(fStyle, "player"))
-                factionInd:SetSize(fSz, fSz)
+                -- As live: an fSz box, the art centred in it at its own proportions.
+                EllesmereUI.FitFactionArt(factionInd, fSz)
                 factionInd:ClearAllPoints()
-                if fPos == "portrait" and portraitFrame and sp then
+                if fPos == "portrait" and portraitFrame and (sp or blizzG) then
                     factionInd:SetPoint("CENTER", portraitFrame, "CENTER", fOx, fOy)
                 else
                     local anchor =
@@ -4193,11 +4256,30 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                         (fPos == "bottomleft"  and "BOTTOMLEFT")  or
                         (fPos == "bottomright" and "BOTTOMRIGHT") or
                         "TOPRIGHT"
-                    factionInd:SetPoint(anchor, pf, anchor, fOx, fOy)
+                    local bx, by = EllesmereUI.FactionBoxCenter(anchor, fSz)
+                    factionInd:SetPoint("CENTER", pf, anchor, fOx + bx, fOy + by)
                 end
                 factionInd:Show()
+                -- The live text's anchors (TIMER_SIDES in EUI_UnitFrames_Init.lua).
+                local tp = (fSide == "left" and "RIGHT") or (fSide == "right" and "LEFT")
+                    or (fSide == "top" and "BOTTOM") or (fSide == "bottom" and "TOP")
+                if tp then
+                    local rp = (fSide == "left" and "LEFT") or (fSide == "right" and "RIGHT")
+                        or (fSide == "top" and "TOP") or "BOTTOM"
+                    local gx = (fSide == "left" and -2) or (fSide == "right" and 2) or 0
+                    local gy = (fSide == "top" and 2) or (fSide == "bottom" and -2) or 0
+                    SetPVFont(fTimer, PREVIEW_FONT, s.factionIndicatorTimerSize or 12)
+                    fTimer:SetText("4:59")
+                    fTimer:ClearAllPoints()
+                    fTimer:SetPoint(tp, factionInd, rp,
+                        gx + (s.factionIndicatorTimerX or 0), gy + (s.factionIndicatorTimerY or 0))
+                    fTimer:Show()
+                elseif fTimer then
+                    fTimer:Hide()
+                end
             else
                 factionInd:Hide()
+                if fTimer then fTimer:Hide() end
             end
         end
         -- Raid marker / leader / elite previews, shown by their rows' eye toggles
@@ -4209,7 +4291,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local isPT = unitKey == "player" or unitKey == "target"
             local function PlaceCorner(tex, pos, ox, oy)
                 tex:ClearAllPoints()
-                if pos == "portrait" and portraitFrame and sp then
+                if pos == "portrait" and portraitFrame and (sp or blizzG) then
                     tex:SetPoint("CENTER", portraitFrame, "CENTER", ox, oy)
                 else
                     local anchor =

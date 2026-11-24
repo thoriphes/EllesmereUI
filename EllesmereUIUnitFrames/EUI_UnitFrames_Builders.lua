@@ -26,6 +26,86 @@ local SlotWidthMul, EstimateUFTextWidth = I.SlotWidthMul, I.EstimateUFTextWidth
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
+function ns.UF_BorderColorSample(unit)
+    if unit == "boss" then
+        local c = ns.Colors and ns.Colors.reaction and ns.Colors.reaction[3]
+        if c then return c.r, c.g, c.b end
+        return 0.8, 0.2, 0.2
+    end
+    local ok, r, g, b = ns.ResolveBgClassColor("player")
+    if ok then return r, g, b end
+    return 1, 1, 1
+end
+
+function ns.UF_ClassificationBorderEnabled(settings, unitKey)
+    return (unitKey == "target" or unitKey == "focus")
+        and (settings.borderRareColored or settings.borderEliteColored)
+end
+
+function ns.UF_ClassificationBorderRGB(settings, key)
+    local c = (settings and settings[key]) or ns.UF_ClassificationBorderDefaults[key]
+    return c.r, c.g, c.b
+end
+
+function ns.UF_ClassificationBorderColor(settings, unit, unitKey)
+    if not ns.UF_ClassificationBorderEnabled(settings, unitKey) or not unit then return end
+    local classification = UnitClassification(unit)
+    if issecretvalue(classification) then return end
+    local colorKey
+    if settings.borderRareColored and (classification == "rare" or classification == "rareelite") then
+        colorKey = "borderRareColor"
+    elseif settings.borderEliteColored and (classification == "elite" or classification == "rareelite" or classification == "worldboss") then
+        colorKey = "borderEliteColor"
+    end
+    if not colorKey then return end
+    if settings.borderExcludeFriendly then
+        local reaction = UnitReaction(unit, "player")
+        if not issecretvalue(reaction) and reaction and reaction >= 5 then return end
+    end
+    return ns.UF_ClassificationBorderRGB(settings, colorKey)
+end
+
+-- own (mini frames only): the mini frame's own settings, so its Advanced
+-- border color/alpha override the donor's (ns.ResolveMiniBorderValue). Class /
+-- classification coloring still follows the donor (settings), as before.
+local function NormalBorderColor(settings, unit, unitKey, bossPreview, own)
+    local a, c = settings.borderAlpha, settings.borderColor
+    if own then
+        a = ns.ResolveMiniBorderValue(own, "borderAlpha", settings)
+        c = ns.ResolveMiniBorderValue(own, "borderColor", settings)
+    end
+    a = a or 1
+    if (settings.borderClassColored or ns.UF_ClassificationBorderEnabled(settings, unitKey))
+        and not ns.UF_Blizz() then
+        local r, g, b = ns.UF_ClassificationBorderColor(settings, unit, unitKey)
+        if r then return r, g, b, a end
+        if settings.borderClassColored then
+            if bossPreview then
+                r, g, b = ns.UF_BorderColorSample("boss")
+                return r, g, b, a
+            end
+            local ok
+            ok, r, g, b = ns.ResolveBgClassColor(I.ClassColorSourceUnit(unit, unit))
+            if ok then return r, g, b, a end
+        end
+    end
+    if c then return c.r, c.g, c.b, a end
+    return 0, 0, 0, a
+end
+
+-- Tint the border and the trim that shares its color, without rebuilding its art.
+function ns.UF_TintFrameBorder(frame, border, r, g, b, a)
+    EllesmereUI.SetBorderStyleColor(border, r, g, b, a)
+    local pt = frame.Portrait
+    local ring = pt and pt.backdrop and pt.backdrop._outerRing
+    if ring and ring:IsShown() then ring:SetVertexColor(r, g, b, a) end
+    local power = frame.Power or frame._power
+    local seam = power and power._pbSeam
+    if seam and seam:IsShown() then seam._tex:SetVertexColor(r, g, b, a) end
+    local portraitSeam = frame._portraitSeparator
+    if portraitSeam and portraitSeam:IsShown() then portraitSeam._tex:SetVertexColor(r, g, b, a) end
+end
+
 -- Boss frames have an independent Hover / Target border recolor (mirrors Raid Frames
 -- "Hover Borders"); both default OFF. Priority: hover (moused over) > target (current
 -- target) > the frame's normal border color. Recolors the existing unified border in
@@ -43,17 +123,12 @@ ns.ApplyBossBorderState = function(self)
         local c = s.bossTargetBorderColor or { r = 1, g = 1, b = 1 }
         r, g, b, a = c.r, c.g, c.b, s.bossTargetBorderAlpha or 1
     else
-        -- The normal colour the reload sweep painted: the same settings table
+        -- The normal color the reload sweep painted: the same settings table
         -- (the donor's while inheriting, never the unused boss copy).
-        local bsrc = ns.UF_BossBorderSettings()
-        local c = bsrc.borderColor or { r = 0, g = 0, b = 0 }
-        r, g, b, a = c.r, c.g, c.b, bsrc.borderAlpha or 1
+        local bossPreview = ns._bossPreviewActive and self._euiUnit == "player"
+        r, g, b, a = NormalBorderColor(ns.UF_BossBorderSettings(), self._euiUnit, self._euiBaseUnit, bossPreview)
     end
-    EllesmereUI.SetBorderStyleColor(self.unifiedBorder, r, g, b, a)
-    local seam = self.Power and self.Power._pbSeam
-    if seam and seam:IsShown() then seam._tex:SetVertexColor(r, g, b, a) end
-    local portraitSeam = self._portraitSeparator
-    if portraitSeam and portraitSeam:IsShown() then portraitSeam._tex:SetVertexColor(r, g, b, a) end
+    ns.UF_TintFrameBorder(self, self.unifiedBorder, r, g, b, a)
 end
 
 local function FrameBorderEnter(self)
@@ -82,16 +157,9 @@ local function FrameBorderEnter(self)
     end
     hc = hc or { r = 1, g = 1, b = 1 }
     ha = ha or 1
-    EllesmereUI.SetBorderStyleColor(self.unifiedBorder, hc.r, hc.g, hc.b, ha)
-    -- The portrait's Outer Ring wears the frame border tint (only once built).
-    local pt = self.Portrait
-    local ring = pt and pt.backdrop and pt.backdrop._outerRing
-    if ring and ring:IsShown() then ring:SetVertexColor(hc.r, hc.g, hc.b, ha) end
-    -- So does the Power Bar Seam (only once built).
-    local seam = self.Power and self.Power._pbSeam
-    if seam and seam:IsShown() then seam._tex:SetVertexColor(hc.r, hc.g, hc.b, ha) end
-    local portraitSeam = self._portraitSeparator
-    if portraitSeam and portraitSeam:IsShown() then portraitSeam._tex:SetVertexColor(hc.r, hc.g, hc.b, ha) end
+    if self._euiBorderColorSource then self._euiBorderColorHover = true end
+    ns.UF_TintFrameBorder(self, self.unifiedBorder, hc.r, hc.g, hc.b, ha)
+    return true
 end
 local function FrameBorderLeave(self)
     if not self.unifiedBorder then return end
@@ -104,25 +172,85 @@ local function FrameBorderLeave(self)
     end
     local isMini = (unit == "pet" or unit == "targettarget" or unit == "focustarget")
     local settings = isMini and GetMiniDonorSettings(unit) or GetSettingsForUnit(unit)
-    local bc, ba = settings.borderColor, settings.borderAlpha
-    if isMini then
-        local own = GetSettingsForUnit(unit)
-        bc = ns.ResolveMiniBorderValue(own, "borderColor", settings)
-        ba = ns.ResolveMiniBorderValue(own, "borderAlpha", settings)
-    end
-    bc = bc or { r = 0, g = 0, b = 0 }
-    ba = ba or 1
-    EllesmereUI.SetBorderStyleColor(self.unifiedBorder, bc.r, bc.g, bc.b, ba)
-    local pt = self.Portrait
-    local ring = pt and pt.backdrop and pt.backdrop._outerRing
-    if ring and ring:IsShown() then ring:SetVertexColor(bc.r, bc.g, bc.b, ba) end
-    local seam = self.Power and self.Power._pbSeam
-    if seam and seam:IsShown() then seam._tex:SetVertexColor(bc.r, bc.g, bc.b, ba) end
-    local portraitSeam = self._portraitSeparator
-    if portraitSeam and portraitSeam:IsShown() then portraitSeam._tex:SetVertexColor(bc.r, bc.g, bc.b, ba) end
+    if self._euiBorderColorHover then self._euiBorderColorHover = nil end
+    -- Mini frames pass their own settings so an Advanced border color/alpha
+    -- (ns.ResolveMiniBorderValue) is the normal color, as the reload paints it.
+    ns.UF_TintFrameBorder(self, self.unifiedBorder,
+        NormalBorderColor(settings, unit, self._euiBaseUnit, nil, isMini and GetSettingsForUnit(unit) or nil))
 end
 -- The detached portrait's click overlay replays these on hover (Portrait.lua).
 I.FrameBorderEnter, I.FrameBorderLeave = FrameBorderEnter, FrameBorderLeave
+
+local function PaintBorderColor(frame, unit)
+    if not frame._euiBorderColorSource or frame._blizzArtFrame then return end
+    if frame._euiBaseUnit:match("^boss%d$") then
+        ns.ApplyBossBorderState(frame)
+    elseif not (frame._euiBorderColorHover and FrameBorderEnter(frame)) then
+        local base = frame._euiBaseUnit
+        local isMini = base == "pet" or base == "targettarget" or base == "focustarget"
+        ns.UF_TintFrameBorder(frame, frame.unifiedBorder,
+            NormalBorderColor(frame._euiBorderColorSource, unit, base, nil,
+                isMini and GetSettingsForUnit(base) or nil))
+    end
+end
+ns.Engine.SetPainter("bordercolor", PaintBorderColor)
+ns.Engine.SetPainter("borderclassification", PaintBorderColor)
+
+local function SetBorderColorChannel(frame, channel)
+    local previous = frame._euiBorderColorChannel
+    if channel == previous then return end
+    if channel then ns.Engine.SetChannelOn(frame, channel, true) end
+    if previous then ns.Engine.SetChannelOn(frame, previous, false) end
+    frame._euiBorderColorChannel = channel
+end
+
+local function ShowBorderColor(frame)
+    local channel = frame._euiWantedBorderColorChannel
+    if not channel then return end
+    SetBorderColorChannel(frame, channel)
+    PaintBorderColor(frame, frame._euiUnit)
+end
+
+local function HideBorderColor(frame)
+    if not frame._euiBorderColorChannel then return end
+    SetBorderColorChannel(frame, nil)
+    frame._euiBorderColorHover = nil
+end
+
+function ns.UF_SyncBorderColor(frame, unit, source)
+    if not frame.unifiedBorder then return end
+    local settings = GetSettingsForUnit(unit)
+    if not source then
+        local isMini = unit == "pet" or unit == "targettarget" or unit == "focustarget"
+        source = unit:match("^boss%d$") and ns.UF_BossBorderSettings()
+            or (isMini and GetMiniDonorSettings(unit)) or settings
+    end
+    local channel
+    if source and not ns.UF_Blizz() and (settings.borderSizeOverride or source.borderSize or 1) > 0 then
+        if ns.UF_ClassificationBorderEnabled(source, unit) then
+            channel = "borderclassification"
+        elseif source.borderClassColored then
+            channel = "bordercolor"
+        end
+    end
+    if channel then
+        frame._euiBorderColorSource = source
+        if not frame._euiBorderColorVisibilityHook then
+            frame._euiBorderColorVisibilityHook = true
+            frame:HookScript("OnShow", ShowBorderColor)
+            frame:HookScript("OnHide", HideBorderColor)
+        end
+    elseif frame._euiWantedBorderColorChannel then
+        -- Turned off: paint the normal color once. The settings pass repaints the
+        -- border, but the portrait's Outer Ring keeps its color memo and would stay
+        -- on the last class / elite tint.
+        frame._euiBorderColorSource, frame._euiBorderColorHover = source, nil
+        PaintBorderColor(frame, frame._euiUnit)
+        frame._euiBorderColorSource = nil
+    end
+    frame._euiWantedBorderColorChannel = channel
+    SetBorderColorChannel(frame, channel and frame:IsVisible() and channel or nil)
+end
 
 -- Unified border for unit frames using the PP border system
 local function CreateUnifiedBorder(frame, unit)
@@ -786,6 +914,11 @@ end
 -- pet frame carries a power bar driven by the pet's own power settings, laid out
 -- like the boss frames'. A plain boolean, fixed per session.
 ns.UF_PetHasPower = (EllesmereUI.IS_FOREVER == true)
+-- Small frames with an EUI power bar: ToT, FoT, and the pet on WoW Forever.
+function ns.UF_MiniHasPower(unit)
+    if unit == "pet" then return ns.UF_PetHasPower end
+    return unit == "targettarget" or unit == "focustarget"
+end
 
 local function StyleSimpleFrame(frame, unit)
     local settings = GetSettingsForUnit(unit)
@@ -793,11 +926,10 @@ local function StyleSimpleFrame(frame, unit)
     if pStyle == "detached" then pStyle = "attached" end
     local showPortrait = pStyle ~= "none" and settings.showPortrait ~= false
     local pSide = settings.portraitSide or "left"
-    -- WoW Forever pet power bar (Blizzard Style keeps its stock one instead): an
-    -- attached bar adds its height to the stack and the portrait squares off the
-    -- whole stack, as on the boss frames. Zero for every other mini frame.
-    local petPower = unit == "pet" and ns.UF_PetHasPower and not ns.UF_Blizz()
-    local ppPos = petPower and (settings.powerPosition or "below") or "none"
+    -- Power bar (Blizzard Style keeps its stock one instead): an attached bar
+    -- adds its height to the stack and the portrait squares off the whole stack.
+    local miniPower = ns.UF_MiniHasPower(unit) and not ns.UF_Blizz()
+    local ppPos = miniPower and (settings.powerPosition or "below") or "none"
     local powerH = (ppPos == "below" or ppPos == "above") and (settings.powerHeight or 6) or 0
     local aboveOff = (ppPos == "above") and powerH or 0
     local barH = settings.healthHeight + powerH
@@ -846,10 +978,9 @@ local function StyleSimpleFrame(frame, unit)
     ApplyDarkTheme(health, unit)
 
     frame.Health = health
-    -- Blizzard Style: the stock small-frame power bar. Otherwise only a WoW Forever
-    -- pet has one, built even at "none" so its position changes live (the painter
-    -- is parked while it is hidden); ToT and FoT carry none.
-    if petPower then
+    -- Blizzard Style: the stock small-frame power bar. Otherwise built even at
+    -- "none" so its position changes live (the painter is parked while hidden).
+    if miniPower then
         frame.Power = CreatePowerBar(frame, unit, settings)
         if ppPos == "none" then frame:DisableElement("Power") end
     else
@@ -927,6 +1058,11 @@ local function StyleSimpleFrame(frame, unit)
     ApplyTextPositions(settings)
     frame._applyTextPositions = ApplyTextPositions
     if unit == "pet" then ns.UF_EnsurePetAuras(frame) end
+    -- Pet cast bar: built only while on, so it costs nothing otherwise.
+    if unit == "pet" and settings.showCastbar == true then
+        frame.Castbar = CreateCastBar(frame, unit, settings)
+        SetupShowOnCastBar(frame, unit)
+    end
 end
 
 

@@ -23,11 +23,11 @@ local UnitCastingInfo, UnitChannelInfo = UnitCastingInfo, UnitChannelInfo
 
 local defaults, GetNPOutline, HP_BAR_SLOTS = I.defaults, I.GetNPOutline, I.HP_BAR_SLOTS
 local SetFSFont, ApplyHealthBarTexture = I.SetFSFont, I.ApplyHealthBarTexture
-local GetCastBarHeight, GetEnemyNameTextSize = I.GetCastBarHeight, I.GetEnemyNameTextSize
+local GetCastBarHeight = I.GetCastBarHeight
 local GetFocusCastHeight, GetHealthBarHeight = I.GetFocusCastHeight, I.GetHealthBarHeight
 local GetHealthBarWidth, GetHitboxYShift = I.GetHealthBarWidth, I.GetHitboxYShift
 local GetNameplateYOffset, GetNameYOffset = I.GetNameplateYOffset, I.GetNameYOffset
-local GetShowCastIcon, GetStackSpacingScale = I.GetShowCastIcon, I.GetStackSpacingScale
+local GetShowCastIcon = I.GetShowCastIcon
 local GetTextSlot, GetTextSlotColor = I.GetTextSlot, I.GetTextSlotColor
 local GetTextSlotOffsets, GetTextSlotSize = I.GetTextSlotOffsets, I.GetTextSlotSize
 local IsComboHealthText = I.IsComboHealthText
@@ -51,6 +51,10 @@ local storedParents = {}
 -- Park record per pooled UnitFrame (our table, weak on the frame): the swept children in park
 -- order, plus .held while HideBlizzardFrame owns the frame. Wiped and reused by the reclaim.
 ns._npParked = setmetatable({}, { __mode = "k" })
+-- Stacking bounds frame per Blizzard nameplate (our table, weak on the frame). The game keeps
+-- the last frame a nameplate was handed (its call has no clear), so the frame stays on its own
+-- nameplate for good and never moves on with a pooled plate.
+ns._npStackBounds = setmetatable({}, { __mode = "k" })
 local function MoveToOffscreen(element, unit)
     if not element then return end
     -- PERF: skip SetParent if already offscreen (saves ~14 calls per plate respawn)
@@ -442,7 +446,7 @@ function NameplateFrame:ApplyAppearance()
     end
     -- The Threat Colors name memo: the static write above replaces its tint.
     self._nameThR, self._nameThG, self._nameThB = nil, nil, nil
-    -- Same for the Text Coloring slot memo: the static slot colours written here and
+    -- Same for the Text Coloring slot memo: the static slot colors written here and
     -- in ApplyHealthTextAppearance below replace what it last painted.
     if self._scMemo then
         for _, e in pairs(self._scMemo) do e[1] = nil end
@@ -546,12 +550,17 @@ end
 -- content via the cache.
 -- Anchors one bar-slot font string. A bottom slot hangs under the health bar's
 -- corner and drops below the cast bar while one shows (AnchorBottomTexts
--- re-runs this on every cast show / hide).
+-- re-runs this on every cast show / hide). A top corner slot sits over the
+-- bar's corner at the Top text's height, above the class power pips while they
+-- show (AnchorTopCornerTexts re-runs this with the name's re-anchor).
 function NameplateFrame:PlaceSlotText(fs, slot, txOff, tyOff)
     fs:ClearAllPoints()
     if slot.bottom then
         local drop = (self.cast:IsShown() and self._castDrop) or 0
         PP.Point(fs, slot.anchor, self.health, slot.point, slot.xOff + txOff, drop - 2 + tyOff)
+    elseif slot.top then
+        PP.Point(fs, slot.anchor, self.health, slot.point, slot.xOff + txOff,
+            4 + GetNameYOffset() + GetClassPowerTopPush(self) + tyOff)
     elseif slot.anchor == "CENTER" then
         fs:SetPoint("CENTER", self.health, "CENTER", txOff, tyOff)
     else
@@ -577,6 +586,24 @@ function NameplateFrame:AnchorBottomTexts()
         end
     end
 end
+-- The class power push changed (RefreshNamePosition): re-anchor whatever the top
+-- corner slots hold. Runs only while a top corner slot is in use (ns._npTopCornerUsed).
+function NameplateFrame:AnchorTopCornerTexts()
+    local T = ns._npTopCornerFS
+    for si = 6, 7 do
+        local slot = HP_BAR_SLOTS[si]
+        local key = T[si - 5]
+        local fs = key and self[key]
+        if fs then
+            local txOff = (p and p[slot.xKey]) or 0
+            local tyOff = (p and p[slot.yKey]) or 0
+            if key == "name" and si == 6 and self._nameRaidMarkerShown then
+                txOff = txOff + ((p and p.nameRaidMarkerSize) or defaults.nameRaidMarkerSize or 14) + 3
+            end
+            self:PlaceSlotText(fs, slot, txOff, tyOff)
+        end
+    end
+end
 -- Target of Target text: its own font string, built the first time a slot
 -- shows it.
 function NameplateFrame:EnsureToTText()
@@ -591,8 +618,8 @@ function NameplateFrame:EnsureToTText()
 end
 -- The unit's target's name, repainted through RefreshTargetTexts below while a slot
 -- shows it. Name and class token may be secret: they only reach setters.
--- The slot's Class text mode paints a player target in its class colour; anything
--- else keeps the slot colour.
+-- The slot's Class text mode paints a player target in its class color; anything
+-- else keeps the slot color.
 function NameplateFrame:UpdateToT()
     local fs, unit, slotKey = self.totText, self.unit, ns._npToTSlot
     if not (fs and unit and slotKey) then return end
@@ -679,7 +706,7 @@ function NameplateFrame:SyncToT(unit)
 end
 
 -- Custom text in one slot (slot: its HP_BAR_SLOTS entry, nil for Top): its own font
--- string, placed and coloured like the slot's other texts, plus an entry in the
+-- string, placed and colored like the slot's other texts, plus an entry in the
 -- plate's custom list (ca._cu) for PaintCustomTexts.
 function NameplateFrame:AddCustomText(ca, slotKey, slot)
     local fsKey = ns.NP_CustomFSKey[slotKey]
@@ -702,14 +729,14 @@ function NameplateFrame:AddCustomText(ca, slotKey, slot)
         fs:SetJustifyH("CENTER")
     end
     fs:SetTextColor(sr, sg, sb, 1)
-    -- Width: the bottom slots never truncate. A text naming the unit ends where the
+    -- Width: the corner slots never truncate. A text naming the unit ends where the
     -- name would (the bar left by the other bar texts, or on Top the room the name
     -- has there, kept current by UpdateNameWidth), scaled by Width %; any other text
     -- is boxed only below 100% (the health loop).
-    local bottom = slot and slot.bottom
+    local corner = slot and slot.corner
     local w = 0
     if not slot then self._cuTopName = (c and c.has.name) and true or nil end
-    if not bottom then
+    if not corner then
         local wpct = (p and p[slotKey .. "WidthPct"]) or 100
         if c and c.has.name then
             w = math.max((slot and ns.NP_BarRestWidth(slotKey)
@@ -719,7 +746,7 @@ function NameplateFrame:AddCustomText(ca, slotKey, slot)
         end
     end
     fs:SetWidth(w)
-    local wrap = (not bottom and p and p[slotKey .. "Wrap"]) and true or false
+    local wrap = (not corner and p and p[slotKey .. "Wrap"]) and true or false
     fs:SetWordWrap(wrap)
     fs:SetMaxLines(wrap and 2 or 1)
     if w > 0 then ns.ReflowFontString(fs) end
@@ -796,7 +823,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
             ca[ci].element = element
             ca[ci].fs = fs
             ca[ci].slotKey = slot.key
-            ca[ci].bottom = slot.bottom or false
+            ca[ci].corner = slot.corner or false
         elseif element == "healthNumber" then
             local fs = self.hpNumber
             fs:SetParent(ns.SlotTextHost(self, slot.key, slotStrata))
@@ -810,7 +837,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
             ca[ci].element = element
             ca[ci].fs = fs
             ca[ci].slotKey = slot.key
-            ca[ci].bottom = slot.bottom or false
+            ca[ci].corner = slot.corner or false
         elseif IsComboHealthText(element) then
             local fs = self.hpText
             fs:SetParent(ns.SlotTextHost(self, slot.key, slotStrata))
@@ -824,7 +851,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
             ca[ci].element = element
             ca[ci].fs = fs
             ca[ci].slotKey = slot.key
-            ca[ci].bottom = slot.bottom or false
+            ca[ci].corner = slot.corner or false
         elseif element == "level" or element == "targetOfTarget" then
             -- Standalone level / Target of Target: own FontString, NOT in the health slot
             -- cache (level content is static per unit -- written here and by UpdateName on
@@ -838,10 +865,10 @@ function NameplateFrame:ApplyHealthTextAppearance()
             fs:SetJustifyH(slot.justify or slot.anchor)
             fs:SetTextColor(sr, sg, sb, 1)
             if isLevel and self.unit then fs:SetText(ns.GetUnitLevelText(self.unit)) end
-            -- The bottom slots never truncate: no Width % or Wrap there.
-            local lwpct = (not slot.bottom and p and p[slot.key .. "WidthPct"]) or 100
+            -- The corner slots never truncate: no Width % or Wrap there.
+            local lwpct = (not slot.corner and p and p[slot.key .. "WidthPct"]) or 100
             fs:SetWidth(lwpct < 100 and (GetHealthBarWidth() * lwpct / 100) or 0)
-            local lwrap = (not slot.bottom and p and p[slot.key .. "Wrap"]) and true or false
+            local lwrap = (not slot.corner and p and p[slot.key .. "Wrap"]) and true or false
             fs:SetWordWrap(lwrap)
             fs:SetMaxLines(lwrap and 2 or 1)
             fs:Show()
@@ -877,7 +904,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
         ca[ci].element = topElement
         ca[ci].fs = fs
         ca[ci].slotKey = "textSlotTop"
-        ca[ci].bottom = false
+        ca[ci].corner = false
     elseif topElement == "level" or topElement == "targetOfTarget" then
         -- Standalone level / Target of Target in the top slot: same shape as the
         -- health block above, on its own font string, no cache entry.
@@ -926,11 +953,11 @@ function NameplateFrame:ApplyHealthTextAppearance()
         -- 100 = unconstrained (SetWidth 0 = auto-size): a width box on a single-point-anchored
         -- FontString ignores SetJustifyH and would re-centre a right/left value, so only box
         -- it when narrowed.
-        -- The bottom slots never truncate: no Width % or Wrap there.
-        local wpct = (not e.bottom and p and e.slotKey and p[e.slotKey .. "WidthPct"]) or 100
+        -- The corner slots never truncate: no Width % or Wrap there.
+        local wpct = (not e.corner and p and e.slotKey and p[e.slotKey .. "WidthPct"]) or 100
         e.fs:SetWidth(wpct < 100 and (barW * wpct / 100) or 0)
         local wrap = false
-        if not e.bottom and p and e.slotKey and p[e.slotKey .. "Wrap"] ~= nil then wrap = p[e.slotKey .. "Wrap"] end
+        if not e.corner and p and e.slotKey and p[e.slotKey .. "Wrap"] ~= nil then wrap = p[e.slotKey .. "Wrap"] end
         e.fs:SetWordWrap(wrap)
         e.fs:SetMaxLines(wrap and 2 or 1)
     end
@@ -986,28 +1013,27 @@ function NameplateFrame:SetUnit(unit, nameplate)
         self._deferredSetupCB = function()
             if not self.unit then return end
             local np = self.nameplate
-            -- Stacking bounds
+            -- Stacking bounds: the rectangle the game stacks this nameplate by, on the
+            -- nameplate's OWN frame (ns._npStackBounds). A frame that travelled with this
+            -- pooled plate would leave its last nameplate measuring a rectangle that sits here.
             if np and np.SetStackingBoundsFrame then
-                if not self._stackBounds then
-                    self._stackBounds = CreateFrame("Frame", nil, np)
+                local sb = ns._npStackBounds[np]
+                if not sb then
+                    sb = CreateFrame("Frame", nil, np)
                     -- Load-bearing: SetStackingBoundsFrame reads this frame's rendered bounds
                     -- (union of its regions), NOT its SetSize. Without a full-size region the
                     -- bounds rect is empty and plates stop stacking. Alpha 0 so it never shows.
-                    local tex = self._stackBounds:CreateTexture(nil, "BACKGROUND")
+                    local tex = sb:CreateTexture(nil, "BACKGROUND")
                     tex:SetColorTexture(1, 0, 0, 0)
-                    tex:SetAllPoints(self._stackBounds)
+                    tex:SetAllPoints(sb)
+                    ns._npStackBounds[np] = sb
                 end
-                self._stackBounds:SetParent(np)
-                self._stackBounds:ClearAllPoints()
-                local barH = GetHealthBarHeight()
-                local castH2 = GetCastBarHeight()
-                local nameGap = 4 + GetEnemyNameTextSize()
-                local totalH = nameGap + barH + castH2
-                local scale = GetStackSpacingScale() / 100
-                self._stackBounds:SetPoint("CENTER", np, "CENTER", 0, GetNameplateYOffset())
-                self._stackBounds:SetSize(GetHealthBarWidth(), totalH * scale)
-                self._stackBounds:Show()
-                np:SetStackingBoundsFrame(self._stackBounds)
+                self._stackBounds = sb
+                sb:ClearAllPoints()
+                sb:SetPoint("CENTER", np, "CENTER", 0, GetNameplateYOffset())
+                sb:SetSize(GetHealthBarWidth(), ns.NP_StackHeight())
+                sb:Show()
+                np:SetStackingBoundsFrame(sb)
             end
             -- Focus cast height override
             if UnitIsUnit(self.unit, "focus") then
@@ -1018,6 +1044,7 @@ function NameplateFrame:SetUnit(unit, nameplate)
                     ns.LayoutCastIcon(self, castH)
                     ns.NP_SetSparkHeight(self, castH)
                     self.kickMarker:SetSize(GetHealthBarWidth(), castH)
+                    self._focusCastSized = true
                 end
             end
             -- Cast target color
@@ -1123,7 +1150,7 @@ function NameplateFrame:ClearUnit()
     -- next UpdateHealthColor uses that to hand them back if the new unit has no signal.
     self._threatBdKr, self._threatBdKg, self._threatBdKb = nil, nil, nil
     self._nameThR, self._nameThG, self._nameThB = nil, nil, nil
-    -- Hostility / Class slot colours: the next occupant's class token is read afresh.
+    -- Hostility / Class slot colors: the next occupant's class token is read afresh.
     self._scUnit = nil
     -- Health-text value memo (UpdateHealthValues): a recycled plate must
     -- always write its first values, never skip against the old unit's.
@@ -1167,8 +1194,10 @@ function NameplateFrame:ClearUnit()
     if self.nameRaidFrame then self.nameRaidFrame:Hide() end
     self.raidFrame:Hide()
     self.classFrame:Hide()
+    if self.questFrame then self.questFrame:Hide() end
     if self.factionFrame then self.factionFrame:Hide() end
-    if self.classText then self.classText:Hide() end
+    if self.questTextFrame then self.questTextFrame:Hide() end
+    if self.questTextTypeIcon then self.questTextTypeIcon:Hide() end
     if self.focusLetter then self.focusLetter:Hide() end
     if self.leftArrow then self.leftArrow:Hide() end
     if self.rightArrow then self.rightArrow:Hide() end
@@ -1179,14 +1208,26 @@ function NameplateFrame:ClearUnit()
     self:SetScale(1)
     self._curScale = nil
     ns._scaleAnim[self] = nil
+    -- Focus Cast Height: ApplyAppearance is skipped on recycle, so hand back the normal height.
+    -- Here, once the scale is back to 1 and the cast glows are off: the offsets snap on the
+    -- pixel grid ApplyAppearance used, and no glow art is seated just before it hides.
+    if self._focusCastSized then
+        self._focusCastSized = nil
+        local castH = GetCastBarHeight()
+        ns.LayoutCastBar(self, ns.GetHealthBarWidth(), castH)
+        ns.LayoutCastIcon(self, castH)
+        ns.NP_SetSparkHeight(self, castH)
+        self.kickMarker:SetSize(GetHealthBarWidth(), castH)
+    end
     self:SetParent(UIParent)
     self:ClearAllPoints()
-    -- Detach stacking bounds from the old nameplate so it doesn't
-    -- confuse the stacking engine when the nameplate is recycled.
+    -- The nameplate keeps its stacking bounds frame: empty it (no points, hidden), so the
+    -- game stacks whatever unit takes the nameplate next by nothing of ours until that
+    -- unit's own setup. This plate only lets go of it.
     if self._stackBounds then
         self._stackBounds:ClearAllPoints()
-        self._stackBounds:SetParent(self)
         self._stackBounds:Hide()
+        self._stackBounds = nil
     end
 end
 

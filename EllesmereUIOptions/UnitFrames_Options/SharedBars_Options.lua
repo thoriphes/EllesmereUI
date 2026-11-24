@@ -39,12 +39,14 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
     local sharedSizeRow
     local ufhDis, ufhTip, ufhRaw = EllesmereUI.MatchGuard(optState.selectedUnit, "Height")
     local ufwDis, ufwTip, ufwRaw = EllesmereUI.MatchGuard(optState.selectedUnit, "Width")
+    -- Vertical Fill wants tall, narrow bars: the Vertical Fill toggle rebuilds the page.
+    local vertFill = SVal("healthVerticalFill", false) == true
     sharedSizeRow, h = W:DualRow(parent, y,
-        EllesmereUI.BlizzStyle.Gate("unitframes", { type="slider", text="Health Bar Height", min=15, max=100, step=1,
+        EllesmereUI.BlizzStyle.Gate("unitframes", { type="slider", text="Health Bar Height", min=15, max=vertFill and 400 or 100, step=1,
           disabled=ufhDis, disabledTooltip=ufhTip, rawTooltip=ufhRaw,
           getValue=function() return SVal("healthHeight", 46) end,
           setValue=function(v) SSet("healthHeight", v) end }),
-        EllesmereUI.BlizzStyle.Gate("unitframes", { type="slider", text="Bar Width", min=80, max=400, step=1,
+        EllesmereUI.BlizzStyle.Gate("unitframes", { type="slider", text="Bar Width", min=vertFill and 20 or 80, max=400, step=1,
           disabled=ufwDis, disabledTooltip=ufwTip, rawTooltip=ufwRaw,
           getValue=function() return SVal("frameWidth", 181) end,
           setValue=function(v) SSet("frameWidth", v) end }));  y = y - h
@@ -96,7 +98,7 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
         })
     end
     -- Reverse Fill cog on Bar Height (left region)
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = sharedSizeRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
             title = "Health Bar Fill",
@@ -109,9 +111,10 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                 { type="toggle", label="Vertical Fill",
                   tooltip="Fill the health bar bottom-to-top instead of left-to-right. Reverse Fill flips it to top-to-bottom.",
                   get=function() return SVal("healthVerticalFill", false) end,
-                  -- RefreshPage re-labels the Absorbs Placement dropdowns for the
-                  -- new axis (cog popups bake labels in at first build).
-                  set=function(v) SSet("healthVerticalFill", v); ReloadAndUpdate(); UpdatePreview(); EllesmereUI:RefreshPage() end },
+                  -- A full rebuild: the size sliders' ranges follow Vertical Fill
+                  -- (baked in at build), and the Absorbs Placement dropdowns
+                  -- re-label for the new axis (cog popups bake labels in too).
+                  set=function(v) SSet("healthVerticalFill", v); ReloadAndUpdate(); UpdatePreview(); EllesmereUI:RefreshPage(true) end },
             },
         })
     end
@@ -405,7 +408,7 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
     -- Dynamic Color and Gradient COMPOSE -- Dynamic picks the color from the
     -- unit's health percent, Gradient then runs from that color to the
     -- gradient end color -- so they share one popup rather than fighting.
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = sharedHealthColorRow._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
             title = "Fill Color Settings",
@@ -544,7 +547,7 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
     end
 
     -- Blizzard Style: the stock level number in the frame's level circle,
-    -- with its size, offsets and difficulty colouring on a cog. The row is
+    -- with its size, offsets and difficulty coloring on a cog. The row is
     -- the preview level text's click target (stashed on the page: the
     -- targets table at the end reads it).
     if EllesmereUI.BlizzStyle.Get("unitframes") then
@@ -554,7 +557,7 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
               getValue=function() return SVal("blizzShowLevel", true) end,
               setValue=function(v) SSet("blizzShowLevel", v); UpdatePreview(); EllesmereUI:RefreshPage() end },
             { type="label", text="" });  y = y - h
-        if not EllesmereUI._prebuilding then
+        do
             EllesmereUI.BuildInlineCog(parent._ufLevelRow._leftRegion, {
                 disabled = function() return not SVal("blizzShowLevel", true) end,
                 disabledTooltip = "This option requires Show Level.",
@@ -570,7 +573,7 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                     { type="slider", label="Y Offset", min=-150, max=150, step=1,
                       get=function() return SVal("blizzLevelY", 0) end,
                       set=function(v) SSet("blizzLevelY", v); UpdatePreview() end },
-                    -- The player's own level never takes a difficulty colour.
+                    -- The player's own level never takes a difficulty color.
                     { type="toggle", label="Difficulty Color",
                       tooltip="Colors an attackable unit's level by difficulty, as the default UI does.",
                       disabled=function() return optState.selectedUnit == "player" end,
@@ -649,17 +652,85 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                     },
                 })
             end
+            -- Cogwheel on Left Text (left region)
+            do
+                local leftRgn = rgn
+                EllesmereUI.BuildInlineCog(leftRgn, {
+                    disabled = function() return SVal("leftTextContent", "name") == "none" end,
+                    disabledTooltip = "This option requires a text selection other than none.",
+                    title = "Left Text Settings",
+                    rows = ns.UF_CoreTextRows("leftText", "name", SVal, SSet, {
+                        { type="slider", label="Size", min=8, max=100, step=1,
+                          get=function() return SVal("leftTextSize", SDB().textSize or 12) end,
+                          set=function(v) SSet("leftTextSize", v); UpdatePreview() end },
+                        { type="slider", label="X Offset", min=-300, max=300, step=1,
+                          get=function() return SVal("leftTextX", 0) end,
+                          set=function(v) SSet("leftTextX", v); UpdatePreview() end },
+                        { type="slider", label="Y Offset", min=-300, max=300, step=1,
+                          get=function() return SVal("leftTextY", 0) end,
+                          set=function(v) SSet("leftTextY", v); UpdatePreview() end },
+                        { type="slider", label="Width %", min=20, max=200, step=5,
+                          get=function() return SVal("leftTextWidthPct", 100) end,
+                          set=function(v) SSet("leftTextWidthPct", v); UpdatePreview() end },
+                        { type="multiswatch", label="Indicator Color",
+                          disabled=function() local c = SVal("leftTextContent","name") return c ~= "nametotarget" and c ~= "targetname" end,
+                          disabledTooltip="This option only applies when Name > Target or Target is selected.",
+                          swatches = {
+                            { tooltip = "Custom Colored", hasAlpha = false,
+                              getValue = function() local c = SVal("leftTextTargetSepColor", nil) if type(c) == "table" then return c.r or 1, c.g or 1, c.b or 1 end return 1, 1, 1 end,
+                              setValue = function(r, g, b) SSet("leftTextTargetSepColor", { r=r, g=g, b=b }); UpdatePreview() end,
+                              onClick = function(self)
+                                  if SVal("leftTextTargetSepClassColor", false) then
+                                      SSet("leftTextTargetSepClassColor", false); UpdatePreview()
+                                      return
+                                  end
+                                  if self._eabOrigClick then self._eabOrigClick(self) end
+                              end,
+                              refreshAlpha = function() return SVal("leftTextTargetSepClassColor", false) and 0.3 or 1 end },
+                            { tooltip = "Class Colored", hasAlpha = false,
+                              getValue = function()
+                                  local _, ct = UnitClass("player")
+                                  local cc = ct and EllesmereUI.GetClassColor(ct)
+                                  if cc then return cc.r, cc.g, cc.b end
+                                  return 1, 1, 1
+                              end,
+                              setValue = function() end,
+                              onClick = function() SSet("leftTextTargetSepClassColor", true); UpdatePreview() end,
+                              refreshAlpha = function() return SVal("leftTextTargetSepClassColor", false) and 1 or 0.3 end },
+                          } },
+                        { type="input", label="Separator", inputWidth=60,
+                          get=function() return SVal("leftTextTargetSep", ">") end,
+                          set=function(v)
+                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                              if v == "" then v = ">" end
+                              SSet("leftTextTargetSep", v); UpdatePreview()
+                          end,
+                          disabled=function() return SVal("leftTextContent","name") ~= "nametotarget" end,
+                          disabledTooltip="This option only applies when Name > Target is selected." },
+                        { type="input", label="Prefix", inputWidth=60,
+                          tooltip="Text shown before the target's name.",
+                          get=function() return SVal("leftTextTargetPrefix", "T:") end,
+                          set=function(v)
+                              -- Unlike Separator, empty is kept: no prefix.
+                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                              SSet("leftTextTargetPrefix", v); UpdatePreview()
+                          end,
+                          disabled=function() return SVal("leftTextContent","name") ~= "targetname" end,
+                          disabledTooltip="This option only applies when Target is selected." },
+                                        }),
+                })
+            end
             -- Inline swatches on Left Text (CDM Border Size double-swatch pattern): class
             -- sets leftTextClassColor, custom opens the picker and switches back from class.
             if not EllesmereUI._prebuilding then
                 local leftRgn = rgn
                 local ltAnchor = leftRgn._lastInline or leftRgn._control
-                -- Class Colored swatch (nearest the control): shows the player's class color.
+                -- Class Colored swatch (nearest the cog): shows the player's class color.
                 local ltClassSwatch, ltUpdateClassSwatch = EllesmereUI.BuildColorSwatch(
                     leftRgn, leftRgn:GetFrameLevel() + 5,
                     function()
                         local _, classFile = UnitClass("player")
-                        local cc = classFile and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classFile]
+                        local cc = classFile and EllesmereUI.GetClassColor(classFile)
                         if cc then return cc.r, cc.g, cc.b end
                         return 1, 1, 1
                     end,
@@ -720,74 +791,6 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                         setValue = function(v) SSet("leftTextClassColor", v) end,
                     })
                 end
-            end
-            -- Cogwheel on Left Text (left region)
-            if not EllesmereUI._prebuilding then
-                local leftRgn = rgn
-                EllesmereUI.BuildInlineCog(leftRgn, {
-                    disabled = function() return SVal("leftTextContent", "name") == "none" end,
-                    disabledTooltip = "This option requires a text selection other than none.",
-                    title = "Left Text Settings",
-                    rows = ns.UF_CoreTextRows("leftText", "name", SVal, SSet, {
-                        { type="slider", label="Size", min=8, max=100, step=1,
-                          get=function() return SVal("leftTextSize", SDB().textSize or 12) end,
-                          set=function(v) SSet("leftTextSize", v); UpdatePreview() end },
-                        { type="slider", label="X Offset", min=-300, max=300, step=1,
-                          get=function() return SVal("leftTextX", 0) end,
-                          set=function(v) SSet("leftTextX", v); UpdatePreview() end },
-                        { type="slider", label="Y Offset", min=-300, max=300, step=1,
-                          get=function() return SVal("leftTextY", 0) end,
-                          set=function(v) SSet("leftTextY", v); UpdatePreview() end },
-                        { type="slider", label="Width %", min=20, max=200, step=5,
-                          get=function() return SVal("leftTextWidthPct", 100) end,
-                          set=function(v) SSet("leftTextWidthPct", v); UpdatePreview() end },
-                        { type="multiswatch", label="Indicator Color",
-                          disabled=function() local c = SVal("leftTextContent","name") return c ~= "nametotarget" and c ~= "targetname" end,
-                          disabledTooltip="This option only applies when Name > Target or Target is selected.",
-                          swatches = {
-                            { tooltip = "Custom Colored", hasAlpha = false,
-                              getValue = function() local c = SVal("leftTextTargetSepColor", nil) if type(c) == "table" then return c.r or 1, c.g or 1, c.b or 1 end return 1, 1, 1 end,
-                              setValue = function(r, g, b) SSet("leftTextTargetSepColor", { r=r, g=g, b=b }); UpdatePreview() end,
-                              onClick = function(self)
-                                  if SVal("leftTextTargetSepClassColor", false) then
-                                      SSet("leftTextTargetSepClassColor", false); UpdatePreview()
-                                      return
-                                  end
-                                  if self._eabOrigClick then self._eabOrigClick(self) end
-                              end,
-                              refreshAlpha = function() return SVal("leftTextTargetSepClassColor", false) and 0.3 or 1 end },
-                            { tooltip = "Class Colored", hasAlpha = false,
-                              getValue = function()
-                                  local _, ct = UnitClass("player")
-                                  local cc = ct and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
-                                  if cc then return cc.r, cc.g, cc.b end
-                                  return 1, 1, 1
-                              end,
-                              setValue = function() end,
-                              onClick = function() SSet("leftTextTargetSepClassColor", true); UpdatePreview() end,
-                              refreshAlpha = function() return SVal("leftTextTargetSepClassColor", false) and 1 or 0.3 end },
-                          } },
-                        { type="input", label="Separator", inputWidth=60,
-                          get=function() return SVal("leftTextTargetSep", ">") end,
-                          set=function(v)
-                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
-                              if v == "" then v = ">" end
-                              SSet("leftTextTargetSep", v); UpdatePreview()
-                          end,
-                          disabled=function() return SVal("leftTextContent","name") ~= "nametotarget" end,
-                          disabledTooltip="This option only applies when Name > Target is selected." },
-                        { type="input", label="Prefix", inputWidth=60,
-                          tooltip="Text shown before the target's name.",
-                          get=function() return SVal("leftTextTargetPrefix", "T:") end,
-                          set=function(v)
-                              -- Unlike Separator, empty is kept: no prefix.
-                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
-                              SSet("leftTextTargetPrefix", v); UpdatePreview()
-                          end,
-                          disabled=function() return SVal("leftTextContent","name") ~= "targetname" end,
-                          disabledTooltip="This option only applies when Target is selected." },
-                                        }),
-                })
             end
         end,
     }
@@ -855,6 +858,74 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                     },
                 })
             end
+            -- Cogwheel on Right Text (right region)
+            do
+                local rightRgn = rgn
+                EllesmereUI.BuildInlineCog(rightRgn, {
+                    disabled = function() return SVal("rightTextContent", "both") == "none" end,
+                    disabledTooltip = "This option requires a text selection other than none.",
+                    title = "Right Text Settings",
+                    rows = ns.UF_CoreTextRows("rightText", "both", SVal, SSet, {
+                        { type="slider", label="Size", min=8, max=100, step=1,
+                          get=function() return SVal("rightTextSize", SDB().textSize or 12) end,
+                          set=function(v) SSet("rightTextSize", v); UpdatePreview() end },
+                        { type="slider", label="X Offset", min=-300, max=300, step=1,
+                          get=function() return SVal("rightTextX", 0) end,
+                          set=function(v) SSet("rightTextX", v); UpdatePreview() end },
+                        { type="slider", label="Y Offset", min=-300, max=300, step=1,
+                          get=function() return SVal("rightTextY", 0) end,
+                          set=function(v) SSet("rightTextY", v); UpdatePreview() end },
+                        { type="slider", label="Width %", min=20, max=200, step=5,
+                          get=function() return SVal("rightTextWidthPct", 100) end,
+                          set=function(v) SSet("rightTextWidthPct", v); UpdatePreview() end },
+                        { type="multiswatch", label="Indicator Color",
+                          disabled=function() local c = SVal("rightTextContent","both") return c ~= "nametotarget" and c ~= "targetname" end,
+                          disabledTooltip="This option only applies when Name > Target or Target is selected.",
+                          swatches = {
+                            { tooltip = "Custom Colored", hasAlpha = false,
+                              getValue = function() local c = SVal("rightTextTargetSepColor", nil) if type(c) == "table" then return c.r or 1, c.g or 1, c.b or 1 end return 1, 1, 1 end,
+                              setValue = function(r, g, b) SSet("rightTextTargetSepColor", { r=r, g=g, b=b }); UpdatePreview() end,
+                              onClick = function(self)
+                                  if SVal("rightTextTargetSepClassColor", false) then
+                                      SSet("rightTextTargetSepClassColor", false); UpdatePreview()
+                                      return
+                                  end
+                                  if self._eabOrigClick then self._eabOrigClick(self) end
+                              end,
+                              refreshAlpha = function() return SVal("rightTextTargetSepClassColor", false) and 0.3 or 1 end },
+                            { tooltip = "Class Colored", hasAlpha = false,
+                              getValue = function()
+                                  local _, ct = UnitClass("player")
+                                  local cc = ct and EllesmereUI.GetClassColor(ct)
+                                  if cc then return cc.r, cc.g, cc.b end
+                                  return 1, 1, 1
+                              end,
+                              setValue = function() end,
+                              onClick = function() SSet("rightTextTargetSepClassColor", true); UpdatePreview() end,
+                              refreshAlpha = function() return SVal("rightTextTargetSepClassColor", false) and 1 or 0.3 end },
+                          } },
+                        { type="input", label="Separator", inputWidth=60,
+                          get=function() return SVal("rightTextTargetSep", ">") end,
+                          set=function(v)
+                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                              if v == "" then v = ">" end
+                              SSet("rightTextTargetSep", v); UpdatePreview()
+                          end,
+                          disabled=function() return SVal("rightTextContent","both") ~= "nametotarget" end,
+                          disabledTooltip="This option only applies when Name > Target is selected." },
+                        { type="input", label="Prefix", inputWidth=60,
+                          tooltip="Text shown before the target's name.",
+                          get=function() return SVal("rightTextTargetPrefix", "T:") end,
+                          set=function(v)
+                              -- Unlike Separator, empty is kept: no prefix.
+                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                              SSet("rightTextTargetPrefix", v); UpdatePreview()
+                          end,
+                          disabled=function() return SVal("rightTextContent","both") ~= "targetname" end,
+                          disabledTooltip="This option only applies when Target is selected." },
+                                        }),
+                })
+            end
             -- Inline swatches on Right Text (CDM Border Size double-swatch pattern): class
             -- sets rightTextClassColor, custom opens the picker and switches back from class.
             if not EllesmereUI._prebuilding then
@@ -864,7 +935,7 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                     rightRgn, rightRgn:GetFrameLevel() + 5,
                     function()
                         local _, classFile = UnitClass("player")
-                        local cc = classFile and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classFile]
+                        local cc = classFile and EllesmereUI.GetClassColor(classFile)
                         if cc then return cc.r, cc.g, cc.b end
                         return 1, 1, 1
                     end,
@@ -921,74 +992,6 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                         setValue = function(v) SSet("rightTextClassColor", v) end,
                     })
                 end
-            end
-            -- Cogwheel on Right Text (right region)
-            if not EllesmereUI._prebuilding then
-                local rightRgn = rgn
-                EllesmereUI.BuildInlineCog(rightRgn, {
-                    disabled = function() return SVal("rightTextContent", "both") == "none" end,
-                    disabledTooltip = "This option requires a text selection other than none.",
-                    title = "Right Text Settings",
-                    rows = ns.UF_CoreTextRows("rightText", "both", SVal, SSet, {
-                        { type="slider", label="Size", min=8, max=100, step=1,
-                          get=function() return SVal("rightTextSize", SDB().textSize or 12) end,
-                          set=function(v) SSet("rightTextSize", v); UpdatePreview() end },
-                        { type="slider", label="X Offset", min=-300, max=300, step=1,
-                          get=function() return SVal("rightTextX", 0) end,
-                          set=function(v) SSet("rightTextX", v); UpdatePreview() end },
-                        { type="slider", label="Y Offset", min=-300, max=300, step=1,
-                          get=function() return SVal("rightTextY", 0) end,
-                          set=function(v) SSet("rightTextY", v); UpdatePreview() end },
-                        { type="slider", label="Width %", min=20, max=200, step=5,
-                          get=function() return SVal("rightTextWidthPct", 100) end,
-                          set=function(v) SSet("rightTextWidthPct", v); UpdatePreview() end },
-                        { type="multiswatch", label="Indicator Color",
-                          disabled=function() local c = SVal("rightTextContent","both") return c ~= "nametotarget" and c ~= "targetname" end,
-                          disabledTooltip="This option only applies when Name > Target or Target is selected.",
-                          swatches = {
-                            { tooltip = "Custom Colored", hasAlpha = false,
-                              getValue = function() local c = SVal("rightTextTargetSepColor", nil) if type(c) == "table" then return c.r or 1, c.g or 1, c.b or 1 end return 1, 1, 1 end,
-                              setValue = function(r, g, b) SSet("rightTextTargetSepColor", { r=r, g=g, b=b }); UpdatePreview() end,
-                              onClick = function(self)
-                                  if SVal("rightTextTargetSepClassColor", false) then
-                                      SSet("rightTextTargetSepClassColor", false); UpdatePreview()
-                                      return
-                                  end
-                                  if self._eabOrigClick then self._eabOrigClick(self) end
-                              end,
-                              refreshAlpha = function() return SVal("rightTextTargetSepClassColor", false) and 0.3 or 1 end },
-                            { tooltip = "Class Colored", hasAlpha = false,
-                              getValue = function()
-                                  local _, ct = UnitClass("player")
-                                  local cc = ct and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
-                                  if cc then return cc.r, cc.g, cc.b end
-                                  return 1, 1, 1
-                              end,
-                              setValue = function() end,
-                              onClick = function() SSet("rightTextTargetSepClassColor", true); UpdatePreview() end,
-                              refreshAlpha = function() return SVal("rightTextTargetSepClassColor", false) and 1 or 0.3 end },
-                          } },
-                        { type="input", label="Separator", inputWidth=60,
-                          get=function() return SVal("rightTextTargetSep", ">") end,
-                          set=function(v)
-                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
-                              if v == "" then v = ">" end
-                              SSet("rightTextTargetSep", v); UpdatePreview()
-                          end,
-                          disabled=function() return SVal("rightTextContent","both") ~= "nametotarget" end,
-                          disabledTooltip="This option only applies when Name > Target is selected." },
-                        { type="input", label="Prefix", inputWidth=60,
-                          tooltip="Text shown before the target's name.",
-                          get=function() return SVal("rightTextTargetPrefix", "T:") end,
-                          set=function(v)
-                              -- Unlike Separator, empty is kept: no prefix.
-                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
-                              SSet("rightTextTargetPrefix", v); UpdatePreview()
-                          end,
-                          disabled=function() return SVal("rightTextContent","both") ~= "targetname" end,
-                          disabledTooltip="This option only applies when Target is selected." },
-                                        }),
-                })
             end
         end,
     }
@@ -1052,6 +1055,74 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                     },
                 })
             end
+            -- Cogwheel on Center Text (left region)
+            do
+                local ctrRgn = rgn
+                EllesmereUI.BuildInlineCog(ctrRgn, {
+                    disabled = function() return SVal("centerTextContent", "none") == "none" end,
+                    disabledTooltip = "This option requires a text selection other than none.",
+                    title = "Center Text Settings",
+                    rows = ns.UF_CoreTextRows("centerText", "none", SVal, SSet, {
+                        { type="slider", label="Size", min=8, max=100, step=1,
+                          get=function() return SVal("centerTextSize", SDB().textSize or 12) end,
+                          set=function(v) SSet("centerTextSize", v); UpdatePreview() end },
+                        { type="slider", label="X Offset", min=-300, max=300, step=1,
+                          get=function() return SVal("centerTextX", 0) end,
+                          set=function(v) SSet("centerTextX", v); UpdatePreview() end },
+                        { type="slider", label="Y Offset", min=-300, max=300, step=1,
+                          get=function() return SVal("centerTextY", 0) end,
+                          set=function(v) SSet("centerTextY", v); UpdatePreview() end },
+                        { type="slider", label="Width %", min=20, max=200, step=5,
+                          get=function() return SVal("centerTextWidthPct", 100) end,
+                          set=function(v) SSet("centerTextWidthPct", v); UpdatePreview() end },
+                        { type="multiswatch", label="Indicator Color",
+                          disabled=function() local c = SVal("centerTextContent","none") return c ~= "nametotarget" and c ~= "targetname" end,
+                          disabledTooltip="This option only applies when Name > Target or Target is selected.",
+                          swatches = {
+                            { tooltip = "Custom Colored", hasAlpha = false,
+                              getValue = function() local c = SVal("centerTextTargetSepColor", nil) if type(c) == "table" then return c.r or 1, c.g or 1, c.b or 1 end return 1, 1, 1 end,
+                              setValue = function(r, g, b) SSet("centerTextTargetSepColor", { r=r, g=g, b=b }); UpdatePreview() end,
+                              onClick = function(self)
+                                  if SVal("centerTextTargetSepClassColor", false) then
+                                      SSet("centerTextTargetSepClassColor", false); UpdatePreview()
+                                      return
+                                  end
+                                  if self._eabOrigClick then self._eabOrigClick(self) end
+                              end,
+                              refreshAlpha = function() return SVal("centerTextTargetSepClassColor", false) and 0.3 or 1 end },
+                            { tooltip = "Class Colored", hasAlpha = false,
+                              getValue = function()
+                                  local _, ct = UnitClass("player")
+                                  local cc = ct and EllesmereUI.GetClassColor(ct)
+                                  if cc then return cc.r, cc.g, cc.b end
+                                  return 1, 1, 1
+                              end,
+                              setValue = function() end,
+                              onClick = function() SSet("centerTextTargetSepClassColor", true); UpdatePreview() end,
+                              refreshAlpha = function() return SVal("centerTextTargetSepClassColor", false) and 1 or 0.3 end },
+                          } },
+                        { type="input", label="Separator", inputWidth=60,
+                          get=function() return SVal("centerTextTargetSep", ">") end,
+                          set=function(v)
+                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                              if v == "" then v = ">" end
+                              SSet("centerTextTargetSep", v); UpdatePreview()
+                          end,
+                          disabled=function() return SVal("centerTextContent","none") ~= "nametotarget" end,
+                          disabledTooltip="This option only applies when Name > Target is selected." },
+                        { type="input", label="Prefix", inputWidth=60,
+                          tooltip="Text shown before the target's name.",
+                          get=function() return SVal("centerTextTargetPrefix", "T:") end,
+                          set=function(v)
+                              -- Unlike Separator, empty is kept: no prefix.
+                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                              SSet("centerTextTargetPrefix", v); UpdatePreview()
+                          end,
+                          disabled=function() return SVal("centerTextContent","none") ~= "targetname" end,
+                          disabledTooltip="This option only applies when Target is selected." },
+                                        }),
+                })
+            end
             -- Inline swatches on Center Text (CDM Border Size double-swatch pattern): class
             -- sets centerTextClassColor, custom opens the picker and switches back from class.
             if not EllesmereUI._prebuilding then
@@ -1061,7 +1132,7 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                     ctrRgn, ctrRgn:GetFrameLevel() + 5,
                     function()
                         local _, classFile = UnitClass("player")
-                        local cc = classFile and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classFile]
+                        local cc = classFile and EllesmereUI.GetClassColor(classFile)
                         if cc then return cc.r, cc.g, cc.b end
                         return 1, 1, 1
                     end,
@@ -1101,74 +1172,6 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                 end
                 RegisterWidgetRefresh(function() ctUpdateSwatch(); ctUpdateClassSwatch(); UpdateCtSwatches() end)
                 UpdateCtSwatches()
-            end
-            -- Cogwheel on Center Text (left region)
-            if not EllesmereUI._prebuilding then
-                local ctrRgn = rgn
-                EllesmereUI.BuildInlineCog(ctrRgn, {
-                    disabled = function() return SVal("centerTextContent", "none") == "none" end,
-                    disabledTooltip = "This option requires a text selection other than none.",
-                    title = "Center Text Settings",
-                    rows = ns.UF_CoreTextRows("centerText", "none", SVal, SSet, {
-                        { type="slider", label="Size", min=8, max=100, step=1,
-                          get=function() return SVal("centerTextSize", SDB().textSize or 12) end,
-                          set=function(v) SSet("centerTextSize", v); UpdatePreview() end },
-                        { type="slider", label="X Offset", min=-300, max=300, step=1,
-                          get=function() return SVal("centerTextX", 0) end,
-                          set=function(v) SSet("centerTextX", v); UpdatePreview() end },
-                        { type="slider", label="Y Offset", min=-300, max=300, step=1,
-                          get=function() return SVal("centerTextY", 0) end,
-                          set=function(v) SSet("centerTextY", v); UpdatePreview() end },
-                        { type="slider", label="Width %", min=20, max=200, step=5,
-                          get=function() return SVal("centerTextWidthPct", 100) end,
-                          set=function(v) SSet("centerTextWidthPct", v); UpdatePreview() end },
-                        { type="multiswatch", label="Indicator Color",
-                          disabled=function() local c = SVal("centerTextContent","none") return c ~= "nametotarget" and c ~= "targetname" end,
-                          disabledTooltip="This option only applies when Name > Target or Target is selected.",
-                          swatches = {
-                            { tooltip = "Custom Colored", hasAlpha = false,
-                              getValue = function() local c = SVal("centerTextTargetSepColor", nil) if type(c) == "table" then return c.r or 1, c.g or 1, c.b or 1 end return 1, 1, 1 end,
-                              setValue = function(r, g, b) SSet("centerTextTargetSepColor", { r=r, g=g, b=b }); UpdatePreview() end,
-                              onClick = function(self)
-                                  if SVal("centerTextTargetSepClassColor", false) then
-                                      SSet("centerTextTargetSepClassColor", false); UpdatePreview()
-                                      return
-                                  end
-                                  if self._eabOrigClick then self._eabOrigClick(self) end
-                              end,
-                              refreshAlpha = function() return SVal("centerTextTargetSepClassColor", false) and 0.3 or 1 end },
-                            { tooltip = "Class Colored", hasAlpha = false,
-                              getValue = function()
-                                  local _, ct = UnitClass("player")
-                                  local cc = ct and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
-                                  if cc then return cc.r, cc.g, cc.b end
-                                  return 1, 1, 1
-                              end,
-                              setValue = function() end,
-                              onClick = function() SSet("centerTextTargetSepClassColor", true); UpdatePreview() end,
-                              refreshAlpha = function() return SVal("centerTextTargetSepClassColor", false) and 1 or 0.3 end },
-                          } },
-                        { type="input", label="Separator", inputWidth=60,
-                          get=function() return SVal("centerTextTargetSep", ">") end,
-                          set=function(v)
-                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
-                              if v == "" then v = ">" end
-                              SSet("centerTextTargetSep", v); UpdatePreview()
-                          end,
-                          disabled=function() return SVal("centerTextContent","none") ~= "nametotarget" end,
-                          disabledTooltip="This option only applies when Name > Target is selected." },
-                        { type="input", label="Prefix", inputWidth=60,
-                          tooltip="Text shown before the target's name.",
-                          get=function() return SVal("centerTextTargetPrefix", "T:") end,
-                          set=function(v)
-                              -- Unlike Separator, empty is kept: no prefix.
-                              v = tostring(v or ""):gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "")
-                              SSet("centerTextTargetPrefix", v); UpdatePreview()
-                          end,
-                          disabled=function() return SVal("centerTextContent","none") ~= "targetname" end,
-                          disabledTooltip="This option only applies when Target is selected." },
-                                        }),
-                })
             end
         end,
     }
@@ -1234,58 +1237,8 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                     },
                 })
             end
-            -- Inline swatches on Extra Text: class sets
-            -- extraTextClassColor, custom opens the picker.
-            if not EllesmereUI._prebuilding then
-                local etrRgn = rgn
-                local etAnchor = etrRgn._lastInline or etrRgn._control
-                local etClassSwatch, etUpdateClassSwatch = EllesmereUI.BuildColorSwatch(
-                    etrRgn, etrRgn:GetFrameLevel() + 5,
-                    function()
-                        local _, classFile = UnitClass("player")
-                        local cc = classFile and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classFile]
-                        if cc then return cc.r, cc.g, cc.b end
-                        return 1, 1, 1
-                    end,
-                    function() end, nil, 20)
-                PP.Point(etClassSwatch, "RIGHT", etAnchor, "LEFT", -8, 0)
-                etClassSwatch:SetScript("OnClick", function()
-                    if SVal("extraTextContent", "none") == "none" then return end
-                    SSet("extraTextClassColor", true); UpdatePreview(); EllesmereUI:RefreshPage()
-                end)
-                etClassSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(etClassSwatch, "Class Colored") end)
-                etClassSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                local etSwGet = function()
-                    return SVal("extraTextColorR", 1), SVal("extraTextColorG", 1), SVal("extraTextColorB", 1)
-                end
-                local etSwSet = function(r, g, b)
-                    SSet("extraTextColorR", r); SSet("extraTextColorG", g); SSet("extraTextColorB", b)
-                    UpdatePreview()
-                end
-                local etSwatch, etUpdateSwatch = EllesmereUI.BuildColorSwatch(etrRgn, etrRgn:GetFrameLevel() + 5, etSwGet, etSwSet, nil, 20)
-                PP.Point(etSwatch, "RIGHT", etClassSwatch, "LEFT", -8, 0)
-                etrRgn._lastInline = etSwatch
-                local etOrigClick = etSwatch:GetScript("OnClick")
-                etSwatch:SetScript("OnClick", function(self, ...)
-                    if SVal("extraTextContent", "none") == "none" then return end
-                    if SVal("extraTextClassColor", false) then
-                        SSet("extraTextClassColor", false); UpdatePreview(); EllesmereUI:RefreshPage(); return
-                    end
-                    if etOrigClick then etOrigClick(self, ...) end
-                end)
-                etSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(etSwatch, "Custom Colored") end)
-                etSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                local function UpdateEtSwatches()
-                    local isNone = SVal("extraTextContent", "none") == "none"
-                    local isClass = SVal("extraTextClassColor", false)
-                    etSwatch:SetAlpha((isClass or isNone) and 0.3 or 1)
-                    etClassSwatch:SetAlpha((isClass and not isNone) and 1 or 0.3)
-                end
-                RegisterWidgetRefresh(function() etUpdateSwatch(); etUpdateClassSwatch(); UpdateEtSwatches() end)
-                UpdateEtSwatches()
-            end
             -- Cogwheel on Extra Text (Center row right region): Alignment + Size/X/Y
-            if not EllesmereUI._prebuilding then
+            do
                 local etrRgn = rgn
                 EllesmereUI.BuildInlineCog(etrRgn, {
                     disabled = function() return SVal("extraTextContent", "none") == "none" end,
@@ -1326,7 +1279,7 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                             { tooltip = "Class Colored", hasAlpha = false,
                               getValue = function()
                                   local _, ct = UnitClass("player")
-                                  local cc = ct and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[ct]
+                                  local cc = ct and EllesmereUI.GetClassColor(ct)
                                   if cc then return cc.r, cc.g, cc.b end
                                   return 1, 1, 1
                               end,
@@ -1355,6 +1308,56 @@ function ns.UFO_BuildHealthBarSection(parent, y, ctx)
                           disabledTooltip="This option only applies when Target is selected." },
                                         }),
                 })
+            end
+            -- Inline swatches on Extra Text: class sets
+            -- extraTextClassColor, custom opens the picker.
+            if not EllesmereUI._prebuilding then
+                local etrRgn = rgn
+                local etAnchor = etrRgn._lastInline or etrRgn._control
+                local etClassSwatch, etUpdateClassSwatch = EllesmereUI.BuildColorSwatch(
+                    etrRgn, etrRgn:GetFrameLevel() + 5,
+                    function()
+                        local _, classFile = UnitClass("player")
+                        local cc = classFile and EllesmereUI.GetClassColor(classFile)
+                        if cc then return cc.r, cc.g, cc.b end
+                        return 1, 1, 1
+                    end,
+                    function() end, nil, 20)
+                PP.Point(etClassSwatch, "RIGHT", etAnchor, "LEFT", -8, 0)
+                etClassSwatch:SetScript("OnClick", function()
+                    if SVal("extraTextContent", "none") == "none" then return end
+                    SSet("extraTextClassColor", true); UpdatePreview(); EllesmereUI:RefreshPage()
+                end)
+                etClassSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(etClassSwatch, "Class Colored") end)
+                etClassSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                local etSwGet = function()
+                    return SVal("extraTextColorR", 1), SVal("extraTextColorG", 1), SVal("extraTextColorB", 1)
+                end
+                local etSwSet = function(r, g, b)
+                    SSet("extraTextColorR", r); SSet("extraTextColorG", g); SSet("extraTextColorB", b)
+                    UpdatePreview()
+                end
+                local etSwatch, etUpdateSwatch = EllesmereUI.BuildColorSwatch(etrRgn, etrRgn:GetFrameLevel() + 5, etSwGet, etSwSet, nil, 20)
+                PP.Point(etSwatch, "RIGHT", etClassSwatch, "LEFT", -8, 0)
+                etrRgn._lastInline = etSwatch
+                local etOrigClick = etSwatch:GetScript("OnClick")
+                etSwatch:SetScript("OnClick", function(self, ...)
+                    if SVal("extraTextContent", "none") == "none" then return end
+                    if SVal("extraTextClassColor", false) then
+                        SSet("extraTextClassColor", false); UpdatePreview(); EllesmereUI:RefreshPage(); return
+                    end
+                    if etOrigClick then etOrigClick(self, ...) end
+                end)
+                etSwatch:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(etSwatch, "Custom Colored") end)
+                etSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                local function UpdateEtSwatches()
+                    local isNone = SVal("extraTextContent", "none") == "none"
+                    local isClass = SVal("extraTextClassColor", false)
+                    etSwatch:SetAlpha((isClass or isNone) and 0.3 or 1)
+                    etClassSwatch:SetAlpha((isClass and not isNone) and 1 or 0.3)
+                end
+                RegisterWidgetRefresh(function() etUpdateSwatch(); etUpdateClassSwatch(); UpdateEtSwatches() end)
+                UpdateEtSwatches()
             end
         end,
     }
@@ -1390,9 +1393,11 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
     local ppTextValues = { ["none"]="None", ["left"]="Left", ["right"]="Right", ["center"]="Center" }
     local ppTextOrder = { "none", "---", "left", "right", "center" }
     local ppFmtValues = { ["none"]="None", ["smart"]="Smart Text", ["curpp"]="Power Value", ["curmaxpp"]="Power Value / Max", ["perpp"]="Power %", ["both"]="Value | %" }
-    local ppFmtOrder = { "none", "smart", "curpp", "curmaxpp", "perpp", "both" }
+    -- WoW Forever lists no Smart Text, and a saved "smart" there reads as the
+    -- value (EllesmereUI.PowerTextFormat).
+    local ppFmtOrder = EllesmereUI.PowerTextFormatOrder({ "none", "smart", "curpp", "curmaxpp", "perpp", "both" })
     -- Power Text alone offers Custom; Form Power Text keeps the lists above.
-    local ppTextFmtOrder = { "none", "---", "custom", "---", "smart", "curpp", "curmaxpp", "perpp", "both" }
+    local ppTextFmtOrder = EllesmereUI.PowerTextFormatOrder({ "none", "---", "custom", "---", "smart", "curpp", "curmaxpp", "perpp", "both" })
 
     -- Row 1: Bar Height + Bar Position. Under a stock style the track fixes
     -- the bar's height and place: the height slot is Hide Power Bar instead
@@ -1428,10 +1433,9 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
           end }));  y = y - h
     -- Cog on Position for X/Y offsets + Width (disabled unless detached, and
     -- under a stock style, which places the bar itself)
-    if not EllesmereUI._prebuilding then
+    do
         local posRgn = sharedPowerRow1._rightRegion
         EllesmereUI.BuildInlineCog(posRgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             disabled = function()
                 if stockPower then return true end
                 local pos = SVal("powerPosition", "below"); return pos ~= "detached_top" and pos ~= "detached_bottom"
@@ -1513,7 +1517,7 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
         })
     end
     -- Reverse Fill cog on Bar Height or Hide Power Bar (left region)
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = sharedPowerRow1._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
             title = "Power Bar Fill",
@@ -1581,7 +1585,7 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
         end)
     sharedPowerRow2, h = W:DualRow(parent, y,
         { type="dropdown", text="Power Text", values=ppTextFmtValues, order=ppTextFmtOrder,
-          getValue=function() return SVal("powerTextFormat", "perpp") end,
+          getValue=function() return EllesmereUI.PowerTextFormat(SVal("powerTextFormat", "perpp")) end,
           setValue=SetPowerTextFormat },
         { type="slider", text="Fill Opacity", min=0, max=100, step=1,
           getValue=function() return SVal("powerBarOpacity", 100) end,
@@ -1594,7 +1598,7 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
             SVal("powerTextFormat", "perpp"), SDB, function() ReloadAndUpdate(); UpdatePreview() end)
     end
     -- Cogwheel on Power Text for Show % toggle
-    if not EllesmereUI._prebuilding then
+    do
         local fmtRgn = sharedPowerRow2._leftRegion
         EllesmereUI.BuildInlineCog(fmtRgn, ns.UFO_PowerTextCog(SVal, SSet,
             { none = true, curpp = true, curmaxpp = true },
@@ -1923,7 +1927,7 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
         })
     end
     -- Gradient cog on Bar Color (left region)
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = sharedPowerRow3._leftRegion
         EllesmereUI.BuildInlineCog(rgn, {
             title = "Gradient Settings",
@@ -1990,7 +1994,7 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
               end },
           } });  y = y - h
     -- Cogwheel on Text Position for size + x/y offsets (left of row 4)
-    if not EllesmereUI._prebuilding then
+    do
         local ppRgn = sharedPowerRow4._leftRegion
         local ppRows = {
             { type="slider", label="Size", min=6, max=100, step=1,
@@ -2004,7 +2008,6 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
               set=function(v) SSet("powerPercentY", v); UpdatePreview() end },
         }
         EllesmereUI.BuildInlineCog(ppRgn, {
-            icon = EllesmereUI.RESIZE_ICON,
             disabled = function() return SVal("powerPercentText", "none") == "none" end,
             disabledTooltip = "This option requires a text position other than none.",
             title = "Text Position",
@@ -2109,7 +2112,7 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
               SSet("powerBorderShiftX", nil)
               SSet("powerBorderShiftY", nil)
               if v ~= "solid" then
-                  -- The style's select colour (Pixels grey), else white.
+                  -- The style's select color (Pixels grey), else white.
                   SSet("powerBorderColor", EllesmereUI.GetBorderSelectColor(v) or { r = 1, g = 1, b = 1 })
                   SSet("powerBorderAlpha", 1)
               else
@@ -2175,9 +2178,9 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
         end
     end
     -- Cog for power border shift / layering (left region)
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = sharedPowerBorderRow._leftRegion
-        local cogBtn = EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+        local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
             title = "Power Border Options",
             rows = {
                 { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -2205,14 +2208,16 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
                   set = function(v) SSet("powerBorderBehind", v); ReloadAndUpdate() end },
             },
         })
-        local function UpdatePBCogVis()
-            local pos = SVal("powerPosition", "below")
-            local isDet = (pos == "detached_top" or pos == "detached_bottom")
-            local tex = SGet("powerBorderStyle") or "solid"
-            if not isDet or tex == "solid" then cogBtn:Hide() else cogBtn:Show() end
+        if not EllesmereUI._prebuilding then
+            local function UpdatePBCogVis()
+                local pos = SVal("powerPosition", "below")
+                local isDet = (pos == "detached_top" or pos == "detached_bottom")
+                local tex = SGet("powerBorderStyle") or "solid"
+                if not isDet or tex == "solid" then cogBtn:Hide() else cogBtn:Show() end
+            end
+            EllesmereUI.RegisterWidgetRefresh(UpdatePBCogVis)
+            UpdatePBCogVis()
         end
-        EllesmereUI.RegisterWidgetRefresh(UpdatePBCogVis)
-        UpdatePBCogVis()
     end
     -- Inline swatches on Border Size (right region)
     if not EllesmereUI._prebuilding then
@@ -2238,6 +2243,25 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
         pbSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         rightRgn._lastInline = pbSwatch
         EllesmereUI.RegisterWidgetRefresh(function() updatePBSwatch() end)
+    end
+
+    -- Hide Empty Power Bar (target and focus, WoW Forever only; the page
+    -- rebuilds on unit change): EUI_UnitFrames_ForeverEmptyPower.lua. It
+    -- needs an attached power bar beside a horizontal health fill; a stock look
+    -- greys it, naming the look (BlizzStyle.Gate).
+    if EllesmereUI.IS_FOREVER == true and (optState.selectedUnit == "target" or optState.selectedUnit == "focus") then
+        _, h = W:DualRow(parent, y,
+            EllesmereUI.BlizzStyle.Gate("unitframes", { type="toggle", text="Hide Empty Power Bar",
+              tooltip="Hides the power bar while the unit has no power and fills its space with the health bar.",
+              disabled=function()
+                  local pos = SVal("powerPosition", "below")
+                  return (pos ~= "below" and pos ~= "above") or SVal("powerHeight", 6) <= 0
+                      or SVal("healthVerticalFill", false) == true
+              end,
+              disabledTooltip="This option requires an attached Power Bar and a horizontal Health Bar fill.",
+              getValue=function() return SVal("hideEmptyPower", false) == true end,
+              setValue=function(v) SSet("hideEmptyPower", v and true or false) end }),
+            EllesmereUI.BlankRowCfg());  y = y - h
     end
 
     -- Spell Cost Prediction (player only, WoW Forever only; the page rebuilds
@@ -2272,7 +2296,6 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
             EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
             rgn._lastInline = eyeBtn
             local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-            EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
             eyeTex:SetAllPoints()
             local function RefreshCostEye()
                 eyeTex:SetTexture(ns._ufShowPowerCostPreview and EllesmereUI.EYE_INVISIBLE_ICON or EllesmereUI.EYE_VISIBLE_ICON)
@@ -2361,9 +2384,8 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
             end
             local FORM_TIP = "Requires Power Type: Mana + Form Power."
             -- Cog: the Form Power bar's offsets.
-            if not EllesmereUI._prebuilding then
+            do
                 EllesmereUI.BuildInlineCog(powerTypeRow._leftRegion, {
-                    icon = EllesmereUI.RESIZE_ICON,
                     disabled = NoFormBar,
                     disabledTooltip = FORM_TIP, rawTooltip = true,
                     title = "Form Power Bar",
@@ -2377,7 +2399,7 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
                     },
                 })
             end
-            -- Form Power Text (its colour swatches inline) + Form Text Position:
+            -- Form Power Text (its color swatches inline) + Form Text Position:
             -- the form bar's text, apart from the power bar's (Mana) text. Built
             -- only with Mana + Form Power (Power Type rebuilds the page).
             if not NoFormBar() then
@@ -2386,7 +2408,7 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
                     { type="dropdown", text="Form Power Text", values=ppFmtValues, order=ppFmtOrder,
                       getValue=function()
                           -- An inherited Custom draws Power % on the form bar.
-                          local v = FormVal("foreverFormTextFormat", "powerTextFormat", "perpp")
+                          local v = EllesmereUI.PowerTextFormat(FormVal("foreverFormTextFormat", "powerTextFormat", "perpp"))
                           return v == "custom" and "perpp" or v
                       end,
                       setValue=function(v)
@@ -2399,8 +2421,22 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
                     { type="dropdown", text="Form Text Position", values=ppTextValues, order=ppTextOrder,
                       getValue=function() return FormVal("foreverFormTextPos", "powerPercentText", "none") end,
                       setValue=function(v) SetForm("foreverFormTextPos", v) end });  y = y - h
-                if not EllesmereUI._prebuilding then
-                    -- Text colour: custom, or the form power's colour. Neither set
+                do
+                    EllesmereUI.BuildInlineCog(formTextRow._leftRegion, {
+                        disabled = function()
+                            local fmt = EllesmereUI.PowerTextFormat(FormVal("foreverFormTextFormat", "powerTextFormat", "perpp"))
+                            return fmt == "none" or fmt == "curpp" or fmt == "curmaxpp"
+                        end,
+                        disabledTooltip = "This option is only available for formats that display a percentage.",
+                        title = "Form Power Text",
+                        rows = {
+                            { type="toggle", label="Show %",
+                              get=function() return FormVal("foreverFormShowPercent", "powerShowPercent", true) ~= false end,
+                              set=function(v) SetForm("foreverFormShowPercent", v) end },
+                        },
+                    })
+                    if not EllesmereUI._prebuilding then
+                    -- Text color: custom, or the form power's color. Neither set
                     -- follows the power bar's Text Color.
                     local function FormPowerColored()
                         local pc = SVal("foreverFormTextPowerColor", nil)
@@ -2446,21 +2482,8 @@ function ns.UFO_BuildPowerBarSection(parent, y, ctx)
                           end,
                           refreshAlpha = function() return FormPowerColored() and 1 or 0.3 end },
                     })
-                    EllesmereUI.BuildInlineCog(formTextRow._leftRegion, {
-                        disabled = function()
-                            local fmt = FormVal("foreverFormTextFormat", "powerTextFormat", "perpp")
-                            return fmt == "none" or fmt == "curpp" or fmt == "curmaxpp"
-                        end,
-                        disabledTooltip = "This option is only available for formats that display a percentage.",
-                        title = "Form Power Text",
-                        rows = {
-                            { type="toggle", label="Show %",
-                              get=function() return FormVal("foreverFormShowPercent", "powerShowPercent", true) ~= false end,
-                              set=function(v) SetForm("foreverFormShowPercent", v) end },
-                        },
-                    })
+                    end
                     EllesmereUI.BuildInlineCog(formTextRow._rightRegion, {
-                        icon = EllesmereUI.RESIZE_ICON,
                         disabled = function()
                             return FormVal("foreverFormTextPos", "powerPercentText", "none") == "none"
                         end,
@@ -2621,7 +2644,10 @@ function ns.UFO_BuildClassResourceSection(parent, y, ctx)
     -- style builds a saved "blizzard" as modern, and a rogue under the
     -- EllesmereUI look reads its own style (ns.UF_ForeverCPStyle, nil
     -- elsewhere). Display and gating only; writes and syncs keep the saved value.
+    -- Forever druid without Cat Form: nothing builds, so the row reads None.
+    local CatLocked = EllesmereUI.ForeverDruidLacksCat
     local function SCPStyle()
+        if CatLocked() then return "none" end
         local v = SValSupported("classPowerStyle", "none")
         if ns.UF_ForeverCPStyle then v = ns.UF_ForeverCPStyle(v) end
         return v
@@ -2630,6 +2656,8 @@ function ns.UFO_BuildClassResourceSection(parent, y, ctx)
     -- Row 1: Enable Class Resource + Class Colors (with inline swatch)
     sharedClassResRow, h = W:DualRow(parent, y,
         { type="dropdown", text="Enable Class Resource", values=classPowerStyleValues, order=classPowerStyleOrder,
+          disabled=CatLocked,
+          disabledTooltip="Learn Cat Form to use combo points.", rawTooltip=true,
           -- Forever ships no class resource bar that can be re-parented: the
           -- per-class globals the Blizzard style adopts are all Mainline-only.
           -- Under the WoW Forever style the entry is the combo point arc
@@ -2877,10 +2905,9 @@ function ns.UFO_BuildClassResourceSection(parent, y, ctx)
     SApplySupport(row._leftRegion, "classPowerPosition")
     SApplySupport(row._rightRegion, "classPowerSize")
     -- Cog on Position for X/Y
-    if not EllesmereUI._prebuilding then
+    do
         local posRgn = row._leftRegion
         EllesmereUI.BuildInlineCog(posRgn, {
-            icon = EllesmereUI.DIRECTIONS_ICON,
             disabled = function() return SCPStyle() ~= "modern" or SValSupported("classPowerPosition", "top") == "above" end,
             disabledTooltip = function() return SCPStyle() ~= "modern" and "This option requires Class Resource to be set to Modern." or "This option requires a dropdown selection other than Above Health Bar" end,
             title = "Class Resource Position",
@@ -3231,7 +3258,7 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
         return true
     end
 
-    -- Row 1: Absorb Style (+ color swatch + placement cog) | Absorb Opacity
+    -- Row 1: Absorb Style (+ placement cog + color swatch) | Absorb Opacity
     absorbRow, h = W:DualRow(parent, y,
         { type="dropdown", text="Absorb Style", values=absorbStyleValues, order=absorbStyleOrder,
           getValue=function() return SValSupported("showPlayerAbsorb", "none") end,
@@ -3251,28 +3278,6 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
           setValue=function(v) SSetSupported("absorbOpacity", v) end });  y = y - h
     SApplySupport(absorbRow._leftRegion, "showPlayerAbsorb")
     SApplySupport(absorbRow._rightRegion, "absorbOpacity")
-    -- Inline color swatch for absorb color
-    if not EllesmereUI._prebuilding then
-        local rgn = absorbRow._leftRegion
-        local swatch = EllesmereUI.BuildColorSwatch(
-            rgn, absorbRow:GetFrameLevel() + 3,
-            function()
-                local c = SGetSupported("absorbColor")
-                if c then return c.r, c.g, c.b, 1 end
-                return 1, 1, 1, 1
-            end,
-            function(r, g, b)
-                UNIT_DB_MAP[optState.selectedUnit]().absorbColor = { r=r, g=g, b=b }
-                ReloadAndUpdate(); UpdatePreview()
-            end, false, 20)
-        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        local function UpdateAbsorbSwatchVis()
-            swatch:SetAlpha(SValSupported("showPlayerAbsorb", "none") == "none" and 0.3 or 1)
-        end
-        RegisterWidgetRefresh(UpdateAbsorbSwatchVis)
-        UpdateAbsorbSwatchVis()
-    end
     -- Inline cog: absorb placement (overlay / right edge / left edge)
     do
         local rgn = absorbRow._leftRegion
@@ -3389,6 +3394,28 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
             end
         end)
     end
+    -- Inline color swatch for absorb color
+    if not EllesmereUI._prebuilding then
+        local rgn = absorbRow._leftRegion
+        local swatch = EllesmereUI.BuildColorSwatch(
+            rgn, absorbRow:GetFrameLevel() + 3,
+            function()
+                local c = SGetSupported("absorbColor")
+                if c then return c.r, c.g, c.b, 1 end
+                return 1, 1, 1, 1
+            end,
+            function(r, g, b)
+                UNIT_DB_MAP[optState.selectedUnit]().absorbColor = { r=r, g=g, b=b }
+                ReloadAndUpdate(); UpdatePreview()
+            end, false, 20)
+        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        local function UpdateAbsorbSwatchVis()
+            swatch:SetAlpha(SValSupported("showPlayerAbsorb", "none") == "none" and 0.3 or 1)
+        end
+        RegisterWidgetRefresh(UpdateAbsorbSwatchVis)
+        UpdateAbsorbSwatchVis()
+    end
     -- Sync icon: Absorb Style + color swatch + cog settings across all frames
     if not EllesmereUI._prebuilding then
         local rgn = absorbRow._leftRegion
@@ -3415,7 +3442,7 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
         })
     end
 
-    -- Row 2: Heal Absorb Style (+ color swatch + placement cog) | Heal Absorb Opacity
+    -- Row 2: Heal Absorb Style (+ placement cog + color swatch) | Heal Absorb Opacity
     healAbsorbRow, h = W:DualRow(parent, y,
         { type="dropdown", text="Heal Absorb Style", values=absorbStyleValues,
           order=healAbsorbStyleOrder,
@@ -3449,7 +3476,6 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
         EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         rgn._lastInline = eyeBtn
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshHealEye()
             eyeTex:SetTexture(optState.showHealAbsorbPreview and EYE_INVISIBLE or EYE_VISIBLE)
@@ -3468,38 +3494,6 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
             EllesmereUI.SetGlyphAlpha(self, 0.4)
             EllesmereUI.HideWidgetTooltip()
         end)
-    end
-    -- Inline color swatch for heal absorb color
-    if not EllesmereUI._prebuilding then
-        local rgn = healAbsorbRow._leftRegion
-        local swatch = EllesmereUI.BuildColorSwatch(
-            rgn, healAbsorbRow:GetFrameLevel() + 3,
-            function()
-                local c = SGetSupported("healAbsorbColor")
-                if c then return c.r or 0.8, c.g or 0.15, c.b or 0.15, 1 end
-                return 0.8, 0.15, 0.15, 1
-            end,
-            function(r, g, b)
-                UNIT_DB_MAP[optState.selectedUnit]().healAbsorbColor = { r=r, g=g, b=b }
-                ReloadAndUpdate(); UpdatePreview()
-            end, false, 20)
-        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-        rgn._lastInline = swatch
-        -- Blocking overlay: disabled for "none" and the pre-colored
-        -- "Large Outlined Stripes" heal styles (their texture is not tinted).
-        local swatchBlock = CreateFrame("Frame", nil, swatch)
-        swatchBlock:SetAllPoints()
-        swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
-        swatchBlock:EnableMouse(true)
-        swatchBlock:Hide()
-        local function UpdateHealAbsorbSwatchVis()
-            local st = SValSupported("healAbsorbStyle", "clean")
-            local off = (st == "none" or st == "largeOutlinedStripes" or st == "largeOutlinedStripesR")
-            swatch:SetAlpha(off and 0.3 or 1)
-            if off then swatchBlock:Show() else swatchBlock:Hide() end
-        end
-        RegisterWidgetRefresh(UpdateHealAbsorbSwatchVis)
-        UpdateHealAbsorbSwatchVis()
     end
     -- Inline cog: heal absorb placement (independent of shield absorb)
     do
@@ -3548,6 +3542,38 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
                 end
             end
         end)
+    end
+    -- Inline color swatch for heal absorb color
+    if not EllesmereUI._prebuilding then
+        local rgn = healAbsorbRow._leftRegion
+        local swatch = EllesmereUI.BuildColorSwatch(
+            rgn, healAbsorbRow:GetFrameLevel() + 3,
+            function()
+                local c = SGetSupported("healAbsorbColor")
+                if c then return c.r or 0.8, c.g or 0.15, c.b or 0.15, 1 end
+                return 0.8, 0.15, 0.15, 1
+            end,
+            function(r, g, b)
+                UNIT_DB_MAP[optState.selectedUnit]().healAbsorbColor = { r=r, g=g, b=b }
+                ReloadAndUpdate(); UpdatePreview()
+            end, false, 20)
+        swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
+        rgn._lastInline = swatch
+        -- Blocking overlay: disabled for "none" and the pre-colored
+        -- "Large Outlined Stripes" heal styles (their texture is not tinted).
+        local swatchBlock = CreateFrame("Frame", nil, swatch)
+        swatchBlock:SetAllPoints()
+        swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
+        swatchBlock:EnableMouse(true)
+        swatchBlock:Hide()
+        local function UpdateHealAbsorbSwatchVis()
+            local st = SValSupported("healAbsorbStyle", "clean")
+            local off = (st == "none" or st == "largeOutlinedStripes" or st == "largeOutlinedStripesR")
+            swatch:SetAlpha(off and 0.3 or 1)
+            if off then swatchBlock:Show() else swatchBlock:Hide() end
+        end
+        RegisterWidgetRefresh(UpdateHealAbsorbSwatchVis)
+        UpdateHealAbsorbSwatchVis()
     end
     -- Sync icon: Heal Absorb Style + color swatch + cog settings across all frames
     if not EllesmereUI._prebuilding then
@@ -3649,7 +3675,7 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
         UpdateHealAbsorbBarSwatchVis()
     end
 
-    -- Max Health Style (+ eyeball, swatch, backing cog) | Max Health Opacity: Raid Frames
+    -- Max Health Style (+ eyeball, backing cog, swatch) | Max Health Opacity: Raid Frames
     -- parity; the overlay is always on the bar's far end. Boss frames use Target's.
     local maxHealthRow
     maxHealthRow, h = W:DualRow(parent, y,
@@ -3663,9 +3689,10 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
           setValue=function(v) SSetSupported("maxHealthOpacity", v) end });  y = y - h
     SApplySupport(maxHealthRow._leftRegion, "maxHealthStyle")
     SApplySupport(maxHealthRow._rightRegion, "maxHealthOpacity")
-    -- Inline order as on the Heal Absorb row: the eyeball, the swatch, then the cog.
-    if not EllesmereUI._prebuilding then
+    -- Inline order as on the Heal Absorb row: the eyeball, the cog, then the swatch.
+    do
         local rgn = maxHealthRow._leftRegion
+        if not EllesmereUI._prebuilding then
         -- Eyeball: shows a reduced maximum on the preview (session-only flag).
         local EYE_VISIBLE   = EllesmereUI.EYE_VISIBLE_ICON
         local EYE_INVISIBLE = EllesmereUI.EYE_INVISIBLE_ICON
@@ -3676,7 +3703,6 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
         EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         rgn._lastInline = eyeBtn
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshMaxHealthEye()
             eyeTex:SetTexture(optState.showMaxHealthPreview and EYE_INVISIBLE or EYE_VISIBLE)
@@ -3695,6 +3721,18 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
             EllesmereUI.SetGlyphAlpha(self, 0.4)
             EllesmereUI.HideWidgetTooltip()
         end)
+        end
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Max Health Rendering",
+            disabled = function() return SValSupported("maxHealthStyle", "none") == "none" end,
+            disabledTooltip = "Max Health Style",
+            rows = {
+                { type="slider", label="Backing Opacity", min=0, max=100, step=1,
+                  get=function() return SValSupported("maxHealthBgOpacity", 100) end,
+                  set=function(v) SSetSupported("maxHealthBgOpacity", v) end },
+            },
+        })
+        if not EllesmereUI._prebuilding then
         -- Swatch tints the texture; blocked for None and the pre-colored styles.
         local swatch = EllesmereUI.BuildColorSwatch(
             rgn, maxHealthRow:GetFrameLevel() + 3,
@@ -3722,16 +3760,7 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
         end
         RegisterWidgetRefresh(UpdateMaxHealthSwatchVis)
         UpdateMaxHealthSwatchVis()
-        EllesmereUI.BuildInlineCog(rgn, {
-            title = "Max Health Rendering",
-            disabled = function() return SValSupported("maxHealthStyle", "none") == "none" end,
-            disabledTooltip = "Max Health Style",
-            rows = {
-                { type="slider", label="Backing Opacity", min=0, max=100, step=1,
-                  get=function() return SValSupported("maxHealthBgOpacity", 100) end,
-                  set=function(v) SSetSupported("maxHealthBgOpacity", v) end },
-            },
-        })
+        end
     end
 
     -- Row 5: Heal Prediction (+ your / others' color swatches) | Prediction Opacity
@@ -3758,7 +3787,6 @@ function ns.UFO_BuildAbsorbsHealsSection(parent, y, ctx)
         EllesmereUI.SetGlyphAlpha(eyeBtn, 0.4)
         rgn._lastInline = eyeBtn
         local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-        EllesmereUI.AccentGlyph(eyeBtn, eyeTex)
         eyeTex:SetAllPoints()
         local function RefreshPredEye()
             eyeTex:SetTexture(ns._ufShowHealPredPreview and EllesmereUI.EYE_INVISIBLE_ICON or EllesmereUI.EYE_VISIBLE_ICON)

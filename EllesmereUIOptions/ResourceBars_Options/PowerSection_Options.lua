@@ -195,27 +195,12 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
                     EllesmereUI.BlizzStyle.Gate("resourcebars", ocfgR));  y = y - h
             end
         end
-        if not EllesmereUI._prebuilding and not ns.ERB_ClassicBorderRow() then
+        if not ns.ERB_ClassicBorderRow() then
             local rgn = pwrBsRow._rightRegion
             local ctrl = rgn._control
-            local borderSwatch, updateBorderSwatch = EllesmereUI.BuildColorSwatch(
-                rgn, pwrBsRow:GetFrameLevel() + 3,
-                function()
-                    local c = cfg()
-                    return (c and c.borderR or 0), (c and c.borderG or 0),
-                           (c and c.borderB or 0), (c and c.borderA or 1)
-                end,
-                function(r, g, b, a)
-                    local c = cfg(); if not c then return end
-                    c.borderR, c.borderG, c.borderB, c.borderA = r, g, b, a
-                    SmoothRefresh(); EllesmereUI:RefreshPage()
-                end,
-                true, 20)
-            PP.Point(borderSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-            rgn._lastInline = borderSwatch  -- the Corner Radius cog chains left of the swatch
             -- Corner Radius (EllesmereUI_RoundedCorners.lua): an inline cog on the
             -- border size control. The stock styles keep the bars square.
-            if not EllesmereUI._prebuilding then
+            do
                 EllesmereUI.BuildInlineCog(pwrBsRow._rightRegion, {
                     title = "Corner Radius", tip = "Corner Radius",
                     disabled = function()
@@ -236,24 +221,41 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
                        function(v) local c = cfg(); if not c then return end; c.cornerMask = v; RebuildPower() end),
                 })
             end
-            EllesmereUI.RegisterWidgetRefresh(function() updateBorderSwatch() end)
-            local swBlock = CreateFrame("Frame", nil, borderSwatch)
-            swBlock:SetAllPoints()
-            swBlock:SetFrameLevel(borderSwatch:GetFrameLevel() + 10)
-            swBlock:EnableMouse(true)
-            swBlock:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(borderSwatch, EllesmereUI.DisabledTooltip(powerDisTip)) end)
-            swBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            local function UpdateBorderSwDis()
-                if powerOff() then borderSwatch:SetAlpha(0.3); swBlock:Show()
-                else borderSwatch:SetAlpha(1); swBlock:Hide() end
+            if not EllesmereUI._prebuilding then
+                local borderSwatch, updateBorderSwatch = EllesmereUI.BuildColorSwatch(
+                    rgn, pwrBsRow:GetFrameLevel() + 3,
+                    function()
+                        local c = cfg()
+                        return (c and c.borderR or 0), (c and c.borderG or 0),
+                               (c and c.borderB or 0), (c and c.borderA or 1)
+                    end,
+                    function(r, g, b, a)
+                        local c = cfg(); if not c then return end
+                        c.borderR, c.borderG, c.borderB, c.borderA = r, g, b, a
+                        SmoothRefresh(); EllesmereUI:RefreshPage()
+                    end,
+                    true, 20)
+                PP.Point(borderSwatch, "RIGHT", rgn._lastInline or ctrl, "LEFT", -8, 0)
+                rgn._lastInline = borderSwatch  -- left of the Corner Radius cog
+                EllesmereUI.RegisterWidgetRefresh(function() updateBorderSwatch() end)
+                local swBlock = CreateFrame("Frame", nil, borderSwatch)
+                swBlock:SetAllPoints()
+                swBlock:SetFrameLevel(borderSwatch:GetFrameLevel() + 10)
+                swBlock:EnableMouse(true)
+                swBlock:SetScript("OnEnter", function() EllesmereUI.ShowWidgetTooltip(borderSwatch, EllesmereUI.DisabledTooltip(powerDisTip)) end)
+                swBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                local function UpdateBorderSwDis()
+                    if powerOff() then borderSwatch:SetAlpha(0.3); swBlock:Show()
+                    else borderSwatch:SetAlpha(1); swBlock:Hide() end
+                end
+                EllesmereUI.RegisterWidgetRefresh(UpdateBorderSwDis)
+                UpdateBorderSwDis()
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateBorderSwDis)
-            UpdateBorderSwDis()
         end
-        if not EllesmereUI._prebuilding then
+        do
             local rgn = pwrBsRow._leftRegion
             local sepValues, sepOrder = ns.ERB_SeparatorArtValues(true)
-            local cogBtn = EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+            local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
                 title = "Border Options",
                 rows = {
                     { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
@@ -372,8 +374,10 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
                 local tex = c and c.borderTexture or "solid"
                 if tex == "solid" or ns.ERB_ClassicBorderRow() then cogBtn:Hide() else cogBtn:Show() end
             end
-            EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
-            UpdateCogVis()
+            if not EllesmereUI._prebuilding then
+                EllesmereUI.RegisterWidgetRefresh(UpdateCogVis)
+                UpdateCogVis()
+            end
         end
         if not ctx.advanced and ctx.syncRows and not EllesmereUI._prebuilding and ns.ERB_ClassicBorderRow() then
             ctx.syncRows.powerBorder = pwrBsRow._rightRegion
@@ -462,6 +466,31 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
               c.fillOpacity = v; RebuildPower()
           end }
     );  y = y - h
+    do
+        local rgn = powerBorderRow._rightRegion
+        EllesmereUI.BuildInlineCog(rgn, {
+            disabled = function() local c = cfg(); return c and not c.enabled end,
+            disabledTooltip = powerDisTip,
+            title = "Fill Settings",
+            rows = {
+                { type = "toggle", label = "Enable Gradient",
+                  get = function() local c = cfg(); return c and c.gradientEnabled end,
+                  set = function(v)
+                      local c = cfg(); if not c then return end
+                      c.gradientEnabled = v; RebuildPower()
+                      EllesmereUI:RefreshPage()
+                  end },
+                { type = "dropdown", label = "Gradient Direction",
+                  values = { HORIZONTAL = "Horizontal", VERTICAL = "Vertical" },
+                  order = { "HORIZONTAL", "VERTICAL" },
+                  get = function() local c = cfg(); return c and c.gradientDir or "HORIZONTAL" end,
+                  set = function(v)
+                      local c = cfg(); if not c then return end
+                      c.gradientDir = v; RebuildPower()
+                  end },
+            },
+        })
+    end
     -- Fill Color inline swatches: gradient end / custom / power
     if not EllesmereUI._prebuilding then
     -- Spender Colors paint the fill flat once a row names a spell, as the bar does
@@ -575,34 +604,9 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
             flashTargets = function() return { ctx.syncRows.powerOpacity, ctx.syncRows.classOpacity, ctx.syncRows.healthOpacity } end,
         })
     end
-    if not EllesmereUI._prebuilding then
-        local rgn = powerBorderRow._rightRegion
-        EllesmereUI.BuildInlineCog(rgn, {
-            disabled = function() local c = cfg(); return c and not c.enabled end,
-            disabledTooltip = powerDisTip,
-            title = "Fill Settings",
-            rows = {
-                { type = "toggle", label = "Enable Gradient",
-                  get = function() local c = cfg(); return c and c.gradientEnabled end,
-                  set = function(v)
-                      local c = cfg(); if not c then return end
-                      c.gradientEnabled = v; RebuildPower()
-                      EllesmereUI:RefreshPage()
-                  end },
-                { type = "dropdown", label = "Gradient Direction",
-                  values = { HORIZONTAL = "Horizontal", VERTICAL = "Vertical" },
-                  order = { "HORIZONTAL", "VERTICAL" },
-                  get = function() local c = cfg(); return c and c.gradientDir or "HORIZONTAL" end,
-                  set = function(v)
-                      local c = cfg(); if not c then return end
-                      c.gradientDir = v; RebuildPower()
-                  end },
-            },
-        })
-    end
 
-    -- Out of Combat Opacity & Visibility cog: Fade Out of Combat dims the Power bar to this alpha out of combat (100 = no fade; ns.ResolveBarAlpha in UpdateVisibility, which reacts to combat). Show When Energy / Focus / Mana Missing reveal a rule-hidden bar while that resource is below full (ns.ERB_MissingWanted, same pass); Mana also covers a WoW Forever druid's Mana Bar while Shapeshifted.
-    if not EllesmereUI._prebuilding then
+    -- Out of Combat Opacity & Visibility cog: Fade Out of Combat dims the Power bar to this alpha out of combat (100 = no fade; ns.ResolveBarAlpha in UpdateVisibility, which reacts to combat). Show When Energy / Focus / Mana Missing show the bar at its normal opacity while that resource is below full, a rule-hidden bar and a faded one alike (ns.ERB_MissingWanted / ns.ERB_MissingLiftFloor, same pass); Mana also covers a WoW Forever druid's Mana Bar while Shapeshifted.
+    do
         local rgn = powerBorderRow._leftRegion
         local rows = {
             { type = "toggle", label = "Fade Out of Combat",
@@ -680,8 +684,9 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
           disabled = powerOff,
           disabledTooltip = powerDisTip,
           values = { none = "None", smart = "Smart Text", curpp = "Power Value", curmaxpp = "Power Value / Max", perpp = "Power %", both = "Power Value | Power %" },
-          order = { "none", "smart", "curpp", "curmaxpp", "perpp", "both" },
-          getValue = function() local c = cfg(); return c and c.textFormat or "none" end,
+          -- WoW Forever lists no Smart Text (EllesmereUI.PowerTextFormat).
+          order = EllesmereUI.PowerTextFormatOrder({ "none", "smart", "curpp", "curmaxpp", "perpp", "both" }),
+          getValue = function() local c = cfg(); return EllesmereUI.PowerTextFormat(c and c.textFormat or "none") end,
           setValue = function(v)
               local c = cfg(); if not c then return end
               c.textFormat = v; RefreshPower(); EllesmereUI:RefreshPage()
@@ -755,9 +760,9 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
         { type = "label", text = "Threshold & Hash Lines" }
     );  y = y - h
     -- Power Text inline cog: percent sign, anchor, x/y offsets
-    if not EllesmereUI._prebuilding then
+    do
         local rgn = powerTextSizeRow._leftRegion
-        local cogBtn = EllesmereUI.BuildInlineCog(rgn, { icon = EllesmereUI.DIRECTIONS_ICON,
+        local cogBtn = EllesmereUI.BuildInlineCog(rgn, {
             disabled = function() local c = cfg(); return c and not c.enabled end,
             disabledTooltip = "Power Bar",
             title = "Power Text",
@@ -791,10 +796,11 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
                   end },
             },
         })
-        AddFormTextBtn(rgn, cogBtn, cfg, RefreshPower)
+        if not EllesmereUI._prebuilding then AddFormTextBtn(rgn, cogBtn, cfg, RefreshPower) end
     end
+    local powerSettingsBtn
     if not EllesmereUI._prebuilding then
-    local powerSettingsBtn = BuildThresholdSettingsButton({
+    powerSettingsBtn = BuildThresholdSettingsButton({
         parentRgn = powerColorRow._rightRegion,
         getBarData = function() return cfg() end,
         pageParent = parent, pageTopY = _advTop, pageBotY = function() return y end,
@@ -822,6 +828,7 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
         threshMin = 1, threshMax = 99,
         defaultR = 1.0, defaultG = 0.2, defaultB = 0.2, defaultA = 1,
     })
+    end
 
     -- Bar-wide hash lines (the fallback when the active threshold entry has none of its own).
     BuildHashCog({
@@ -831,7 +838,6 @@ function ns.ERB_BuildPowerSection(parent, y, ctx)
         refreshFn = function() RebuildPower() end,
         popupTitle = EllesmereUI.L("Power Bar Hash Lines"),
     })
-    end
     -- Thresholds have their own per-spec system, so lock the slot during a Spec Overrides editing session.
     if EllesmereUI.SpecOverrides_AttachEditLock and not EllesmereUI._prebuilding then
         EllesmereUI.SpecOverrides_AttachEditLock(powerColorRow._rightRegion,

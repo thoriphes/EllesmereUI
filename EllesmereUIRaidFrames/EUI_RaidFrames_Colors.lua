@@ -28,7 +28,7 @@ local UnitGetTotalHealAbsorbs = UnitGetTotalHealAbsorbs
 local InCombatLockdown      = InCombatLockdown
 local issecretvalue         = issecretvalue
 
-local AbbreviateNumbers, ApplyFont, defaults = I.AbbreviateNumbers, I.ApplyFont, I.defaults
+local ApplyFont, defaults = I.ApplyFont, I.defaults
 local DISPEL_COLORS, GetFFD, PixelSnap = I.DISPEL_COLORS, I.GetFFD, I.PixelSnap
 local unitToButton = I.unitToButton
 
@@ -67,41 +67,99 @@ end
 
 -- Custom Dynamic Colors: the Classic path with user-chosen stops. Live frames feed a C_CurveUtil
 -- curve to UnitHealthPercent (secret-value safe); cached, rebuilt only when one of the three
--- colors changes. do-block keeps the cache state off the main-chunk local budget.
+-- colors or one of the two thresholds changes. do-block keeps the cache state off the
+-- main-chunk local budget.
 do
     local DEF100 = { r = 0, g = 1, b = 0 }
     local DEF50  = { r = 0xEC/255, g = 0xEC/255, b = 0x32/255 }
     local DEF0   = { r = 0xE3/255, g = 0x30/255, b = 0x30/255 }
     local dynCurve
-    local r0, g0, b0, r50, g50, b50, r100, g100, b100
+    local r0, g0, b0, r50, g50, b50, r100, g100, b100, lowSaved, highSaved
+
+    -- Low / High thresholds (percent): at or below Low the 0% color holds, at or above High
+    -- the 100% color holds. Clamped to their slider ranges so the stops stay in order.
+    local function Thresholds(s)
+        return Clamp(s.dynamicLow or 0, 0, 20) / 100, Clamp(s.dynamicHigh or 100, 80, 100) / 100
+    end
+
     function ns.GetCustomDynamicCurve(s)
         s = s or db.profile
         local c0   = s.dynamicColor0   or DEF0
         local c50  = s.dynamicColor50  or DEF50
         local c100 = s.dynamicColor100 or DEF100
+        -- Every unit asks on every health paint: the saved thresholds are compared
+        -- as they stand, and clamped only when the curve is built.
+        local low, high = s.dynamicLow, s.dynamicHigh
         if not (dynCurve
             and r0   == c0.r   and g0   == c0.g   and b0   == c0.b
             and r50  == c50.r  and g50  == c50.g  and b50  == c50.b
-            and r100 == c100.r and g100 == c100.g and b100 == c100.b) then
+            and r100 == c100.r and g100 == c100.g and b100 == c100.b
+            and lowSaved == low and highSaved == high) then
+            local lo, hi = Thresholds(s)
             dynCurve = C_CurveUtil.CreateColorCurve()
             dynCurve:SetType(Enum.LuaCurveType.Linear)
-            dynCurve:AddPoint(0,   CreateColor(c0.r,   c0.g,   c0.b,   1))
-            dynCurve:AddPoint(0.5, CreateColor(c50.r,  c50.g,  c50.b,  1))
-            dynCurve:AddPoint(1,   CreateColor(c100.r, c100.g, c100.b, 1))
+            dynCurve:AddPoint(0, CreateColor(c0.r, c0.g, c0.b, 1))
+            if lo > 0 then dynCurve:AddPoint(lo, CreateColor(c0.r, c0.g, c0.b, 1)) end
+            dynCurve:AddPoint(0.5, CreateColor(c50.r, c50.g, c50.b, 1))
+            if hi < 1 then dynCurve:AddPoint(hi, CreateColor(c100.r, c100.g, c100.b, 1)) end
+            dynCurve:AddPoint(1, CreateColor(c100.r, c100.g, c100.b, 1))
             r0, g0, b0       = c0.r, c0.g, c0.b
             r50, g50, b50    = c50.r, c50.g, c50.b
             r100, g100, b100 = c100.r, c100.g, c100.b
+            lowSaved, highSaved = low, high
         end
         return dynCurve
     end
 
     -- Clean-number interpolation matching the curve, for previews where the
-    -- percent is a known fake (0-1): linear 0/50 below half, 50/100 above.
+    -- percent is a known fake (0-1): flat past the Low / High thresholds, linear between.
     function ns.ResolveDynamicColor(s, pct01)
         s = s or db.profile
         local c0   = s.dynamicColor0   or DEF0
         local c50  = s.dynamicColor50  or DEF50
         local c100 = s.dynamicColor100 or DEF100
+        local lo, hi = Thresholds(s)
+        if pct01 >= hi then return c100.r, c100.g, c100.b end
+        if pct01 <= lo then return c0.r, c0.g, c0.b end
+        if pct01 >= 0.5 then
+            local t = (pct01 - 0.5) / (hi - 0.5)
+            return c50.r + (c100.r - c50.r) * t,
+                   c50.g + (c100.g - c50.g) * t,
+                   c50.b + (c100.b - c50.b) * t
+        end
+        local t = (pct01 - lo) / (0.5 - lo)
+        return c0.r + (c50.r - c0.r) * t,
+               c0.g + (c50.g - c0.g) * t,
+               c0.b + (c50.b - c0.b) * t
+    end
+
+    -- The plain three-stop gradient of the frames that keep stops of their own (the pet
+    -- frames, the party target frames): no thresholds. cache: a table the caller keeps,
+    -- so each kind of frame has its own curve and differently colored kinds never
+    -- rebuild each other's; built again only when a stop changed. A missing stop takes
+    -- its default.
+    function ns.RF_StopsCurve(cache, c0, c50, c100)
+        c0, c50, c100 = c0 or DEF0, c50 or DEF50, c100 or DEF100
+        if not (cache.curve
+            and cache[1] == c0.r   and cache[2] == c0.g   and cache[3] == c0.b
+            and cache[4] == c50.r  and cache[5] == c50.g  and cache[6] == c50.b
+            and cache[7] == c100.r and cache[8] == c100.g and cache[9] == c100.b) then
+            local curve = C_CurveUtil.CreateColorCurve()
+            curve:SetType(Enum.LuaCurveType.Linear)
+            curve:AddPoint(0, CreateColor(c0.r, c0.g, c0.b, 1))
+            curve:AddPoint(0.5, CreateColor(c50.r, c50.g, c50.b, 1))
+            curve:AddPoint(1, CreateColor(c100.r, c100.g, c100.b, 1))
+            cache.curve = curve
+            cache[1], cache[2], cache[3] = c0.r, c0.g, c0.b
+            cache[4], cache[5], cache[6] = c50.r, c50.g, c50.b
+            cache[7], cache[8], cache[9] = c100.r, c100.g, c100.b
+        end
+        return cache.curve
+    end
+
+    -- Its clean-number twin for the previews (pct01: a made-up 0-1 health).
+    function ns.RF_StopsColorAt(c0, c50, c100, pct01)
+        c0, c50, c100 = c0 or DEF0, c50 or DEF50, c100 or DEF100
         if pct01 >= 0.5 then
             local t = (pct01 - 0.5) * 2
             return c50.r + (c100.r - c50.r) * t,
@@ -113,6 +171,12 @@ do
                c0.g + (c50.g - c0.g) * t,
                c0.b + (c50.b - c0.b) * t
     end
+end
+
+-- The Classic curve's clean-number twin for the previews (pct01: a made-up 0-1 health).
+function ns.RF_ClassicColorAt(pct01)
+    if pct01 >= 0.5 then return 1 - (pct01 - 0.5) * 2, 1, 0 end
+    return 1, pct01 * 2, 0
 end
 
 -- Class Color Reactive: the Custom Dynamic gradient whose 100% stop is the
@@ -187,7 +251,7 @@ do
 end
 
 -- Textured Background (Health Bar Fill cog; off by default): the bar texture on the
--- bar backgrounds, tinted by the colour each is painted. A tinted background's own
+-- bar backgrounds, tinted by the color each is painted. A tinted background's own
 -- SetColorTexture tints the texture, so every existing paint keeps it: paint these
 -- backgrounds only through SetColorTexture. The health background follows the fill
 -- edge, so there the texture is a fixed full-size layer on the health bar, shown
@@ -215,7 +279,7 @@ do
         return (s.healthBarOpacity or 100) >= 100
     end
     -- A background that never moves: swapped to the texture at path, tinted by its
-    -- paints (vertical: turned with a vertical bar); nil puts the flat colour back at
+    -- paints (vertical: turned with a vertical bar); nil puts the flat color back at
     -- the next paint.
     function ns.RF_TexBgTint(bg, path, vertical)
         if path then
@@ -260,7 +324,7 @@ do
             bg._rfTexBgLayer:Hide()
         end
     end
-    -- Buttons with a health layer, re-checked by every colour push before
+    -- Buttons with a health layer, re-checked by every color push before
     -- ERF:UpdateAllFrames repaints (a Dark Mode Fill edit can cross 100 with no
     -- reload). Nil until the option is first on.
     local watched
@@ -337,7 +401,7 @@ function ns._ApplyHealthBg(d, health, s, unit, connected, deadOrGhost)
             or (s.statusColorDead or { r = 0x24/255, g = 0x17/255, b = 0x17/255 })
         local st = (not connected) and 3 or 2
         -- Under Inverted Fill a corpse paints a full missing-health bar (UpdateButton):
-        -- its own state, so that fill is hidden and the status colour shows undimmed.
+        -- its own state, so that fill is hidden and the status color shows undimmed.
         local hideFill = deadOrGhost and health and health._euiInv
         if hideFill then st = st + 2 end
         if d._bgSt ~= st or d._bgR ~= c.r or d._bgG ~= c.g or d._bgB ~= c.b then
@@ -744,9 +808,9 @@ function ns.RefreshAllNames()
     for unit, btn in pairs(ns._partyUnitToButton) do refresh(unit, btn) end
 end
 
--- A preview text's colour for its colour mode: accent, class (classToken: the sample member's
+-- A preview text's color for its color mode: accent, class (classToken: the sample member's
 -- class; none, as for a pet, reads white), power (pToken: the sample member's power type) or
--- custom (custom: the colour). r, g, b: the colour without one.
+-- custom (custom: the color). r, g, b: the color without one.
 function ns.RF_PreviewTextColor(mode, custom, classToken, r, g, b, pToken)
     if mode == "accent" then
         local ar, ag, ab = EllesmereUI.ResolveActiveAccent()
@@ -847,7 +911,7 @@ do
         local max, abr = sfind(key, ":max", 1, true) ~= nil, sfind(key, ":abr", 1, true) ~= nil
         local status = kind == "hp" and not max
         local pctKey, perKey, sample = kind .. "Pct", kind .. "Per", SCHEMA[key].sample
-        local valueType = kind == "hp" and (max and "maxHealth" or "health") or nil
+        local valueType = kind == "hp" and (max and "maxHealth" or "health") or "power"
         return function(unit, s, pv)
             local st = status and Status(unit, pv)
             if st then return st end
@@ -859,10 +923,7 @@ do
             else
                 return sample
             end
-            if abr then
-                if valueType then return AbbreviateValue(v, valueType) end
-                return AbbreviateNumbers(v)
-            end
+            if abr then return AbbreviateValue(v, valueType) end
             return sformat("%d", v)
         end
     end
@@ -899,10 +960,13 @@ do
 
     -- [name] and [target], plain or with a Name Format modifier ([name:abbr]):
     -- fmt, when given, takes the place of the text's Name Format, so the cap
-    -- still comes last and nicknames stay whole.
+    -- still comes last and nicknames stay whole. [name:last] and [target:last]
+    -- show nothing for your own unit while your name is your first name alone
+    -- (OwnSurnameHidden: WoW Forever, Blizzard's My Surname off).
     local function NamePiece(key, fmt)
         local sample = SCHEMA[key].sample
         return function(unit, s, pv)
+            if unit and fmt == "last" and EllesmereUI.OwnSurnameHidden(unit) then return "" end
             if unit then return ResolveDisplayName(unit, true, s, fmt) end
             -- A preview member's name as its name text would show it.
             if fmt and pv and pv.rawName then
@@ -924,6 +988,7 @@ do
             if not unit then return sample end
             local tunit = targetOf[unit]
             if not UnitExists(tunit) then return "" end
+            if fmt == "last" and EllesmereUI.OwnSurnameHidden(tunit) then return "" end
             local name = UnitName(tunit)
             if issecretvalue(name) then return name end
             return ResolveDisplayName(tunit, false, s, fmt)
@@ -1013,14 +1078,10 @@ function ns.RF_HealthTextInto(fs, mode, pct, unit, perPct)
         fs:SetFormattedText("%.0f", pct)
     elseif mode == "number" then
         if unit then v = UnitHealth(unit, true) else v = pct * perPct end
-        if v and AbbreviateNumbers then
-            fs:SetText(AbbreviateValue(v, "health"))
-        elseif v then
-            fs:SetFormattedText("%s", v)
-        end
+        if v then fs:SetText(AbbreviateValue(v, "health")) end
     elseif mode == "numberPercent" or mode == "percentNumber" then
         if unit then v = UnitHealth(unit, true) else v = pct * perPct end
-        local numStr = (v and AbbreviateNumbers) and AbbreviateValue(v, "health") or tostring(v or 0)
+        local numStr = v and AbbreviateValue(v, "health") or "0"
         if mode == "numberPercent" then
             fs:SetFormattedText("%s | %.0f%%", numStr, pct)
         else
@@ -1029,13 +1090,7 @@ function ns.RF_HealthTextInto(fs, mode, pct, unit, perPct)
     elseif mode == "missing" then
         if unit then v = UnitHealthMissing(unit, true) else v = (100 - pct) * perPct end
         fs:SetText(C_StringUtil.TruncateWhenZero(v))
-        if fs:GetText() then
-            if v and AbbreviateNumbers then
-                fs:SetText(AbbreviateValue(v, "health"))
-            elseif v then
-                fs:SetFormattedText("%s", v)
-            end
-        end
+        if v and fs:GetText() then fs:SetText(AbbreviateValue(v, "health")) end
     else
         fs:SetText("")
         return false
@@ -1052,7 +1107,7 @@ function ns.FormatHealAbsorbInto(fs, amt, mode)
     if not fs then return end
     if not mode or mode == "none" then fs:SetText(""); return end
     fs:SetText(C_StringUtil.TruncateWhenZero(amt or 0))
-    if mode == "short" and AbbreviateNumbers and fs:GetText() then
+    if mode == "short" and fs:GetText() then
         fs:SetText(AbbreviateValue(amt or 0, "absorb"))
     end
 end
@@ -1119,7 +1174,7 @@ ns._RFPowerTypeEdge = function(d, unit, force)
             d._pwBgTintF = f
         end
     end
-    -- Power Text's colour is identity-class state too (its Power mode is this type's colour).
+    -- Power Text's color is identity-class state too (its Power mode is this type's color).
     if d._pwtOn then ns.RF_TextPowerColor(d, unit, s, pr, pg, pb) end
 end
 
@@ -1132,7 +1187,7 @@ end
 -- (UnitPowerPercent, which can be secret in combat: it only ever reaches a format setter).
 -- unit + pType: the live unit, blank while dead or offline like Health Text (both checks return
 -- clean booleans for group units); its amount is read only in the modes that show it and goes
--- straight through AbbreviateNumbers into the setter, never compared. A preview (unit nil)
+-- straight through AbbreviateValue into the setter, never compared. A preview (unit nil)
 -- shows made-up amounts, perPct per percent. Returns false when it blanks the text (dead,
 -- offline, None or an unknown mode), otherwise true.
 function ns.RF_PowerTextInto(fs, mode, pct, unit, pType, perPct)
@@ -1146,7 +1201,7 @@ function ns.RF_PowerTextInto(fs, mode, pct, unit, pType, perPct)
         fs:SetFormattedText("%.0f", pct)
     elseif mode == "number" or mode == "numberPercent" or mode == "percentNumber" then
         local num
-        if unit then num = AbbreviateNumbers(UnitPower(unit, pType)) else num = AbbreviateNumbers(pct * perPct) end
+        if unit then num = AbbreviateValue(UnitPower(unit, pType), "power") else num = AbbreviateValue(pct * perPct, "power") end
         if mode == "number" then
             fs:SetText(num)
         elseif mode == "numberPercent" then
