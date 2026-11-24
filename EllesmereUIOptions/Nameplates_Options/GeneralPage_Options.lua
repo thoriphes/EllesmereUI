@@ -536,6 +536,15 @@ local function BuildGeneralPage(pageName, parent, yOffset)
             if ns.ApplyOOCPlates then ns.ApplyOOCPlates() end
           end });  y = y - h
 
+    -- Force Nameplate on Current Target: row 7 (beside the pets toggle) or row 8 (classes with a class option).
+    local forceTargetCfg = { type="toggle", text="Force Nameplate on Current Target",
+          tooltip="Force the nameplate on your current target regardless of visibility rules: always show your current target's nameplate, even when its kind of nameplate is hidden: enemies out of combat, friendly NPCs, enemy pets, minor enemies, or anything switched off in Blizzard's Nameplate settings.\n\nWhile such a unit is targeted its nameplate kind is switched on for the target alone; every other nameplate of that kind stays hidden, and the setting is handed back when the target changes.\n\nFriendly nameplates cannot be forced inside dungeons, raids or battlegrounds (the game locks them there).",
+          getValue=function() return DBVal("forceTargetPlate") == true end,
+          setValue=function(v)
+            DB().forceTargetPlate = v
+            if ns.TF_Refresh then ns.TF_Refresh() end
+          end }
+
     -- Row 6: Minor Enemy Scale | Non-Elite Enemy Scale. Global Search also finds
     -- both by the section and the row they are known under.
     local function TypeScaleCfg(label, key, tip)
@@ -590,7 +599,12 @@ local function BuildGeneralPage(pageName, parent, yOffset)
           tooltip="Toggle visibility of enemy pet nameplates." }
     -- (also found by the section name it is known under)
     SearchWords(petsCfg.text, SECTION_MISC, petsCfg.tooltip, "OTHER NAMEPLATES")
-    _, h = W:DualRow(parent, y, petsCfg, classCfg or EllesmereUI.BlankRowCfg());  y = y - h
+    -- Row 7: Show Enemy Pet Nameplates beside the class option or, without one,
+    -- Force Nameplate on Current Target; with a class option the toggle gets row 8.
+    _, h = W:DualRow(parent, y, petsCfg, classCfg or forceTargetCfg);  y = y - h
+    if classCfg then
+        _, h = W:DualRow(parent, y, forceTargetCfg, EllesmereUI.BlankRowCfg());  y = y - h
+    end
 
     return math.abs(y)
 end
