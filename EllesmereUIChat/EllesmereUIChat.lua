@@ -1411,6 +1411,7 @@ do
     local lastSelected
     local lastShown = {}
     local lastFontSize = {}
+    local lastWindowName = {}
     local lastDockCount
 
     -- Seed before the first interaction so a fast tab-menu change is still
@@ -1485,6 +1486,19 @@ do
                 end
             end
         end
+        -- Tab menu rename (NAME_CHAT popup -> FCF_SetWindowName) resizes the
+        -- Blizzard tab but emits no event, so the ghost kept the old label
+        -- until the next reload. Permanent windows only: temp windows are
+        -- labelled from chatTarget and cannot be renamed.
+        local nameChanged = false
+        for i = 1, NUM_CHAT_WINDOWS or 10 do
+            local name = GetChatWindowInfo(i)
+            if name ~= lastWindowName[i] then
+                lastWindowName[i] = name
+                nameChanged = true
+            end
+        end
+        if nameChanged and ECHAT.QueueTabPass then ECHAT.QueueTabPass() end
         -- A frame appeared or closed (tab menu close, window created).
         local shownChanged = false
         for i = 1, 20 do
@@ -1503,7 +1517,7 @@ do
         -- land while the mouse has been in the menu far past the linger, and
         -- the shown/selection watches above must see their results.
         local menuOpen = Menu and Menu.GetManager and Menu.GetManager():IsAnyMenuOpen()
-        -- New Window opens a name popup and creates the window on Accept, long
+        -- New Window and Rename open a name popup that acts on Accept, long
         -- after the menu closed: stay armed while it is up.
         local namePopup = StaticPopup_Visible and StaticPopup_Visible("NAME_CHAT")
         if hoverCount == 0 and not editMode and not unlockHold and not menuOpen and not namePopup
