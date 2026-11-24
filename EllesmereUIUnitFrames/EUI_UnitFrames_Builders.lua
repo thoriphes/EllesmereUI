@@ -65,8 +65,16 @@ function ns.UF_ClassificationBorderColor(settings, unit, unitKey)
     return ns.UF_ClassificationBorderRGB(settings, colorKey)
 end
 
-local function NormalBorderColor(settings, unit, unitKey, bossPreview)
-    local a = settings.borderAlpha or 1
+-- own (mini frames only): the mini frame's own settings, so its Advanced
+-- border color/alpha override the donor's (ns.ResolveMiniBorderValue). Class /
+-- classification coloring still follows the donor (settings), as before.
+local function NormalBorderColor(settings, unit, unitKey, bossPreview, own)
+    local a, c = settings.borderAlpha, settings.borderColor
+    if own then
+        a = ns.ResolveMiniBorderValue(own, "borderAlpha", settings)
+        c = ns.ResolveMiniBorderValue(own, "borderColor", settings)
+    end
+    a = a or 1
     if (settings.borderClassColored or ns.UF_ClassificationBorderEnabled(settings, unitKey))
         and not ns.UF_Blizz() then
         local r, g, b = ns.UF_ClassificationBorderColor(settings, unit, unitKey)
@@ -81,7 +89,6 @@ local function NormalBorderColor(settings, unit, unitKey, bossPreview)
             if ok then return r, g, b, a end
         end
     end
-    local c = settings.borderColor
     if c then return c.r, c.g, c.b, a end
     return 0, 0, 0, a
 end
@@ -140,9 +147,16 @@ local function FrameBorderEnter(self)
     -- Per-mini-frame opt-out: with "Show Highlight Border" off, a mini frame never
     -- recolors on hover even when the donor (main frame) highlight is enabled. (When the
     -- donor highlight is off we already returned above, so this has no effect then.)
-    if isMini and GetSettingsForUnit(unit).showHighlightBorder == false then return end
-    local hc = settings.highlightColor or { r = 1, g = 1, b = 1 }
-    local ha = settings.highlightAlpha or 1
+    local hc, ha = settings.highlightColor, settings.highlightAlpha
+    if isMini then
+        local own = GetSettingsForUnit(unit)
+        if own.showHighlightBorder == false then return end
+        -- Advanced borders: the mini frame may carry its own highlight color.
+        hc = ns.ResolveMiniBorderValue(own, "highlightColor", settings)
+        ha = ns.ResolveMiniBorderValue(own, "highlightAlpha", settings)
+    end
+    hc = hc or { r = 1, g = 1, b = 1 }
+    ha = ha or 1
     if self._euiBorderColorSource then self._euiBorderColorHover = true end
     ns.UF_TintFrameBorder(self, self.unifiedBorder, hc.r, hc.g, hc.b, ha)
     return true
@@ -159,7 +173,10 @@ local function FrameBorderLeave(self)
     local isMini = (unit == "pet" or unit == "targettarget" or unit == "focustarget")
     local settings = isMini and GetMiniDonorSettings(unit) or GetSettingsForUnit(unit)
     if self._euiBorderColorHover then self._euiBorderColorHover = nil end
-    ns.UF_TintFrameBorder(self, self.unifiedBorder, NormalBorderColor(settings, unit, self._euiBaseUnit))
+    -- Mini frames pass their own settings so an Advanced border color/alpha
+    -- (ns.ResolveMiniBorderValue) is the normal color, as the reload paints it.
+    ns.UF_TintFrameBorder(self, self.unifiedBorder,
+        NormalBorderColor(settings, unit, self._euiBaseUnit, nil, isMini and GetSettingsForUnit(unit) or nil))
 end
 -- The detached portrait's click overlay replays these on hover (Portrait.lua).
 I.FrameBorderEnter, I.FrameBorderLeave = FrameBorderEnter, FrameBorderLeave
@@ -169,8 +186,11 @@ local function PaintBorderColor(frame, unit)
     if frame._euiBaseUnit:match("^boss%d$") then
         ns.ApplyBossBorderState(frame)
     elseif not (frame._euiBorderColorHover and FrameBorderEnter(frame)) then
+        local base = frame._euiBaseUnit
+        local isMini = base == "pet" or base == "targettarget" or base == "focustarget"
         ns.UF_TintFrameBorder(frame, frame.unifiedBorder,
-            NormalBorderColor(frame._euiBorderColorSource, unit, frame._euiBaseUnit))
+            NormalBorderColor(frame._euiBorderColorSource, unit, base, nil,
+                isMini and GetSettingsForUnit(base) or nil))
     end
 end
 ns.Engine.SetPainter("bordercolor", PaintBorderColor)
