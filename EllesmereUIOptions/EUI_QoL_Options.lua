@@ -295,7 +295,7 @@ local function BuildSelfCombatTextSection(parent, y)
           getValue=function() return SCTGet(key) end,
           setValue=function(v) SCTSet(key, v) end }
     end
-    -- A category toggle's colour, locked while the feature or that category is off
+    -- A category toggle's color, locked while the feature or that category is off
     local function sctSwatch(rgn, key, colorKey, label)
         if EllesmereUI._prebuilding then return end
         EllesmereUI.BuildInlineSwatches(rgn, { {
@@ -1028,12 +1028,12 @@ initFrame:SetScript("OnEvent", function(self)
                 return not EllesmereUI.QoLExtrasGet("showFPS")
             end
 
-            -- Inline class + custom colour swatches, the same convention as the
+            -- Inline class + custom color swatches, the same convention as the
             -- Secondary Stats row: the active mode renders at full alpha, the
             -- other dimmed, each with a naming tooltip.
             local function fpsMode()
                 -- No mode saved: custom -- the look before the mode existed,
-                -- which is white until a colour is actually picked.
+                -- which is white until a color is actually picked.
                 return EllesmereUI.QoLExtrasGet("fpsColorMode") or "custom"
             end
             local fpsUpdateState   -- forward: swatches reference it from OnClick
@@ -1139,7 +1139,7 @@ initFrame:SetScript("OnEvent", function(self)
                 PP.Point(fpsSwatch, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
                 leftRgn._lastInline = fpsSwatch
 
-                -- Class-colour swatch: live player class colour.
+                -- Class-color swatch: live player class color.
                 local fpsClassSw, fpsUpdClass = EllesmereUI.BuildColorSwatch(
                     leftRgn, leftRgn:GetFrameLevel() + 5,
                     function()
@@ -1678,7 +1678,7 @@ initFrame:SetScript("OnEvent", function(self)
             })
 
             if not EllesmereUI._prebuilding then
-                -- Inline default + class + custom colour swatches, following the
+                -- Inline default + class + custom color swatches, following the
                 -- minimap border's swatch-row convention: the active mode renders
                 -- at full alpha, the others dimmed, each with a naming tooltip.
                 local function ssMode()
@@ -1695,7 +1695,7 @@ initFrame:SetScript("OnEvent", function(self)
                     if ssUpdateState then ssUpdateState() end
                 end
 
-                -- Custom swatch (nearest the cog): stored custom colour. A
+                -- Custom swatch (nearest the cog): stored custom color. A
                 -- click switches to custom mode first; a second click opens the
                 -- picker (same two-step as the minimap border swatches).
                 local ssCustom, ssUpdCustom = EllesmereUI.BuildColorSwatch(
@@ -1721,7 +1721,7 @@ initFrame:SetScript("OnEvent", function(self)
                 PP.Point(ssCustom, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
                 leftRgn._lastInline = ssCustom
 
-                -- Class-colour swatch: live player class colour.
+                -- Class-color swatch: live player class color.
                 local ssClass, ssUpdClass = EllesmereUI.BuildColorSwatch(
                     leftRgn, leftRgn:GetFrameLevel() + 5,
                     function()
@@ -2647,6 +2647,9 @@ initFrame:SetScript("OnEvent", function(self)
         for i = #searchTerms, 1, -1 do
             if foreverDrop[searchTerms[i]] then table.remove(searchTerms, i) end
         end
+        -- The Unspent Legacy Points alert exists only there.
+        searchTerms[#searchTerms + 1] = "legacy"
+        searchTerms[#searchTerms + 1] = "legacy points"
     end
     EllesmereUI:RegisterModule("EllesmereUIQoL", {
         title       = "Quality of Life",
@@ -2752,6 +2755,7 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.hideAlertToastsHousing = nil
                 EllesmereUIDB.announceGroupDeaths = false
                 EllesmereUIDB.groupDeathTextSize = nil
+                EllesmereUIDB.groupDeathRoleIcon = nil
                 EllesmereUIDB.groupDeathAlertPos = nil
                 EllesmereUIDB.groupDeathSound = nil      -- legacy boolean (pre-dropdown)
                 EllesmereUIDB.groupDeathSoundKey = nil
@@ -2776,6 +2780,11 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.talentAlertTextSize = nil
                 EllesmereUIDB.talentAlertColor = nil
                 EllesmereUIDB.talentAlertUseClassColor = nil
+                EllesmereUIDB.legacyAlertEnabled = false
+                EllesmereUIDB.legacyAlertText = nil
+                EllesmereUIDB.legacyAlertTextSize = nil
+                EllesmereUIDB.legacyAlertColor = nil
+                EllesmereUIDB.legacyAlertUseClassColor = nil
                 EllesmereUIDB.targetDistanceEnabled = false
                 EllesmereUIDB.targetDistanceFormat = nil
                 EllesmereUIDB.targetDistanceAlign = nil
@@ -2790,7 +2799,7 @@ initFrame:SetScript("OnEvent", function(self)
                 for _, k in ipairs({
                     "targetDistanceEnabled", "targetDistanceFormat", "targetDistanceAlign",
                     "targetDistanceTextSize", "targetDistanceStrata", "targetDistancePos",
-                    "announceGroupDeaths", "groupDeathTextSize", "groupDeathAlertPos", "groupDeathSound",
+                    "announceGroupDeaths", "groupDeathTextSize", "groupDeathRoleIcon", "groupDeathAlertPos", "groupDeathSound",
                     "groupDeathSoundKey",
                     "combatAlertEnabled", "combatAlertMode", "combatAlertTextSize", "combatAlertPos",
                     "combatAlertEnterText", "combatAlertLeaveText", "combatAlertEnterColor", "combatAlertLeaveColor",
@@ -2799,6 +2808,8 @@ initFrame:SetScript("OnEvent", function(self)
                     "potionAlertUseClassColor",
                     "talentAlertEnabled", "talentAlertText", "talentAlertTextSize", "talentAlertColor",
                     "talentAlertUseClassColor",
+                    "legacyAlertEnabled", "legacyAlertText", "legacyAlertTextSize", "legacyAlertColor",
+                    "legacyAlertUseClassColor",
                     -- not repairWarning: the Global Settings reset owns that switch
                     "durWarnThreshold", "durWarnTextSize", "durWarnColor", "durWarnYOffset",
                     "durWarnPos", "durWarnIgnoreThrown",
@@ -2836,6 +2847,7 @@ initFrame:SetScript("OnEvent", function(self)
             if EllesmereUI._applyCombatAlert then EllesmereUI._applyCombatAlert() end
             if EllesmereUI._applyPotionAlert then EllesmereUI._applyPotionAlert() end
             if EllesmereUI._applyTalentAlert then EllesmereUI._applyTalentAlert() end
+            if EllesmereUI._applyLegacyAlert then EllesmereUI._applyLegacyAlert() end
             if EllesmereUI._applyTargetDistance then EllesmereUI._applyTargetDistance() end
             if EllesmereUI._applyHideTransforms then EllesmereUI._applyHideTransforms() end
             if EllesmereUI._applyQuickSignup then EllesmereUI._applyQuickSignup() end

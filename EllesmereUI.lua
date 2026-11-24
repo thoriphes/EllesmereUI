@@ -21,11 +21,11 @@ if IS_STANDALONE then
     shared.__euiCoreNS = EUI_NS
 end
 -------------------------------------------------------------------------------
---  Constants & Colours (BURNE STAY AWAY FROM THIS SECTION)
+--  Constants & Colors (BURNE STAY AWAY FROM THIS SECTION)
 -------------------------------------------------------------------------------
 --  Visual Settings  (edit these to adjust the look -- values only, no tables)
 -------------------------------------------------------------------------------
--- Accent colour -- canonical default: #0CD29D teal. The Forever client opens
+-- Accent color -- canonical default: #0CD29D teal. The Forever client opens
 -- on #DCA77F (soft bronze) instead; a chosen accent always wins over this.
 local DEFAULT_ACCENT_R, DEFAULT_ACCENT_G, DEFAULT_ACCENT_B = 12/255, 210/255, 157/255
 if EUI_CLIENT_FOREVER == true then
@@ -69,7 +69,7 @@ local THEME_BG_FILES = {
 -- layer at alpha 0, so nothing flashes), or at PLAYER_LOGIN for the player whose
 -- saved theme it is (EllesmereUI._PreloadLazyThemeBG).
 EllesmereUI._THEME_BG_LAZY = { ["Pixels"] = true }
--- Accent overlay per theme: its accent-coloured pieces (logo mark, rules, close X)
+-- Accent overlay per theme: its accent-colored pieces (logo mark, rules, close X)
 -- as white art, cropped to their band of the 1500x1154 canvas (x, y = top-left
 -- offset; w, h = size, all in canvas units). Drawn above the theme art and tinted
 -- with the live UI accent; built on the theme's first apply (CreateMainFrame).
@@ -80,10 +80,10 @@ EllesmereUI.THEME_ACCENT_OVERLAYS = {
 -- tight rect around its border; bx, by, bw, bh = outer rect of the border line
 -- itself and bd = its depth (the hover glow lights only that ring); gx, gy =
 -- centre of its X; gs = glyph size drawn over a copy (16 when absent); r, g, b =
--- the X colour; sh = alpha of the dark rim under a glyph; acc = alpha of a
+-- the X color; sh = alpha of the dark rim under a glyph; acc = alpha of a
 -- live-accent glyph stacked on top (art whose X comes from its accent overlay);
 -- ex, ey = top-left of the 76 unit square around the painted logo emblem; rr, rg,
--- rb = the logo badge ring colour. The collapse button and the collapsed mini
+-- rb = the logo badge ring color. The collapse button and the collapsed mini
 -- window rebuild their boxes and badge from these rects of the art on screen.
 EllesmereUI.THEME_CLOSE_BOX = {
     ["backgrounds\\eui-bg-new.png"] = { x = 1346, y = 114, w = 43, h = 41, gx = 1368, gy = 134,
@@ -187,7 +187,7 @@ local STYLE = {
     -- Slider  (white + alpha for track -- adapts to any background tint)
     SL_TRACK_R = 1, SL_TRACK_G = 1, SL_TRACK_B = 1,        -- track bg (white + alpha)
     SL_TRACK_A = 0.16,                                     -- track bg alpha
-    SL_FILL_A = 0.75,                                      -- filled portion alpha (colour = accent)
+    SL_FILL_A = 0.75,                                      -- filled portion alpha (color = accent)
     SL_INPUT_R = 0.030, SL_INPUT_G = 0.023, SL_INPUT_B = 0.018, -- input box background (darker than bg, stays as-is)
     SL_INPUT_A = 0.25,                                     -- input box alpha (all sliders)
     SL_INPUT_BRD_A = 0.12,                                 -- input box border alpha (white; a visible outline, dimmer than a dropdown's)
@@ -199,7 +199,7 @@ local STYLE = {
     -- Toggle  (white + alpha for off states -- adapts to any background tint)
     TG_OFF_R = 0.267, TG_OFF_G = 0.267, TG_OFF_B = 0.267,  -- track when OFF (#444)
     TG_OFF_A = 0.65,                                       -- track OFF alpha
-    TG_ON_A = 0.75,                                        -- track alpha at full ON (colour = accent)
+    TG_ON_A = 0.75,                                        -- track alpha at full ON (color = accent)
     TG_KNOB_OFF_R = 1, TG_KNOB_OFF_G = 1, TG_KNOB_OFF_B = 1, -- knob when OFF (white + alpha)
     TG_KNOB_OFF_A = 0.5,                                   -- knob OFF alpha
     TG_KNOB_ON_R = 1, TG_KNOB_ON_G = 1, TG_KNOB_ON_B = 1,  -- knob when ON
@@ -213,18 +213,18 @@ local STYLE = {
     BTN_BG_R = 0.089, BTN_BG_G = 0.080, BTN_BG_B = 0.072,  -- background
     BTN_BG_A = 0.6,
     BTN_BG_HA = 0.65,                                      -- background alpha hovered
-    BTN_BRD_A = 0.3,                                       -- border alpha (colour = white)
+    BTN_BRD_A = 0.3,                                       -- border alpha (color = white)
     BTN_BRD_HA = 0.45,                                     -- border alpha hovered
-    BTN_TXT_A = 0.55,                                      -- text alpha (colour = white)
+    BTN_TXT_A = 0.55,                                      -- text alpha (color = white)
     BTN_TXT_HA = 0.70,                                     -- text alpha hovered
 
     -- Dropdown
     DD_BG_R = 0.103, DD_BG_G = 0.095, DD_BG_B = 0.088,     -- background
     DD_BG_A = 0.9,
     DD_BG_HA = 0.98,                                       -- background alpha hovered
-    DD_BRD_A = 0.20,                                       -- border alpha (colour = white)
+    DD_BRD_A = 0.20,                                       -- border alpha (color = white)
     DD_BRD_HA = 0.30,                                      -- border alpha hovered
-    DD_TXT_A = 0.50,                                       -- selected value text alpha (colour = white)
+    DD_TXT_A = 0.50,                                       -- selected value text alpha (color = white)
     DD_TXT_HA = 0.60,                                      -- selected value text alpha hovered
     DD_ITEM_HL_A = 0.08,                                   -- menu item highlight alpha (hover)
     DD_ITEM_SEL_A = 0.04,                                  -- menu item highlight alpha (active selection)
@@ -284,7 +284,7 @@ local TEXT_WHITE      = { r = STYLE.TEXT_WHITE_R, g = STYLE.TEXT_WHITE_G, b = ST
 local TEXT_DIM        = { r = STYLE.TEXT_DIM_R, g = STYLE.TEXT_DIM_G, b = STYLE.TEXT_DIM_B, a = STYLE.TEXT_DIM_A }
 local TEXT_SECTION    = { r = STYLE.TEXT_SECTION_R, g = STYLE.TEXT_SECTION_G, b = STYLE.TEXT_SECTION_B, a = STYLE.TEXT_SECTION_A }
 
--- Dropdown widget colours: widgets reference DD_BG_*, DD_BRD_*, DD_TXT_* directly
+-- Dropdown widget colors: widgets reference DD_BG_*, DD_BRD_*, DD_TXT_* directly
 
 local CONTENT_PAD = 45
 local CONTENT_HEADER_TOP_PAD = 10  -- extra top padding on scroll content when header is present
@@ -1341,10 +1341,47 @@ end
 -- there win). Once a session, as soon as the GUID and the name read: before
 -- login, the game's placeholder for a name it has not loaded is no name.
 local _rosterAdopted
+
+-- This character's name as the roster stores it (with the surname on WoW Forever); nil if unreadable.
+local function RosterName()
+    local Plain = EllesmereUI.PlainString
+    local first, surname = (UnitNameUnmodified or UnitName)("player")
+    first = Plain(first)
+    return first and EllesmereUI.WithSurname(first, Plain(surname), true)
+end
+
 local function AdoptNamedEntries(chars)
     local guid, name = EllesmereUI.CharGUID(), UnitName("player")
     if not guid or not name or issecretvalue(name) or (name == UNKNOWNOBJECT and not IsLoggedIn()) then return end
     _rosterAdopted = true
+    -- A GUID changed (WoW Forever only: its GUIDs may lose their realm part,
+    -- while a name is unique across the region): a GUID the roster does not
+    -- know takes over the entry of the same name and ruleset, but only when
+    -- that entry's class is this character's and its level is not above this
+    -- character's. A moved character keeps both; a reroll under a freed name
+    -- starts again at level 1. Race can be changed, so it is not compared.
+    -- Latest seen wins; nothing moves while the class or level cannot be read.
+    if EllesmereUI.IS_FOREVER and type(chars[guid]) ~= "table" then
+        local Plain = EllesmereUI.PlainString
+        local full, realm = RosterName(), Plain(EllesmereUI.RealmGroupName())
+        local _, class = UnitClass("player")
+        class = Plain(class)
+        local level = UnitLevel("player")
+        if type(level) ~= "number" or issecretvalue(level) or level < 1 then level = nil end
+        if full and realm and class and level then
+            local oldKey, oldSeen
+            for key, c in pairs(chars) do
+                if type(c) == "table" and c.name == full and c.realm == realm and c.class == class
+                    and type(c.level) == "number" and c.level <= level
+                    and (not oldKey or (c.seen or 0) > oldSeen) then
+                    oldKey, oldSeen = key, c.seen or 0
+                end
+            end
+            if oldKey then
+                chars[guid], chars[oldKey] = chars[oldKey], nil
+            end
+        end
+    end
     local mine = chars[guid]
     local realms = { EllesmereUI.RealmGroupName() or "", GetRealmName() or "",
         GetNormalizedRealmName and GetNormalizedRealmName() or "" }
@@ -1409,9 +1446,7 @@ local function RecordIdentity(level)
     local c = EllesmereUI.CharEntry(true)
     if not c then return end
     local Plain = EllesmereUI.PlainString
-    local first, surname = (UnitNameUnmodified or UnitName)("player")
-    first = Plain(first)
-    if first then c.name = EllesmereUI.WithSurname(first, Plain(surname), true) end
+    c.name = RosterName() or c.name
     c.realm = Plain(EllesmereUI.RealmGroupName()) or c.realm
     if EllesmereUI.IS_FOREVER then
         c.realmKey = c.realm
@@ -1545,7 +1580,7 @@ EllesmereUI.EYE_VISIBLE_ICON   = MEDIA_PATH .. "icons\\eui-visible.png"
 EllesmereUI.EYE_INVISIBLE_ICON = MEDIA_PATH .. "icons\\eui-invisible.png"
 EllesmereUI.UNLOCK_ICON     = MEDIA_PATH .. "icons\\unlockmode.png"
 
--- Shared chat/tooltip colour escapes. Leave codes inside L()/Lf() literals alone:
+-- Shared chat/tooltip color escapes. Leave codes inside L()/Lf() literals alone:
 -- that text is the translation key.
 EllesmereUI.COLOR_CODES = {
     WHITE = "|cffffffff",
@@ -3065,6 +3100,9 @@ function EllesmereUI.MakeUnlockElement(opts)
         saveRawPosition   = opts.saveRawPos,
         noAnchorTarget    = opts.noAnchorTarget,
         noAnchorTo        = opts.noAnchorTo,
+        -- anchorStandIn: function -> frame children measure against while this
+        -- element rides the cursor (nil otherwise).
+        anchorStandIn     = opts.anchorStandIn,
         -- allowMatchSource: show the width/height MATCH buttons even when resize is
         -- disabled (noResize), so the element can size-match TO another element.
         -- noSizeMatchTarget: other elements may NOT size-match TO this one.
@@ -3076,10 +3114,6 @@ function EllesmereUI.MakeUnlockElement(opts)
         -- is impossible (action bars in Blizzard Style, where EUI does not control
         -- sizing). Clearing an existing match stays allowed.
         matchUnavailable  = opts.matchUnavailable,
-        -- keepMoverWhenAnchored: isAnchored() reflecting a module option (ERB "Anchor
-        -- To") still gets a mover -- position-locked (no drag/nudge/anchor link), but
-        -- resize and width/height matching stay available.
-        keepMoverWhenAnchored = opts.keepMoverWhenAnchored,
         -- moverBg: optional {r,g,b} tint for the mover background (default: dark overlay).
         -- moverTooltip: optional hover tooltip (string or function) on the mover
         -- (first use: CDM's Additional Bar Offset marker).
@@ -3538,7 +3572,7 @@ end
 -------------------------------------------------------------------------------
 --  Slash commands
 -------------------------------------------------------------------------------
-EllesmereUI.VERSION = "9.9.1"
+EllesmereUI.VERSION = "9.9.3"
 
 -- Register this addon's version into a shared global table (taint-free at load time)
 if not _G._EUI_AddonVersions then _G._EUI_AddonVersions = {} end
