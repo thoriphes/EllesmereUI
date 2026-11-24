@@ -1317,7 +1317,7 @@ local PET_AURA_KEYS = {
     showAuraTooltips = 1,
     buffIconZoom = 2, debuffIconZoom = 2,
     auraBorderR = 2, auraBorderG = 2, auraBorderB = 2, auraBorderA = 2,
-    auraBorderSize = 2, auraBorderSizePx = 2, auraBorderTexture = 2,
+    auraBorderSize = 2, auraBorderSizePx = 2, auraBorderCornerRadius = 2, auraBorderTexture = 2,
     auraBorderTextureOffset = 2, auraBorderTextureOffsetY = 2,
     auraBorderTextureShiftX = 2, auraBorderTextureShiftY = 2,
     auraBorderBehind = 2, auraBorderBehindUnitFrame = 2, auraBorderDispelTextured = 2,
@@ -1578,13 +1578,13 @@ local function StyleTableFP(st, font)
     return FP(font, st.width, st.height, tc[1], tc[2], tc[3], tc[4],
         st.hideDurationText, st.durationPrecisionThreshold, st.cdTextSize, CK(st.cdTextColor), st.cdOffX, st.cdOffY,
         st.stackSize, CK(st.stackColor), st.stackPos, st.stackOffX, st.stackOffY,
-        b and b.texture, b and b.size, b and b.edgePx, b and b[1], b and b[2], b and b[3], b and b[4],
+        b and b.texture, b and b.size, b and b.cornerRadius, b and b.edgePx, b and b[1], b and b[2], b and b[3], b and b[4],
         b and b.offsetX, b and b.offsetY, b and b.shiftX, b and b.shiftY,
         b and b.behind, b and b.behindUnitFrame, b and b.unitFrameLevel,
         st.auraBorderAboveEffects,
         st.noTooltips, st.blizzBorder, st.dispelBorder,
         -- Textured Dispel Ring (the ring's art key) and Use Dispel Colors (the
-        -- palette fingerprint the colour map was built from).
+        -- palette fingerprint the color map was built from).
         st.dispelBorderTexture, st.dispelColorFP)
 end
 
@@ -1772,6 +1772,7 @@ local function BuildStyle(unit, base, s, unitFrame)
         border = {
             s.auraBorderR or 0, s.auraBorderG or 0, s.auraBorderB or 0, s.auraBorderA or 1,
             size = s.auraBorderSize or 1,
+            cornerRadius = s.auraBorderCornerRadius,
             texture = s.auraBorderTexture or "solid",
             -- Exact size (nil = the legacy step path); a pure function of the three
             -- keys, so the built-style fingerprint above covers it.
@@ -1786,7 +1787,7 @@ local function BuildStyle(unit, base, s, unitFrame)
         }
         -- Dispel-type border recolor (per-unit debuffDispelBorder): the engine
         -- shows the ring only on typed (dispellable) debuffs and tints it per
-        -- dispel type, in its own colours or, with the player's Use Dispel
+        -- dispel type, in its own colors or, with the player's Use Dispel
         -- Colors, in the Dispel Colors palette handed over as
         -- customDispelColorMap (below). No aura data is read either way.
         dispel = (not isBuff and s.debuffDispelBorder) and true or nil
@@ -1912,8 +1913,8 @@ function PurgeGlow.Spec(s)
         bgR = bgc and bgc.r, bgG = bgc and bgc.g, bgB = bgc and bgc.b,
     }
     spec.r, spec.g, spec.b = EllesmereUI.Glows.ResolveColor(mode, c and c.r, c and c.g, c and c.b)
-    -- Class mode: the palette colour this spec (and Register's print) holds,
-    -- for the colours-changed hook below the reload.
+    -- Class mode: the palette color this spec (and Register's print) holds,
+    -- for the colors-changed hook below the reload.
     if mode == "class" then PurgeGlow.ccR, PurgeGlow.ccG, PurgeGlow.ccB = spec.r, spec.g, spec.b end
     return spec
 end
@@ -2941,7 +2942,7 @@ local TypeIcons = { LIFT = 18, GROW = { up = "UP", down = "DOWN", left = "LEFT",
 -- dispel overlay uses) as a customDispelColorMap (dispel type -> Color) for the
 -- player's debuff rings, plus its fingerprint, which BuildStyle hands on as
 -- style.dispelColorFP (AuraKit re-registers the ring options when it moves).
--- Memoised on the five resolved colours, its only inputs: an unchanged palette
+-- Memoised on the five resolved colors, its only inputs: an unchanged palette
 -- hands back the same map.
 do
     local memoFP, memoMap
@@ -3865,7 +3866,7 @@ end
 
 -- Colors page edits (swatches, darken, resets, profile switches) all end in
 -- ApplyColorsToOUF. Once a Class-mode purge glow was built, a changed class
--- colour re-runs the reload; the purge print carries the colour, so only
+-- color re-runs the reload; the purge print carries the color, so only
 -- that glow style restyles. Calls in one frame (a profile switch can make
 -- two) collapse into one check on the next frame: the flush frame stays
 -- hidden until a call and hides itself before working.

@@ -132,7 +132,7 @@ end
 -- A pet's owner line always shows: Blizzard puts no owner line under a pet, so
 -- this is ours to give, and it is the whole point of the pet's subtitle row.
 
--- The subtitle, the pet test and the group roster the entity colours read live
+-- The subtitle, the pet test and the group roster the entity colors read live
 -- together, in EUI_Nameplates_AlliedColors.lua.
 local GetCachedNPCTitle = ns.Allied.GetCachedNPCTitle
 local IsPetUnit = ns.Allied.IsPet
@@ -441,7 +441,7 @@ local unitToNameplate = setmetatable({}, { __mode = "v" })
 
 -- Filled further down, where the suppression and the name-only text live: the
 -- overlay here is what calls into them.
-local SuppressBlizzardUF, RestoreNPCNameplate, IsParked, HideNameOnlySub
+local SuppressBlizzardUF, RestoreNPCNameplate, IsParked, HideNameOnlySub, ForgetNameText
 local nameFSUnits, nameFSText
 
 -- The plate's own unit token: namePlateUnitToken first, then the pooled
@@ -586,9 +586,9 @@ local function ApplyOverlayStyle(overlay, unit)
         overlay.name:SetTexelSnappingBias(0)
     end
     EllesmereUI.SetFontFamily(overlay.title, font, GetNPCTitleSize(overlay), outline, shadow)
-    -- A pet's owner line takes its own colour (or the pet's name colour when it is
+    -- A pet's owner line takes its own color (or the pet's name color when it is
     -- set to match); an NPC's subtitle takes the NPC Title Color pair, or the name
-    -- colour above it when it is set to match.
+    -- color above it when it is set to match.
     if overlay.isPet then
         overlay.title:SetTextColor(ns.Allied.GetPetOwnerColor(unit))
     else
@@ -621,7 +621,7 @@ local function SetOverlayTitle(overlay, unit)
 end
 
 -- UNIT_NAME_UPDATE: the server sent the name after the plate came up.
--- UNIT_FLAGS / UNIT_FACTION: the unit changed side, so its colour did.
+-- UNIT_FLAGS / UNIT_FACTION: the unit changed side, so its color did.
 local function OnOverlayEvent(self, event)
     local unit = self.unit
     if not unit then return end
@@ -633,7 +633,7 @@ local function OnOverlayEvent(self, event)
 end
 
 -- Point the plate's overlay at a unit and paint it. A plate reused for another
--- NPC keeps its overlay frame but takes the new unit's name, colour, events and
+-- NPC keeps its overlay frame but takes the new unit's name, color, events and
 -- marker: only the properties are re-read, never rebuilt.
 local function ShowNPCOverlay(nameplate, unit)
     local overlay = npcOverlays[nameplate]
@@ -812,10 +812,7 @@ local function RefreshNPCOverlay(nameplate, unit)
         -- the last friendly player's guild under this NPC's name. Cleared before
         -- the park is verified, so a rejected claim cannot leave it behind either.
         local nfs = nameplate.UnitFrame and nameplate.UnitFrame.name
-        if nfs then
-            nameFSUnits[nfs], nameFSText[nfs] = nil, nil
-            HideNameOnlySub(nfs)
-        end
+        if nfs then ForgetNameText(nfs) end
         -- Bookkeeping is not proof: in combat Blizzard can refuse a write to a
         -- protected frame, and a park that did not take leaves Blizzard's own
         -- plate on screen. Painting our name over it as well is the one thing
@@ -856,7 +853,7 @@ function ns.RefreshNPCOverlayStyle()
     end
 end
 
--- Refresh all visible NPC overlays (Show NPC Titles, the title colour, Show
+-- Refresh all visible NPC overlays (Show NPC Titles, the title color, Show
 -- Raid Marker): re-decide each plate, then re-point each overlay at the unit it
 -- already holds, which re-reads the title and re-registers the events without
 -- pooling the frame.
@@ -994,11 +991,11 @@ local function InMyGroup(unit)
 end
 
 -------------------------------------------------------------------------------
---  Class colours: the friendly bar, the name and the guild line
+--  Class colors: the friendly bar, the name and the guild line
 -------------------------------------------------------------------------------
--- The unit's class colour on the suite palette (custom class colours and Class
+-- The unit's class color on the suite palette (custom class colors and Class
 -- Color Darken). Returns ok, r, g, b. A redacted class token takes the
--- restricted-unit palette, else Blizzard's class colour; those r/g/b may be
+-- restricted-unit palette, else Blizzard's class color; those r/g/b may be
 -- secret, so they only ever reach a setter. plainOnly refuses a redacted token
 -- instead, for callers that need numbers they can do arithmetic on.
 local function ClassRGB(unit, plainOnly)
@@ -1016,10 +1013,10 @@ local function ClassRGB(unit, plainOnly)
     return true, c.r, c.g, c.b
 end
 
--- Paints one full plate's bar and name. Players: the bar takes the class colour
--- (Class Colored Health Bar) or friendlyBarColor, the name the class colour or
--- the Custom colour (Name Color); with Class Colored Health Bar on, a class that
--- does not resolve paints both in the NPC colour. NPCs take the NPC colour. One
+-- Paints one full plate's bar and name. Players: the bar takes the class color
+-- (Class Colored Health Bar) or friendlyBarColor, the name the class color or
+-- the Custom color (Name Color); with Class Colored Health Bar on, a class that
+-- does not resolve paints both in the NPC color. NPCs take the NPC color. One
 -- UnitClass read at most. Under the WoW Forever style a member of your party or
 -- raid takes the stock plate's group tint in place of friendlyBarColor; the plate
 -- remembers it (_grpTint), so a roster change repaints only the bars it moved
@@ -1063,15 +1060,15 @@ ns.NP_PaintFriendlyColors = PaintFriendlyColors   -- the options page's player s
 -------------------------------------------------------------------------------
 local SUB_TEXT_R, SUB_TEXT_G, SUB_TEXT_B = 0.8, 0.8, 0.8
 
--- Effective sub text color: the player's own name colour when Match Player Name
--- Color is picked (a target highlight, else the name's class or custom colour),
+-- Effective sub text color: the player's own name color when Match Player Name
+-- Color is picked (a target highlight, else the name's class or custom color),
 -- else class color when Class Colored is picked, else the custom color.
 local function GetSubTextColor(unit)
     local fp = FP()
     if fp and fp.friendlyBelowNameMatchNameColor then
         local r, g, b = ns.Allied.GetOverrideColor(unit, fp)
         if r then return r, g, b end
-        -- The name's own colour, by the style in use (Class Color or Custom).
+        -- The name's own color, by the style in use (Class Color or Custom).
         if ns.FriendlyNameClass(fp, IsNameOnlyMode()) then
             local ok, cr, cg, cb = ClassRGB(unit, true)
             if ok then return cr, cg, cb end
@@ -1098,12 +1095,12 @@ local function ShowFriendlyLevel()
     return fp and fp.friendlyShowLevel == true
 end
 -- Color Level by Difficulty (friendlyLevelDiffColor, default off): the level
--- in its difficulty colour against yours, as Blizzard's level box draws it.
+-- in its difficulty color against yours, as Blizzard's level box draws it.
 local function FriendlyLevelDiffColor()
     local fp = FP()
     return fp and fp.friendlyShowLevel == true and fp.friendlyLevelDiffColor == true
 end
--- The level part of a friendly player's name: plain, or difficulty-coloured
+-- The level part of a friendly player's name: plain, or difficulty-colored
 -- while that option is on. A secret or unreadable level stays a plain "??".
 local function FriendlyLevelText(unit)
     return ns.GetUnitLevelText(unit, FriendlyLevelDiffColor() and "diffAll" or nil)
@@ -1199,11 +1196,11 @@ local function PlayerStatusTag(unit)
     return nil
 end
 
--- Name Color in Name Only mode. Blizzard colours its own name text: the class
--- colour by its CVar, else a colour of its own. A Custom pick is written as a
--- colour escape round the name, which outranks that colour; nil while the pick
--- is not Custom (unset included: Blizzard's own colour stands). The escape is
--- built again only when the colour changes.
+-- Name Color in Name Only mode. Blizzard colors its own name text: the class
+-- color by its CVar, else a color of its own. A Custom pick is written as a
+-- color escape round the name, which outranks that color; nil while the pick
+-- is not Custom (unset included: Blizzard's own color stands). The escape is
+-- built again only when the color changes.
 local NameEsc = {}
 function NameEsc.Get()
     local fp = FP()
@@ -1217,9 +1214,9 @@ function NameEsc.Get()
     return NameEsc.str
 end
 
--- The colour a friendly player's name-only text is written in, as an escape:
+-- The color a friendly player's name-only text is written in, as an escape:
 -- a target highlight (friend, guild, group, ...) wins over Name Color's Custom
--- pick. nil leaves Blizzard's own colour (the class colour by its CVar).
+-- pick. nil leaves Blizzard's own color (the class color by its CVar).
 local function NameOnlyEsc(unit)
     local r, g, b = ns.Allied.GetOverrideColor(unit)
     if r then return ns.Allied.HexEsc(r, g, b) end
@@ -1351,22 +1348,12 @@ local function ApplySubText(fs, unit)
 end
 
 -------------------------------------------------------------------------------
---  Name-only mode: EVERYTHING rides Blizzard's own name FontString
+--  Name-only mode: Blizzard's own name FontString
 --
 --  Blizzard renders the name here, so the title is folded in inline (via
---  UnitPVPName) and the guild is appended as a SECOND LINE of that same
---  string. One region means the guild can never drift from the name: there
---  is no second widget to position, so there is nothing to fall out of sync
---  on a moving (mounted) plate. A separate overlay frame was tried first and
---  jittered ~1px per frame against the name no matter how it was anchored or
---  pixel-snapped; this removes the failure mode instead of compensating.
---
---  Cost of the approach: one FontString means ONE font size, so the guild
---  line renders at the name's size here (its colour still applies, via an
---  inline colour escape). The Guild Text Size setting governs full-plate
---  mode, which draws its own separate FontString. Show Guild Line as Its Own
---  Text (off by default) opts into the separate widget instead, which can take
---  Guild Text Size at the cost of a position to keep in sync.
+--  UnitPVPName), with the level, the group brackets and a Custom name color
+--  composed onto that same string. The guild line is a font string of our
+--  own under the name (NameOnlySub below), at Guild Text Size.
 --
 --  The unit token and last-written text for a Blizzard name FontString ride
 --  external weak-keyed tables -- never custom keys on the Blizzard widget.
@@ -1407,6 +1394,13 @@ HideNameOnlySub = function(nameFS)
     fs:Hide()
 end
 
+-- A pooled name string another plate or unit now holds: forget its pairing and
+-- what was composed onto it, and hide its guild line.
+ForgetNameText = function(nameFS)
+    nameFSUnits[nameFS], nameFSText[nameFS] = nil, nil
+    HideNameOnlySub(nameFS)
+end
+
 -- Every name-only guild line off: the system stops painting these plates (the
 -- style changed, or the plates are hidden), and a line left standing under
 -- Blizzard's own name would be orphaned.
@@ -1418,7 +1412,7 @@ local function ClearAllNameOnlySubs()
 end
 
 -- Write (or clear) the guild line: its own font family at Guild Text Size, the
--- guild colour, the <brackets> the setting asks for.
+-- guild color, the <brackets> the setting asks for.
 local function WriteNameOnlySub(nameFS, unit, guild)
     if not guild then
         HideNameOnlySub(nameFS)
@@ -1431,7 +1425,7 @@ local function WriteNameOnlySub(nameFS, unit, guild)
     local fp = FP()
     local body = (not fp or fp.friendlyBelowNameGuildBrackets ~= false) and "<%s>" or "%s"
     -- The guild is only ever a SetFormattedText argument (display sinks accept
-    -- secrets); the brackets and the colour are our own values.
+    -- secrets); the brackets and the color are our own values.
     fs:SetFormattedText(body, guild)
     fs:SetTextColor(r, g, b, 1)
     fs:Show()
@@ -1453,8 +1447,7 @@ local function UpdateNameOnlyText(nameFS)
     -- forget the token and leave Blizzard's own name.
     local np = C_NamePlate.GetNamePlateForUnit(unit)
     if not (np and np.UnitFrame and np.UnitFrame.name == nameFS) then
-        nameFSUnits[nameFS], nameFSText[nameFS] = nil, nil
-        HideNameOnlySub(nameFS)
+        ForgetNameText(nameFS)
         return
     end
     -- This composition is for players: NPC plates ride the overlay above.
@@ -1466,8 +1459,9 @@ local function UpdateNameOnlyText(nameFS)
     end
     -- Nameplate tokens are recycled: a plate reused for an enemy keeps our
     -- hook and a stale friendly token, so never write on a hostile unit
-    -- (Blizzard's own name write is already correct there).
-    if UnitCanAttack("player", unit) then
+    -- (Blizzard's own name write is already correct there). An unflagged
+    -- opposite-faction player is no friend either: Blizzard colors that name.
+    if UnitCanAttack("player", unit) or not UnitIsFriend("player", unit) then
         HideNameOnlySub(nameFS)
         nameFSText[nameFS] = nil
         return
@@ -1482,16 +1476,16 @@ local function UpdateNameOnlyText(nameFS)
     if isPlayer and FriendlyNameFormat() then
         want = FormatFriendlyName(unit, want, ModeHasTitle(mode))
     end
-    -- Blizzard's away/busy tag, on the name itself so it takes the name's colour
+    -- Blizzard's away/busy tag, on the name itself so it takes the name's color
     -- and rides inside the group brackets. Off unless Status Tags asks for
     -- it (PlayerStatusTag answers nil then).
     if isPlayer then
         local tag = PlayerStatusTag(unit)
         if tag then want = want .. tag end
     end
-    -- The name's colour: a target highlight (friend, guild, group, ...) first,
+    -- The name's color: a target highlight (friend, guild, group, ...) first,
     -- else Name Color's Custom pick. Round the name, inside the group brackets,
-    -- which keep their own colours.
+    -- which keep their own colors.
     local esc = isPlayer and NameOnlyEsc(unit) or nil
     if esc then want = esc .. want .. "|r" end
     local gKind
@@ -1505,8 +1499,8 @@ local function UpdateNameOnlyText(nameFS)
     end
     if isPlayer and ShowFriendlyLevel() then
         if esc then
-            -- The level and the divider take the colour too; each piece closes its
-            -- own escape, so a level coloured by difficulty keeps that colour.
+            -- The level and the divider take the color too; each piece closes its
+            -- own escape, so a level colored by difficulty keeps that color.
             want = esc .. FriendlyLevelText(unit) .. "|r" .. esc .. " | |r" .. want
         else
             want = FriendlyLevelText(unit) .. " | " .. want
@@ -1540,7 +1534,7 @@ local function UpdateNameOnlyText(nameFS)
 end
 
 -- Whether this plate's name can differ from the plain name Blizzard writes:
--- a subtitle, a name format, a level, brackets, a name colour, a target
+-- a subtitle, a name format, a level, brackets, a name color, a target
 -- highlight, or the away/busy tag while a Status Tag is on. Cheapest test
 -- first; the hook asks this on every SetText.
 local function NeedsNameOnlyTextUpdate(unit)
@@ -1577,8 +1571,7 @@ local function AttachNameOnlyText(nameFS, unit)
                 -- an enemy's). The guild line under it is OURS, and nothing else
                 -- clears it: left alone it shows a nearby player's guild under
                 -- whatever that plate holds now. Forget the pairing and clear it.
-                nameFSUnits[self], nameFSText[self] = nil, nil
-                HideNameOnlySub(self)
+                ForgetNameText(self)
                 return
             end
             if not NeedsNameOnlyTextUpdate(u) then
@@ -1919,10 +1912,16 @@ end
 -------------------------------------------------------------------------------
 hooksecurefunc(NamePlateDriverFrame, "OnNamePlateAdded", function(_, unit)
     if not unit or unit == "preview" then return end
+
+    local nameplate = C_NamePlate.GetNamePlateForUnit(unit)
+    -- Pooled name string: drop the last occupant's composition and guild line.
+    -- The player path below re-attaches it.
+    local nfs = nameplate and nameplate.UnitFrame and nameplate.UnitFrame.name
+    if nfs then ForgetNameText(nfs) end
+
     if UnitCanAttack("player", unit) then return end
     if UnitIsUnit(unit, "player") then return end
 
-    local nameplate = C_NamePlate.GetNamePlateForUnit(unit)
     if nameplate then unitToNameplate[unit] = nameplate end
 
     -- A pooled UnitFrame can arrive still parked for the unit that last held
@@ -1987,7 +1986,7 @@ hooksecurefunc(NamePlateDriverFrame, "OnNamePlateAdded", function(_, unit)
             end
             EnsureNameUnconstrained(nameplate.UnitFrame.name)
             -- Subtitle Text (inline title + guild line), the Name Format, a
-            -- level, brackets, Name Color's Custom colour and the target
+            -- level, brackets, Name Color's Custom color and the target
             -- highlights, all composed onto this same FontString.
             if NeedsNameOnlyTextUpdate(unit) then
                 AttachNameOnlyText(nameplate.UnitFrame.name, unit)
@@ -2368,7 +2367,7 @@ function FriendlyFrame:UpdateName()
     if fmt and isPlayer and unitName then
         unitName = FormatFriendlyName(unit, unitName, hasTitle)
     end
-    -- Blizzard's away/busy tag, on the same text and colour as the name. A secret
+    -- Blizzard's away/busy tag, on the same text and color as the name. A secret
     -- name cannot be concatenated, so it is left without one.
     local tag
     if unitName and UnitIsPlayer(unit) and not (issecretvalue and issecretvalue(unitName)) then
@@ -2484,7 +2483,7 @@ function FriendlyFrame:ApplyTarget()
             self._targetBorderSized = nil
             self:ApplyBorder()
         end
-        -- Colour after size: a rebuilt custom border takes the tint right after. A tint only.
+        -- Color after size: a rebuilt custom border takes the tint right after. A tint only.
         if fx and ns.GetTargetGlowBorderColor() then
             local bc = ns.GetTargetBorderColor()
             if ns.IsCustomBorderEnabled() then
@@ -2732,7 +2731,7 @@ function ns.NP_SyncFriendlyHealthTextSide()
     end
 end
 
--- Repaints every live full plate's bar and name (colour settings, the class
+-- Repaints every live full plate's bar and name (color settings, the class
 -- palette, profile switches), the same way the spawn path paints them.
 -- paletteChanged: the class palette moved, so a Class Colored guild line
 -- (either friendly mode) is repainted too.
@@ -2759,7 +2758,7 @@ end
 
 -- Show Level: a friendly player's level-up repaints that plate's name, and
 -- with Color Level by Difficulty your own level-up repaints them all (the
--- colours rank against your level). The event frame registers only while
+-- colors rank against your level). The event frame registers only while
 -- Show Level is on (armed from the settings refresh and the system pass), so
 -- it costs nothing while it is off.
 do
@@ -3237,7 +3236,7 @@ function ns.UpdateFriendlyNameplateSystem()
     -- included, where the health-bar manager above stays unregistered -- and
     -- only while something reads them (see ns.RefreshFriendlyTagWatch).
     ns.RefreshFriendlyTagWatch()
-    -- Class-colour CVar for the friendly player names Blizzard draws: every name
+    -- Class-color CVar for the friendly player names Blizzard draws: every name
     -- in name-only mode, the protected instance plates in full-plate mode. A
     -- combat skip is caught by the visibility retry above.
     if (nameOnly or shouldEnable) and not InCombatLockdown() then
