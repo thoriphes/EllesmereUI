@@ -1064,6 +1064,121 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
+    --  WoW Forever Scrolls and Elixirs: the row label, the checkbox dropdown of
+    --  the stats this class is reminded of (per class, forever.<stat>ConsumableByClass)
+    --  and its cog. A class with neither Mage Armors nor Class Buffs has it beside
+    --  the Arcane Censer, every other class on a row of its own before the custom
+    --  spells, so Add Custom Spell | New Spell Group stay a pair.
+    ---------------------------------------------------------------------------
+    local STAT_KEYS = { "intellect", "strength", "agility", "stamina", "spirit", "protection" }
+    local function ScrollsSlot()
+        return { type="label", text=EllesmereUI.L("Scrolls and Elixirs"),
+            tooltip=EllesmereUI.L("Reminds you when a ticked stat has no scroll or elixir buff while one is in your bags. Click the icon to use it.\nOne reminder by default; the cog can show one per stat.\nWith Action Picker on, right-click to choose another item.") }
+    end
+    local function DressScrollsSlot(rgn, class, slotCfg)
+        local function IntellectLocked() return ns.FvStatConsumableLocked("ai", class) end
+        local function StaminaLocked() return ns.FvStatConsumableLocked("fort", class) end
+        local function SpiritLocked() return ns.FvStatConsumableLocked("spirit", class) end
+        local locks = { intellect = IntellectLocked, stamina = StaminaLocked, spirit = SpiritLocked }
+        local function Ticked(f, key)
+            if locks[key] and locks[key]() then return false end
+            local picks = f[key .. "ConsumableByClass"]
+            return picks and picks[class] == true or false
+        end
+        if not EllesmereUI._prebuilding then
+            local profile = FDB()
+            local items = {
+                { key = "intellect", label = EllesmereUI.L("Intellect"),
+                  lockedFn = IntellectLocked,
+                  lockedTooltip = EllesmereUI.L("Disabled because you already know Arcane Intellect."),
+                  tooltip = EllesmereUI.L("Scrolls of Intellect I-IV") .. "\n" .. EllesmereUI.L("Intellect Elixirs") .. "\n\n"
+                      .. EllesmereUI.L("Does not stack with Arcane Intellect, Arcane Brilliance and Incense Candle.") },
+                { key = "strength", label = EllesmereUI.L("Strength"),
+                  tooltip = EllesmereUI.L("Scrolls of Strength I-IV") .. "\n" .. EllesmereUI.L("Strength Elixirs") .. "\n\n"
+                      .. EllesmereUI.L("Can stack with Sharpening Wheel and Strength of Earth Totem.") },
+                { key = "agility", label = EllesmereUI.L("Agility"),
+                  tooltip = EllesmereUI.L("Scrolls of Agility I-IV") .. "\n" .. EllesmereUI.L("Agility Elixirs") .. "\n\n"
+                      .. EllesmereUI.L("Can stack with Grace of Air Totem.") },
+                { key = "stamina", label = EllesmereUI.L("Stamina"),
+                  lockedFn = StaminaLocked,
+                  lockedTooltip = EllesmereUI.L("Disabled because you already know Power Word: Fortitude."),
+                  tooltip = EllesmereUI.L("Scrolls of Stamina I-IV") .. "\n" .. EllesmereUI.L("Elixirs of Fortitude") .. "\n\n"
+                      .. EllesmereUI.L("Stamina scrolls do not stack with Power Word: Fortitude, Prayer of Fortitude and First Aid Kit.\nElixirs of Fortitude stack with any Stamina buff.") },
+                { key = "spirit", label = EllesmereUI.L("Spirit"),
+                  lockedFn = SpiritLocked,
+                  lockedTooltip = EllesmereUI.L("Disabled because you already know Divine Spirit."),
+                  tooltip = EllesmereUI.L("Scrolls of Spirit I-IV") .. "\n" .. EllesmereUI.L("Spirit Elixirs") .. "\n\n"
+                      .. EllesmereUI.L("Does not stack with Divine Spirit and Prayer of Spirit.") },
+                { key = "protection", label = EllesmereUI.L("Protection"),
+                  tooltip = EllesmereUI.L("Scrolls of Protection I-IV") .. "\n" .. EllesmereUI.L("Armor Elixirs") .. "\n\n"
+                      .. EllesmereUI.L("Can stack with Devotion Aura.") },
+            }
+            for _, item in ipairs(items) do
+                if item.lockedTooltip then
+                    item.lockedTooltip = item.lockedTooltip .. "\n\n" .. item.tooltip
+                end
+            end
+            local dd, refresh = EllesmereUI.BuildVisOptsCBDropdown(rgn, 170, rgn:GetFrameLevel() + 2, items,
+                function(key)
+                    local f = FDB(); if not (f and class) then return false end
+                    return Ticked(f, key)
+                end,
+                function(key, v)
+                    local f = FDB(); if not (f and f == profile and class) then return end
+                    if locks[key] and locks[key]() then return end
+                    local field = key .. "ConsumableByClass"
+                    local picks = f[field]
+                    if v then
+                        if not picks then picks = {}; f[field] = picks end
+                        picks[class] = true
+                    elseif picks then
+                        picks[class] = nil
+                    end
+                    RefreshAll()
+                end, nil, nil, nil, nil, nil, { dimLocked = true })
+            EllesmereUI.PanelPP.Point(dd, "RIGHT", rgn, "RIGHT", -20, 0)
+            dd._ttText = slotCfg.tooltip
+            rgn._control = dd
+            rgn._lastInline = nil
+            EllesmereUI.RegisterWidgetRefresh(refresh)
+            ns.RefreshStatConsumableOptions = function()
+                if dd:IsVisible() then refresh() end
+            end
+        end
+        EllesmereUI.BuildInlineCog(rgn, {
+            title = "Scrolls and Elixirs",
+            disabled = function()
+                local f = FDB(); if not (f and class) then return true end
+                for _, key in ipairs(STAT_KEYS) do
+                    if Ticked(f, key) then return false end
+                end
+                return true
+            end,
+            disabledTooltip = "Scrolls and Elixirs",
+            minWidth = 320,
+            rows = {
+                { type="toggle", label=EllesmereUI.L("Separate Reminders"),
+                  tooltip=EllesmereUI.L("Show a separate icon for each selected stat with an eligible scroll or elixir."),
+                  get=function() local f = FDB(); return f and f.statConsumableSeparateReminders == true end,
+                  set=function(v) local f = FDB(); if f then f.statConsumableSeparateReminders = v == true; RefreshAll() end end },
+                { type="toggle", label=EllesmereUI.L("Show Stronger Buffs"),
+                  tooltip=EllesmereUI.L("Suggest a usable scroll or elixir from your bags if it gives more of the stat than your current buff."),
+                  get=function() local f = FDB(); return f and f.statConsumableShowUpgrades == true end,
+                  set=function(v) local f = FDB(); if f then f.statConsumableShowUpgrades = v == true; RefreshAll() end end },
+                { type="dropdown", label="Rank to Use", ddWidth=200,
+                  values={ high = "Highest Owned", low = "Lowest Owned" }, order={ "high", "low" },
+                  tooltip=EllesmereUI.L("Choose the highest or lowest eligible item for each stat. An eligible Action Picker choice takes priority."),
+                  get=function() local f = FDB(); return f and f.statConsumableLowRank and "low" or "high" end,
+                  set=function(v) local f = FDB(); if f then f.statConsumableLowRank = v == "low"; RefreshAll() end end },
+                { type="slider", label="Show Below (Minutes)", min=0, max=10, step=1,
+                  tooltip=EllesmereUI.L("Show a countdown before a tracked scroll or elixir buff expires. 0 = show only after it expires."),
+                  get=function() local f = FDB(); return f and f.statConsumableShowBelow or 0 end,
+                  set=function(v) local f = FDB(); if f then f.statConsumableShowBelow = v; RefreshAll() end end },
+            },
+        })
+    end
+
+    ---------------------------------------------------------------------------
     --  WoW Forever custom spells: the lead slot (the Add Custom Spell entry),
     --  the New Spell Group slot, then one slot per tracked spell (its icon,
     --  name and ID, and a checkbox dropdown of the classes it reminds, each
@@ -1427,7 +1542,7 @@ initFrame:SetScript("OnEvent", function(self)
             (function()
                 if FOREVER then
                     return { type="toggle", text="Action Picker",
-                      tooltip="Right-click a spell group or Class Buffs reminder to choose the spell its left click casts, or the Well Fed reminder to choose a food. Scroll over a spell to choose its rank.",
+                      tooltip="Right-click a spell group or Class Buffs reminder to choose a spell, or an item reminder such as Well Fed or Scrolls and Elixirs to choose an item. Scroll over a spell to choose its rank.",
                       getValue=function() local f = FDB(); return f and f.pickerEnabled == true end,
                       setValue=function(v)
                           local f = FDB(); if not f then return end; f.pickerEnabled = v
@@ -1959,6 +2074,10 @@ initFrame:SetScript("OnEvent", function(self)
                           tooltip="Also reminds you this many minutes before Well-Rested runs out. 0 = off.",
                           get=function() local f = FDB(); return f and f.sleepingBagShowBelow or 0 end,
                           set=function(v) local f = FDB(); if f then f.sleepingBagShowBelow = v > 0 and v or nil; RefreshAll() end end },
+                        { type="toggle", label="Show Sleep Timer",
+                          tooltip="Counts down to three Well-Rested stacks while you sleep in the bag.",
+                          get=function() local f = FDB(); return not f or f.sleepingBagShowProgress ~= false end,
+                          set=function(v) local f = FDB(); if f then f.sleepingBagShowProgress = v and true or false; RefreshAll() end end },
                     },
                 })
                 EllesmereUI.BuildInlineCog(gatherRow._leftRegion, {
@@ -2029,7 +2148,10 @@ initFrame:SetScript("OnEvent", function(self)
                     censerCfg
                 )
             else
-                _, h = W:DualRow(parent, y, censerCfg, EllesmereUI.BlankRowCfg())
+                local scrolls = ScrollsSlot()
+                local censerRow
+                censerRow, h = W:DualRow(parent, y, censerCfg, scrolls)
+                DressScrollsSlot(censerRow._rightRegion, class, scrolls)
             end
             y = y - h
 
@@ -2056,15 +2178,27 @@ initFrame:SetScript("OnEvent", function(self)
                     items[#items + 1] = { key = b.key, label = text, tooltip = tip }
                     byKey[b.key] = b
                 end
+                if class == "HUNTER" then
+                    items[#items + 1] = { key = "hunterTracking", label = "Target Tracking",
+                        tooltip = "In combat, shows the tracking that matches your hostile target's creature type." }
+                end
                 local isOn = _G._EABR_FvClassBuffOn
                 local rgn = classRow._leftRegion
                 local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
                     rgn, 170, rgn:GetFrameLevel() + 2, items,
-                    function(key) local f = FDB(); return isOn(byKey[key], f and f.classBuffPicks) end,
+                    function(key)
+                        local f = FDB()
+                        if key == "hunterTracking" then return f and f.hunterTracking == true end
+                        return isOn(byKey[key], f and f.classBuffPicks)
+                    end,
                     function(key, v)
                         local f = FDB(); if not f then return end
-                        f.classBuffPicks = f.classBuffPicks or {}
-                        f.classBuffPicks[key] = v and true or false
+                        if key == "hunterTracking" then
+                            f.hunterTracking = v and true or false
+                        else
+                            f.classBuffPicks = f.classBuffPicks or {}
+                            f.classBuffPicks[key] = v and true or false
+                        end
                         RefreshAll()
                     end)
                 EllesmereUI.PanelPP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0)
@@ -2130,6 +2264,16 @@ initFrame:SetScript("OnEvent", function(self)
                     minWidth = 320,
                     rows = rows,
                 })
+            end
+
+            -- Scrolls and Elixirs on a row of its own (beside the Arcane Censer
+            -- above for a class with neither Mage Armors nor Class Buffs)
+            if classRow then
+                local scrolls = ScrollsSlot()
+                local scrollsRow
+                scrollsRow, h = W:DualRow(parent, y, scrolls, EllesmereUI.BlankRowCfg())
+                DressScrollsSlot(scrollsRow._leftRegion, class, scrolls)
+                y = y - h
             end
 
             -- Add Custom Spell, paired with the tracked spells

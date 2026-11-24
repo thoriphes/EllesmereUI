@@ -24,6 +24,7 @@ local CreateCustomClassPower, DestroyCustomClassPower, IsKickCastbarUnit =
 local StyleFullFrame, StyleFocusFrame, StyleSimpleFrame, StyleBossFrame =
     I.StyleFullFrame, I.StyleFocusFrame, I.StyleSimpleFrame, I.StyleBossFrame
 local UnitFrame_OnEnter, UnitFrame_OnLeave = I.UnitFrame_OnEnter, I.UnitFrame_OnLeave
+local DruidNeedsCatForm = I.DruidNeedsCatForm
 local db
 I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 
@@ -512,9 +513,85 @@ local function InitializeFrames()
     -- UIParent-parented bars).
     local _cpExpectedParent = nil
 
+    -- WoW Forever druid, row above the health bar: while the row hides out of Cat Form,
+    -- a second health bar fills its band (the health bar never moves). Not under
+    -- Vertical Fill: a band over a bottom-up fill cannot read as one bar.
+    local hpStrip, SetHealthStrip
+    -- Forwarded only while the strip is on (health._euiStrip); values may be secret.
+    local function StripValue(self, ...) local m = self._euiStrip; if m then m:SetValue(...) end end
+    local function StripBounds(self, ...) local m = self._euiStrip; if m then m:SetMinMaxValues(...) end end
+    local function StripColor(self, ...) local m = self._euiStrip; if m then m:SetStatusBarColor(...) end end
+    local function StripReverse(self, ...) local m = self._euiStrip; if m then m:SetReverseFill(...) end end
+    -- Vertical Fill turned on or off while the strip is wanted (health._euiStripBar,
+    -- the row): it stands down or comes back. While it is on, the fill is horizontal.
+    local function StripOrient(self, o)
+        local bar = self._euiStripBar
+        if not bar then return end
+        if o == "VERTICAL" then
+            if self._euiStrip then
+                self._euiStrip = nil
+                hpStrip:Hide()
+            end
+        elseif not self._euiStrip then
+            SetHealthStrip(bar, true)
+        end
+    end
+
+    -- Places the strip over the row's band (on) or stands it down (off).
+    SetHealthStrip = function(bar, on)
+        local health = frames.player and frames.player.Health
+        if not on then
+            if health then health._euiStrip, health._euiStripBar = nil, nil end
+            if hpStrip then hpStrip:Hide() end
+            return
+        end
+        health._euiStripBar = bar
+        if not hpStrip then
+            -- As CreateHealthBar builds the health bar.
+            hpStrip = CreateFrame("StatusBar", nil, health)
+            hpStrip:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+            hpStrip:GetStatusBarTexture():SetHorizTile(false)
+            local bg = hpStrip:CreateTexture(nil, "BACKGROUND")
+            bg:SetAllPoints(hpStrip)
+            hpStrip.bg = bg
+            hooksecurefunc(health, "SetValue", StripValue)
+            hooksecurefunc(health, "SetMinMaxValues", StripBounds)
+            hooksecurefunc(health, "SetStatusBarColor", StripColor)
+            hooksecurefunc(health, "SetReverseFill", StripReverse)
+            hooksecurefunc(health, "SetOrientation", StripOrient)
+        end
+        if not bar._euiStripHooked then
+            bar._euiStripHooked = true
+            local function Follow()
+                if health._euiStrip then hpStrip:SetShown(not bar:IsShown()) end
+            end
+            bar:HookScript("OnShow", Follow)
+            bar:HookScript("OnHide", Follow)
+        end
+        if health:GetOrientation() == "VERTICAL" then
+            health._euiStrip = nil
+            hpStrip:Hide()
+            return
+        end
+        hpStrip:ClearAllPoints()
+        PP.Point(hpStrip, "BOTTOMLEFT", health, "TOPLEFT", 0, 0)
+        PP.Point(hpStrip, "BOTTOMRIGHT", health, "TOPRIGHT", 0, 0)
+        PP.Height(hpStrip, bar._pipH or 3)
+        hpStrip:SetFrameLevel(health:GetFrameLevel())
+        -- The bar's current state, then its paint.
+        hpStrip:SetOrientation(health:GetOrientation())
+        hpStrip:SetMinMaxValues(health:GetMinMaxValues())
+        hpStrip:SetValue(health:GetValue())
+        health._euiStrip = hpStrip
+        ns.UF_PaintHealthMirror(health, frames.player._euiUnit or "player", "_euiStrip", "_euiStripChain")
+        hpStrip:SetShown(not bar:IsShown())
+    end
+
     local function PositionClassPowerBar(bar)
         if not bar or not frames.player then return end
         bar:ClearAllPoints()
+        -- Only the "above" branch below keeps the health strip.
+        SetHealthStrip(nil, false)
         -- Stock styles: the health bar keeps the kit's spot (the stock pass
         -- places it, and skips in combat), so only the pips move here.
         local stock = ns.UF_Blizz()
@@ -551,6 +628,9 @@ local function InitializeFrames()
             end
             PP.Point(bar, "BOTTOMLEFT", anchorFrame, "TOPLEFT", 0, 0)
             PP.Point(bar, "BOTTOMRIGHT", anchorFrame, "TOPRIGHT", 0, 0)
+            local _, cls = UnitClass("player")
+            SetHealthStrip(bar, EllesmereUI.IS_FOREVER == true and not stock
+                and DruidNeedsCatForm(cls, bar._powerType))
             local fw = db.profile.player.frameWidth or 181
             if bar._repositionForWidth then
                 bar._repositionForWidth(fw)
@@ -798,6 +878,7 @@ local function InitializeFrames()
         ns.UF_ApplyForeverComboArc()
 
         -- Clean up existing
+        SetHealthStrip(nil, false)
         _blizzCPActive = false
         ns._ufBlizzCPHeld = false
         if frames._customClassPower then
@@ -1132,7 +1213,7 @@ local function InitializeFrames()
             if issecretvalue(classToken) then classToken = nil end
             -- All custom combat icons (Arcade/Dungeoneer/Classic/Cross/Circle/Square =
             -- combat0..5) are shown exactly as authored: no class theming, no tint, no
-            -- desaturation. Standard/Class Theme below are tinted by the colour mode.
+            -- desaturation. Standard/Class Theme below are tinted by the color mode.
             if style:find("^combat%d") then
                 combat:SetTexture(COMBAT_MEDIA .. style .. ".tga")
                 combat:SetTexCoord(0, 1, 0, 1)
@@ -2366,6 +2447,10 @@ local function InitializeFrames()
         local frame = frames[unitKey]
         if frame and (unitKey == "target" or unitKey == "focus") then
             ns.UF_RecolorTexts(frame, unitKey, db.profile[unitKey])
+            local s, btb = db.profile[unitKey], frame._btb
+            if btb and btb._applyBTBClassIcon and s and s.bottomTextBar then
+                btb._applyBTBClassIcon(s)
+            end
         end
         if not frame or not frame.Portrait then return end
         local backdrop = frame.Portrait.backdrop

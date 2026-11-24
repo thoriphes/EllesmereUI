@@ -100,15 +100,17 @@ I.anyItemPanelOpenSetters[#I.anyItemPanelOpenSetters + 1] = function(v) _anyItem
 -- (Merge Duplicates, or Recent Items showing picked-up amounts), so the caller
 -- can refresh. A view that does not merge paints the same either way: its
 -- painted state just follows, so neither this nor OnShow repaints.
+-- A panel change ends a held bags layout: then true too.
 local function SetItemPanelOpen(key, open)
+    local refresh = ns.Hold and _openItemPanels[key] ~= (open or nil) and ns.Hold.ReleaseHeld("bags")
     _openItemPanels[key] = open or nil
     local any = next(_openItemPanels) ~= nil
-    if any == _anyItemPanelOpen then return false end
+    if any == _anyItemPanelOpen then return refresh end
     SetAnyItemPanelOpen(any)
     local bp = BP()
     local merges = bp.bagMergeDuplicates ~= false or bp.bagRecentShowGained == true
     if not merges then SetPaintedPanelOpen(any) end
-    return merges
+    return merges or refresh
 end
 
 -- Pre-cache sort fields onto item data tables to avoid API calls in comparator.
@@ -438,6 +440,32 @@ local function GetItemMergeKey(link)
     return (link:gsub("(|Hitem:[^|]-):Player%-%d+%-%x+([:|])", "%1:%2", 1))
 end
 
+-- Reagent Bag Icon choices (bagReagentBadge, bagReagentBadgeSize).
+local REAGENT_BADGES = {
+    order = { "none",
+              "goldleaf", "goldnugget", "goldhammer", "profession",
+              "wqherbalism", "wqmining", "wqskinning", "wqalchemy", "wqtailoring", "wqleatherworking",
+              "wqenchanting", "wqblacksmithing", "wqengineering" },
+    styles = {
+        goldleaf         = { atlas = "Professions_Tracking_Herb", label = "Golden Leaf" },
+        goldnugget       = { atlas = "Professions_Tracking_Ore", label = "Gold Nugget" },
+        goldhammer       = { atlas = "Professions-Crafting-Orders-Icon", label = "Golden Hammer" },
+        profession       = { atlas = "profession", label = "Profession" },
+        wqherbalism      = { atlas = "worldquest-icon-herbalism", label = "Herbalism" },
+        wqmining         = { atlas = "worldquest-icon-mining", label = "Mining" },
+        wqskinning       = { atlas = "worldquest-icon-skinning", label = "Skinning" },
+        wqalchemy        = { atlas = "worldquest-icon-alchemy", label = "Alchemy" },
+        wqtailoring      = { atlas = "worldquest-icon-tailoring", label = "Tailoring" },
+        wqleatherworking = { atlas = "worldquest-icon-leatherworking", label = "Leatherworking" },
+        wqenchanting     = { atlas = "worldquest-icon-enchanting", label = "Enchanting" },
+        wqblacksmithing  = { atlas = "worldquest-icon-blacksmithing", label = "Blacksmithing" },
+        wqengineering    = { atlas = "worldquest-icon-engineering", label = "Engineering" },
+    },
+}
+ns.BAG_REAGENT_BADGES = REAGENT_BADGES  -- also read by EllesmereUIBags_Grid.lua and the Bags options page
+-- Reagent bag keys of one MergeDuplicates call while a Reagent Bag Icon is on (reused)
+local _seenReag = {}
+
 -- Merge duplicate non-gear items within an already-ordered list.
 -- Must run AFTER ApplySavedOrder so the first occurrence in visual order wins.
 -- Returns a new list; the caller's tables are NEVER modified. A merged winner is
@@ -461,11 +489,14 @@ local function MergeDuplicates(items)
     -- OnShow repaints when the marks were wiped by the close that hid them.
     EUI_Bags._paintedUnmerged = (unmerged ~= nil and next(unmerged) ~= nil) or nil
     local seen = {}
+    -- Reagent Bag Icon on: reagent bag stacks merge only with each other.
+    local seenReag = REAGENT_BADGES.styles[BP().bagReagentBadge] and wipe(_seenReag) or seen
     local out = {}
     for _, data in ipairs(items) do
         local key = not data._isGear and not IsGearCategory(data.categoryIndex or 0) and GetItemMergeKey(data.itemLink)
         if key and not (unmerged and unmerged[key]) then
-            local idx = seen[key]
+            local into = data.bag == 5 and seenReag or seen
+            local idx = into[key]
             if idx then
                 local prev = out[idx]
                 if not prev._mergedCount then
@@ -483,7 +514,7 @@ local function MergeDuplicates(items)
                 prev._mergedCount = prev._mergedCount + (data.info.stackCount or 1)
             else
                 out[#out + 1] = data
-                seen[key] = #out
+                into[key] = #out
             end
         else
             out[#out + 1] = data
@@ -757,7 +788,10 @@ UpdatePawnArrow = function(btn, itemLink)
 end
 
 local function RefreshPawnArrows()
-    if EUI_Bags:IsVisible() then EUI_Bags:RefreshInventory() end
+    if EUI_Bags:IsVisible() then
+        if ns.Hold then ns.Hold.events.bags = true end
+        EUI_Bags:RefreshInventory()
+    end
     if EUI_BagsReagent:IsVisible() then EUI_BagsReagent:RefreshInventory() end
 end
 

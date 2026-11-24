@@ -295,7 +295,7 @@ local function BuildSelfCombatTextSection(parent, y)
           getValue=function() return SCTGet(key) end,
           setValue=function(v) SCTSet(key, v) end }
     end
-    -- A category toggle's colour, locked while the feature or that category is off
+    -- A category toggle's color, locked while the feature or that category is off
     local function sctSwatch(rgn, key, colorKey, label)
         if EllesmereUI._prebuilding then return end
         EllesmereUI.BuildInlineSwatches(rgn, { {
@@ -883,6 +883,82 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
 
+        -- Dialog Keys | Dialog Key keybind (EllesmereUIQoL_DialogKeys.lua),
+        -- retail and WoW Forever.
+        do
+            local dialogKeysRow
+            dialogKeysRow, h = W:DualRow(parent, y,
+                { type="toggle", text="Dialog Keys",
+                  tooltip="Answer NPC windows with the keyboard. The Dialog Key presses Accept, Continue or Complete Quest, or a gossip window's top choice, and number keys (top row or numpad) press a numbered choice. Use the cog to turn the number keys off, or to let the Dialog Key confirm Abandon Quest. Off in combat.",
+                  getValue=function()
+                      return EllesmereUIDB and EllesmereUIDB.dialogKeys or false
+                  end,
+                  setValue=function(v)
+                      if not EllesmereUIDB then EllesmereUIDB = {} end
+                      EllesmereUIDB.dialogKeys = v
+                      if EllesmereUI._applyDialogKeys then EllesmereUI._applyDialogKeys() end
+                      EllesmereUI:RefreshPage()  -- update the key picker's disabled state
+                  end },
+                { type="label", text="Dialog Key" }
+            );  y = y - h
+
+            -- Cog on Dialog Keys (left slot): Number Keys (on by default) and
+            -- Confirm Popups (off by default). Key picker in the label's slot:
+            -- never set = Space; right-click unbinds it (false), leaving only
+            -- the number keys. The cog is built in the search pre-build too, so
+            -- Global Search finds its rows; the key picker is not.
+            local function dialogKeysOff()
+                return not (EllesmereUIDB and EllesmereUIDB.dialogKeys)
+            end
+            EllesmereUI.BuildInlineCog(dialogKeysRow._leftRegion, {
+                title = "Dialog Keys Settings",
+                rows = {
+                    { type="toggle", label="Number Keys",
+                      tooltip="Number keys 1-9 and 0, on the top row or the numpad, press the numbered choice. A quest ready to turn in shows its number in gold. Turn off to leave the keys to your action bars.",
+                      get=function()
+                          return not (EllesmereUIDB and EllesmereUIDB.dialogKeysNumbers == false)
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.dialogKeysNumbers = v
+                          if EllesmereUI._applyDialogKeys then EllesmereUI._applyDialogKeys() end
+                      end },
+                    { type="toggle", label="Confirm Popups",
+                      tooltip="The Dialog Key also presses Yes on Abandon Quest. Never on popups the game or other players send you, like summons, invites or duels.",
+                      get=function()
+                          return EllesmereUIDB and EllesmereUIDB.dialogKeysPopups == true
+                      end,
+                      set=function(v)
+                          if not EllesmereUIDB then EllesmereUIDB = {} end
+                          EllesmereUIDB.dialogKeysPopups = v
+                          if EllesmereUI._applyDialogKeys then EllesmereUI._applyDialogKeys() end
+                      end },
+                },
+                gap = 9, disabled = dialogKeysOff, disabledTooltip = "Dialog Keys",
+            })
+
+            if not EllesmereUI._prebuilding then
+                local rgn = dialogKeysRow._rightRegion
+                local kbBtn, refresh = EllesmereUI.BuildKeybindButton(rgn, {
+                    w = 140, h = 30, font = 13,
+                    get = function()
+                        local k = EllesmereUIDB and EllesmereUIDB.dialogKeysKey
+                        if k == nil then return "SPACE" end
+                        return k or nil
+                    end,
+                    set = function(fullKey)
+                        if not EllesmereUIDB then EllesmereUIDB = {} end
+                        EllesmereUIDB.dialogKeysKey = fullKey or false
+                        if EllesmereUI._applyDialogKeys then EllesmereUI._applyDialogKeys() end
+                    end,
+                    disabled = dialogKeysOff,
+                    disabledTip = "Dialog Keys",
+                })
+                PP.Point(kbBtn, "RIGHT", rgn, "RIGHT", -20, 0)
+                EllesmereUI.RegisterWidgetRefresh(refresh)
+            end
+        end
+
         -- Type /cd to open Blizzard CDM | AH Current Expansion Only. The AH
         -- filter is not offered on WoW Forever (its runtime block does not
         -- exist there), so that slot is blank there.
@@ -952,12 +1028,12 @@ initFrame:SetScript("OnEvent", function(self)
                 return not EllesmereUI.QoLExtrasGet("showFPS")
             end
 
-            -- Inline class + custom colour swatches, the same convention as the
+            -- Inline class + custom color swatches, the same convention as the
             -- Secondary Stats row: the active mode renders at full alpha, the
             -- other dimmed, each with a naming tooltip.
             local function fpsMode()
                 -- No mode saved: custom -- the look before the mode existed,
-                -- which is white until a colour is actually picked.
+                -- which is white until a color is actually picked.
                 return EllesmereUI.QoLExtrasGet("fpsColorMode") or "custom"
             end
             local fpsUpdateState   -- forward: swatches reference it from OnClick
@@ -1063,7 +1139,7 @@ initFrame:SetScript("OnEvent", function(self)
                 PP.Point(fpsSwatch, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
                 leftRgn._lastInline = fpsSwatch
 
-                -- Class-colour swatch: live player class colour.
+                -- Class-color swatch: live player class color.
                 local fpsClassSw, fpsUpdClass = EllesmereUI.BuildColorSwatch(
                     leftRgn, leftRgn:GetFrameLevel() + 5,
                     function()
@@ -1602,7 +1678,7 @@ initFrame:SetScript("OnEvent", function(self)
             })
 
             if not EllesmereUI._prebuilding then
-                -- Inline default + class + custom colour swatches, following the
+                -- Inline default + class + custom color swatches, following the
                 -- minimap border's swatch-row convention: the active mode renders
                 -- at full alpha, the others dimmed, each with a naming tooltip.
                 local function ssMode()
@@ -1619,7 +1695,7 @@ initFrame:SetScript("OnEvent", function(self)
                     if ssUpdateState then ssUpdateState() end
                 end
 
-                -- Custom swatch (nearest the cog): stored custom colour. A
+                -- Custom swatch (nearest the cog): stored custom color. A
                 -- click switches to custom mode first; a second click opens the
                 -- picker (same two-step as the minimap border swatches).
                 local ssCustom, ssUpdCustom = EllesmereUI.BuildColorSwatch(
@@ -1645,7 +1721,7 @@ initFrame:SetScript("OnEvent", function(self)
                 PP.Point(ssCustom, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
                 leftRgn._lastInline = ssCustom
 
-                -- Class-colour swatch: live player class colour.
+                -- Class-color swatch: live player class color.
                 local ssClass, ssUpdClass = EllesmereUI.BuildColorSwatch(
                     leftRgn, leftRgn:GetFrameLevel() + 5,
                     function()
@@ -2571,6 +2647,9 @@ initFrame:SetScript("OnEvent", function(self)
         for i = #searchTerms, 1, -1 do
             if foreverDrop[searchTerms[i]] then table.remove(searchTerms, i) end
         end
+        -- The Unspent Legacy Points alert exists only there.
+        searchTerms[#searchTerms + 1] = "legacy"
+        searchTerms[#searchTerms + 1] = "legacy points"
     end
     EllesmereUI:RegisterModule("EllesmereUIQoL", {
         title       = "Quality of Life",
@@ -2624,6 +2703,10 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.autoGossipShiftSkip = nil
                 EllesmereUIDB.autoGossipDisableInstance = nil
                 EllesmereUIDB.autoGossipIgnoreTrivial = nil
+                EllesmereUIDB.dialogKeys = false
+                EllesmereUIDB.dialogKeysKey = nil
+                EllesmereUIDB.dialogKeysNumbers = nil
+                EllesmereUIDB.dialogKeysPopups = nil
                 EllesmereUIDB.skipCinematics = false
                 EllesmereUIDB.skipCinematicsAuto = false
                 EllesmereUIDB.autoFillDelete = false
@@ -2672,6 +2755,7 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.hideAlertToastsHousing = nil
                 EllesmereUIDB.announceGroupDeaths = false
                 EllesmereUIDB.groupDeathTextSize = nil
+                EllesmereUIDB.groupDeathRoleIcon = nil
                 EllesmereUIDB.groupDeathAlertPos = nil
                 EllesmereUIDB.groupDeathSound = nil      -- legacy boolean (pre-dropdown)
                 EllesmereUIDB.groupDeathSoundKey = nil
@@ -2696,6 +2780,11 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.talentAlertTextSize = nil
                 EllesmereUIDB.talentAlertColor = nil
                 EllesmereUIDB.talentAlertUseClassColor = nil
+                EllesmereUIDB.legacyAlertEnabled = false
+                EllesmereUIDB.legacyAlertText = nil
+                EllesmereUIDB.legacyAlertTextSize = nil
+                EllesmereUIDB.legacyAlertColor = nil
+                EllesmereUIDB.legacyAlertUseClassColor = nil
                 EllesmereUIDB.targetDistanceEnabled = false
                 EllesmereUIDB.targetDistanceFormat = nil
                 EllesmereUIDB.targetDistanceAlign = nil
@@ -2710,7 +2799,7 @@ initFrame:SetScript("OnEvent", function(self)
                 for _, k in ipairs({
                     "targetDistanceEnabled", "targetDistanceFormat", "targetDistanceAlign",
                     "targetDistanceTextSize", "targetDistanceStrata", "targetDistancePos",
-                    "announceGroupDeaths", "groupDeathTextSize", "groupDeathAlertPos", "groupDeathSound",
+                    "announceGroupDeaths", "groupDeathTextSize", "groupDeathRoleIcon", "groupDeathAlertPos", "groupDeathSound",
                     "groupDeathSoundKey",
                     "combatAlertEnabled", "combatAlertMode", "combatAlertTextSize", "combatAlertPos",
                     "combatAlertEnterText", "combatAlertLeaveText", "combatAlertEnterColor", "combatAlertLeaveColor",
@@ -2719,6 +2808,8 @@ initFrame:SetScript("OnEvent", function(self)
                     "potionAlertUseClassColor",
                     "talentAlertEnabled", "talentAlertText", "talentAlertTextSize", "talentAlertColor",
                     "talentAlertUseClassColor",
+                    "legacyAlertEnabled", "legacyAlertText", "legacyAlertTextSize", "legacyAlertColor",
+                    "legacyAlertUseClassColor",
                     -- not repairWarning: the Global Settings reset owns that switch
                     "durWarnThreshold", "durWarnTextSize", "durWarnColor", "durWarnYOffset",
                     "durWarnPos", "durWarnIgnoreThrown",
@@ -2756,12 +2847,14 @@ initFrame:SetScript("OnEvent", function(self)
             if EllesmereUI._applyCombatAlert then EllesmereUI._applyCombatAlert() end
             if EllesmereUI._applyPotionAlert then EllesmereUI._applyPotionAlert() end
             if EllesmereUI._applyTalentAlert then EllesmereUI._applyTalentAlert() end
+            if EllesmereUI._applyLegacyAlert then EllesmereUI._applyLegacyAlert() end
             if EllesmereUI._applyTargetDistance then EllesmereUI._applyTargetDistance() end
             if EllesmereUI._applyHideTransforms then EllesmereUI._applyHideTransforms() end
             if EllesmereUI._applyQuickSignup then EllesmereUI._applyQuickSignup() end
             if EllesmereUI._applyPersistSignupNote then EllesmereUI._applyPersistSignupNote() end
             if EllesmereUI._applyQuickLoot then EllesmereUI._applyQuickLoot() end
             if EllesmereUI._applyAutoGossip then EllesmereUI._applyAutoGossip() end
+            if EllesmereUI._applyDialogKeys then EllesmereUI._applyDialogKeys() end
             if EllesmereUI._applyInstanceResetAnnounce then EllesmereUI._applyInstanceResetAnnounce() end
             if EllesmereUI._applyAutoOpenContainers then EllesmereUI._applyAutoOpenContainers() end
             if EllesmereUI._ShutdownShifter then EllesmereUI._ShutdownShifter() end

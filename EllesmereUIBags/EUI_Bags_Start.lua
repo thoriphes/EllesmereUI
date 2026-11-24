@@ -994,6 +994,8 @@ local function StartAddon()
         end
         refreshBurst = refreshAgain
         if EUI_Bags:IsVisible() then
+            -- an item-event pass: it may keep the layout hold
+            ns.Hold.events.bags = true
             EUI_Bags:RefreshInventory()
             local detach = BP().detachReagentBag or false
             if detach and EUI_BagsReagent:IsVisible() then EUI_BagsReagent:RefreshInventory() end
@@ -1005,6 +1007,11 @@ local function StartAddon()
         if refreshPending then refreshAgain = true; return end
         refreshPending, refreshAgain, refreshDefers = true, false, 0
         C_Timer.After(0.1, FireRefresh)
+    end
+    -- A watched tooltip finished loading and changed an item's red tint: repaint.
+    EUI_Bags._tintRetry = function()
+        if InCombatLockdown() then EUI_Bags._refreshPendingCombat = true; return end
+        if EUI_Bags:IsVisible() then ScheduleRefresh() end
     end
 
     -- Cooldown-only repaint of the shown item buttons, once per frame at most.
@@ -1218,7 +1225,7 @@ local function StartAddon()
             end
             if EUI_Bags._refreshPendingCombat then
                 EUI_Bags._refreshPendingCombat = nil
-                if EUI_Bags:IsVisible() then EUI_Bags:RefreshInventory() end
+                if EUI_Bags:IsVisible() then ns.Hold.events.bags = true; EUI_Bags:RefreshInventory() end
                 if EUI_BagsReagent:IsVisible() and EUI_BagsReagent.RefreshInventory then
                     EUI_BagsReagent:RefreshInventory()
                 end

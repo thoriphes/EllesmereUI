@@ -217,7 +217,7 @@ do
         out = out or {}
         local idx = ns.GetDispelGlowStyle()
         -- Blizzard Border sits outside the view and keeps Blizzard's own art
-        -- until a colour is picked (ns.GetDispelBorderColor); Blizzard
+        -- until a color is picked (ns.GetDispelBorderColor); Blizzard
         -- Pandemic Border is always drawn untinted.
         if idx == EllesmereUI.Glows.STEALABLE_BORDER then
             out.style = idx
@@ -237,9 +237,9 @@ do
         out.bgR, out.bgG, out.bgB = bgc and bgc.r, bgc and bgc.g, bgc and bgc.b
         return out
     end
-    -- Blizzard Border tint: the glow colour, except the untouched default gold
+    -- Blizzard Border tint: the glow color, except the untouched default gold
     -- (the profile merge fills the key, so it is compared, not nil-tested)
-    -- keeps Blizzard's own stealable art. Per-type colours always tint.
+    -- keeps Blizzard's own stealable art. Per-type colors always tint.
     ns.GetDispelBorderColor = function(dispelType)
         local r, g, b = ns.GetDispelGlowColor(dispelType)
         if dispelType and ns.GetDispelGlowUseTypeColor() then return r, g, b end
@@ -635,9 +635,9 @@ do
         end
         return nil
     end
-    -- A slot's Core Text Coloring mode: "custom" (the slot colour),
+    -- A slot's Core Text Coloring mode: "custom" (the slot color),
     -- "class" (Hostility / Class, painted per unit) or "level" (Level Difficulty, the
-    -- unit's level difficulty colour; any text but Target of Target, which names
+    -- unit's level difficulty color; any text but Target of Target, which names
     -- another unit). An unset <slot>ColorMode is derived from keys read
     -- here and never written: levelDifficultyColor makes a standalone level "level";
     -- <slot>ClassColor, or enemyNameTextReactionColor on the first name slot, makes
@@ -659,8 +659,8 @@ do
         end
         return "custom"
     end
-    -- Level | Name / Name | Level: the level part in the difficulty colour (applies
-    -- while the slot's mode is not "level"). A custom level colour turns it off; unset
+    -- Level | Name / Name | Level: the level part in the difficulty color (applies
+    -- while the slot's mode is not "level"). A custom level color turns it off; unset
     -- follows levelDifficultyColor.
     function ns.NP_SlotLevelDiff(slotKey, db)
         db = db or p or defaults
@@ -671,8 +671,8 @@ do
         if v ~= nil then return v == true end
         return db.levelDifficultyColor == true
     end
-    -- A combo part's stored colour (part "name" or "level"), falling back to the slot
-    -- colour; r, g, b. Whether it applies is <slot>NameColorOn / <slot>LevelColorOn.
+    -- A combo part's stored color (part "name" or "level"), falling back to the slot
+    -- color; r, g, b. Whether it applies is <slot>NameColorOn / <slot>LevelColorOn.
     function ns.NP_SlotPartColor(slotKey, part, db)
         db = db or p or defaults
         local k = SK[slotKey]
@@ -681,9 +681,9 @@ do
         if c then return c.r, c.g, c.b end
         return 1, 1, 1
     end
-    -- Materializes every slot's combo format strings: a part with a custom colour is
+    -- Materializes every slot's combo format strings: a part with a custom color is
     -- wrapped in its escape inside the format (the name stays a %s argument), and diff
-    -- marks a level part drawn in the difficulty colour. Run by NP_RefreshSlotClassFlags.
+    -- marks a level part drawn in the difficulty color. Run by NP_RefreshSlotClassFlags.
     function ns.NP_RefreshSlotNameParts()
         local db = p or defaults
         for i = 1, #textSlotKeys do
@@ -701,8 +701,8 @@ do
             f.diff = ns.NP_SlotColorMode(s, db) ~= "level" and ns.NP_SlotLevelDiff(s, db)
         end
     end
-    -- r, g, b for a readable level: the skull's colour below 0, else the difficulty
-    -- colour (nil when attackability or the player's level is secret). "player" is the
+    -- r, g, b for a readable level: the skull's color below 0, else the difficulty
+    -- color (nil when attackability or the player's level is secret). "player" is the
     -- options preview's stand-in mob, ranked as attackable like a hostile mob.
     -- friendly: rank friendly units by difficulty whatever levelDifficultyColorFriendly says.
     local function LevelRGB(unit, lvl, friendly)
@@ -710,7 +710,7 @@ do
         return EllesmereUI.GetLevelColor(unit, lvl,
             friendly or unit == "player" or (p and p.levelDifficultyColorFriendly))
     end
-    -- The unit's level difficulty colour, r, g, b; nil while its level cannot be read.
+    -- The unit's level difficulty color, r, g, b; nil while its level cannot be read.
     function ns.NP_UnitLevelColor(unit)
         local lvl = UnitEffectiveLevel(unit)
         if type(lvl) ~= "number" or (issecretvalue and issecretvalue(lvl)) then return nil end
@@ -718,7 +718,7 @@ do
     end
     -- Display string for the unit's EFFECTIVE level (so scaling/Chromie time read as the game
     -- ranks them). "??" for skull-ranked (-1) or unreadable (secret) levels, matching default UI.
-    -- color "diff" wraps it in the difficulty colour (an unreadable level stays a plain
+    -- color "diff" wraps it in the difficulty color (an unreadable level stays a plain
     -- "??"); "diffAll" does too and ranks friendly units as well (the friendly player
     -- plates' Color Level by Difficulty); any other value returns it plain.
     function ns.GetUnitLevelText(unit, color)
@@ -734,8 +734,8 @@ do
     end
     -- Write a name-family element's text into a FontString (shared by runtime update and
     -- options preview). name may be SECRET: only ever passed as a %s display arg, never inspected.
-    -- slotKey (nil = FindNameSlot's) picks the combo's materialized part colours; the rest
-    -- of the text keeps the font string's colour.
+    -- slotKey (nil = FindNameSlot's) picks the combo's materialized part colors; the rest
+    -- of the text keeps the font string's color.
     function ns.SetNameElementText(fs, element, name, unit, slotKey)
         if element == "levelName" or element == "nameLevel" then
             local f = PARTS[slotKey or ns.FindNameSlot()] or PLAIN
@@ -1392,6 +1392,18 @@ function ns.GetIconBorderEnabled(kind)
     end
     return not v
 end
+function ns.NP_AuraCornerRadius()
+    if not (p and p.cornerRadiusAuras) then return end
+    local radius = p.cornerRadius or 0
+    if radius <= 0 or ns.NP_Blizz() or ns.GetWrapBorderCastbar() then return end
+    if ns.IsCustomBorderEnabled() then
+        local tex = p.customBorderTexture or defaults.customBorderTexture
+        if not EllesmereUI.RoundedStyleOK(tex) then return end
+        if p.auraIconCustomBorder and tex and tex ~= "" and tex ~= "solid" then return end
+    end
+    return radius
+end
+
 function ns.ApplyFrameIconBorder(frame, enabled, adjustIconInset)
     local PP = EllesmereUI and EllesmereUI.PP
     if not (frame and PP and PP.GetBorders and PP.GetBorders(frame)) then return end
@@ -1420,7 +1432,7 @@ function ns.NP_CanShowCastIconSeparator(db)
 end
 
 -- Shared by live plates and the preview; the cast bar owns this lazy divider. It
--- does not follow the target or threat tint, so the border-colour passes that land
+-- does not follow the target or threat tint, so the border-color passes that land
 -- here (every threat repaint) change nothing: only a moved style input restyles it.
 function ns.NP_ApplyCastIconSeparator(cast, icon, db, customOn, strata)
     local seam = cast._iconSeam
@@ -1447,7 +1459,7 @@ function ns.NP_ApplyCastIconSeparator(cast, icon, db, customOn, strata)
     local c = db.customBorderColor or defaults.customBorderColor
     local a = db.customBorderAlpha or defaults.customBorderAlpha
     -- Restyle inputs: shown state, strata, level (a strata change resets it), texture,
-    -- size step, exact px, side, the scale its width snaps to, and its colour.
+    -- size step, exact px, side, the scale its width snaps to, and its color.
     if seam:IsShown() and seam:GetFrameStrata() == st and seam:GetFrameLevel() == lvl
         and seam._key == key and seam._size == size and seam._px == px and seam._right == right
         and seam._es == seam:GetEffectiveScale()
@@ -1491,7 +1503,7 @@ end
 -- hide with the icon, and turns off through ApplyBorderStyle(frame, 0) so the UI scale
 -- re-apply cannot bring it back. MEDIUM strata lifts it out of the plate's flattened
 -- layer above the icon art (the lift's strata while the cast bar is lifted). Style
--- inputs restyle only when one moved; a colour change (Use Target Border Color on the
+-- inputs restyle only when one moved; a color change (Use Target Border Color on the
 -- target) is a plain tint. Off, this is the 1px edge call plus the opt-in gates.
 function ns.ApplyCastIconBorder(plate)
     local icon = plate and plate.castIconFrame
@@ -1517,6 +1529,8 @@ function ns.ApplyCastIconBorder(plate)
         bf:SetAllPoints(icon)
         bf:EnableMouse(false)
         plate._castIconBorder = bf
+        -- Built as the plate spawns: snap at the nameplate's settled scale.
+        EllesmereUI.SetBorderSnapHost(bf, plate)
     end
     local tex = p.customBorderTexture or defaults.customBorderTexture
     local sz = p.customBorderSize or defaults.customBorderSize
@@ -1534,7 +1548,7 @@ function ns.ApplyCastIconBorder(plate)
     local offX, offY = p.customBorderOffset, p.customBorderOffsetY
     local shX, shY = p.customBorderShiftX, p.customBorderShiftY
     -- Restyle inputs: shown state, strata, level (a strata change resets it), texture,
-    -- size step, exact px, both offsets and both shifts. Anything else is colour.
+    -- size step, exact px, both offsets and both shifts. Anything else is color.
     if not bf:IsShown() or bf:GetFrameStrata() ~= strata or bf:GetFrameLevel() ~= lvl
         or bf._sTex ~= tex or bf._sSz ~= sz or bf._sPx ~= px
         or bf._sOX ~= offX or bf._sOY ~= offY or bf._sSX ~= shX or bf._sSY ~= shY then
@@ -1561,7 +1575,7 @@ function ns.NP_BorderSize()
     if ns.NP_Classic() then return 1 end
     return (p and p.borderSize) or defaults.borderSize
 end
--- Cast bar border colour: black under Classic WoW UI, else the profile's.
+-- Cast bar border color: black under Classic WoW UI, else the profile's.
 function ns.NP_CastBorderColor()
     if ns.NP_Classic() then return 0, 0, 0 end
     local c = (p and p.castBorderColor) or defaults.castBorderColor
@@ -1880,6 +1894,8 @@ local function PlaceArrow(plate, arrow, side, extent, aw, ah)
     elseif row and ry < a1 and a0 < ry + rh then
         local icon = ns.NP_FullIconPush(plate, side, a0, a1)
         if icon > 0 and ns.NP_FullIconPush(plate, side, ry, ry + rh) == 0 then x = x + icon end
+        -- The row starts the side aura gap off the bar: an empty one leaves the arrow where a bare side puts it.
+        x = x - GetSideAuraXOffset()
         local cy = barH / 2 - ry
         local corner = (side == "left") and "BOTTOMLEFT" or "BOTTOMRIGHT"
         if side == "left" then x = -x end

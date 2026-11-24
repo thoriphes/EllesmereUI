@@ -469,6 +469,7 @@ local function BuildNPStyle(kind, variant)
         stackOffX = stk.x,
         stackOffY = stk.y,
     }
+    if style.border then style.border.cornerRadius = ns.NP_AuraCornerRadius() end
     -- variant: nil/1 = the dispellable glow group ("np" -- the Magic half
     -- while split), 2 = the non-Magic half ("np2", enrages), "plain" = the
     -- npnb remainder: identical text styling, NEVER the glow. Per-aura
@@ -1128,7 +1129,9 @@ function NPB.GlowSpec(idx)
                 ApplyNPBuffExtra(btn, dd, style)
             end
         end,
-        layout = { elementWidth = 24, elementHeight = 24, elementSpacing = 4, lineSpacing = 4 },
+        -- Laid out by its place in the row (Magic, enrages, plain), not by
+        -- when it was declared: the enrage half can join after the plain group.
+        layout = { elementWidth = 24, elementHeight = 24, elementSpacing = 4, lineSpacing = 4, layoutIndex = idx },
     }
 end
 
@@ -1175,7 +1178,7 @@ local function AddBundleBuffs(b)
         maxFrameCount = plainToks and 4 or 0,
         sortMethod = SORT_IMPORTANT,
         style = "np:buffsplain",
-        layout = { elementWidth = 24, elementHeight = 24, elementSpacing = 4, lineSpacing = 4 },
+        layout = { elementWidth = 24, elementHeight = 24, elementSpacing = 4, lineSpacing = 4, layoutIndex = 3 },
     }
     b.containers.buffs = BundleContainer(b, "buffs", specs)
     if #specs > 2 then b.containers.buffs._npbSplit = true end
@@ -1369,10 +1372,22 @@ local function AnchorNPContainer(container, kind, plate, slotVal)
             elementWidth = size, elementHeight = height,
             elementSpacing = spacing, lineSpacing = spacing,
         }
+        -- A layout replaces the group's whole layout, its layoutIndex too: the
+        -- buff row's groups keep their row order (Magic, enrages, plain; see
+        -- NPB.GlowSpec) through every pass.
+        local buffs = kind == "buffs"
+        if buffs then gLayout.layoutIndex = 1 end
         container:SetAuraGroupLayout("np", gLayout)
         -- The buff row's non-Magic glow group shares the row's element sizing.
         if container._npbSplit then
+            gLayout.layoutIndex = 2
             container:SetAuraGroupLayout("np2", gLayout)
+        end
+        -- So does its plain remainder group (always declared on the buff row).
+        if buffs then
+            gLayout.layoutIndex = 3
+            container:SetAuraGroupLayout("npnb", gLayout)
+            gLayout.layoutIndex = nil
         end
         -- NPF record groups share the row's element sizing.
         if container._npfGroups then
@@ -1762,11 +1777,12 @@ end
 -- The cast-lockout icon is hand-built outside AuraKit, so Custom Border on Aura Icons
 -- reaches it through its own child frame (the icon inset drops to 0 while that draws);
 -- off, the plain 1px edge. Runs on every lockout show, so the restyle is
--- skipped while its inputs (shown state, level, texture, size step, exact px, colour,
+-- skipped while its inputs (shown state, level, texture, size step, exact px, color,
 -- alpha, offsets, shifts) are unchanged; the child turns off through
 -- ApplyBorderStyle(frame, 0) so the UI scale re-apply cannot bring it back.
 local function NPLockoutBorder(f)
     local on = ns.GetIconBorderEnabled("ccs")
+    local radius = on and ns.NP_AuraCornerRadius()
     local cb = f._npCB
     if on and NPIconCustomBorderOn() then
         if not cb then
@@ -1803,6 +1819,11 @@ local function NPLockoutBorder(f)
             f.icon:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
             f.icon:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
         end
+        if (radius and radius > 0) or (f.auraRound and f.auraRound.on) then
+            local size = NPSize("cc")
+            EllesmereUI.RoundAuraCorners(f, f, f.icon, f.cd, cb,
+                (px or sz) > 0 and (not tex or tex == "" or tex == "solid") and radius, size, NPHeight("cc", size))
+        end
         ns.ApplyFrameIconBorder(f, false)
         return
     end
@@ -1810,7 +1831,11 @@ local function NPLockoutBorder(f)
         EllesmereUI.ApplyBorderStyle(cb, 0)
         cb:Hide()
     end
-    if f._npCBInset0 then
+    if radius and not f._npCBInset0 then
+        f.icon:ClearAllPoints()
+        f.icon:SetAllPoints(f)
+        f._npCBInset0 = true
+    elseif not radius and f._npCBInset0 then
         -- Back to the creation inset (0 under the stock styles, else 1).
         f._npCBInset0 = nil
         local px = ns.NP_Blizz() and 0 or 1
@@ -1819,6 +1844,10 @@ local function NPLockoutBorder(f)
         f.icon:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -px, px)
     end
     ns.ApplyFrameIconBorder(f, on)
+    if radius or (f.auraRound and f.auraRound.on) then
+        local size = NPSize("cc")
+        EllesmereUI.RoundAuraCorners(f, f, f.icon, f.cd, f, radius, size, NPHeight("cc", size))
+    end
 end
 
 function ns.NPC_UpdateLockout(plate)
@@ -2133,7 +2162,7 @@ local function StyleFPFor(kind, idx)
     -- Custom Border on Aura Icons: every input of NPCustomIconBorder, folded in only
     -- while it is on (a constant "-" otherwise, so a border edit never restyles default
     -- users' icons): the toggle and Border = Custom (the gate), texture, size step, the
-    -- exact-size value, colour, alpha, both offsets and both shifts. Colour and alpha go
+    -- exact-size value, color, alpha, both offsets and both shifts. Color and alpha go
     -- in as exact strings, not FP's two-decimal numbers.
     local cbFP = "-"
     if NPIconCustomBorderOn() then
@@ -2149,7 +2178,7 @@ local function StyleFPFor(kind, idx)
         -- NOT `fn(kind) or true`: the getter legitimately returns false, and
         -- `false or true` would pin this fingerprint input to a constant so
         -- the toggle never restyles (the ternary-falsy trap).
-        (not ns.GetIconBorderEnabled) or ns.GetIconBorderEnabled(kind), cbFP,
+        (not ns.GetIconBorderEnabled) or ns.GetIconBorderEnabled(kind), cbFP, ns.NP_AuraCornerRadius(),
         PVal("showAuraTooltips") == true)
 end
 
@@ -2266,8 +2295,8 @@ local function QueueBundleEnsure(b)
 end
 
 -- Class mode on an aura glow (Dispel or Pandemic) that takes a color: the style
--- prints hold the palette colour, kept here for the colours-changed hook below
--- NPC_ReloadAll. Any other state clears it, so later colour edits never reload.
+-- prints hold the palette color, kept here for the colors-changed hook below
+-- NPC_ReloadAll. Any other state clears it, so later color edits never reload.
 function NPB.SnapClassColor()
     local PB = EllesmereUI.Glows.PANDEMIC_BORDER
     local class = (PurgeGlowActive() and PVal("dispelGlowColorMode") == "class"
@@ -2396,7 +2425,7 @@ end
 
 -- Colors page edits (swatches, darken, resets, profile switches) all end in
 -- ApplyColorsToOUF. Once a Class-mode aura glow was printed, a changed class
--- colour re-runs the reload; the glow prints carry the colour, so only the
+-- color re-runs the reload; the glow prints carry the color, so only the
 -- glow styles restyle. Calls in one frame (a profile switch can make two)
 -- collapse into one check on the next frame: the flush frame stays hidden
 -- until a call and hides itself before working.

@@ -923,14 +923,14 @@ local function RepointAllDBs(profileName)
     -- re-apply when any section is per-profile. GetCustomColorsDB() resolves the
     -- right tables LIVE (edits write straight to the profiles' own customColors --
     -- never a wipe/restore, which is what once let a combat-end spec switch reset
-    -- colours). ApplyColorsToOUF self-guards combat on its action-bar branch.
+    -- colors). ApplyColorsToOUF self-guards combat on its action-bar branch.
     if EllesmereUIDB and EllesmereUI.AnyColorSectionPerProfile() and EllesmereUI.ApplyColorsToOUF then
         EllesmereUI.ApplyColorsToOUF()
     end
     -- Dark Mode settings are ALWAYS per-profile, so the active profile's dark
     -- palette + darken amounts change on every repoint. Re-read and repaint.
     -- RefreshDarkMode() also runs ApplyColorsToOUF, so the (possibly different)
-    -- darken propagates to class/power colours even in global colour mode.
+    -- darken propagates to class/power colors even in global color mode.
     EllesmereUI.RefreshDarkMode()
     -- Number Format is per-profile too: drop the resolved configs and redraw.
     EllesmereUI.RefreshNumberFormat()
@@ -1322,8 +1322,8 @@ function EllesmereUI.ApplyProfileData(profileData)
     -- snapshot. A partial import nils profileData.fonts to keep the recipient's
     -- own fonts -- wiping unconditionally here reset them to the default
     -- (Expressway/shadow) instead. Mirrors SwitchProfile's guarded restore.
-    -- Custom colours are getter-redirected (GetCustomColorsDB) and must NEVER be
-    -- wiped/restored here (see the custom-colours global-mode design).
+    -- Custom colors are getter-redirected (GetCustomColorsDB) and must NEVER be
+    -- wiped/restored here (see the custom-colors global-mode design).
     if profileData.fonts then
         local fontsDB = EllesmereUI.GetFontsDB()
         for k in pairs(fontsDB) do fontsDB[k] = nil end
@@ -1409,6 +1409,7 @@ local REFRESH_ADDON_STEPS = {
         if EllesmereUI._applyCombatAlert then EllesmereUI._applyCombatAlert() end
         if EllesmereUI._applyPotionAlert then EllesmereUI._applyPotionAlert() end
         if EllesmereUI._applyTalentAlert then EllesmereUI._applyTalentAlert() end
+        if EllesmereUI._applyLegacyAlert then EllesmereUI._applyLegacyAlert() end
         if EllesmereUI._applyAnnounceGroupDeaths then EllesmereUI._applyAnnounceGroupDeaths() end
         if EllesmereUI._applyGroupDeathAlert then EllesmereUI._applyGroupDeathAlert() end
         if EllesmereUI._syncDurWarnEvents then EllesmereUI._syncDurWarnEvents() end
@@ -2100,6 +2101,23 @@ function EllesmereUI.ForeverDropShadowedLegacy(inherited, incoming)
     end
 end
 
+-- Action bar spells (abSpells, profile root): the EllesmereUI Builder's
+-- spells per spec and action slot, which the Action Bars module places. An
+-- import takes the string's own, never the recipient's, and only with the
+-- Action Bars data beside them, the module loaded here, and a string made on
+-- this client. data = the profile data the import builds from (folder keys
+-- already this build's). The import mark (_abSpellsImported) never travels:
+-- each import that takes bar spells sets its own.
+local AB_SPELLS_FOLDER = "EllesmereUIActionBars"
+local function ImportedABSpells(data, payload)
+    local t = type(data) == "table" and data.abSpells
+    if type(t) ~= "table" or next(t) == nil then return nil end
+    if type(data.addons) ~= "table" or type(data.addons[AB_SPELLS_FOLDER]) ~= "table" then return nil end
+    if not EllesmereUI.IsModuleAddonLoaded(AB_SPELLS_FOLDER) then return nil end
+    if EllesmereUI.PayloadFromOtherClient(payload) then return nil end
+    return DeepCopy(t)
+end
+
 -- Snapshot the per-profile CDM spell allocation (which spells sit on which bars +
 -- per-spell settings, per spec) for export. The bar DEFINITIONS already travel in
 -- the addon blob; this carries the content that sits on them. Strips the sharer's
@@ -2131,6 +2149,7 @@ local function SnapshotProfileCDMSpells(profileName, includedFolders, cdmSpecs)
             if type(copy.barSpells) == "table" then copy.barSpells.__ghost_cd = nil end
             copy._barFilterModelV6 = nil
             copy._importGhostMode = nil
+            copy._importKeep = nil
             snap[specKey] = copy
         end
     end
@@ -2350,6 +2369,7 @@ function EllesmereUI.ExportProfile(profileName, includedFolders, includeLayout, 
     -- payload metadata, never profile data -- strip any stale copies too (the
     -- export re-stamps them deliberately further down).
     exportData._importEstablishPending = nil
+    exportData._abSpellsImported = nil
     exportData.overridesIncluded = nil
     exportData.overridesExcluded = nil
     exportData.partialImport     = nil
@@ -2382,6 +2402,11 @@ function EllesmereUI.ExportProfile(profileName, includedFolders, includeLayout, 
             end
         end
     end
+    -- Action bar spells ride only with the Action Bars data: a subset export
+    -- without it, or the module not loaded, carries none.
+    if not (exportData.addons and exportData.addons[AB_SPELLS_FOLDER]) then
+        exportData.abSpells = nil
+    end
     -- Exclude spec-specific data from export
     exportData.trackedBuffBars = nil
     exportData.tbbPositions = nil
@@ -2405,7 +2430,7 @@ function EllesmereUI.ExportProfile(profileName, includedFolders, includeLayout, 
     -- fonts/customColors/darkMode/euiAccent are profile-GLOBAL appearance and are
     -- not separable per-addon, so a subset export must not carry them (they'd
     -- clobber the recipient's). Only a full-profile export carries them.
-    -- Profile-global appearance (fonts, custom colours, dark mode, accent,
+    -- Profile-global appearance (fonts, custom colors, dark mode, accent,
     -- number format) and the account UI scale ride only when "Global Settings" is included
     -- (default ON) -- full and subset exports alike, since the unified export
     -- flow offers the toggle for both (2026-07-20 redesign; the old subset
@@ -2602,6 +2627,7 @@ local FULL_EXPORT_EXCLUDED = {
     gfxBackup             = true, -- Optimize My FPS and Graphics' Restore values
     friendlyPlateVisSaved = true, -- friendly plates hidden in a follower dungeon
     chatTellMuted         = true, -- whisper sound Chat muted
+    chatClassColorWas     = true, -- the game's chatClassColorOverride before Chat's Name of Chatter hold
     -- Opened inline cogs: their notification dots stay for the importer
     cogSeen               = true,
 }
@@ -2685,6 +2711,7 @@ function EllesmereUI.ExportFullAccountData()
         copy.unlockLayout = SnapshotUnlockLayout()
         -- Recipient-local import bookkeeping never rides a string.
         copy._importEstablishPending = nil
+        copy._abSpellsImported = nil
         -- The gold ledger and Upgrade Calculator cache also have LEGACY homes
         -- inside the module profile blobs (see PRIVATE_ADDON_KEYS); an older
         -- profile can still carry them there, and they are excluded from a
@@ -2795,6 +2822,10 @@ function EllesmereUI.ImportFullAccountData(payload)
             -- Legacy per-profile homes of the excluded blobs (see the export
             -- side): refused on the way in too.
             StripPrivateAddonData(copy.addons)
+            -- Action bar spells: the profile's own by the profile import's
+            -- rules, and the mark the Action Bars popup reads at the next login.
+            copy.abSpells = ImportedABSpells(copy, payload)
+            copy._abSpellsImported = copy.abSpells and time() or nil
             -- WoW Forever: the one-time buff clear, before the profile is
             -- installed (EllesmereUI_Migration.lua).
             if EllesmereUI.FvBW then EllesmereUI.FvBW.ProcessProfile(copy, "import") end
@@ -3034,6 +3065,12 @@ function EllesmereUI.ExportCurrentProfile(includeLayout, includeCDM, cdmSpecs)
     profileData.assignedSpecs = CollectAssignedSpecs(activeName)
     -- HoverCast (click-cast) bindings are account-global, not per-profile; never export.
     profileData.clickCast = nil
+    -- Action bar spells ride with the Action Bars data, as in ExportProfile.
+    local activeProf = EllesmereUIDB and EllesmereUIDB.profiles and EllesmereUIDB.profiles[activeName]
+    if profileData.addons and profileData.addons[AB_SPELLS_FOLDER]
+       and activeProf and type(activeProf.abSpells) == "table" then
+        profileData.abSpells = DeepCopy(activeProf.abSpells)
+    end
     -- Per-character account data (gold ledger, upgrade-calc caches) likewise
     -- never rides a shared string -- see PRIVATE_ADDON_KEYS. SnapshotAllAddons
     -- deep-copies each module's live profile blob, so a profile still holding
@@ -3431,6 +3468,33 @@ local function BuildImportedCDMSpellBucket(profileName, activeName, incomingSpec
             -- drag-arranged buffDisplayOrder without the flag; stamp it or the first
             -- live reconcile resyncs the imported order to Blizzard order (idempotent).
             EllesmereUI.MigrateCdmBuffOrderUserFlag(specProf)
+            -- Every spell the layout places is held by the Cooldown Manager's automatic
+            -- keep/drop passes until Blizzard tracks it (the set is read and emptied
+            -- there: ImportKeepKey in EUI_CDM_Reconcile.lua), so a layout imported
+            -- before its Blizzard layout is picked keeps its spells. Entries those
+            -- passes never judge are left out.
+            local keep
+            if type(specProf.barSpells) == "table" then
+                for _, bs in pairs(specProf.barSpells) do
+                    local list = type(bs) == "table" and bs.assignedSpells
+                    if type(list) == "table" then
+                        local custom = type(bs.customSpellIDs) == "table" and bs.customSpellIDs
+                        local cdurs = type(bs.customSpellDurations) == "table" and bs.customSpellDurations
+                        local sdurs = type(bs.spellDurations) == "table" and bs.spellDurations
+                        local groups = type(bs.customSpellGroups) == "table" and bs.customSpellGroups
+                        for i = 1, #list do
+                            local id = list[i]
+                            if type(id) == "number" and id > 0
+                               and not (custom and custom[id]) and not (cdurs and cdurs[id])
+                               and not (sdurs and sdurs[id]) and not (groups and groups[id]) then
+                                keep = keep or {}
+                                keep[id] = true
+                            end
+                        end
+                    end
+                end
+            end
+            specProf._importKeep = keep
         end
     end
 end
@@ -3724,6 +3788,15 @@ function EllesmereUI.ImportProfile(importStr, profileName)
         -- value, never the recipient's (an absent key reads as the
         -- EllesmereUI look).
         merged.windowSkinLook = imported.windowSkinLook
+        -- Action bar spells follow the Action Bars data. An import that brings
+        -- that data takes the string's own or none, with the mark the Action
+        -- Bars popup reads once at the next login when it brought some. An
+        -- import without it (a partial string, Action Bars unticked) leaves the
+        -- profile's own bar spells and mark as they were.
+        if type(imported.addons) == "table" and type(imported.addons[AB_SPELLS_FOLDER]) == "table" then
+            merged.abSpells = ImportedABSpells(imported, payload)
+            merged._abSpellsImported = merged.abSpells and time() or nil
+        end
 
         -- Snap all positions to the physical pixel grid (imported profiles
         -- may come from a different version without pixel snapping)
@@ -3860,12 +3933,12 @@ function EllesmereUI.ImportProfile(importStr, profileName)
         -- apply of any later session; value harvests are never suppressed.
         db.profiles[profileName]._importEstablishPending = true
         EllesmereUI._importGuardArmedNow = true
-        -- Custom colours resolve live via GetCustomColorsDB. A GLOBAL-mode colour
+        -- Custom colors resolve live via GetCustomColorsDB. A GLOBAL-mode color
         -- section takes its palette from its Pull Colors From (or the first profile); a
         -- recipient who pinned a specific source would store the imported palette but
-        -- keep seeing their own. When the import actually carries colours, point every
+        -- keep seeing their own. When the import actually carries colors, point every
         -- global-mode section at the imported profile so its palette is what shows.
-        -- Getter-redirect only -- never wipes or restores a live colour table (that is
+        -- Getter-redirect only -- never wipes or restores a live color table (that is
         -- banned). Per-profile sections read the active (now imported) profile already.
         if imported.customColors and EllesmereUIDB then
             EllesmereUI.PointColorSectionsAt(profileName)
@@ -3959,8 +4032,10 @@ function EllesmereUI.SaveCurrentAsProfile(name)
     -- Count existing profiles BEFORE adding the new one
     -- Deep-copy the current profile into the new name
     local copy = src and DeepCopy(src) or {}
-    -- Never inherit the import-window guard flag (see ImportProfile).
+    -- Never inherit the import-window guard flag (see ImportProfile), nor
+    -- the action bar spells import mark (the copy never asks again).
     copy._importEstablishPending = nil
+    copy._abSpellsImported = nil
     -- Ensure fonts/colors/unlock layout are current
     copy.fonts = DeepCopy(EllesmereUI.GetFontsDB())
     copy.customColors = DeepCopy(EllesmereUI.GetCustomColorsDB())
@@ -4038,9 +4113,9 @@ function EllesmereUI.DeleteProfile(name)
             end
         end
     end
-    -- Colour sources: deleting a source profile must not leave a dangling pointer
+    -- Color sources: deleting a source profile must not leave a dangling pointer
     -- (the stale name showed in Pull Colors From, the shared palette silently fell
-    -- back, and colour editing locked because the user could never be "on" the
+    -- back, and color editing locked because the user could never be "on" the
     -- deleted source). nil = default (first profile), per section too.
     if EllesmereUI.ColorSourcesProfileRemoved(name) then
         EllesmereUI.ApplyColorsToOUF()
@@ -4092,8 +4167,8 @@ function EllesmereUI.RenameProfile(oldName, newName)
             end
         end
     end
-    -- Keep every colour source following the renamed profile (same palette
-    -- tables, so no colour refresh is needed).
+    -- Keep every color source following the renamed profile (same palette
+    -- tables, so no color refresh is needed).
     EllesmereUI.ColorSourcesProfileRenamed(oldName, newName)
     if db.activeProfile == oldName then
         -- Rename repoints the SAME profile table: unlockLayout rides it, so

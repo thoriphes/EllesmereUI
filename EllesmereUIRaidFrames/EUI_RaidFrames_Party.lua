@@ -148,7 +148,7 @@ do
         -- indicator with it; was filed under indicators before, see
         -- _NormalizePartySyncSections for the carry-over.
         border = {
-            "borderSize", "borderColor", "borderAlpha", "borderTexture",
+            "borderSize", "borderColor", "borderAlpha", "borderClassColored", "borderTexture",
             "borderBehind", "borderTextureOffset", "borderTextureOffsetY",
             "borderTextureShiftX", "borderTextureShiftY", "cornerRadius", "cornerMask",
             "hoverBorderEnabled", "hoverBorderSize", "hoverBorderColor", "hoverBorderAlpha",

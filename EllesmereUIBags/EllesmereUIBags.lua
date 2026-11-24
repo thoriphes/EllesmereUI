@@ -13,6 +13,8 @@ EUI_Bags:Hide()
 -- Auto-size state: reset on close (next open sizes from its first/active tab);
 -- while open it only grows, and shrinks too with Auto-Size's Shrink on.
 EUI_Bags:HookScript("OnHide", function(self)
+    -- A close ends the layout hold; a hidden UI (Alt-Z) is not a close
+    if ns.Hold and not self:IsShown() then ns.Hold.Release("bags") end
     -- WoW Forever and the Compact display size every open to its content: a hidden UI (Alt-Z) is not a close, keep the size.
     if (EllesmereUI.IS_FOREVER or EUI_Bags.IsCompactMode()) and self:IsShown() then return end
     self._asCols  = nil
@@ -36,27 +38,135 @@ local IsEquippableItem = C_Item.IsEquippableItem
 -- the real item, never GetItemByID: scaling gear's bonus IDs lower its required level, but
 -- GetItemByID shows the unscaled base item's level (reads red). Prefer bag slot > link > ID; cache by link, cleared on a level-up or a skill change.
 local _canUseCache = {}
-local ITEM_CLASS_RECIPE = Enum.ItemClass.Recipe
-local function BagsItemUnusable(bagID, slot, itemLink, itemID)
+local ITEM_CLASS_RECIPE, ITEM_CLASS_CONSUMABLE = Enum.ItemClass.Recipe, Enum.ItemClass.Consumable
+-- A tooltip line in the game's red (with tolerance: rounding can put red just under r=1).
+local function IsRed(c)
+    return c and c.r > 0.9 and c.g < 0.2 and c.b < 0.2
+end
+-- A scanned tooltip can still be loading: the client fills it in with TOOLTIP_DATA_UPDATE.
+-- Watch each scan for a short window only, re-read just those items, repaint on a change.
+local WATCH_SECONDS = 2
+local _tipItem = {}
+local _watchEnd, _watchTimer, _rescanning = 0, false, false
+local BagsItemUnusable
+-- Hidden while idle: its OnUpdate is the once-a-frame re-read of what updates marked.
+local _tipWatch = CreateFrame("Frame")
+_tipWatch:Hide()
+local _recheckIDs, _recheckAll = {}, false
+local function StopWatch()
+    wipe(_tipItem)
+    wipe(_recheckIDs)
+    _recheckAll = false
+    _tipWatch:Hide()
+    _tipWatch:UnregisterEvent("TOOLTIP_DATA_UPDATE")
+end
+local function WatchExpire()
+    local left = _watchEnd - GetTime()
+    if left > 0 then C_Timer.After(left, WatchExpire); return end
+    _watchTimer = false
+    StopWatch()
+end
+-- Re-read one watched item; true if its answer changed. A rescan re-watches its new
+-- dataInstanceID without extending the window.
+local function Recheck(id, w)
+    _tipItem[id] = nil
+    if w.bagID and w.link and C_Container.GetContainerItemLink(w.bagID, w.slot) ~= w.link then
+        return false
+    end
+    local old = _canUseCache[w.item]
+    _canUseCache[w.item] = nil
+    _rescanning = true
+    local new = BagsItemUnusable(w.bagID, w.slot, w.link, w.itemID)
+    _rescanning = false
+    return new ~= old
+end
+-- Updates only mark what to re-read (an update that names no tooltip marks every
+-- watched item); one pass a frame re-reads the marked items.
+local _recheckList = {}
+_tipWatch:SetScript("OnUpdate", function(self)
+    self:Hide()
+    if GetTime() > _watchEnd then StopWatch(); return end
+    if _recheckAll then
+        for wid in pairs(_tipItem) do _recheckList[#_recheckList + 1] = wid end
+    else
+        for wid in pairs(_recheckIDs) do _recheckList[#_recheckList + 1] = wid end
+    end
+    _recheckAll = false
+    wipe(_recheckIDs)
+    local changed = false
+    for i = 1, #_recheckList do
+        local wid = _recheckList[i]
+        local w = _tipItem[wid]
+        if w and Recheck(wid, w) then changed = true end
+    end
+    wipe(_recheckList)
+    if not next(_tipItem) then StopWatch() end
+    if not changed then return end
+    if EUI_Bags._tintRetry then EUI_Bags._tintRetry() end
+    if EUI_Bank and EUI_Bank._tintRetry then EUI_Bank._tintRetry() end
+end)
+_tipWatch:SetScript("OnEvent", function(self, _, id)
+    if id then
+        if not _tipItem[id] then return end
+        _recheckIDs[id] = true
+    else
+        _recheckAll = true
+    end
+    self:Show()
+end)
+local function WatchTip(tip, item, bagID, slot, itemLink, itemID)
+    local id = tip.dataInstanceID
+    if not id then return end
+    if not _rescanning then _watchEnd = GetTime() + WATCH_SECONDS end
+    if GetTime() > _watchEnd then return end
+    if not next(_tipItem) then _tipWatch:RegisterEvent("TOOLTIP_DATA_UPDATE") end
+    _tipItem[id] = { item = item, bagID = bagID, slot = slot, link = itemLink, itemID = itemID }
+    if not _watchTimer then
+        _watchTimer = true
+        C_Timer.After(WATCH_SECONDS, WatchExpire)
+    end
+end
+function BagsItemUnusable(bagID, slot, itemLink, itemID)
     local item = itemLink or itemID
     if not item then return false end
     local cached = _canUseCache[item]
     if cached ~= nil then return cached end
     local unusable = false
 
-    -- Recipes also have a spell (the teach effect), so they'd hit the tooltip scan
-    -- below. Skip that: the scan can see red from the crafted item's own preview
-    -- stats, not just from the recipe's learn requirements. Use the usable check
-    -- instead, which reflects skill/known state directly.
+    -- Recipes: IsUsableItem misreads the learn requirement. The crafted item's preview
+    -- comes first, so only red after the last Use line counts (anywhere if none).
     local _, _, _, _, _, classID = GetItemInfoInstant(item)
     if classID == ITEM_CLASS_RECIPE then
-        local usable = C_Item.IsUsableItem(item)
-        unusable = not usable
+        local tip
+        if bagID and slot then
+            tip = C_TooltipInfo.GetBagItem(bagID, slot)
+        elseif itemLink then
+            tip = C_TooltipInfo.GetHyperlink(itemLink)
+        end
+        if not (tip and tip.lines) then return false end
+        WatchTip(tip, item, bagID, slot, itemLink, itemID)
+        local red = false
+        for _, row in ipairs(tip.lines) do
+            local text = row.leftText
+            if text == ITEM_SPELL_KNOWN then
+                red = true
+                break
+            elseif text and text:sub(1, #ITEM_SPELL_TRIGGER_ONUSE) == ITEM_SPELL_TRIGGER_ONUSE then
+                red = false
+            elseif IsRed(row.leftColor) then
+                red = true
+            end
+        end
+        unusable = red
         _canUseCache[item] = unusable
         return unusable
     end
 
-    if IsEquippableItem(item) or C_Item.GetItemSpell(item) then
+    -- No Use line: tokens are scanned only while above the player's level, consumables
+    -- always (a scroll can need a skill, which GetItemInfo does not report).
+    local _, _, _, _, minLevel = C_Item.GetItemInfo(item)
+    if IsEquippableItem(item) or C_Item.GetItemSpell(item) or classID == ITEM_CLASS_CONSUMABLE
+       or (minLevel and minLevel > UnitLevel("player")) then
         -- Only use a tooltip from the real bag slot or real item link; both carry
         -- bonus IDs, which set the item's true required level. A bare itemID lacks
         -- those and can read the wrong level requirement either way.
@@ -69,18 +179,16 @@ local function BagsItemUnusable(bagID, slot, itemLink, itemID)
             reliable = true
         end
         if tip and tip.lines then
+            WatchTip(tip, item, bagID, slot, itemLink, itemID)
             for _, row in ipairs(tip.lines) do
-                local lc = row.leftColor
-                -- Tolerance, not exact equality: rounding can put red just under r=1.
-                if lc and lc.r > 0.9 and lc.g < 0.2 and lc.b < 0.2
+                if IsRed(row.leftColor)
                    and row.leftText ~= ITEM_SCRAPABLE_NOT
                    and row.leftText ~= CANNOT_UNEQUIP_COMBAT
                    and row.leftText ~= ITEM_DISENCHANT_NOT_DISENCHANTABLE then
                     unusable = true
                     break
                 end
-                local rc = row.rightColor
-                if rc and rc.r > 0.9 and rc.g < 0.2 and rc.b < 0.2 then
+                if IsRed(row.rightColor) then
                     unusable = true
                     break
                 end
@@ -102,6 +210,8 @@ do
     f:RegisterEvent("PLAYER_LEVEL_CHANGED")
     -- A skill rank gates recipes and some items without a level change.
     f:RegisterEvent("SKILL_LINES_CHANGED")
+    -- A learned recipe turns its other copies (bank, alts' mail) into "Already known".
+    f:RegisterEvent("NEW_RECIPE_LEARNED")
     f:SetScript("OnEvent", function(_, event)
         if event == "SKILL_LINES_CHANGED" and InCombatLockdown() then
             -- A rank gained in a fight (weapon and defense skill, by the dozen while
@@ -112,6 +222,7 @@ do
             return
         end
         wipe(_canUseCache)
+        StopWatch()
     end)
 end
 -- WoW Forever: the player's bags (1-4) that hold one kind of item only --
@@ -119,10 +230,10 @@ end
 -- family. Like the reagent bag they get their own category and sections and
 -- stay out of Main Bags, the header count, OneBag's sort, Auto Split and drop
 -- placement. nil on retail or with none equipped; the next call reuses the
--- set, so read it right away. Such a bag in the fifth slot (bag 5) is not in
--- the set: it keeps the reagent bag's section, sort and split paths, and only
--- the header count leaves it out, by the tally's own family read
--- (EUI_Bags:RefreshInventory).
+-- set, so read it right away. A bag in the fifth slot (bag 5) is not in the
+-- set: it keeps the reagent bag's section, sort and split paths, and the
+-- header count leaves out only a quiver, ammo pouch or soul bag there
+-- (families 1, 2, 4; EUI_Bags:RefreshInventory).
 do
     local special = {}
     function ns.SpecialBags()
@@ -134,6 +245,16 @@ do
             if family and family ~= 0 then special[bag] = true; any = true end
         end
         return any and special or nil
+    end
+
+    -- WoW Forever: the bag family of the fifth slot's bag, the one read the
+    -- header count and OneBag's reagent routing share; each applies its own
+    -- rule (the count keeps families 1, 2, 4 out, the routing skips any
+    -- non-zero family). nil on retail.
+    function ns.FifthSlotFamily()
+        if not EllesmereUI.IS_FOREVER then return nil end
+        local _, family = C_Container.GetContainerNumFreeSlots(5)
+        return family
     end
 
     -- Auto Split's target bags for a stack in bag, in order: the reagent bag

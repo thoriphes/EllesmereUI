@@ -78,6 +78,8 @@ qolFrame:SetScript("OnEvent", function(self)
     -- Self Combat Text (EllesmereUIQoL_SelfCombatText.lua): nothing is built while off.
     ns.SCT_Refresh()
     if EllesmereUI._applyUpgradeTooltips then EllesmereUI._applyUpgradeTooltips() end
+    -- Dialog Keys (EllesmereUIQoL_DialogKeys.lua): nothing is built while off.
+    if EllesmereUIDB.dialogKeys and EllesmereUI._applyDialogKeys then EllesmereUI._applyDialogKeys() end
 
     ---------------------------------------------------------------------------
     -- Bonus roll confirmation. Addon-owned overlays intercept Roll/Pass clicks;
@@ -3766,11 +3768,11 @@ do
         vBar:SetPoint("CENTER", crosshairFrame, "CENTER", 0, 0)
         vBar:SetColorTexture(cr, cg, cb, ca)
 
-        -- Base colour for out-of-range recolor; melee state resets so OnUpdate re-applies the range colour next tick if still needed.
+        -- Base color for out-of-range recolor; melee state resets so OnUpdate re-applies the range color next tick if still needed.
         crosshairFrame._normalColor = { r = cr, g = cg, b = cb, a = ca }
         crosshairFrame._meleeActive = false
 
-        -- Pixel border: a slightly larger bar of border colour behind each arm.
+        -- Pixel border: a slightly larger bar of border color behind each arm.
         if bSize and bSize > 0 then
             local bp = PP.Scale(bSize)
             local br, bg, bb, ba = bc.r or 0, bc.g or 0, bc.b or 0, bc.a or 1
@@ -4361,6 +4363,43 @@ do
 
     local DEFAULT_TEXT_SIZE = 34
 
+    local ROLE_ICON_ATLAS = {
+        TANK    = "UI-LFG-RoleIcon-Tank",
+        HEALER  = "UI-LFG-RoleIcon-Healer",
+        DAMAGER = "UI-LFG-RoleIcon-DPS",
+    }
+    local SKULL_ICON_MARKUP = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:0|t"
+
+    local function RoleIconEnabled()
+        return EllesmereUI.QoLExtrasGet("groupDeathRoleIcon") and true or false
+    end
+
+    -- A missing, unknown or secret role keeps the skull.
+    local function RoleIconMarkup(role, size)
+        if not RoleIconEnabled() then return SKULL_ICON_MARKUP end
+        role = EllesmereUI.PlainString(role)
+        local atlas = role and ROLE_ICON_ATLAS[role]
+        if not atlas then return SKULL_ICON_MARKUP end
+        local px = math.floor(size * 0.5 + 0.5)
+        return CreateAtlasMarkup(atlas, px, px)
+    end
+
+    -- The player's own role for the options previews: the assigned one, else
+    -- (retail) the spec's. WoW Forever has no specs, so there only an
+    -- assigned role shows, as in a real alert.
+    local function PlayerRole()
+        if not RoleIconEnabled() then return nil end
+        local role = EllesmereUI.PlainString(UnitGroupRolesAssigned("player"))
+        if (not role or role == "NONE") and not EllesmereUI.IS_FOREVER then
+            local spec = C_SpecializationInfo.GetSpecialization()
+            if spec then
+                local _, _, _, _, specRole = C_SpecializationInfo.GetSpecializationInfo(spec)
+                role = EllesmereUI.PlainString(specRole) or role
+            end
+        end
+        return role
+    end
+
     -- Configured font size + saved position (default center-top).
     local function ApplyOverlaySettings()
         if not alertOverlay then return end
@@ -4416,7 +4455,7 @@ do
         alertOverlay:Hide()
     end
 
-    local function ShowAlert(name, classToken)
+    local function ShowAlert(name, classToken, role)
         if not name then return end
         CreateAlertOverlay()
         ApplyOverlaySettings()
@@ -4426,8 +4465,9 @@ do
         if c then
             colored = "|c" .. (c.colorStr or "ffffffff") .. name .. "|r"
         end
-        local skull = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:0|t"
-        alertOverlay._text:SetText(skull .. " " .. colored .. " |cffff2020DIED!|r")
+        local size = EllesmereUI.QoLExtrasGet("groupDeathTextSize") or DEFAULT_TEXT_SIZE
+        local icon = RoleIconMarkup(role, size)
+        alertOverlay._text:SetText(icon .. " " .. EllesmereUI.Lf("%1$s |cffff2020DIED!|r", colored))
 
         alertOverlay._ag:Stop()
         alertOverlay:SetAlpha(1)
@@ -4487,7 +4527,7 @@ do
     local function Poll()
         if not EllesmereUI.QoLExtrasGet("announceGroupDeaths") then return end
         local seen = {}
-        local newlyDeadName, newlyDeadClass, newlyDeadCount
+        local newlyDeadName, newlyDeadClass, newlyDeadUnit, newlyDeadCount
         ForEachGroupUnit(function(u)
             local guid = UnitGUID(u)
             if not guid then return end
@@ -4500,6 +4540,7 @@ do
                 local _, classToken = UnitClass(u)
                 newlyDeadName = UnitName(u)
                 newlyDeadClass = classToken
+                newlyDeadUnit = u
                 newlyDeadCount = (newlyDeadCount or 0) + 1
             end
             deadState[guid] = dead
@@ -4509,7 +4550,9 @@ do
         end
         -- One alert per poll (extra ShowAlert calls would just clobber each other) and at most one throttled sound.
         if newlyDeadCount then
-            ShowAlert(newlyDeadName, newlyDeadClass)
+            -- The role is read only for the death that shows, and only with Role Icon on.
+            local role = RoleIconEnabled() and UnitGroupRolesAssigned(newlyDeadUnit) or nil
+            ShowAlert(newlyDeadName, newlyDeadClass, role)
             TryPlayDeathSound()
         end
     end
@@ -4552,14 +4595,14 @@ do
     -- Fires a sample alert (with sound) so the look/sound can be checked without a real death; uses your own name/class as preview text.
     EllesmereUI._announceGroupDeathsPreview = function()
         local _, classToken = UnitClass("player")
-        ShowAlert(UnitName("player"), classToken)
+        ShowAlert(UnitName("player"), classToken, PlayerRole())
         PlayDeathSound()
     end
 
     -- Visual-only preview (used by the Text Size slider so dragging it doesn't repeatedly fire the sound).
     EllesmereUI._groupDeathShowVisual = function()
         local _, classToken = UnitClass("player")
-        ShowAlert(UnitName("player"), classToken)
+        ShowAlert(UnitName("player"), classToken, PlayerRole())
     end
 
     EllesmereUI._groupDeathPlaySound = PlayDeathSound
@@ -5236,7 +5279,7 @@ end
 -------------------------------------------------------------------------------
 --  Equipment Flyout item levels -- Blizzard's gear flyout (hover a character-
 --  sheet slot -> popup of same-slot bag/equipped items) only shows icons; when
---  enabled, overlays each button with the item's level, coloured by quality. Hooks
+--  enabled, overlays each button with the item's level, colored by quality. Hooks
 --  EquipmentFlyout_UpdateItems (after every flyout shape is populated) and reads EllesmereUIDB
 --  live, so the toggle applies to the next flyout with no reload. Toggle: EllesmereUIDB.flyoutItemLevels (Quality of Life -> UI).
 --  EllesmereUIDB.flyoutItemStats adds the stat letters (EllesmereUI.GetItemStatLetters)

@@ -195,10 +195,9 @@ end
 
 -- Apply a canonical payload to all sync surfaces (CDM icon bars, Tracked Buff Bars,
 -- Nameplates), best-effort. opts.skipCdmKey/opts.skipNameplates exclude the source surface; opts.skipTbbBar excludes one TBB (its source bar table).
--- Nameplates are no surface on WoW Forever, where they have no pandemic glow (ns.CDM_ANTI_CLIP).
 function EllesmereUI.ApplyPandemicGlowToAll(payload, opts)
     opts = opts or {}
-    if not opts.skipNameplates and not ns.CDM_ANTI_CLIP then
+    if not opts.skipNameplates then
         local np = PG_GetNPProfile()
         if np and EllesmereUI.NameplatePandemicGlowStyles then
             PG_Write(np, payload, PG_NameplateIndexFromName, "pandemicGlowPick")
@@ -231,7 +230,7 @@ end
 -- True when every (non-skipped) surface already matches the payload.
 function EllesmereUI.IsPandemicGlowSyncedToAll(payload, opts)
     opts = opts or {}
-    if not opts.skipNameplates and not ns.CDM_ANTI_CLIP then
+    if not opts.skipNameplates then
         local np = PG_GetNPProfile()
         if np and EllesmereUI.NameplatePandemicGlowStyles
            and not PG_Matches(np, payload, PG_NameplateIndexFromName, PG_NameplateStyle, "custom") then
@@ -302,7 +301,7 @@ StartNativeGlow = function(overlay, style, cr, cg, cb, opts)
     -- Glows already lit at the very first enable of a session have no record
     -- until their own next edge; the option setter re-issues the bar and buff
     -- glows right away and everything is exact from the next login.
-    -- Stored verbatim, pre-defaulting, so a nil colour stays nil. The owner and
+    -- Stored verbatim, pre-defaulting, so a nil color stays nil. The owner and
     -- its resolved spellID ride along so the replay can tell a record that is
     -- still current from one whose pooled icon has since been handed a
     -- different spell (fc.spellID is our cached plain identity, never secret).
