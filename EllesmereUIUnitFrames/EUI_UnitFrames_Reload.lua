@@ -254,7 +254,7 @@ ReloadFramesBody = function()
 
     -- Uses global font
     local donorFontPath = EllesmereUI.GetFontPath("unitFrames")
-        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
+        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\EUI Highway.ttf"
 
     -- Live enable/disable frames without reload
     local function ToggleFrame(unit, frame)
@@ -1650,7 +1650,8 @@ ReloadFramesBody = function()
             if frame.unifiedBorder then
                 frame.unifiedBorder:ClearAllPoints()
                 -- Mini frames (ToT/Focus Target/Pet) may override the border size
-                -- per frame (settings.borderSizeOverride, nil = donor size). The
+                -- (settings.borderSizeOverride) and its Width / Height Offset
+                -- (ns.UF_BorderOffsets) per frame, nil = the donor's. The
                 -- rest of the border inherits from the donor unless the mini
                 -- frame's Advanced borders toggle is on and it carries its own
                 -- value (ns.ResolveMiniBorderValue, per key). Boss frames have no
@@ -1667,18 +1668,13 @@ ReloadFramesBody = function()
                 local bc = ns.ResolveMiniBorderValue(settings, "borderColor", bsrc) or { r = 0, g = 0, b = 0 }
                 local ba = ns.ResolveMiniBorderValue(settings, "borderAlpha", bsrc) or 1
                 local btex = ns.ResolveMiniBorderValue(settings, "borderTexture", bsrc) or "solid"
-                -- The donor's exact pixel size rides along only while the size IS
-                -- the donor's own; a per-frame override, or an Advanced size while
-                -- the toggle is on, is a substitute step (legacy path).
-                local bpx = nil
-                if not (settings.borderSizeOverride or (ov and ov.borderSize)) then
-                    bpx = EllesmereUI.BorderPx(bsrc.borderSizePx, bs, btex)
-                end
+                -- The donor's exact size applies while the step and texture match its own (BorderPx checks).
+                local bpx = EllesmereUI.BorderPx(bsrc.borderSizePx, bs, btex)
+                local box, boy = ns.UF_MiniBorderOffsets(UnitToSettingsKey(unit), settings, bsrc)
                 PP.Point(frame.unifiedBorder, "TOPLEFT", frame, "TOPLEFT", 0, 0)
                 PP.Point(frame.unifiedBorder, "BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
                 EllesmereUI.ApplyBorderStyle(frame.unifiedBorder, bs, bc.r, bc.g, bc.b, ba, btex,
-                    ns.ResolveMiniBorderValue(settings, "borderTextureOffset", bsrc),
-                    ns.ResolveMiniBorderValue(settings, "borderTextureOffsetY", bsrc),
+                    box, boy,
                     ns.ResolveMiniBorderValue(settings, "borderTextureShiftX", bsrc),
                     ns.ResolveMiniBorderValue(settings, "borderTextureShiftY", bsrc),
                     "unitframes", bs, nil, bpx)
@@ -1975,7 +1971,7 @@ ns.UF_PAD_KEYS = { "player", "target", "focus", "pet", "targettarget", "focustar
 -- Size matching: the width and height the unit frame's textured border draws
 -- OUTSIDE the frame, from exactly what the reload sweep's unified border apply
 -- passes (the paint that lands last: the minis take the donor's border, and a
--- per-frame Border Size override drops the donor's exact size). The border
+-- per-frame Border Size at another step drops the donor's exact size). The border
 -- wraps the frame getSize measures. nil for a solid border, under the stock
 -- looks (no EllesmereUI border), for the class resource bar and the boss
 -- stack. Reads settings only. Change together with the sweep.
@@ -1988,11 +1984,9 @@ function ns.UF_FrameBorderPad(k)
     local btex = d.borderTexture or "solid"
     if btex == "solid" then return nil end
     local bs = settings.borderSizeOverride or d.borderSize or 1
-    local bpx = nil
-    if not settings.borderSizeOverride then
-        bpx = EllesmereUI.BorderPx(d.borderSizePx, bs, btex)
-    end
-    return EllesmereUI.BorderMatchPad(bs, btex, d.borderTextureOffset, d.borderTextureOffsetY,
+    local bpx = EllesmereUI.BorderPx(d.borderSizePx, bs, btex)
+    local ox, oy = ns.UF_BorderOffsets(k, settings, d)
+    return EllesmereUI.BorderMatchPad(bs, btex, ox, oy,
         d.borderTextureShiftX, d.borderTextureShiftY, "unitframes", bs, bpx, nil, d.borderAlpha or 1)
 end
 

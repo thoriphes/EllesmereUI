@@ -791,17 +791,28 @@ function ns.ERB_BuildHealthSection(parent, y, ctx)
     end
 
     local healthTextSizeRow
+    local function SetHealthText(v)
+        local c = cfg(); if not c then return end
+        c.textFormat = v; RefreshHealth(); EllesmereUI:RefreshPage()
+        ns.ERB_RefreshTextMenu(healthTextSizeRow and healthTextSizeRow._leftRegion)
+    end
     healthTextSizeRow, h = W:DualRow(parent, y,
         { type = "dropdown", text = "Health Text",
           disabled = healthOff,
           disabledTooltip = "Health Bar",
-          values = { none = "None", perhp = "Health %", perhpnosign = "Health % (No Sign)", curhpshort = "Health #", curmaxhp = "Health # / Max #", perhpnum = "Health % | #", both = "Health # | %" },
-          order = { "none", "---", "perhp", "perhpnosign", "curhpshort", "curmaxhp", "perhpnum", "both" },
+          values = ns.ERB_CustomTextValues(
+              { none = "None", perhp = "Health %", perhpnosign = "Health % (No Sign)", curhpshort = "Health #", curmaxhp = "Health # / Max #", perhpnum = "Health % | #", both = "Health # | %" },
+              ns.ERB_HealthTags, cfg,
+              function(c)
+                  local _, cls = UnitClass("player")
+                  if c.textCustomColored == false and cls then return EllesmereUI.GetClassColor(cls) end
+                  return { r = c.textFillR or 1, g = c.textFillG or 1, b = c.textFillB or 1 }
+              end,
+              SetHealthText, { examples = ns.ERB_HealthTagExamples, label = "Health Text", apply = RefreshHealth,
+                  region = function() return healthTextSizeRow and healthTextSizeRow._leftRegion end }),
+          order = { "none", "---", "custom", "---", "perhp", "perhpnosign", "curhpshort", "curmaxhp", "perhpnum", "both" },
           getValue = function() local c = cfg(); return c and c.textFormat or "none" end,
-          setValue = function(v)
-              local c = cfg(); if not c then return end
-              c.textFormat = v; RefreshHealth(); EllesmereUI:RefreshPage()
-          end },
+          setValue = SetHealthText },
         { type = "multiSwatch", text = "Text Color",
           disabled = healthTextDis,
           disabledTooltip = healthTextDisTip,
@@ -852,6 +863,7 @@ function ns.ERB_BuildHealthSection(parent, y, ctx)
               end },
           } }
     );  y = y - h
+    ns.ERB_AddCustomFormatAccessor(healthTextSizeRow._leftRegion, "Health Text", cfg, RefreshHealth)
     -- Health Text inline cog: anchor + x/y offsets
     do
         local rgn = healthTextSizeRow._leftRegion
