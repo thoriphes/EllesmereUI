@@ -48,6 +48,18 @@ function ns.GetMiniDonorSettings(unitKey)
 end
 local GetMiniDonorSettings = ns.GetMiniDonorSettings
 
+-- Width / Height Offset a frame border draws with (b = its border source). ToT / Focus Target /
+-- Pet: their own offset once moved, else the donor's at any Border Size (owner pick 2026-11-24:
+-- a mini frame at another size keeps the main frames' offsets, as before PR #3619).
+local MINI_BORDER_KEYS = { pet = true, targettarget = true, focustarget = true }
+function ns.UF_BorderOffsets(key, s, b)
+    if not MINI_BORDER_KEYS[key] then return b.borderTextureOffset, b.borderTextureOffsetY end
+    local ox, oy = s.borderOffsetOverride, s.borderOffsetYOverride
+    if ox == nil then ox = b.borderTextureOffset end
+    if oy == nil then oy = b.borderTextureOffsetY end
+    return ox, oy
+end
+
 -- The frame a mini frame's auras take their look from (the pet's Copy Auras
 -- From, auraSource, no default): its pick while that frame can lend its look,
 -- else the frame its Copy Look From uses. Returns the key.
@@ -87,6 +99,20 @@ ns.ResolveMiniBorderValue = function(ownSettings, key, donorSettings)
     local ov = ownSettings.borderAdvanced and ownSettings.borderOverride
     if ov and ov[key] ~= nil then return ov[key] end
     return donorSettings[key]
+end
+
+-- Width / Height Offset a mini frame border draws with: the Advanced value
+-- while the toggle is on and it carries one, else ns.UF_BorderOffsets (the
+-- frame's own Width / Height Offset, else the donor's). Switching Advanced off
+-- returns to exactly the non-Advanced offsets, as with the size.
+ns.UF_MiniBorderOffsets = function(key, s, b)
+    local ox, oy = ns.UF_BorderOffsets(key, s, b)
+    local ov = s.borderAdvanced and s.borderOverride
+    if ov then
+        if ov.borderTextureOffset ~= nil then ox = ov.borderTextureOffset end
+        if ov.borderTextureOffsetY ~= nil then oy = ov.borderTextureOffsetY end
+    end
+    return ox, oy
 end
 
 function ns.UF_BossAuraBorderAboveEffects(s)

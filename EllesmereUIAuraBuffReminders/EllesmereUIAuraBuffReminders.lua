@@ -12,10 +12,12 @@ EllesmereUI._ModuleNS[ADDON_NAME] = select(2, ...)  -- LOD options files read th
 local EABR = EllesmereUI.Lite.NewAddon("EllesmereUIAuraBuffReminders")
 
 -- WoW Forever runs a reduced module: the Raid Buffs section over that client's
--- own buffs (EABR.CollectForeverRaidBuffs) and one Forever-only section (the
--- Camp Benefits campfire buff, the Sleeping Bag's Well-Rested buff, the Arcane
--- Censer's Magical Awareness, gathering tracking, Find Treasure and custom
--- spell IDs) collected by
+-- own buffs (EABR.CollectForeverRaidBuffs) and two Forever-only sections, Self
+-- Buffs (Mage Armors, class buffs, weapon imbues, gathering tracking, Find
+-- Treasure, hunter Target Tracking, custom spell IDs and spell groups) and
+-- Consumables (the Camp Benefits campfire buff,
+-- the Sleeping Bag's Well-Rested buff, the Arcane Censer's Magical Awareness,
+-- Well Fed, scrolls and elixirs, weapon stones and oils), both collected by
 -- EABR.CollectForever, with every other retail collector, its events and its
 -- options sections off. Both values live on EABR, where every split file reads
 -- them; retail reads FOREVER as false at each gate and nothing else changes
@@ -52,6 +54,20 @@ EABR.MAGE_ARMORS = {
     { 6117, 22782, 22783 },         -- Mage Armor 1-3
 }
 if EABR.FOREVER then
+    -- Forever pairs each sacrificed demon with a different buff than vanilla did.
+    EABR.DEMONIC_SACRIFICE = 18788
+    EABR.SACRIFICE_DEMONS = {
+        { key = "imp",        summon = 688, buff = 18789, family = 23 },
+        { key = "voidwalker", summon = 697, buff = 18792, family = 16 },
+        { key = "succubus",   summon = 712, buff = 18791, family = 17 },
+        { key = "felhunter",  summon = 691, buff = 18790, family = 15 },
+    }
+    -- Aura lists for PlayerHasAuraByID: every sacrifice buff, and each demon's own.
+    EABR.SACRIFICE_BUFFS = { all = {} }
+    for _, d in ipairs(EABR.SACRIFICE_DEMONS) do
+        EABR.SACRIFICE_BUFFS.all[#EABR.SACRIFICE_BUFFS.all + 1] = d.buff
+        EABR.SACRIFICE_BUFFS[d.key] = { d.buff }
+    end
     EABR.FV_WEAPON_BUFFS = {
         { key = "instant", name = "Instant Poison", imbue = true, class = "ROGUE", items = { 6947, 6949, 6950, 8926, 8927, 8928 } },
         { key = "deadly", name = "Deadly Poison", imbue = true, class = "ROGUE", items = { 2892, 2893, 8984, 8985, 20844 } },
@@ -62,8 +78,8 @@ if EABR.FOREVER then
         { key = "flametongue", imbue = true, class = "SHAMAN", spells = { 8024, 8027, 8030, 16339, 16341, 16342 } },
         { key = "frostbrand", imbue = true, class = "SHAMAN", spells = { 8033, 8038, 10456, 16355, 16356 } },
         { key = "rockbiter", imbue = true, class = "SHAMAN", spells = { 8017, 8018, 8019, 10399, 16314, 16315, 16316 } },
-        { key = "firestone", name = "Firestone", imbue = true, class = "WARLOCK", items = { 1254, 13699, 13700, 13701 } },
-        { key = "spellstone", name = "Spellstone", imbue = true, class = "WARLOCK", items = { 5522, 13602, 13603 } },
+        { key = "firestone", name = "Firestone", imbue = true, class = "WARLOCK", items = { 1254, 13699, 13700, 13701 }, create = { 6366, 17951, 17952, 17953 } },
+        { key = "spellstone", name = "Spellstone", imbue = true, class = "WARLOCK", items = { 5522, 13602, 13603 }, create = { 2362, 17727, 17728 } },
         { key = "sharpening", name = "Sharpening Stone", weapon = "BLADED", items = { 2862, 287978, 2863, 2871, 7964, 12404 } },
         { key = "weightstone", name = "Weightstone", weapon = "BLUNT", items = { 3239, 3240, 3241, 7965, 12643 } },
         { key = "elemental", name = "Elemental Sharpening Stone", items = { 18262, 287980 } },
@@ -243,7 +259,7 @@ local function ResolveFontPath(fontName)
     if EllesmereUI and EllesmereUI.GetFontPath then
         return EllesmereUI.GetFontPath("auraBuff")
     end
-    return "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
+    return "Interface\\AddOns\\EllesmereUI\\media\\fonts\\EUI Highway.ttf"
 end
 local _cachedOutline
 local function SetABRFont(fs, font, size)
