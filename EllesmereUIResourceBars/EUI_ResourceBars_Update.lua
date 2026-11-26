@@ -73,6 +73,39 @@ I.UpdateGCDBarSetters[#I.UpdateGCDBarSetters + 1] = function(v) UpdateGCDBar = v
 -- Health and power text: the global Number Format for valueType (power follows
 -- only the Unit Style). On ns for the options preview and the druid mana bar.
 ns.AbbreviateValue = EllesmereUI.AbbreviateValue
+
+-- Custom text: a catalog per bar whose pieces read the update's (cur, max, percent),
+-- secret or not. On ns for the options popup and preview.
+do
+    local TT, unpack = EllesmereUI.TextTags, unpack
+    local function Num(v) return format("%d", v) end
+    local function Abr(kind, max)
+        if max then return function(_, mx) return ns.AbbreviateValue(mx, kind) end end
+        return function(cur) return ns.AbbreviateValue(cur, kind) end
+    end
+    local function Max(_, mx) return Num(mx) end
+    local function Pct(_, _, pct) return Num(pct) end
+    -- The bars' own help examples for the popup (the unit schema's name tags the bars do not bind).
+    ns.ERB_HealthTagExamples = { "[hp:pct]%", "[hp:abr] / [hp:max:abr]", "[hp:abr] | [hp:pct]%" }
+    ns.ERB_PowerTagExamples = { "[pp:pct]%", "[pp:abr] / [pp:max:abr]", "[pp:abr] | [pp:pct]%" }
+    ns.ERB_HealthTags = TT.Bind(TT.UNIT, {
+        ["hp"] = Num, ["hp:abr"] = Abr("health"), ["hp:max"] = Max,
+        ["hp:max:abr"] = Abr("maxHealth", true), ["hp:pct"] = Pct,
+    })
+    ns.ERB_PowerTags = TT.Bind(TT.UNIT, {
+        ["pp"] = Num, ["pp:abr"] = Abr("power"), ["pp:max"] = Max,
+        ["pp:max:abr"] = Abr("power", true), ["pp:pct"] = Pct,
+    })
+    local args = {}
+    -- The template filled in, "" while it is empty.
+    function ns.ERB_CustomText(cat, template, cur, mx, pct)
+        local parsed = TT.Parse(cat, template)
+        if not parsed then return "" end
+        local keys, map = parsed.keys, cat.map
+        for i = 1, #keys do args[i] = map[keys[i]](cur, mx, pct) end
+        return format(parsed.fmt, unpack(args, 1, #keys))
+    end
+end
 -- The power text memo names no Number Format input, so a format change drops it.
 EllesmereUI.RegisterNumberFormatCallback(function()
     I.UpdateHealthBar()
@@ -103,8 +136,8 @@ local function UpdateHealthBar()
         pctRaw = 0
     end
 
-    -- Color: threshold via ColorCurve (same as the power bar), from the
-    -- per-spec threshold entry.
+    -- Color: threshold ColorCurve from the per-spec entry, read from predicted
+    -- health like the fill and text (unpredicted lags with no event after).
     local _hpTsEntry = ResolveThresholdSpecEntry(hp)
     local _hpTsEnabled = _hpTsEntry and (_hpTsEntry.thresholdEnabled ~= false) or false
     local _hpBandOn, _hpBands, _hpBandMode, _hpBandRev = ResolveBandConfig(hp, _hpTsEntry)
@@ -139,7 +172,7 @@ local function UpdateHealthBar()
                 curve = GetBarThresholdCurve(tbR, tbG, tbB, tR, tG, tB, _hpTsEntry.thresholdPct or hp.thresholdPct or 30)
             end
             if curve and healthBar._text then
-                local ok, colorResult = pcall(UnitHealthPercent, "player", false, curve)
+                local ok, colorResult = pcall(UnitHealthPercent, "player", true, curve)
                 if ok and colorResult and colorResult.GetRGBA then
                     healthBar._text:SetTextColor(colorResult:GetRGBA())
                 end
@@ -162,7 +195,7 @@ local function UpdateHealthBar()
                 curve = GetBarThresholdCurve(baseR, baseG, baseB, tR, tG, tB, _hpTsEntry.thresholdPct or hp.thresholdPct or 30)
             end
             if curve then
-                local ok, colorResult = pcall(UnitHealthPercent, "player", false, curve)
+                local ok, colorResult = pcall(UnitHealthPercent, "player", true, curve)
                 if ok and colorResult and colorResult.GetRGBA then
                     ft:SetVertexColor(colorResult:GetRGBA())
                 end
@@ -187,8 +220,12 @@ local function UpdateHealthBar()
 
     if hp.textFormat ~= "none" and not _G._ERB_TextHiddenByForm(hp) then
         local fmt = hp.textFormat
-        local pctStr = format("%d", pctRaw)
-        local curStr = ns.AbbreviateValue(cur, "health")
+        -- Custom builds its own text: the presets' strings are made for them only.
+        local pctStr, curStr
+        if fmt ~= "custom" then
+            pctStr = format("%d", pctRaw)
+            curStr = ns.AbbreviateValue(cur, "health")
+        end
         local txt
         if fmt == "both" then
             txt = curStr .. " | " .. pctStr .. "%"
@@ -202,6 +239,8 @@ local function UpdateHealthBar()
             txt = pctStr
         elseif fmt == "perhpnum" then
             txt = pctStr .. "% | " .. curStr
+        elseif fmt == "custom" then
+            txt = ns.ERB_CustomText(ns.ERB_HealthTags, hp.textCustomFormat, cur, mx, pctRaw)
         else
             txt = pctStr .. "%"
         end
@@ -491,8 +530,11 @@ local function UpdatePrimaryBar()
                 primaryBar._txtGen, primaryBar._txtPow = ns.CfgGen, cachedPrimary
             end
             local fmt = pp.textFormat
-            local percentSuffix = (pp.showPercent == false) and "" or "%"
-            local percentText = format("%d", pctRaw) .. percentSuffix
+            -- Custom builds its own text: the presets' percent string is made for them only.
+            local percentText
+            if fmt ~= "custom" then
+                percentText = format("%d", pctRaw) .. ((pp.showPercent == false) and "" or "%")
+            end
             local txt
             if fmt == "smart" then
                 local isPercent = EllesmereUI.IsSmartPowerPercent and EllesmereUI.IsSmartPowerPercent(cachedPrimary)
@@ -505,6 +547,8 @@ local function UpdatePrimaryBar()
                 txt = ns.AbbreviateValue(cur, "power") .. " / " .. ns.AbbreviateValue(mx, "power")
             elseif fmt == "perpp" then
                 txt = percentText
+            elseif fmt == "custom" then
+                txt = ns.ERB_CustomText(ns.ERB_PowerTags, pp.textCustomFormat, cur, mx, pctRaw)
             else
                 txt = ns.AbbreviateValue(cur, "power")
             end

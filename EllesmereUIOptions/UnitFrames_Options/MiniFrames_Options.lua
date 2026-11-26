@@ -302,15 +302,18 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
     -- DISPLAY bottom rows: per-frame border for ToT/Focus Target/Pet. Boss
     -- frames use their own Border Style | Border Size row above instead.
     --
-    -- Default: Border Size only (borderSizeOverride, nil = inherit donor
-    -- size until set); color/texture/offsets inherit from the main frames.
+    -- Default: Border Size (borderSizeOverride, nil = inherit donor size
+    -- until set), plus Width / Height Offset under a textured donor
+    -- (borderOffsetOverride / borderOffsetYOverride, ns.UF_BorderOffsets);
+    -- color/texture inherit from the main frames.
     -- With the header's Advanced toggle on (settingsTable.borderAdvanced) the
     -- main frames' border block is repeated here for this frame, in the Main
     -- Frames row shape: Border Style (+ offset cog) | Border Size (+ inline
     -- Border swatch), then Show Highlight Border (+ inline Highlight swatch)
     -- as the section's last row. Values live in settingsTable.borderOverride
     -- under the main-frame key names; a key left nil keeps reading the donor
-    -- (ns.ResolveMiniBorderValue), so switching the toggle on changes nothing
+    -- (ns.ResolveMiniBorderValue; offsets through ns.UF_MiniBorderOffsets),
+    -- so switching the toggle on changes nothing
     -- until a row is edited.
     if unitKey ~= "boss" then
         local adv = settingsTable.borderAdvanced == true
@@ -341,6 +344,8 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
               setValue=function(v)
                   if adv then BSet("borderSize", v) else settingsTable.borderSizeOverride = v end
                   ReloadAndUpdate()
+                  -- The Width / Height Offset sliders show the size's defaults.
+                  if not adv then EllesmereUI:RefreshPage() end
               end })
         local hlSlot = { type="toggle", text="Show Highlight Border",
               tooltip="Show the main frames' hover highlight border on this frame. Turn off so this frame never recolors on mouseover. No effect when Highlight is off in the main frames' Hover Borders.",
@@ -386,10 +391,10 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
                     title = "Border Offset",
                     rows = {
                         { type = "slider", label = "Offset X", min = -10, max = 10, step = 1,
-                          get = function() return BGet("borderTextureOffset") or OffsetDefault(1) end,
+                          get = function() return (ns.UF_MiniBorderOffsets(unitKey, settingsTable, GetMiniDonorSettings(unitKey))) or OffsetDefault(1) end,
                           set = function(v) BSet("borderTextureOffset", v); ReloadAndUpdate() end },
                         { type = "slider", label = "Offset Y", min = -10, max = 10, step = 1,
-                          get = function() return BGet("borderTextureOffsetY") or OffsetDefault(2) end,
+                          get = function() return select(2, ns.UF_MiniBorderOffsets(unitKey, settingsTable, GetMiniDonorSettings(unitKey))) or OffsetDefault(2) end,
                           set = function(v) BSet("borderTextureOffsetY", v); ReloadAndUpdate() end },
                         { type = "slider", label = "Shift X", min = -10, max = 10, step = 1,
                           get = function() return BGet("borderTextureShiftX") or OffsetDefault(3) end,
@@ -417,6 +422,54 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
             LockDark(hlRow._rightRegion)
         else
             _, h = W:DualRow(parent, y, sizeSlot, hlSlot);  y = y - h
+            -- Width / Height Offset under the donor's textured style (ns.UF_BorderOffsets: an
+            -- unset offset follows the main frames' at any size). A pick equal to what following
+            -- shows (the donor's offset, else the texture's default) stores nothing, so the frame
+            -- follows the main frames again; any other pick is stored.
+            local donorTex = GetMiniDonorSettings(unitKey).borderTexture or "solid"
+            if donorTex ~= "solid" and donorTex ~= "" then
+                local function Donor() return GetMiniDonorSettings(unitKey) end
+                local function Size() return settingsTable.borderSizeOverride or Donor().borderSize or 1 end
+                local function DonorSolid()
+                    local t = Donor().borderTexture or "solid"
+                    return t == "solid" or t == ""
+                end
+                -- atDefault: the helper found the pick equal to the texture's default for the size.
+                local function Pick(pick, atDefault, donorVal)
+                    if donorVal == nil then return (not atDefault) and pick or nil end
+                    return pick ~= math.floor(donorVal + 0.5) and pick or nil
+                end
+                local pickX, pickY
+                local ocfgL, ocfgR = EllesmereUI.BorderOffsetRowCfgs({
+                    addonKey = "unitframes",
+                    tooltip = "Overrides the border offset from the main frames for this frame only.",
+                    getTex = function() return Donor().borderTexture or "solid" end,
+                    getStep = Size,
+                    getSizeKey = Size,
+                    getPx = function() return Donor().borderSizePx end,
+                    getX = function() return (ns.UF_BorderOffsets(unitKey, settingsTable, Donor())) end,
+                    setX = function(v)
+                        settingsTable.borderOffsetOverride = Pick(pickX, v == nil, Donor().borderTextureOffset)
+                    end,
+                    getY = function()
+                        local _, oy = ns.UF_BorderOffsets(unitKey, settingsTable, Donor())
+                        return oy
+                    end,
+                    setY = function(v)
+                        settingsTable.borderOffsetYOverride = Pick(pickY, v == nil, Donor().borderTextureOffsetY)
+                    end,
+                    apply = ReloadAndUpdate,
+                    -- Built only for a textured donor; a cached page whose donor went Solid since greys out.
+                    disabled = DonorSolid,
+                    disabledTooltip = "This option requires a textured Border Style on the Main Frames.",
+                })
+                local setL, setR = ocfgL.setValue, ocfgR.setValue
+                ocfgL.setValue = function(v) pickX = math.floor(v + 0.5); setL(v) end
+                ocfgR.setValue = function(v) pickY = math.floor(v + 0.5); setR(v) end
+                _, h = W:DualRow(parent, y,
+                    EllesmereUI.BlizzStyle.Gate("unitframes", ocfgL),
+                    EllesmereUI.BlizzStyle.Gate("unitframes", ocfgR));  y = y - h
+            end
             local darkRow
             darkRow, h = W:DualRow(parent, y, darkCfg, EllesmereUI.BlankRowCfg());  y = y - h
             LockDark(darkRow._leftRegion)

@@ -216,6 +216,7 @@ if EABR.FOREVER then
         wellFed = false,    -- Well Fed reminder; opt-in, matched by aura name (every food has its own spell ID)
         wellFedShowBelow = 0, -- minutes before the food buff runs out at which it also shows; 0 = off
         mageArmor = false,  -- Mage armor reminder (Mage); opt-in, it shows while no Frost/Ice/Mage Armor rank is up
+        demonicSacrifice = false,  -- Demonic Sacrifice reminder (Warlock talent); opt-in, demon in sacrificeDemon (nil = Auto)
         weapon = false,
         weaponLowRank = false,
         weaponHideNoItem = true,
@@ -227,7 +228,9 @@ if EABR.FOREVER then
         pickerEnabled = false,
         classBuffActions = {},  -- class buff key -> { castSpellID, castRanks = { spell ID -> pinned rank } }
         classBuffPicks = {},  -- class buff key -> ticked (unset: the buff's own default)
-        whereToShow = {},   -- section "Where to Show" (an absent bucket = shown)
+        whereToShow = {},   -- Consumables' "Where to Show" (an absent bucket = shown)
+        -- Self Buffs keep selfWhereToShow, selfSound and weaponImbue unset here (everywhere / no sound /
+        -- off); abr_forever_self_buffs_split_v1 seeded them once from the shared values.
         customIDs = {},     -- spell IDs the user tracks, in the order added
         customClasses = {}, -- spell ID -> { CLASS = false }: the classes a custom ID does not remind (unset: every class)
         customGroups = {},  -- { name = string, ids = { spell IDs } }: one reminder while none of ids is active
@@ -269,7 +272,7 @@ function EABR.SpecialSoundField(key)
 end
 
 -- Resolves the configured sound key for a reminder from its dismissKey.
-function EABR.ResolveReminderSound(dk)
+function EABR.ResolveReminderSound(dk, fvSelf)
     local prefix, key = dk:match("^(%a+):(.+)$")
     if not prefix then return nil end
     local p = db.profile
@@ -284,7 +287,9 @@ function EABR.ResolveReminderSound(dk)
         return co.sectionSound
     elseif prefix == "forever" then
         local fo = p.forever
-        return fo and fo.sectionSound
+        if not fo then return nil end
+        if fvSelf then return fo.selfSound end
+        return fo.sectionSound
     end
     return nil
 end
@@ -299,7 +304,7 @@ function EABR.HandleAppearSounds(missing)
         if dk and not missing[i].hunterTrackingStatus and not _dismissedUntilLoad[dk] then
             cur[dk] = true
             if primed and not prev[dk] then
-                local skey = EABR.ResolveReminderSound(dk)
+                local skey = EABR.ResolveReminderSound(dk, missing[i].fvSelf)
                 if skey and skey ~= "none" then
                     local paths = EllesmereUI._groupDeathSoundPaths
                     local path = paths and paths[skey]
