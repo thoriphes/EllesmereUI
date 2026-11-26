@@ -1651,22 +1651,45 @@ ReloadFramesBody = function()
                 frame.unifiedBorder:ClearAllPoints()
                 -- Mini frames (ToT/Focus Target/Pet) may override the border size
                 -- (settings.borderSizeOverride) and its Width / Height Offset
-                -- (ns.UF_BorderOffsets) per frame; color and texture still inherit
-                -- from the donor. nil = inherit the donor's.
-                -- Boss frames paint from ns.UF_BossBorderSettings: the donor's
-                -- border until the boss Border Style leaves Inherit.
+                -- (ns.UF_BorderOffsets) per frame, nil = the donor's. The
+                -- rest of the border inherits from the donor unless the mini
+                -- frame's Advanced borders toggle is on and it carries its own
+                -- value (ns.ResolveMiniBorderValue, per key). Boss frames have no
+                -- toggle: they paint from ns.UF_BossBorderSettings (the donor's
+                -- border until the boss Border Style leaves Inherit).
+                -- Size: an Advanced borderOverride.borderSize (style pick / slider
+                -- while the toggle is on) wins over borderSizeOverride, so that
+                -- switching the toggle off returns to exactly the pre-Advanced size.
                 -- ns.UF_FrameBorderPad mirrors this apply for size matching: change the two together.
                 local bsrc = donorSettings
                 if unit:match("^boss%d$") then bsrc = ns.UF_BossBorderSettings() end
-                local bs = settings.borderSizeOverride or bsrc.borderSize or 1
-                local bc = bsrc.borderColor or { r = 0, g = 0, b = 0 }
-                local btex = bsrc.borderTexture or "solid"
-                -- The donor's exact size applies while the step matches its own (BorderPx checks).
+                local ov = settings.borderAdvanced and settings.borderOverride
+                local bs = (ov and ov.borderSize) or settings.borderSizeOverride or bsrc.borderSize or 1
+                local bc = ns.ResolveMiniBorderValue(settings, "borderColor", bsrc) or { r = 0, g = 0, b = 0 }
+                local ba = ns.ResolveMiniBorderValue(settings, "borderAlpha", bsrc) or 1
+                local btex = ns.ResolveMiniBorderValue(settings, "borderTexture", bsrc) or "solid"
+                -- The donor's exact size applies while the step and texture match its own (BorderPx checks).
                 local bpx = EllesmereUI.BorderPx(bsrc.borderSizePx, bs, btex)
-                local box, boy = ns.UF_BorderOffsets(UnitToSettingsKey(unit), settings, bsrc)
+                local box, boy = ns.UF_MiniBorderOffsets(UnitToSettingsKey(unit), settings, bsrc)
                 PP.Point(frame.unifiedBorder, "TOPLEFT", frame, "TOPLEFT", 0, 0)
                 PP.Point(frame.unifiedBorder, "BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-                EllesmereUI.ApplyBorderStyle(frame.unifiedBorder, bs, bc.r, bc.g, bc.b, bsrc.borderAlpha or 1, btex, box, boy, bsrc.borderTextureShiftX, bsrc.borderTextureShiftY, "unitframes", bs, nil, bpx)
+                EllesmereUI.ApplyBorderStyle(frame.unifiedBorder, bs, bc.r, bc.g, bc.b, ba, btex,
+                    box, boy,
+                    ns.ResolveMiniBorderValue(settings, "borderTextureShiftX", bsrc),
+                    ns.ResolveMiniBorderValue(settings, "borderTextureShiftY", bsrc),
+                    "unitframes", bs, nil, bpx)
+                -- Show Behind. Mini borders never inherited it: the level comes from
+                -- the mini's own borderBehind (which nothing writes: above the bars),
+                -- as the portrait pass above computes it. Once the frame carries a
+                -- borderOverride table, re-set the level here from the same own flag,
+                -- or the Advanced override when on, so the toggle changes nothing
+                -- until the row is edited and switching it off is a full revert
+                -- regardless of what ran earlier in this refresh. A frame without
+                -- the table (the default) keeps the level it already has.
+                if settings.borderOverride and (unit == "pet" or unit == "targettarget" or unit == "focustarget") then
+                    local behind = ns.ResolveMiniBorderValue(settings, "borderBehind", settings)
+                    frame.unifiedBorder:SetFrameLevel(behind and math.max(0, frame:GetFrameLevel() - 1) or (frame:GetFrameLevel() + 10))
+                end
             end
             -- Boss Hover/Target border: the border was just restyled to its normal
             -- color above, so re-apply the hover/target recolor (both default off,
