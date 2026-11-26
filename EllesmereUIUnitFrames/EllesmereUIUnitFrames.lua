@@ -1474,11 +1474,11 @@ local SOLID_BACKDROP = { bgFile = "Interface\\Buttons\\WHITE8X8" }
 -- locale's glyphs, else falls back to the system font. Do NOT re-decide locale fallback
 -- locally or locale clients could never use a custom font here.
 local cachedFontPath = (EllesmereUI.GetFontPath("unitFrames"))
-    or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
+    or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\EUI Highway.ttf"
 local cachedFontPaths = {}  -- per-unit font cache
 local function ResolveFontPath(unitKey)
     local gPath = EllesmereUI.GetFontPath("unitFrames")
-        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
+        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\EUI Highway.ttf"
     cachedFontPath = gPath
     for _, uKey in ipairs({"player", "target", "focus", "boss", "pet", "targettarget", "focustarget"}) do
         cachedFontPaths[uKey] = gPath
@@ -1774,9 +1774,9 @@ do
     end
 end
 
--- Cast bars reuse the unit's health bar texture. The cast bar stacks three textures
--- over the fill bounds (base fill + cast tint + shielded tint, all WHITE8X8 by
--- default), so apply to each. On ns to avoid the Lua 200-local cap.
+-- Cast bars reuse the unit's health bar texture: the base fill and the cast tint over
+-- it (the whole bar, masked to the fill) take it; the shielded tint keeps WHITE8X8
+-- (below). On ns to avoid the Lua 200-local cap.
 ns.ApplyCastBarTexture = function(castbar, texKey)
     if not castbar then return end
     ns.UF_TexBgCast(castbar, texKey)
@@ -1847,7 +1847,13 @@ ns.ApplyCastFillOpacity = function(castbar, settings)
             castbar._fillOp = nil
             if bgTex then
                 bgTex:ClearAllPoints()
-                bgTex:SetAllPoints(bgHost)
+                if castbar._blizzCast then
+                    -- Stock styles: the background spans the bar, not the icon slot.
+                    bgTex:SetPoint("TOPLEFT", castbar, "TOPLEFT", -1, 1)
+                    bgTex:SetPoint("BOTTOMRIGHT", castbar, "BOTTOMRIGHT", 1, -1)
+                else
+                    bgTex:SetAllPoints(bgHost)
+                end
             end
             -- Mid-cast restore: the tint's active/idle state comes from our own
             -- flag, never from reading the widget back (see _castTintOn).
@@ -1861,13 +1867,14 @@ ns.ApplyCastFillOpacity = function(castbar, settings)
     castbar._fillOp = op / 100
     local tex = castbar:GetStatusBarTexture()
     if bgTex and tex then
+        local edge = castbar._blizzCast and castbar or bgHost
         bgTex:ClearAllPoints()
         if castbar.GetReverseFill and castbar:GetReverseFill() then
-            bgTex:SetPoint("TOPLEFT", bgHost, "TOPLEFT", 0, 0)
+            bgTex:SetPoint("TOPLEFT", edge, "TOPLEFT", 0, 0)
             bgTex:SetPoint("BOTTOMRIGHT", tex, "BOTTOMLEFT", 0, 0)
         else
             bgTex:SetPoint("TOPLEFT", tex, "TOPRIGHT", 0, 0)
-            bgTex:SetPoint("BOTTOMRIGHT", bgHost, "BOTTOMRIGHT", 0, 0)
+            bgTex:SetPoint("BOTTOMRIGHT", edge, "BOTTOMRIGHT", 0, 0)
         end
     end
     -- Mid-cast application: retune the tint if it is currently active.

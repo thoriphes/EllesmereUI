@@ -14,11 +14,11 @@ local MEDIA_PATH = EllesmereUI.MEDIA_PATH
 -------------------------------------------------------------------------------
 -- Canonical font name -> filename mapping (shared across all addons)
 EllesmereUI.FONT_FILES = {
-    ["Expressway"]          = "Expressway.TTF",
-    ["Expressway Bold"]     = "Expressway Bold.ttf",
-    ["Expressway CAPS"]     = "Expressway CAPS.ttf",
-    ["Avant Garde"]         = "Avant Garde Naowh.ttf",
-    ["Arial Bold"]          = "Arial Bold.TTF",
+    ["Expressway"]          = "EUI Highway.ttf",
+    ["Expressway Bold"]     = "EUI Highway Black.ttf",
+    ["Expressway CAPS"]     = "EUI Highway Caps.ttf",
+    ["Avant Garde"]         = "EUI Geometric.ttf",
+    ["Arial Bold"]          = "EUI Grotesk Bold.ttf",
     ["Poppins"]             = "Poppins.ttf",
     ["Fira Sans Medium"]    = "FiraSans Medium.ttf",
     ["Arial Narrow"]        = "Arial Narrow.ttf",
@@ -27,35 +27,61 @@ EllesmereUI.FONT_FILES = {
     ["Exo"]                 = "Exo.otf",
     ["Fira Sans Bold"]      = "FiraSans Bold.ttf",
     ["Fira Sans Light"]     = "FiraSans Light.ttf",
-    ["Future X Black"]      = "Future X Black.otf",
-    ["Gotham Narrow Ultra"] = "Gotham Narrow Ultra.otf",
-    ["Gotham Narrow"]       = "Gotham Narrow.otf",
+    ["Future X Black"]      = "EUI Geometric Black.ttf",
+    ["Gotham Narrow Ultra"] = "EUI Narrow Heavy.ttf",
+    ["Gotham Narrow"]       = "EUI Narrow Sans.ttf",
     ["Russo One"]           = "Russo One.ttf",
     ["Ubuntu"]              = "Ubuntu.ttf",
     ["Homespun"]            = "Homespun.ttf",
-    ["HWT Artz"]            = "HWT Artz.ttf",
-    ["KMT Kimberley"]       = "KMT Kimberley.otf",
+    ["HWT Artz"]            = "EUI Poster Caps.ttf",
+    ["KMT Kimberley"]       = "EUI Rounded Block.ttf",
     ["KMT Ninja Naruto"]    = "KMT Ninja Naruto.ttf",
     ["Friz Quadrata"]       = nil,  -- Blizzard font
     ["Arial"]               = nil,  -- Blizzard font
     ["Morpheus"]            = nil,  -- Blizzard font
     ["Skurri"]              = nil,  -- Blizzard font
 }
+-- A setting that saves a file path (Combat Text Font, the name font's path cache) may name
+-- a bundled file by an earlier name; this reads such a path as the file's current one.
+-- Nothing saved is rewritten: the setting keeps its value until the player picks again.
+do
+    local EARLIER_FILES = {
+        ["expressway.ttf"]          = "EUI Highway.ttf",
+        ["expressway bold.ttf"]     = "EUI Highway Black.ttf",
+        ["expressway caps.ttf"]     = "EUI Highway Caps.ttf",
+        ["gotham narrow.otf"]       = "EUI Narrow Sans.ttf",
+        ["gotham narrow ultra.otf"] = "EUI Narrow Heavy.ttf",
+        ["future x black.otf"]      = "EUI Geometric Black.ttf",
+        ["hwt artz.ttf"]            = "EUI Poster Caps.ttf",
+        ["kmt kimberley.otf"]       = "EUI Rounded Block.ttf",
+        ["arial bold.ttf"]          = "EUI Grotesk Bold.ttf",
+        ["avant garde naowh.ttf"]   = "EUI Geometric.ttf",
+    }
+    local FONT_DIR = (MEDIA_PATH .. "fonts\\"):lower()
+    function EllesmereUI.CurrentFontPath(path)
+        if type(path) ~= "string" then return path end
+        local lower = path:lower()
+        if lower:sub(1, #FONT_DIR) ~= FONT_DIR then return path end
+        local file = EARLIER_FILES[lower:sub(#FONT_DIR + 1)]
+        return file and (MEDIA_PATH .. "fonts\\" .. file) or path
+    end
+end
 -- Bundled faces whose cmap covers the FULL Russian alphabet (U+0410-U+044F plus U+0401
 -- and U+0451, i.e. the Yo pair): these stay
 -- usable in ruRU instead of being swapped for the system glyph font. Verified per file
 -- against its cmap table -- every other face (Poppins, Exo, Gotham Narrow Ultra, Changa,
 -- Cinzel, Future X Black, Homespun, HWT Artz, KMT Ninja Naruto, Barlow Condensed) has ZERO
--- Cyrillic and would render boxes, except Avant Garde: it carries the alphabet in another
--- open face's letters and is left to the system glyph font on ruRU. Re-check coverage before
--- adding a face; a wrong entry ships unreadable text. Expressway CAPS: cmap checked, 66/66
--- Russian letters (Yo pair included), its Russian lowercase drawn as lowercase.
+-- Cyrillic and would render boxes. Re-check coverage before adding a face; a wrong entry
+-- ships unreadable text. Expressway CAPS: cmap checked, 66/66 Russian letters (Yo pair
+-- included), its Russian lowercase drawn as lowercase. Avant Garde: 66/66, its Cyrillic
+-- letters drawn in another open face's design; every face that was on this list keeps it.
 -- Deliberately NOT extended to FONT_BLIZZARD: the Cyrillic-capable Blizzard face is
 -- FRIZQT___CYR (already the fallback), and the plain ones vary by installed client locale.
 EllesmereUI.FONT_CYRILLIC = {
     ["Expressway"]       = true,
     ["Expressway Bold"]  = true,
     ["Expressway CAPS"]  = true,
+    ["Avant Garde"]      = true,
     ["Arial Bold"]       = true,
     ["Arial Narrow"]     = true,
     ["Fira Sans Medium"] = true,
@@ -86,21 +112,10 @@ EllesmereUI.FONT_ORDER = {
 }
 -- Display name overrides for the font dropdown (key = FONT_ORDER name). The key is what
 -- settings save and what LSM lists, and FONT_FILES keeps each file name (some settings save
--- the path): the label alone names the face the file holds, with the name it replaced.
-EllesmereUI.FONT_DISPLAY_NAMES = {
-    ["Expressway"]          = "Roboto ExtraBold (previously Expressway)",
-    ["Expressway Bold"]     = "Roboto Black (previously Expressway Bold)",
-    ["Expressway CAPS"]     = "Roboto CAPS (previously Expressway CAPS)",
-    ["Avant Garde"]         = "Adventor (previously Avant Garde)",
-    ["Arial Bold"]          = "Arimo Bold (previously Arial Bold)",
-    ["Arial Narrow"]        = "Liberation Narrow (previously Arial Narrow)",
-    ["Future X Black"]      = "Gantari Black (previously Future X Black)",
-    ["Gotham Narrow Ultra"] = "Blinker ExtraBold (previously Gotham Narrow Ultra)",
-    ["Gotham Narrow"]       = "TikTok Sans (previously Gotham Narrow)",
-    ["HWT Artz"]            = "Anek CAPS (previously HWT Artz)",
-    ["KMT Kimberley"]       = "Tektur (previously KMT Kimberley)",
-    ["KMT Ninja Naruto"]    = "Sedgwick Ave (previously KMT Ninja Naruto)",
-}
+-- the path). Every list shows the saved name, the bundled fonts' replacements included (owner
+-- 2026-11-24: keep the names in game too); media/fonts/licenses/README.txt names the font
+-- each file holds. A label that differs from its key goes here.
+EllesmereUI.FONT_DISPLAY_NAMES = {}
 -- The label a font list shows for a FONT_ORDER name.
 function EllesmereUI.FontDisplayName(name)
     return EllesmereUI.FONT_DISPLAY_NAMES[name] or name
@@ -256,7 +271,7 @@ local function ResolveFontName(fontName)
     end
     -- Explicit Expressway override: bypasses the glyph-restriction mapping below.
     if fontName == EllesmereUI.EXPRESSWAY_FORCED_KEY then
-        return MEDIA_PATH .. "fonts\\Expressway.TTF"
+        return MEDIA_PATH .. "fonts\\EUI Highway.ttf"
     end
     -- Glyph-restricted locales (CJK, Cyrillic): bundled fonts without coverage for the
     -- script, and the System Default sentinel, map to the system glyph font. Only an
@@ -310,7 +325,7 @@ local function ResolveFontName(fontName)
             end
         end
     end
-    return MEDIA_PATH .. "fonts\\Expressway.TTF"
+    return MEDIA_PATH .. "fonts\\EUI Highway.ttf"
 end
 EllesmereUI.ResolveFontName = ResolveFontName
 
@@ -1176,7 +1191,7 @@ function EllesmereUI.BuildFontDropdownData()
         local values = { ["__global"] = { text = "EUI Global Font" },
                          [EllesmereUI.SYSTEM_FONT_KEY] = { text = "System Default", font = EllesmereUI.LOCALE_FONT_FALLBACK },
                          [EllesmereUI.EXPRESSWAY_FORCED_KEY] = { text = EllesmereUI.LatinOnlyFontLabel(),
-                             font = EllesmereUI.MEDIA_PATH .. "fonts\\Expressway.TTF" },
+                             font = EllesmereUI.MEDIA_PATH .. "fonts\\EUI Highway.ttf" },
                          _menuOpts = EllesmereUI.FONT_MENU_OPTS }
         local order  = { "__global", EllesmereUI.SYSTEM_FONT_KEY, EllesmereUI.EXPRESSWAY_FORCED_KEY }
         if EllesmereUI.AppendExternalSharedMediaFonts then
@@ -1200,7 +1215,7 @@ function EllesmereUI.BuildFontDropdownData()
             order[#order + 1] = "---"
         else
             local path = EllesmereUI.FONT_BLIZZARD[name]
-                or (FONT_DIR .. (EllesmereUI.FONT_FILES[name] or "Expressway.TTF"))
+                or (FONT_DIR .. (EllesmereUI.FONT_FILES[name] or "EUI Highway.ttf"))
             local displayName = (EllesmereUI.FONT_DISPLAY_NAMES and EllesmereUI.FONT_DISPLAY_NAMES[name]) or name
             values[name] = { text = displayName, font = path }
             order[#order + 1] = name

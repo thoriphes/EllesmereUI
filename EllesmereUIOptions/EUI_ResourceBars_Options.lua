@@ -10,11 +10,64 @@ if not ns then return end  -- module disabled: no options page
 local abs = math.abs
 
 local PAGE_DISPLAY   = "Class, Power and Health Bars"
+
 local PAGE_CASTBAR   = "Cast Bar"
 local PAGE_GCD       = "GCD Bar"
 local PAGE_SWING     = "Swing Timer"   -- WoW Forever only (C_SwingTimer)
 local PAGE_TOTEM     = "Totem Bar"
 local PAGE_UNLOCK    = "Unlock Mode"
+
+-- Health/Power Text: the template's Spec Overrides accessor, on a Custom text or one
+-- holding a template an override may switch back to; once per region.
+local function HasFormatAccessor(rgn, text)
+    local cc = rgn._captureCfg
+    if not cc then return false end
+    if cc.text == text and not cc.accessors then return true end
+    for _, a in ipairs(cc.accessors or {}) do
+        if a.text == text then return true end
+    end
+    return false
+end
+function ns.ERB_AddCustomFormatAccessor(rgn, label, cfg, apply)
+    local c = cfg()
+    if not (c and rgn) or EllesmereUI._prebuilding then return end
+    if c.textFormat ~= "custom" and type(c.textCustomFormat) ~= "string" then return end
+    if HasFormatAccessor(rgn, label .. " Custom Format") then return end
+    EllesmereUI.TextTags.AddFormatAccessor(rgn, label,
+        function() local t = cfg(); return t and t.textCustomFormat end,
+        function(v) local t = cfg(); if t then t.textCustomFormat = v; apply() end end)
+end
+-- Health/Power Text values with a Custom entry: it opens the template popup (preview
+-- in color(c), help examples o.examples), then setValue("custom"). The save gives the
+-- row (o.region(), once built) the accessor and reports the write to Spec Overrides,
+-- as the factory reports its own.
+function ns.ERB_CustomTextValues(values, cat, cfg, color, setValue, o)
+    local TT = EllesmereUI.TextTags
+    return TT.MenuValues(values, function()
+        local c = cfg(); if not c then return end
+        TT.EditPopup({
+            cat = cat, color = color(c), examples = o.examples,
+            get = function() return c.textCustomFormat end,
+            set = function(txt) c.textCustomFormat = txt end,
+            onSave = function()
+                setValue("custom")
+                local rgn = o.region()
+                if rgn then
+                    ns.ERB_AddCustomFormatAccessor(rgn, o.label, cfg, o.apply)
+                    EllesmereUI._NotifySettingWrite(rgn, EllesmereUI._SOAttribution(rgn))
+                end
+            end,
+        })
+    end, { selected = function() local c = cfg(); return c and c.textFormat == "custom" end })
+end
+-- The menu reads Custom's pencil alpha when it is built: after a pick, built again
+-- once the list has closed.
+function ns.ERB_RefreshTextMenu(rgn)
+    C_Timer.After(0, function()
+        local dd = rgn and rgn._control
+        if dd and dd._invalidateMenu then dd._invalidateMenu() end
+    end)
+end
 
 -- WoW Forever shows the first tab as "Main Resources" and the totem tab as
 -- "Totem Bars" (it holds the Call Totem Bar too). Display only: the page
@@ -260,7 +313,7 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     local FONT_PATH = (EllesmereUI.GetFontPath("resourceBars"))
-        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
+        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\EUI Highway.ttf"
     local SetPVFont = EllesmereUI.ApplyModuleFont
     local CONTENT_PAD = 45
     local SIDE_PAD = 20
@@ -583,6 +636,8 @@ initFrame:SetScript("OnEvent", function(self)
             elseif fmt == "curmaxhp" then txt = curStr .. " / " .. ns.AbbreviateValue(mx, "maxHealth")
             elseif fmt == "perhpnosign" then txt = pctStr
             elseif fmt == "perhpnum" then txt = pctStr .. "% | " .. curStr
+            elseif fmt == "custom" then
+                txt = ns.ERB_CustomText(ns.ERB_HealthTags, c.textCustomFormat, math.floor(mx * pct / 100), mx, pct)
             else txt = pctStr .. "%" end
         else
             local percentText = tostring(pct) .. ((c.showPercent == false) and "" or "%")
@@ -594,6 +649,8 @@ initFrame:SetScript("OnEvent", function(self)
             elseif fmt == "curpp" then txt = curStr
             elseif fmt == "curmaxpp" then txt = curStr .. " / " .. ns.AbbreviateValue(mx, "power")
             elseif fmt == "perpp" then txt = percentText
+            elseif fmt == "custom" then
+                txt = ns.ERB_CustomText(ns.ERB_PowerTags, c.textCustomFormat, math.floor(mx * pct / 100), mx, pct)
             else txt = curStr end
         end
         SetPVFont(text, FONT_PATH, c.textSize or 11)

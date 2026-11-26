@@ -19,6 +19,19 @@ local CreateFrame = EllesmereUI._Pool.CreateFrame
 -- another addon could replace.
 local PoolOwned = EllesmereUI._Pool.Owned
 
+-- The preview's cast fill is a plain texture as wide as the filled share f: its art is
+-- cropped to that share, fixed to the bar (from the right on Reverse Fill), as the live
+-- bar's fill and its masked cast tint draw it. atlas: the art's atlas name, if any.
+function ns.UFO_CropPreviewFill(tex, f, reverse, atlas)
+    local l, r, t, b = 0, 1, 0, 1
+    local info = atlas and C_Texture.GetAtlasInfo(atlas)
+    if info then
+        l, r, t, b = info.leftTexCoord, info.rightTexCoord, info.topTexCoord, info.bottomTexCoord
+    end
+    local w = (r - l) * f
+    if reverse then tex:SetTexCoord(r - w, r, t, b) else tex:SetTexCoord(l, l + w, t, b) end
+end
+
 function ns.UFO_BuildUnitPreview(parent, unitKey, side)
     local env = ns._UFO_OptEnv
     local ApplyClassIconTexture_Preview, ApplyPreviewPortraitShape, BlizzPreviewScale, CLASS_FULL_COORDS = env.ApplyClassIconTexture_Preview, env.ApplyPreviewPortraitShape, env.BlizzPreviewScale, env.CLASS_FULL_COORDS
@@ -836,6 +849,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         local ppOvr = CreateFrame("Frame", nil, pf)
         ppOvr:SetAllPoints(power)
         ppOvr:SetFrameLevel(barArea:GetFrameLevel() + 8)
+        power._pvTextOvr = ppOvr
         ppPreviewFS = ppOvr:CreateFontString(nil, "OVERLAY")
         SetPVFont(ppPreviewFS, PREVIEW_FONT, 9)
         ppPreviewFS:Hide()
@@ -2040,7 +2054,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local tbAtlas = (not CK) and UFC and ns.UF_BlizzAtlas(UFC.textbox)
             local nameSide = s.castSpellNameSide or "left"
             local tbOn = tbAtlas and castNameFS2 and nameSide ~= "none"
-            local icoW = ch + (tbOn and 13 or 0)
+            local icoW = ch + (tbAtlas and 13 or 0)
             castbar:ClearAllPoints()
             castbar:SetPoint("TOP", barArea, "BOTTOM", inW and (onRight and -(icoW / 2) or (icoW / 2)) or 0, padBottom - (drop or 0))
             if castIconFrame then castIconFrame:SetSize(icoW, icoW) end
@@ -2056,6 +2070,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             if fillAtlas and castFill then
                 castFill:SetAtlas(fillAtlas)
                 castFill:SetVertexColor(1, 1, 1, 1)
+                ns.UFO_CropPreviewFill(castFill, optState._previewCastFill or 0.6, s.castReverseFill, fillAtlas)
             end
             PP.HideBorder(castbar)
             if castIconFrame then
@@ -2616,10 +2631,28 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 pvPw = s.powerWidth
             end
             PP.Size(power, pvPw, ph)
-            if pvPpIsDet and db.profile.enableCustomBarStratas then
-                power:SetFrameLevel(pf:GetFrameLevel() + 40)
-            elseif pvPpIsDet then
-                power:SetFrameLevel(pf:GetFrameLevel() + 3)
+            if pvPpIsDet then
+                -- The preview draws in one strata, so it ranks the strata as live sets
+                -- them: a detached bar takes the Detached Power Bar strata while Custom
+                -- Bar Stratas is on, else MEDIUM, against the unit's Frame Strata.
+                -- Higher draws over the whole frame, equal takes live's frame + 12,
+                -- lower goes under the frame. Its percent text stays above it.
+                local barSt = db.profile.enableCustomBarStratas
+                    and (db.profile.detachedPowerStrata or "HIGH") or "MEDIUM"
+                local frameSt = s.frameStrata or db.profile.frameStrata or "MEDIUM"
+                local order = EllesmereUI.FRAME_STRATA_ORDER_FULL
+                local barRank, frameRank = 3, 3
+                for i = 1, #order do
+                    if order[i] == barSt then barRank = i end
+                    if order[i] == frameSt then frameRank = i end
+                end
+                local pfLvl = pf:GetFrameLevel()
+                power:SetFrameLevel((barRank > frameRank and pfLvl + 40)
+                    or (barRank == frameRank and pfLvl + 12) or pfLvl)
+                if power._pvTextOvr then
+                    power._pvTextOvr:SetFrameLevel(math.max(barArea:GetFrameLevel() + 8,
+                        power:GetFrameLevel() + 10))
+                end
             end
             power:ClearAllPoints()
             if pvPpPos == "none" then
@@ -2963,8 +2996,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                     local cbTexPath = (ns.healthBarTextures or {})[cbTexKey] or "Interface\\Buttons\\WHITE8X8"
                     local fc = fillC or db.profile.castbarColor or { r=0.114, g=0.655, b=0.514 }
                     PV_FillColor(castFill, cbTexPath, fc.r, fc.g, fc.b, nil, nil, nil, 1)
-                    -- The "Blizzard" fill is the vanilla cast bar's own art, tinted.
-                    if cbTexKey == "blizzard" then castFill:SetAtlas("UI-CastingBar-Fill", true) end
+                    -- The "Blizzard" fill is the vanilla cast bar's own art, tinted (its size
+                    -- stays the fill's: anchored height, the share's width above).
+                    if cbTexKey == "blizzard" then castFill:SetAtlas("UI-CastingBar-Fill") end
+                    ns.UFO_CropPreviewFill(castFill, optState._previewCastFill or 0.6, s.castReverseFill,
+                        cbTexKey == "blizzard" and "UI-CastingBar-Fill" or nil)
                 end
                 if castIconFrame then
                     castIconFrame:SetSize(ch, ch)
@@ -3075,8 +3111,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         border:SetPoint("TOPLEFT", barArea, "TOPLEFT", 0, 0)
         border:SetPoint("TOPRIGHT", barArea, "TOPRIGHT", 0, 0)
         border:SetHeight(borderH)
-        EllesmereUI.ApplyBorderStyle(border, bs, bc.r, bc.g, bc.b, bds.borderAlpha or 1, bTexKey, bds.borderTextureOffset, bds.borderTextureOffsetY, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs, nil,
-            EllesmereUI.BorderPx((not s.borderSizeOverride) and bds.borderSizePx, bs, bTexKey))
+        local box, boy = ns.UF_BorderOffsets(unitKey, s, bds)
+        EllesmereUI.ApplyBorderStyle(border, bs, bc.r, bc.g, bc.b, bds.borderAlpha or 1, bTexKey, box, boy, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs, nil,
+            EllesmereUI.BorderPx(bds.borderSizePx, bs, bTexKey))
 
         -- Class Power Pips update (player only)
         if cpPipContainer and cpPips then
@@ -3843,11 +3880,11 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             th = blizzG.h - (pad and (pad.top + pad.bottom) or 0)
             if ch > 0 then
                 cbStrip = ch
-                -- The stock text box hangs 13px under the cast bar: reserve
-                -- it so the content header below does not overlap it.
+                -- The stock text box (and the icon spanning it) hangs 13px under
+                -- the cast bar: reserve it so the content header does not overlap.
                 local UFC = ns.UF_CAST_BLIZZ
                 if UFC and not ns.UF_BLIZZ.cast and ns.UF_BlizzAtlas(UFC.textbox)
-                   and (s.castSpellNameSide or "left") ~= "none" then
+                   and ((s.castSpellNameSide or "left") ~= "none" or ns.UF_CastIconInWidth(unitKey, s)) then
                     cbStrip = cbStrip + 13
                 end
                 if not blizzBelow then th = th + cbStrip end
@@ -3876,8 +3913,9 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         if border then
             local bs2 = s.borderSizeOverride or bds.borderSize or 1
             local bTex2 = bds.borderTexture or "solid"
-            EllesmereUI.ApplyBorderStyle(border, bs2, (bds.borderColor or {r=0,g=0,b=0}).r, (bds.borderColor or {r=0,g=0,b=0}).g, (bds.borderColor or {r=0,g=0,b=0}).b, bds.borderAlpha or 1, bTex2, bds.borderTextureOffset, bds.borderTextureOffsetY, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs2, nil,
-                EllesmereUI.BorderPx((not s.borderSizeOverride) and bds.borderSizePx, bs2, bTex2))
+            local box2, boy2 = ns.UF_BorderOffsets(unitKey, s, bds)
+            EllesmereUI.ApplyBorderStyle(border, bs2, (bds.borderColor or {r=0,g=0,b=0}).r, (bds.borderColor or {r=0,g=0,b=0}).g, (bds.borderColor or {r=0,g=0,b=0}).b, bds.borderAlpha or 1, bTex2, box2, boy2, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs2, nil,
+                EllesmereUI.BorderPx(bds.borderSizePx, bs2, bTex2))
         end
         -- Rounded corners, as on the live frame: the border frame is the shape
         -- (health + power + attached portrait and text bar); the fill sits on
