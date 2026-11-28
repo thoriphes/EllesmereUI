@@ -2250,8 +2250,9 @@ initFrame:SetScript("OnEvent", function(self)
         if type(key) ~= "string" then return false end
         -- visibilityMatch only modifies barVisibility's selection, so it has to stay
         -- with the frame for the same reason: copying the modifier to a frame that kept
-        -- its own mode changes how that mode reads.
-        if key == "barVisibility" or key == "visibilityMatch" or key:sub(1, 1) == "_" then return false end
+        -- its own mode changes how that mode reads. visCustom replaces that selection.
+        if key == "barVisibility" or key == "visibilityMatch" or key == "visCustom"
+           or key:sub(1, 1) == "_" then return false end
         -- A Retail pet has no power bar, so power keys skip copies involving it.
         if groupUnits == MINI_GROUP_ORDER and not ns.UF_PetHasPower and key:find("[Pp]ower") then return false end
         -- The pet's buffs and debuffs stay with the pet: the other small frames
