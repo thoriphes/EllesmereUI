@@ -551,13 +551,14 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             if content == "level" then return levelText
             elseif content == "levelname" then return levelText .. " | " .. _pvName()
             else return _pvName() .. " | " .. levelText end
-        elseif content == "both" or content == "bothdash" or content == "curhpshort" or content == "healthshort" or content == "curmaxhp" or content == "perhp" or content == "perhpnosign" or content == "perhpnum" or content == "perhpnumdash" then
+        elseif content == "both" or content == "bothdash" or content == "curhpshort" or content == "healthshort" or content == "curmaxhp" or content == "missinghp" or content == "perhp" or content == "perhpnosign" or content == "perhpnum" or content == "perhpnumdash" then
             local maxHP = UnitHealthMax("player") or 1
             local pct = optState._previewHealthPct or 0.70
             local curHP = math.floor(maxHP * pct)
             if content == "healthshort" then return ns.AbbreviateShortHealth(curHP)
             elseif content == "curhpshort" then return _pvAbbrev(curHP, "health")
             elseif content == "curmaxhp" then return _pvAbbrev(curHP, "health") .. " / " .. _pvAbbrev(maxHP, "maxHealth")
+            elseif content == "missinghp" then return (maxHP > curHP) and _pvAbbrev(maxHP - curHP, "health") or ""
             elseif content == "perhp" then return _pvPct(pct) .. "%"
             elseif content == "perhpnosign" then return _pvPct(pct)
             elseif content == "perhpnum" then return _pvPct(pct) .. "% | " .. _pvAbbrev(curHP, "health")
@@ -737,7 +738,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local barW = s.frameWidth or 181
             if rc ~= "none" then
                 local UF_TEXT_PADDING = 10
-                local ufTW = { both = 75, curhpshort = 38, healthshort = 38, curmaxhp = 75, curmaxpp = 75, perhp = 38, perpp = 38, curpp = 38, curhp_curpp = 75, perhp_perpp = 75, level = 24 }
+                local ufTW = { both = 75, curhpshort = 38, healthshort = 38, curmaxhp = 75, missinghp = 38, curmaxpp = 75, perhp = 38, perpp = 38, curpp = 38, curhp_curpp = 75, perhp_perpp = 75, level = 24 }
                 local rightUsed = (ufTW[rc] or 0) + UF_TEXT_PADDING
                 if rc == "custom" then
                     rightUsed = ns.UF_EstimateTextWidth(rc, s.rightTextCustomFormat, true)
@@ -3113,7 +3114,8 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
         border:SetHeight(borderH)
         local box, boy = ns.UF_BorderOffsets(unitKey, s, bds)
         EllesmereUI.ApplyBorderStyle(border, bs, bc.r, bc.g, bc.b, bds.borderAlpha or 1, bTexKey, box, boy, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs, nil,
-            EllesmereUI.BorderPx(bds.borderSizePx, bs, bTexKey))
+            EllesmereUI.BorderPx(bds.borderSizePx, bs, bTexKey),
+            ns.UF_KeepBorderGradient(bds, unitKey))
 
         -- Class Power Pips update (player only)
         if cpPipContainer and cpPips then
@@ -3915,7 +3917,8 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
             local bTex2 = bds.borderTexture or "solid"
             local box2, boy2 = ns.UF_BorderOffsets(unitKey, s, bds)
             EllesmereUI.ApplyBorderStyle(border, bs2, (bds.borderColor or {r=0,g=0,b=0}).r, (bds.borderColor or {r=0,g=0,b=0}).g, (bds.borderColor or {r=0,g=0,b=0}).b, bds.borderAlpha or 1, bTex2, box2, boy2, bds.borderTextureShiftX, bds.borderTextureShiftY, "unitframes", bs2, nil,
-                EllesmereUI.BorderPx(bds.borderSizePx, bs2, bTex2))
+                EllesmereUI.BorderPx(bds.borderSizePx, bs2, bTex2),
+                ns.UF_KeepBorderGradient(bds, unitKey))
         end
         -- Rounded corners, as on the live frame: the border frame is the shape
         -- (health + power + attached portrait and text bar); the fill sits on
@@ -4043,12 +4046,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 sp and isAttached, EllesmereUI.BlizzStyle.Get("unitframes"), true,
                 (unitKey == "targettarget" or unitKey == "boss") and bds or nil)
         end
-        if (bds.borderClassColored or ns.UF_ClassificationBorderEnabled(bds, unitKey))
-            and not EllesmereUI.BlizzStyle.Get("unitframes") then
-            local r, g, b = ns.UF_ClassificationBorderColor(bds, unitKey, unitKey)
-            if not r and bds.borderClassColored then r, g, b = ns.UF_BorderColorSample(unitKey) end
-            if r then ns.UF_TintFrameBorder(pf, border, r, g, b, bds.borderAlpha or 1) end
-        end
+        ns.UF_PaintBorderPreview(pf, border, bds, unitKey)
         -- Color Custom Borders: while the Magic border copy shows, both
         -- separators are tinted Magic at full opacity in place, as the live
         -- copies draw them (the two passes above reset the border color

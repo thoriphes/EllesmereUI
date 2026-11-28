@@ -610,7 +610,7 @@ do
     end
 end
 
--- Styles the custom-spell "Show Charges" count text (created lazily by the CdmHooks ticker) to
+-- Styles the custom-spell count text (created lazily by the preset cooldown drain) to
 -- match the bar's native stack/charge text: font, size, color, anchor position and X/Y offset.
 -- Called at creation and from every RefreshCDMIconAppearance pass so option changes apply live. With no bar data the defaults resolve to size 11, bottom-right, +2 nudge.
 -- fs: another count FontString of ours on the icon (Buff Stacks); defaults to
@@ -1054,9 +1054,13 @@ local function RefreshCDMIconAppearance(barKey)
             icon._itemCountText:SetPoint(scPoint, txOverlay or icon, scPoint, scX, scY)
             if showItemCount then icon._itemCountText:Show() else icon._itemCountText:Hide() end
         end
-        -- Custom-spell "Show Charges" count text (our own lazy fontstring from the CdmHooks ticker) follows the same stack/charge text settings.
+        -- Custom-spell count text (our own lazy fontstring from the preset cooldown drain) follows the same stack/charge text settings.
         if icon._castCountText then
             ns.StyleCustomChargeText(icon, barKey)
+            -- Its count and the bar's Hide Text at 0 Stacks are read again on
+            -- the next drain pass (EUI_CDM_HookPresetCooldowns.lua).
+            icon._cdEvalArm = true
+            if ns._MarkPresetCdDirty then ns._MarkPresetCdDirty() end
         end
         -- Per-spell Buff Stacks text (EUI_CDM_CdBuffStacks.lua), same settings.
         if ns.CdBuffStacksRestyle then ns.CdBuffStacksRestyle(icon, barKey) end
@@ -1184,10 +1188,10 @@ local function RefreshCDMIconAppearance(barKey)
             local csSs = ns.ResolveSpellSettings and ns.ResolveSpellSettings(icon, csSid, csSd, csBk)
             -- The effect is a hide and a glow, each run on its own below.
             local cse, csGlow = ns.CdStateOf(csSs, icon)
-            -- The hide effects run as their base mode plus flags (ns.CD_STATE_HIDE: Shift Icons, Hidden Until Usable, Hidden Outside Form/Stance), so the branches below stay as-is.
+            -- The hide effects run as their base mode plus flags (ns.CD_STATE_HIDE: Shift Icons, Hidden Until Usable, Hidden Until Castable, Hidden Outside Form/Stance), so the branches below stay as-is.
             local m = cse and ns.CD_STATE_HIDE[cse]
-            local cseShift, cseUsable, cseForm
-            if m then cse, cseShift, cseUsable, cseForm = m.base, m.shift, m.usable, m.form end
+            local cseShift, cseUsable, cseForm, csePower
+            if m then cse, cseShift, cseUsable, cseForm, csePower = m.base, m.shift, m.usable, m.form, m.power end
             -- Stance Bar (EllesmereUICdmStanceBar.lua): one more hide reason. Alone,
             -- it runs as Hidden (On CD) with the cooldown never read.
             local stance = ns.CdmStanceBarOf(csSs, icon)
@@ -1214,15 +1218,16 @@ local function RefreshCDMIconAppearance(barKey)
                     onCD = realCD
                 end
                 if cseUsable then
-                    if not onCD then onCD = ns.CdmSpellNotUsable(csLive) end
-                    -- Proc edges change only usability: SPELL_UPDATE_USABLE watch.
-                    ns.WatchCdUsable(icon)
+                    if not onCD then onCD = ns.CdmSpellNotUsable(csLive, csePower) end
+                    -- Proc edges change only usability: SPELL_UPDATE_USABLE watch
+                    -- (and the power edge for Hidden Until Castable).
+                    ns.WatchCdUsable(icon, nil, nil, true, csePower)
                 end
                 local sHide, sShift = false, false
                 if stance then
                     sHide, sShift = ns.CdmStanceBarHidden(stance)
                     -- Page changes re-arm through the stance bar watch.
-                    ns.WatchCdUsable(icon, cseForm, true, cseUsable)
+                    ns.WatchCdUsable(icon, cseForm, true, cseUsable, csePower)
                 end
                 if sHide then
                     icon:SetAlpha(0)

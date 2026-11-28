@@ -3044,6 +3044,10 @@ EllesmereUI._IS_STANDALONE  = IS_STANDALONE
 --               tracker, whose spot lives in the shared Edit Mode layout and
 --               takes a reload to change)
 --    linkedKeys (table)  list of element keys that move with this one
+--    elementOptions (table) where the cog menu's Element Options goes, in the
+--               shape of an _ELEMENT_SETTINGS_MAP entry: { module, page,
+--               sectionName, preSelectFn, highlightText }. module may be a
+--               plugin's (EllesmereUI.GetPluginModuleKey)
 --    noResize   (boolean) true for Blizzard elements that cannot be resized
 --    sizeFixedByLook (boolean) the current look fixes the element's size
 --               (Blizzard Style unit frames): getSize reports that look's size,
@@ -3091,6 +3095,7 @@ function EllesmereUI.MakeUnlockElement(opts)
         isPositionHeld = opts.isPositionHeld,
         noSpecLayout  = opts.noSpecLayout,
         linkedKeys    = opts.linkedKeys,
+        elementOptions = opts.elementOptions,
         noResize          = opts.noResize,
         linkedDimensions  = opts.linkedDimensions,
         -- noInitHook: self-positioning element; ApplySavedPositions /
@@ -3572,7 +3577,7 @@ end
 -------------------------------------------------------------------------------
 --  Slash commands
 -------------------------------------------------------------------------------
-EllesmereUI.VERSION = "9.9.5"
+EllesmereUI.VERSION = "9.9.6"
 
 -- Register this addon's version into a shared global table (taint-free at load time)
 if not _G._EUI_AddonVersions then _G._EUI_AddonVersions = {} end
@@ -4760,7 +4765,10 @@ initFrame:SetScript("OnEvent", function(self, event)
             return IsShiftKeyDown()
         end
 
-        -- Shared dedup check: only scan last 5 lines (we add at most 3)
+        -- Shared dedup check: only scan last 5 lines (we add at most 3). A secret
+        -- line (restricted combat: a charge spell's charges or recharge line) is
+        -- skipped, never searched: our own lines are plain text, so it is never
+        -- one of them. Bailing on it hid the IDs on every charge spell there.
         local function hasDupLine(tooltip, name, tag)
             local n = tooltip:NumLines()
             local start = n - 4
@@ -4769,9 +4777,8 @@ initFrame:SetScript("OnEvent", function(self, event)
                 local fs = _G[name .. "TextLeft" .. i]
                 if fs then
                     local txt = fs:GetText()
-                    if txt then
-                        if _isSecret and _isSecret(txt) then return true end
-                        if txt:find(tag) then return true end
+                    if not (_isSecret and _isSecret(txt)) and txt and txt:find(tag) then
+                        return true
                     end
                 end
             end
