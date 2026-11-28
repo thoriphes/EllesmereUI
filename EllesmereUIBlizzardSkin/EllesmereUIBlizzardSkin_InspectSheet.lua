@@ -524,7 +524,9 @@ local function ApplyTabVisibility(showLabels)
     -- Hide/show avg ilvl + M+ score
     local frame = InspectFrame
     if frame then
-        if GetFFD(frame).avgIlvlText then GetFFD(frame).avgIlvlText:SetShown(showLabels) end
+        if GetFFD(frame).avgIlvlText then
+            GetFFD(frame).avgIlvlText:SetShown(showLabels and ns.InspectShowAvgIlvl())
+        end
         if GetFFD(frame).mPlusScoreText then GetFFD(frame).mPlusScoreText:SetShown(showLabels) end
     end
 end
@@ -589,11 +591,20 @@ local function UpdateInspectHeader(frame)
         mpFS:SetFont(fontPath, 12, "")
         mpFS:SetTextColor(0.8, 0.8, 0.8, 1)
         mpFS:SetJustifyH("CENTER")
-        mpFS:SetPoint("TOP", GetFFD(frame).avgIlvlText, "BOTTOM", 0, -2)
         GetFFD(frame).mPlusScoreText = mpFS
     end
 
-    local avg = CalculateAverageItemLevel()
+    -- Show Average Item Level off: the M+ line moves up into its slot.
+    local avgOn = ns.InspectShowAvgIlvl()
+    local mpFS = GetFFD(frame).mPlusScoreText
+    mpFS:ClearAllPoints()
+    if avgOn then
+        mpFS:SetPoint("TOP", GetFFD(frame).avgIlvlText, "BOTTOM", 0, -2)
+    else
+        mpFS:SetPoint("TOP", GetFFD(frame).avgIlvlText, "TOP", 0, 0)
+    end
+
+    local avg = avgOn and CalculateAverageItemLevel()
     if avg and avg > 0 then
         GetFFD(frame).avgIlvlText:SetFormattedText("%.2f", avg)
         GetFFD(frame).avgIlvlText:Show()
@@ -1703,9 +1714,6 @@ if EllesmereUI then
             if EllesmereUI._refreshInspectEnchantsVisibility then
                 EllesmereUI._refreshInspectEnchantsVisibility()
             end
-            if EllesmereUI._refreshInspectAverageItemLevelVisibility then
-                EllesmereUI._refreshInspectAverageItemLevelVisibility()
-            end
         end
     end)
 
@@ -1734,6 +1742,19 @@ do
             end
         end
     end)
+end
+
+-- The Show Average Item Level toggle: the header pass again, which reads it
+-- (the themed pass of each INSPECT_READY runs that pass itself).
+function EllesmereUI._refreshInspectAverageItemLevelVisibility()
+    local frame = InspectFrame
+    if not (frame and frame:IsShown() and GetFFD(frame).avgIlvlText) then return end
+    UpdateInspectHeader(frame)
+    -- The header pass shows its lines; off the Character tab they stay hidden.
+    if (frame.selectedTab or 1) ~= 1 then
+        GetFFD(frame).avgIlvlText:Hide()
+        GetFFD(frame).mPlusScoreText:Hide()
+    end
 end
 
 -- Function to refresh item level visibility when toggle changes
