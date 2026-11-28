@@ -305,7 +305,8 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
     -- Default: Border Size (borderSizeOverride, nil = inherit donor size
     -- until set), plus Width / Height Offset under a textured donor
     -- (borderOffsetOverride / borderOffsetYOverride, ns.UF_BorderOffsets);
-    -- color/texture inherit from the main frames.
+    -- color/texture inherit from the main frames. The gradient (Border
+    -- Settings cog + Gradient End swatch) hangs on Border Size in both states.
     -- With the header's Advanced toggle on (settingsTable.borderAdvanced) the
     -- main frames' border block is repeated here for this frame, in the Main
     -- Frames row shape: Border Style (+ offset cog) | Border Size (+ inline
@@ -352,8 +353,9 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
               getValue=function() return settingsTable.showHighlightBorder ~= false end,
               setValue=function(v) settingsTable.showHighlightBorder = v end }
 
-        -- The rows the inline swatches hang on (Advanced only).
-        local styleRow, hlRow
+        -- The rows the inline swatches hang on (sizeRow: Advanced off; styleRow
+        -- and hlRow: Advanced on).
+        local sizeRow, styleRow, hlRow
         if adv then
             -- Border Style (+ cog) | Border Size (+ swatch). Mirrors the Main Frames
             -- row: picking a style resets offsets and takes that style's
@@ -421,7 +423,7 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
             hlRow, h = W:DualRow(parent, y, hlSlot, darkCfg);  y = y - h
             LockDark(hlRow._rightRegion)
         else
-            _, h = W:DualRow(parent, y, sizeSlot, hlSlot);  y = y - h
+            sizeRow, h = W:DualRow(parent, y, sizeSlot, hlSlot);  y = y - h
             -- Width / Height Offset under the donor's textured style (ns.UF_BorderOffsets: an
             -- unset offset follows the main frames' at any size). A pick equal to what following
             -- shows (the donor's offset, else the texture's default) stores nothing, so the frame
@@ -473,6 +475,46 @@ local function BuildMiniTextAndSize(W, parent, y, settingsTable, unitKey, enable
             local darkRow
             darkRow, h = W:DualRow(parent, y, darkCfg, EllesmereUI.BlankRowCfg());  y = y - h
             LockDark(darkRow._leftRegion)
+        end
+
+        -- Gradient: Border Settings cog + Gradient End swatch on the Border Size
+        -- control in both states. The gradient follows Copy Look From unless
+        -- this frame overrides it (borderGradientOverride); its start color is
+        -- the frame's resolved border color (Advanced, else the donor's).
+        do
+            local rgn = adv and styleRow._rightRegion or sizeRow._leftRegion
+            local function Donor() return GetMiniDonorSettings(unitKey) end
+            local function Following() return not settingsTable.borderGradientOverride end
+            local rows, swatch = ns.UFO_FrameBorderGradientControls(rgn, unitKey, settingsTable, Donor,
+                function()
+                    if Following() then return "Turn off Follow Copy Look From to edit this frame's gradient." end
+                end, ReloadAndUpdate)
+            table.insert(rows, 1, { type = "toggle", label = "Follow Copy Look From",
+                tooltip = "Use the gradient settings from the main frame this frame copies its look from.",
+                get = Following,
+                set = function(v)
+                    if db.profile[unitKey] ~= settingsTable or EllesmereUI.BlizzStyle.Get("unitframes") then return end
+                    if not v and settingsTable.borderGradientEnabled == nil then
+                        local src = Donor()
+                        local r, g, b = ns.UF_BorderGradientRGB(src)
+                        settingsTable.borderGradientEnabled = src.borderGradientEnabled == true
+                        settingsTable.borderGradientDir = src.borderGradientDir or "HORIZONTAL"
+                        settingsTable.borderGradientColor = { r = r, g = g, b = b }
+                    end
+                    settingsTable.borderGradientOverride = not v or nil
+                    ReloadAndUpdate()
+                    EllesmereUI:RefreshPage()
+                end })
+            EllesmereUI.BuildInlineCog(rgn, {
+                title = "Border Settings", tip = "Border Settings",
+                disabled = function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
+                disabledTooltip = function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
+                rows = rows,
+            })
+            EllesmereUI.BuildInlineSwatches(rgn, { swatch }, {
+                disabled = function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
+                disabledTooltip = function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
+            })
         end
 
         -- Advanced: inline Border color swatch on Border Size and Highlight

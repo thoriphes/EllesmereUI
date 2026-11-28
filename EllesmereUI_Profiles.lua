@@ -2288,6 +2288,7 @@ do
         "flyoutItemStatsTertiary", "charSheetItemStatsTertiary", "charSheetSocketPanelStats",
         "showCharSheetDurability", "charSheetDurabilityLocation",
         "charSheetDurabilityShowLabel", "charSheetItemLevelPos", "charSheetShowItemStats",
+        "charSheetShowAvgIlvl",
         "showSecondaryRaw", "showSecondaryBoth",
         "showTertiaryRaw", "showTertiaryBoth", "showAdjustedStats",
         "showManaStat", "highlightSecondaryItems", "highlightTertiaryItems",
@@ -2297,6 +2298,7 @@ do
         -- Inspect card
         "inspectShowEnchants", "inspectEnchantNames", "inspectEnchantSize",
         "inspectShowItemLevel", "inspectShowUpgradeTrack", "inspectItemLevelPos", "inspectShowItemStats",
+        "inspectShowAvgIlvl",
         -- LFG / Merchant / Mail cards
         "lfgRememberRoles",
         "merchantShowAsList", "merchantListRowHeight", "merchantShowItemLevel", "merchantBulkBuy",
@@ -2630,6 +2632,8 @@ local FULL_EXPORT_EXCLUDED = {
     -- Game settings from before EllesmereUI, put back by Uninstall EUI
     restoreOnUninstall    = true, -- EllesmereUI_Uninstall.lua
     gfxBackup             = true, -- Optimize My FPS and Graphics' Restore values
+    debugAddOns           = true, -- Debug Mode: the addons it turned off, per character
+    debugErrors           = true, -- and the Lua errors it saved
     friendlyPlateVisSaved = true, -- friendly plates hidden in a follower dungeon
     chatTellMuted         = true, -- whisper sound Chat muted
     chatClassColorWas     = true, -- the game's chatClassColorOverride before Chat's Name of Chatter hold
