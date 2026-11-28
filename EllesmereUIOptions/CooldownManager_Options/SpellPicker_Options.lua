@@ -2055,12 +2055,16 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                     { val = "hiddenReadyShift", label = "Hidden CD Ready (Shift Icons)" },
                     { val = "hiddenUnusableShift", label = "Hidden Until Usable (Shift Icons)",
                       tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
+                    { val = "hiddenCastableShift", label = "Hidden Until Castable (Shift Icons)",
+                      tooltip = "Only shown while it can be cast now: usable, off cooldown and with enough resources." },
                     { val = "hiddenFormShift", label = "Hidden Outside Form/Stance (Shift Icons)",
                       tooltip = "Only shown in the form or stance the spell needs, even while it is on cooldown." },
                     { val = "hiddenOnCD",      label = "Hidden (On CD)" },
                     { val = "hiddenReady",     label = "Hidden (CD Ready)" },
                     { val = "hiddenUnusable",  label = "Hidden (Until Usable)",
                       tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
+                    { val = "hiddenCastable",  label = "Hidden (Until Castable)",
+                      tooltip = "Only shown while it can be cast now: usable, off cooldown and with enough resources." },
                     { val = "hiddenForm",      label = "Hidden (Outside Form/Stance)",
                       tooltip = "Only shown in the form or stance the spell needs, even while it is on cooldown." },
                 }
@@ -3072,7 +3076,8 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                                         SetOwn("missingShowBelow", (v and v > 0) and v or nil)
                                         ns.QueueReanchor()
                                     end, EllesmereUI.L("Also Show Below"),
-                                        EllesmereUI.L("Seconds left when the buff shows again (0 = off)"))
+                                        EllesmereUI.L("Seconds left when the buff shows again (0 = off)"),
+                                        3600)  -- long buffs (30-60 min) need minutes, not just seconds
                                 end)
                             end,
                             -- Mutually exclusive with the bar's "Keep Buffs in Same Place": that
@@ -3697,12 +3702,16 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                         { val = "hiddenReadyShift", label = "Hidden CD Ready (Shift Icons)" },
                         { val = "hiddenUnusableShift", label = "Hidden Until Usable (Shift Icons)",
                           tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
+                        { val = "hiddenCastableShift", label = "Hidden Until Castable (Shift Icons)",
+                          tooltip = "Only shown while it can be cast now: usable, off cooldown and with enough resources." },
                         { val = "hiddenFormShift", label = "Hidden Outside Form/Stance (Shift Icons)",
                           tooltip = "Only shown in the form or stance the spell needs, even while it is on cooldown." },
                         { val = "hiddenOnCD",      label = "Hidden (On CD)" },
                         { val = "hiddenReady",     label = "Hidden (CD Ready)" },
                         { val = "hiddenUnusable",  label = "Hidden (Until Usable)",
                           tooltip = "Only shown while usable and off cooldown, such as Overpower or Victory Rush after a proc. Low resources do not hide it." },
+                        { val = "hiddenCastable",  label = "Hidden (Until Castable)",
+                          tooltip = "Only shown while it can be cast now: usable, off cooldown and with enough resources." },
                         { val = "hiddenForm",      label = "Hidden (Outside Form/Stance)",
                           tooltip = "Only shown in the form or stance the spell needs, even while it is on cooldown." },
                     }
@@ -3980,7 +3989,11 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                                 end)
                             end
                         end,
-                        { itemState = AB.CdStateItemState(cas, nil, true),
+                        -- A typed custom spell's glows also lock while its Proc Glow is
+                        -- set, as on a tracked spell (the Proc Glow row below).
+                        { itemState = AB.CdStateItemState(cas, (sd.customSpellIDs and sd.customSpellIDs[spellID])
+                              and function() return (cas.procGlow and cas.procGlow > 0) and true or false end
+                              or nil, true),
                           onRefresh = function()
                               if (ns.CdStateGlowOf(cas) ~= nil) ~= hadGlowC then menu._rebuildPending = true end
                           end,
@@ -4312,6 +4325,56 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
                             nil,
                             { apply = { keys = { "activeGlow" },
                                         write = function(t, v) t.activeGlow = v end } })
+                    end
+
+                    -- Proc Glow and Max Charges Glow, typed custom spells only: the
+                    -- game's proc events and charge state reach any spell, so their
+                    -- icons glow as a tracked spell's do (the runtime reads both from
+                    -- this store: EUI_CDM_Glows.lua ShowProcGlow and
+                    -- EUI_CDM_HookIconStyle.lua MaxStacksSettingsFor). Racials and
+                    -- items keep the rows they had. A pick redraws a lit glow at once
+                    -- (the appearance pass RefreshCDMIconSettings runs restarts a lit
+                    -- proc glow; ApplyMaxStacksGlow relights on a style or color
+                    -- change), and the Proc Glow row locks as the tracked spell's
+                    -- does: on a custom-shaped bar (always Shape Glow) and, for its
+                    -- glow choices, while a Cooldown State glow is set.
+                    if sd.customSpellIDs and sd.customSpellIDs[spellID] then
+                        MakeSubnavRow("Proc Glow", GLOW_ITEMS,
+                            function()
+                                local v = cas.procGlow
+                                if v == false then v = nil end
+                                return v
+                            end,
+                            function(v)
+                                SetCasOwn("procGlow", v)
+                                if ns.RefreshCDMIconSettings then ns.RefreshCDMIconSettings(barKey) end
+                            end,
+                            function() return not cas.procGlow and cas.procGlow ~= 0 end,
+                            nil,
+                            { disabled = function()
+                                  local cbd = ns.barDataByKey and ns.barDataByKey[barKey]
+                                  local shp = cbd and cbd.iconShape
+                                  return (shp and shp ~= "none" and shp ~= "cropped") and true or false
+                              end,
+                              disabledTooltip = "Custom shapes always use Shape Glow. Set the bar's Icon Shape to None or Cropped to pick a different glow.",
+                              itemState = function(si, item)
+                                  if item.val and item.val > 0 then
+                                      SetFlyoutItemLocked(si, ns.CdStateGlowOf(cas) ~= nil,
+                                          "Disable the Cooldown State glow first")
+                                  end
+                              end })
+                        MakeSubnavRow("Max Charges Glow", ACTIVE_GLOW_ITEMS,
+                            function()
+                                local v = cas.maxStacksGlow
+                                if v == false then v = nil end
+                                return v
+                            end,
+                            function(v)
+                                SetCasOwn("maxStacksGlow", v)
+                                if v and v > 0 then ns._cdmAnyMaxStacksGlow = true end
+                                if ns.RefreshCDMIconSettings then ns.RefreshCDMIconSettings(barKey) end
+                            end,
+                            function() return not cas.maxStacksGlow end)
                     end
 
                     -- Glow Effect Color (colors the active glow AND the CD-ready glow).
@@ -5306,7 +5369,8 @@ local function ShowSpellPicker(anchorFrame, barKey, slotIndex, excludeSet, onSel
         end)
         csItem:SetScript("OnClick", function()
             menu:Hide()
-            -- Only this caller offers Show Charges (CD/utility bars).
+            -- The last argument marks a CD/utility bar (only this caller):
+            -- the popup refuses spells the spell list already offers.
             ns.CDMO_ShowCustomSpellIDPopup(bd and bd.key, function(sid)
                 if ns.UpdateCustomBuffAuraTracking then ns.UpdateCustomBuffAuraTracking() end
                 if onSelect then onSelect(sid, true) end

@@ -1420,6 +1420,8 @@ local REFRESH_ADDON_STEPS = {
         if _G._EUI_BattleRes_Apply then _G._EUI_BattleRes_Apply() end
         if _G._EUI_Bloodlust_Apply then _G._EUI_Bloodlust_Apply() end
     end,
+    -- QoL Loot Roll Frame (enable state, style, position; both clients)
+    function() if _G._EUI_LootRolls_Apply then _G._EUI_LootRolls_Apply() end end,
     -- AuraBuffReminders (style + refresh + position)
     function()
         if _G._EABR_UpdateGroupAuraRegistration then _G._EABR_UpdateGroupAuraRegistration() end
@@ -2205,7 +2207,7 @@ do
     -- Tooltips, Menus & Popups tab
     add({
         "customTooltips", "tooltipFontScale", "tooltipPlayerTitles",
-        "tooltipItemLevel", "tooltipMythicScore", "tooltipShowMount",
+        "tooltipItemLevel", "tooltipItemLevelItems", "tooltipMythicScore", "tooltipShowMount",
         "tooltipShowGuildRank", "tooltipShowTarget", "tooltipShowMode",
         "tooltipShowModifier", "tooltipGrowthDirection",
         "tooltipLevelColor", "tooltipClassLineColor", "tooltipFactionColor",
@@ -2220,6 +2222,9 @@ do
         "tooltipRoundedCorners",
         "showSpellID", "spellIDModifier", "showIconID", "showItemID",
         "showItemMaxStacks", "itemStackModifier",
+        "tooltipItemLevelItemsModifier", "tooltipItemLevelItemsColor",
+        "tooltipItemLevelItemsCompare", "tooltipItemLevelItemsBags",
+        "tooltipItemLevelItemsPosition",
         "reskinPopupsMenus", "reskinGameMenu", "reskinQueuePopup",
         "showQueueTimer", "queueTimerTextColor", "queueTimerTextSize",
         "queueTimerBarHeight", "queueTimerTextOffsetY",
@@ -2283,6 +2288,7 @@ do
         "flyoutItemStatsTertiary", "charSheetItemStatsTertiary", "charSheetSocketPanelStats",
         "showCharSheetDurability", "charSheetDurabilityLocation",
         "charSheetDurabilityShowLabel", "charSheetItemLevelPos", "charSheetShowItemStats",
+        "charSheetShowAvgIlvl",
         "showSecondaryRaw", "showSecondaryBoth",
         "showTertiaryRaw", "showTertiaryBoth", "showAdjustedStats",
         "showManaStat", "highlightSecondaryItems", "highlightTertiaryItems",
@@ -2292,6 +2298,7 @@ do
         -- Inspect card
         "inspectShowEnchants", "inspectEnchantNames", "inspectEnchantSize",
         "inspectShowItemLevel", "inspectShowUpgradeTrack", "inspectItemLevelPos", "inspectShowItemStats",
+        "inspectShowAvgIlvl",
         -- LFG / Merchant / Mail cards
         "lfgRememberRoles",
         "merchantShowAsList", "merchantListRowHeight", "merchantShowItemLevel", "merchantBulkBuy",
@@ -2625,6 +2632,8 @@ local FULL_EXPORT_EXCLUDED = {
     -- Game settings from before EllesmereUI, put back by Uninstall EUI
     restoreOnUninstall    = true, -- EllesmereUI_Uninstall.lua
     gfxBackup             = true, -- Optimize My FPS and Graphics' Restore values
+    debugAddOns           = true, -- Debug Mode: the addons it turned off, per character
+    debugErrors           = true, -- and the Lua errors it saved
     friendlyPlateVisSaved = true, -- friendly plates hidden in a follower dungeon
     chatTellMuted         = true, -- whisper sound Chat muted
     chatClassColorWas     = true, -- the game's chatClassColorOverride before Chat's Name of Chatter hold

@@ -728,7 +728,8 @@ end
 
 -- The hide effects by saved value: the base mode the evaluators run, plus
 -- shift (the bar closes the gap: Shift Icons), usable (an unusable spell also
--- hides: Hidden Until Usable) and form (only the spell's form or stance
+-- hides: Hidden Until Usable), power (with usable: missing power counts as
+-- unusable too: Hidden Until Castable) and form (only the spell's form or stance
 -- decides, whatever its cooldown: Hidden Outside Form/Stance). A new hide
 -- effect is one entry here: the glows it cannot show beside derive from its
 -- base and flags (ns.CdStateGlowConflicts).
@@ -741,6 +742,8 @@ ns.CD_STATE_HIDE = {
     hiddenReadyShift    = { base = "hiddenReady", shift = true },
     hiddenUnusableShift = { base = "hiddenOnCD", shift = true, usable = true },
     hiddenFormShift     = { base = "hiddenOnCD", shift = true, form = true },
+    hiddenCastable      = { base = "hiddenOnCD", usable = true, power = true },
+    hiddenCastableShift = { base = "hiddenOnCD", shift = true, usable = true, power = true },
 }
 
 -- True for a Shift Icons effect
@@ -949,6 +952,18 @@ function ns.RescanMaxStacksGlowFlag()
             return true
         end
     end)
+    -- Custom spells keep theirs in the Custom Active State store.
+    if not ns._cdmAnyMaxStacksGlow then
+        local store = ns.GetCustomActiveStates and ns.GetCustomActiveStates()
+        if store then
+            for _, e in pairs(store) do
+                if type(e) == "table" and e.maxStacksGlow and e.maxStacksGlow > 0 then
+                    ns._cdmAnyMaxStacksGlow = true
+                    break
+                end
+            end
+        end
+    end
 end
 
 -- Audio on Buff Gain/Loss gate: set ns._cdmAnyBuffSound once if any saved buff icon or
@@ -1163,25 +1178,6 @@ function ns.RescanCustomItemFlag()
                             return
                         end
                     end
-                end
-            end
-        end
-    end
-end
-
--- "Show Charges" (custom CD/utility spells) gate. Same contract as the flags above; zero cost in ProcessPresetCooldowns unless a custom spell opted in.
-function ns.RescanCustomForceCountFlag()
-    if ns._cdmAnyCustomForceCount or ns._customForceCountScanned then return end
-    local sp = SpellStore and SpellStore.GetSpecProfiles and SpellStore.GetSpecProfiles()
-    if not sp then return end
-    ns._customForceCountScanned = true
-    for _, prof in pairs(sp) do
-        local barSpells = prof and prof.barSpells
-        if barSpells then
-            for _, bs in pairs(barSpells) do
-                if bs and type(bs.customSpellForceCount) == "table" and next(bs.customSpellForceCount) then
-                    ns._cdmAnyCustomForceCount = true
-                    return
                 end
             end
         end

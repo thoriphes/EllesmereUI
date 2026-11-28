@@ -531,6 +531,9 @@ local defaults = {
         borderSize       = 1,
         borderColor      = { r = 0, g = 0, b = 0 },
         borderClassColored = false,
+        borderGradientEnabled = false,
+        borderGradientDir = "HORIZONTAL",
+        borderGradientColor = { r = 0.20, g = 0.20, b = 0.80 },
         borderAlpha      = 1,
         borderTexture    = "solid",
         borderBehind     = false,
@@ -834,6 +837,8 @@ local defaults = {
         partyHorizontal   = false,
         partyFlipGrowth   = false,  -- false=default growth, true=DOWN->UP / RIGHT->LEFT flip, "centered"=stack centered in the 5-slot container
         partyHideSelf     = false,
+        -- With Hide Self, your own pet hides too (Hide Self's cog); off keeps it in the slot after the last frame.
+        partyHideSelfPet  = false,
         partyUnlockPos    = nil,
         -- Party mirror of autoResizeTrackedBuffs ("Auto Resize Icons", Party tab); nil = on.
         partyAutoResizeTrackedBuffs = true,

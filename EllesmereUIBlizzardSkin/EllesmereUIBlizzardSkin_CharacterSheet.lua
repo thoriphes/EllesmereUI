@@ -31,6 +31,12 @@ function ns.CharSheetStyle()
     return v
 end
 function ns.CharSheetStock() return ns.CharSheetStyle() ~= "eui" end
+-- WoW Forever: the Show Average Item Level toggles (on unless false); retail always on.
+local function AvgIlvlOn(key)
+    return not (EllesmereUI.IS_FOREVER and EllesmereUIDB and EllesmereUIDB[key] == false)
+end
+function ns.CharSheetShowAvgIlvl() return AvgIlvlOn("charSheetShowAvgIlvl") end
+function ns.InspectShowAvgIlvl() return AvgIlvlOn("inspectShowAvgIlvl") end
 -- Blizz Default on WoW Forever: the slot text on Blizzard's Forever sheet.
 -- False off Forever.
 function ns.CharSheetForever()
@@ -55,7 +61,8 @@ function ns.CharSheetParkStatsPane()
 end
 function ns.CharSheetBlizzColor()
     if not ns.CharSheetStock() then return nil end
-    if EllesmereUIDB and EllesmereUIDB.charSheetBlizzColors == false then return nil end
+    -- WoW Forever has no control for it: always on under Blizz Default there.
+    if not EllesmereUI.IS_FOREVER and EllesmereUIDB and EllesmereUIDB.charSheetBlizzColors == false then return nil end
     local c = ns._csBlizzYellow
     if not c then
         local n = _G.NORMAL_FONT_COLOR

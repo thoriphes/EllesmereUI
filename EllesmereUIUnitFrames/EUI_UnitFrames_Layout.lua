@@ -48,6 +48,18 @@ function ns.GetMiniDonorSettings(unitKey)
 end
 local GetMiniDonorSettings = ns.GetMiniDonorSettings
 
+-- Width / Height Offset a frame border draws with (b = its border source). ToT / Focus Target /
+-- Pet: their own offset once moved, else the donor's at any Border Size (owner pick 2026-11-24:
+-- a mini frame at another size keeps the main frames' offsets, as before PR #3619).
+local MINI_BORDER_KEYS = { pet = true, targettarget = true, focustarget = true }
+function ns.UF_BorderOffsets(key, s, b)
+    if not MINI_BORDER_KEYS[key] then return b.borderTextureOffset, b.borderTextureOffsetY end
+    local ox, oy = s.borderOffsetOverride, s.borderOffsetYOverride
+    if ox == nil then ox = b.borderTextureOffset end
+    if oy == nil then oy = b.borderTextureOffsetY end
+    return ox, oy
+end
+
 -- The frame a mini frame's auras take their look from (the pet's Copy Auras
 -- From, auraSource, no default): its pick while that frame can lend its look,
 -- else the frame its Copy Look From uses. Returns the key.
@@ -184,6 +196,7 @@ local ufTextWidths = {
     curhpshort  = 38,  -- "132 K"
     healthshort = 38,
     curmaxhp    = 75,  -- "132 K / 150 K"
+    missinghp   = 38,  -- "18 K"
     curmaxpp    = 75,  -- "132 K / 150 K"
     perhp       = 38,  -- "86%"
     perhpnosign = 30,  -- "86"
@@ -582,14 +595,19 @@ local function UpdateBordersForScale(frame, unit)
     if not frame then return end
     local settings = GetSettingsForUnit(unit)
     if not settings then return end
-    local borderSize = settings.borderSize or 1
-
     -- 1) Main frame border textures.
     if frame.unifiedBorder then
-        local bc = settings.borderColor or { r = 0, g = 0, b = 0 }
-        local textureKey = settings.borderTexture or "solid"
-        EllesmereUI.ApplyBorderStyle(frame.unifiedBorder, borderSize, bc.r, bc.g, bc.b, settings.borderAlpha or 1, textureKey, settings.borderTextureOffset, settings.borderTextureOffsetY, settings.borderTextureShiftX, settings.borderTextureShiftY, "unitframes", borderSize, nil,
-            EllesmereUI.BorderPx(settings.borderSizePx, borderSize, textureKey))
+        local key = UnitToSettingsKey(unit)
+        local source = key == "boss" and ns.UF_BossBorderSettings()
+            or (MINI_BORDER_KEYS[key] and GetMiniDonorSettings(key)) or settings
+        local borderSize = settings.borderSizeOverride or source.borderSize or 1
+        local bc = source.borderColor or { r = 0, g = 0, b = 0 }
+        local textureKey = source.borderTexture or "solid"
+        local x, y = ns.UF_BorderOffsets(key, settings, source)
+        EllesmereUI.ApplyBorderStyle(frame.unifiedBorder, borderSize, bc.r, bc.g, bc.b, source.borderAlpha or 1, textureKey, x, y, source.borderTextureShiftX, source.borderTextureShiftY, "unitframes", borderSize, nil,
+            EllesmereUI.BorderPx(source.borderSizePx, borderSize, textureKey),
+            ns.UF_KeepBorderGradient(source, unit, frame))
+        ns.UF_ApplyBorderGradient(frame.unifiedBorder, source, unit, frame)
     end
 
     -- 2) Gather layout info.

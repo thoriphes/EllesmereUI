@@ -149,6 +149,7 @@ do
         -- _NormalizePartySyncSections for the carry-over.
         border = {
             "borderSize", "borderColor", "borderAlpha", "borderClassColored", "borderTexture",
+            "borderGradientEnabled", "borderGradientDir", "borderGradientColor",
             "borderBehind", "borderTextureOffset", "borderTextureOffsetY",
             "borderTextureShiftX", "borderTextureShiftY", "cornerRadius", "cornerMask",
             "hoverBorderEnabled", "hoverBorderSize", "hoverBorderColor", "hoverBorderAlpha",
@@ -284,6 +285,7 @@ ns._partyProxy = setmetatable({}, {
             local pv = rawget(db.profile, "party_" .. key)
             if pv ~= nil then return pv end
         end
+        -- Border color mode and gradient settings are in the Border section: Raid while it is synced.
         return db and db.profile and db.profile[key]
     end,
 })

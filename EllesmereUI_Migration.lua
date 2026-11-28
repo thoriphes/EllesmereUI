@@ -2426,11 +2426,15 @@ EllesmereUI.RegisterMigration({
         local db = ctx.db
         if db.mailCloseBags == false and db.profiles then
             for _, profData in pairs(db.profiles) do
-                if not profData.addons then profData.addons = {} end
-                local bags = profData.addons.EllesmereUIBags
-                if not bags then bags = {}; profData.addons.EllesmereUIBags = bags end
-                if not bags.bagAutoCloseWindows then bags.bagAutoCloseWindows = {} end
-                bags.bagAutoCloseWindows.mail = false
+                -- Skip empty/stub profiles: bags_hide_pinned_existing_off_v1 reads
+                -- any addons entry as an existing user's profile.
+                if type(profData) == "table" and type(profData.addons) == "table"
+                   and next(profData.addons) then
+                    local bags = profData.addons.EllesmereUIBags
+                    if not bags then bags = {}; profData.addons.EllesmereUIBags = bags end
+                    if not bags.bagAutoCloseWindows then bags.bagAutoCloseWindows = {} end
+                    bags.bagAutoCloseWindows.mail = false
+                end
             end
         end
         db.mailCloseBags = nil
@@ -3679,6 +3683,27 @@ EllesmereUI.RegisterMigration({
         EllesmereUI.SplitTalentReminders(abr.talentReminders)
     end,
 })
+
+-- WoW Forever Self Buffs got their own Where to Show, sound and imbue toggle, seeded from the shared ones.
+-- Once only: data that already has selfWhereToShow was split, by this or by the page (its Where to Show
+-- dropdown writes it on build), so a re-run (an imported string without ABR data replaces the stamps) or a
+-- first-session edit is never overwritten.
+if EllesmereUI.IS_FOREVER == true then
+EllesmereUI.RegisterMigration({
+    id          = "abr_forever_self_buffs_split_v1",
+    scope       = "profile",
+    description = "AuraBuff Reminders (WoW Forever): Self Buffs start with the Where to Show and sound the Forever section had, and Weapon Imbues with its weapon toggle.",
+    body = function(ctx)
+        local abr = ctx.profile.addons and ctx.profile.addons.EllesmereUIAuraBuffReminders
+        local fo = type(abr) == "table" and abr.forever
+        if type(fo) ~= "table" then return end
+        if fo.selfWhereToShow ~= nil then return end
+        fo.selfWhereToShow = type(fo.whereToShow) == "table" and CopyTable(fo.whereToShow) or {}
+        if fo.selfSound == nil then fo.selfSound = fo.sectionSound end
+        if fo.weaponImbue == nil then fo.weaponImbue = fo.weapon == true end
+    end,
+})
+end
 
 local migrationFrame = CreateFrame("Frame")
 migrationFrame:RegisterEvent("ADDON_LOADED")

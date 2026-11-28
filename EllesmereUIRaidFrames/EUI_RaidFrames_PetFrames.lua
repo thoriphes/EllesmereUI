@@ -32,8 +32,9 @@ I.dbSetters[#I.dbSetters + 1] = function(v) db = v end
 -------------------------------------------------------------------------------
 --  Pet Frames: party and raid pets in one Blizzard pet header, beside the
 --  groups like Friendly Boss, or (Party tab, Beside Owner) one pet button
---  beside each party frame. Health, name, range, hover/target borders and
---  click-cast only, on the FB visuals, painter and anchor; out of the raid
+--  beside each party frame. Health, name, range, hover/target borders,
+--  click-cast and the aura containers (debuffs, dispel overlay, Buff Manager
+--  indicators), on the FB visuals, painter and anchor; out of the raid
 --  routing maps, trackers of their own. Built on first Show Pets.
 -------------------------------------------------------------------------------
 do
@@ -459,7 +460,8 @@ PF.ChainAnchor = function(pset)
 end
 
 -- map: the unit -> button map the button keeps itself in (none for your own Beside Owner pet).
-PF.StyleButton = function(b, map)
+-- party: aura containers use the party settings (Beside Owner), else the raid settings (Pet Group).
+PF.StyleButton = function(b, map, party)
     b:RegisterForClicks("AnyUp")
     ns.EllesmereUI.SetLeftClickTarget(b)
     -- The engine gates SecureUnitButton's togglemenu; route right-click through a SecureActionButton proxy so the menu works without taint.
@@ -471,14 +473,16 @@ PF.StyleButton = function(b, map)
         PF.visCount = (PF.visCount or 0) + 1
         -- A button showing again holds its unit's map entry, which another button may have taken
         -- and dropped while this one was off screen with the same unit.
+        local u = self:GetAttribute("unit")
+        local d = GetFFD(self)
         if map then
-            local u = self:GetAttribute("unit")
-            local d = GetFFD(self)
             local old = d.pfUnit
             if old and old ~= u and map[old] == self then map[old] = nil end
             if u then map[u] = self end
             d.pfUnit = u
         end
+        -- Containers first, as on the friendly boss frames.
+        if u and ns.RFC_OnUnitAssigned then ns.RFC_OnUnitAssigned(self, d, u) end
         -- Header buttons hidden at the last restyle catch up as they show.
         local g = PF.styledGen[self]
         if g and g ~= PF.styleGen then PF.StyleHeaderButton(self) end
@@ -517,6 +521,7 @@ PF.StyleButton = function(b, map)
             if not value then FB.tgt[self] = nil end
             return
         end
+        if ns.RFC_OnUnitAssigned then ns.RFC_OnUnitAssigned(self, d, value) end
         if value == d.pfPaintUnit then
             local g = UnitGUID(value)
             if issecretvalue(g) then g = nil end
@@ -527,6 +532,13 @@ PF.StyleButton = function(b, map)
 
     -- Full click-cast / hovercast binding suite (mouseover heals included)
     if ns.CC_RegisterFrame then ns.CC_RegisterFrame(b) end
+
+    -- Buffs, debuffs, dispel and Buff Manager containers, as on the friendly boss frames.
+    if ns.RFC_SetupButton then
+        local d = GetFFD(b)
+        d._isParty = party or nil
+        ns.RFC_SetupButton(b, b._health, d)
+    end
 end
 
 -- One header button at the header's current size and style.
@@ -759,7 +771,7 @@ PF.EnsureOwnerBuilt = function()
     local sp = CreateFrame("Button", nil, ns._partyContainerFrame, "SecureUnitButtonTemplate")
     sp:SetAttribute("unit", "pet")
     sp:Hide()
-    PF.StyleButton(sp)
+    PF.StyleButton(sp, nil, true)
     FB.src[sp] = PF.PartySource
     PF.selfPet = sp
     PF.ownerButtons[1] = sp
@@ -769,7 +781,7 @@ PF.EnsureOwnerBuilt = function()
             b:Hide()
             b:SetIgnoreParentAlpha(true)
             PF.ownerOf[b] = owner
-            PF.StyleButton(b, PF.ownerByUnit)
+            PF.StyleButton(b, PF.ownerByUnit, true)
             FB.src[b] = PF.PartySource
             PF.ownerButtons[#PF.ownerButtons + 1] = b
             SecureHandlerSetFrameRef(owner, "pfpet", b)
@@ -959,6 +971,13 @@ PF.OwnerLayout = function(restyle)
     end
 end
 
+-- Hide Self with Hide Your Pet on (its cog): your own pet hides with you, in play (the self pet
+-- button and the pet header) and in the options preview. s: the settings read (the profile by default).
+PF.SelfPetHidden = function(s)
+    s = s or db.profile
+    return s.partyHideSelf == true and s.partyHideSelfPet == true
+end
+
 -- Your own pet: beside the self button while that shows you. With Hide Self (in a group), in your
 -- frame's empty slot after the last party frame: seated here, then re-seated by the party frames'
 -- unit snippet after whichever frame the header fills last, so joins, leaves and re-sorts in combat
@@ -971,7 +990,8 @@ PF.PlaceSelfPet = function(force)
     local mode = "off"
     if PF.watching then
         local m = ns._partySelfMode
-        if m == "button" or (m == "hidden" and IsInGroup()) then mode = m end
+        -- Hide Your Pet (Hide Self's cog) hides it with you.
+        if m == "button" or (m == "hidden" and IsInGroup() and not PF.SelfPetHidden()) then mode = m end
     end
     if mode == "off" then
         if force or PF.spMode ~= "off" then
@@ -1173,6 +1193,8 @@ PF.Layout = function(restyle)
     -- One batch: the header re-runs once below, not per attribute.
     local changed = SetAttr(hdr, "groupFilter", group, false)
     changed = SetAttr(hdr, "showSolo", solo, changed)
+    -- Your pet leaves the party pets with you under Hide Self's Hide Your Pet.
+    changed = SetAttr(hdr, "showPlayer", not (party and PF.SelfPetHidden()), changed)
     changed = SetAttr(hdr, "point", point, changed)
     changed = SetAttr(hdr, "xOffset", xOff, changed)
     changed = SetAttr(hdr, "yOffset", yOff, changed)
@@ -1358,7 +1380,7 @@ PF.OwnerPreviewSpec = function(s, w, h, sp)
     else
         spec.padT, spec.padR = gap + ph, max(0, pw - w)
     end
-    if s.partyHideSelf then
+    if s.partyHideSelf and not PF.SelfPetHidden(s) then
         local grow = ns._PartyGrowth(s)
         spec.selfSlot = true
         -- The next slot: the party frames' pitch, party target frames along the stack included.

@@ -1,7 +1,7 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 local GetSpecialization = (C_SpecializationInfo and C_SpecializationInfo.GetSpecialization) or GetSpecialization
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.HideFrame and EllesmereUI._Pool and EllesmereUI.AbsorbGlow and EllesmereUI.SetCraftBatch and EllesmereUI.FitCastName and EllesmereUI.CleanCastName and EllesmereUI.AbbreviateValue and EllesmereUI.IsZeroValue and EllesmereUI.UnitNameFormat and EllesmereUI.OwnSurnameHidden and EllesmereUI.PadGamepadUI and EllesmereUI.SetEditModeChildInert and EllesmereUI.ApplyModuleFontFamily and EllesmereUI.PadModeOn and EllesmereUI.UIScaledAlpha and EllesmereUI.OnUIAlphaChanged and EllesmereUI.CastChromeGeom and EllesmereUI.SetLeftClickTarget and EllesmereUI.ForeverDruidLacksCat and EllesmereUI.FitFactionArt and EllesmereUI.FactionBoxCenter and EllesmereUI.RoundAuraOverlay and EllesmereUI.TextTags and EllesmereUI.TextTags.UNIT.keys["classification:abbr"]) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard frame suppression hides through the parent's HideFrame, the player absorb glow line is the parent's AbsorbGlow, the player cast bar's Full Craft Time is the parent's SetCraftBatch, Show Full Spell Name is the parent's FitCastName, the cast name drops the quest-object " - No Text" through its CleanCastName, and the health texts format through the parent's AbbreviateValue, the [absorb:abr] tags blank at zero through its IsZeroValue, and the Name Format asks its UnitNameFormat, the [name:last] and [target:last] tags its OwnSurnameHidden, and the WoW Forever gamepad target menu keeps Blizzard's TargetFrame live through its PadGamepadUI and SetEditModeChildInert, and the frame texts take their font family through its ApplyModuleFontFamily, and the gamepad cast bar hide follows its PadModeOn, and the 3D portraits follow a faded UI through its UIScaledAlpha and OnUIAlphaChanged, and the stock cast bar art seats from its CastChromeGeom, and the unit buttons' left-click target comes from its SetLeftClickTarget, and a WoW Forever druid without Cat Form gets no combo point row through its ForeverDruidLacksCat, and the Faction/PvP Indicator sizes and centres its art through its FitFactionArt and FactionBoxCenter, and Player Aura Bars round a rounded icon's filter border through its RoundAuraOverlay, and the [classification] tags bind its TextTags schema keys)
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewInternals and EllesmereUI.NewCombatQueue and EllesmereUI.HideFrame and EllesmereUI._Pool and EllesmereUI.AbsorbGlow and EllesmereUI.SetCraftBatch and EllesmereUI.FitCastName and EllesmereUI.CleanCastName and EllesmereUI.AbbreviateValue and EllesmereUI.IsZeroValue and EllesmereUI.UnitNameFormat and EllesmereUI.OwnSurnameHidden and EllesmereUI.PadGamepadUI and EllesmereUI.SetEditModeChildInert and EllesmereUI.ApplyModuleFontFamily and EllesmereUI.PadModeOn and EllesmereUI.UIScaledAlpha and EllesmereUI.OnUIAlphaChanged and EllesmereUI.CastChromeGeom and EllesmereUI.SetLeftClickTarget and EllesmereUI.ForeverDruidLacksCat and EllesmereUI.FitFactionArt and EllesmereUI.FactionBoxCenter and EllesmereUI.RoundAuraOverlay and EllesmereUI.AuraKit and EllesmereUI.AuraKit.DurationFmtStamp and EllesmereUI.TextTags and EllesmereUI.TextTags.UNIT.keys["classification:abbr"]) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring (the Blizzard frame suppression hides through the parent's HideFrame, the player absorb glow line is the parent's AbsorbGlow, the player cast bar's Full Craft Time is the parent's SetCraftBatch, Show Full Spell Name is the parent's FitCastName, the cast name drops the quest-object " - No Text" through its CleanCastName, and the health texts format through the parent's AbbreviateValue, the [absorb:abr] tags blank at zero through its IsZeroValue, and the Name Format asks its UnitNameFormat, the [name:last] and [target:last] tags its OwnSurnameHidden, and the WoW Forever gamepad target menu keeps Blizzard's TargetFrame live through its PadGamepadUI and SetEditModeChildInert, and the frame texts take their font family through its ApplyModuleFontFamily, and the gamepad cast bar hide follows its PadModeOn, and the 3D portraits follow a faded UI through its UIScaledAlpha and OnUIAlphaChanged, and the stock cast bar art seats from its CastChromeGeom, and the unit buttons' left-click target comes from its SetLeftClickTarget, and a WoW Forever druid without Cat Form gets no combo point row through its ForeverDruidLacksCat, and the Faction/PvP Indicator sizes and centres its art through its FitFactionArt and FactionBoxCenter, and Player Aura Bars round a rounded icon's filter border through its RoundAuraOverlay, and the [classification] tags bind its TextTags schema keys)
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
 
 local math_floor, math_ceil, math_max, math_min, math_abs =
@@ -192,6 +192,7 @@ ns.UF_ClassificationBorderDefaults = {
     borderRareColor = { r = 0.75, g = 0.78, b = 0.82 },
     borderEliteColor = { r = 1, g = 0.82, b = 0.25 },
 }
+ns.UF_BorderGradientDefault = { r = 0.20, g = 0.20, b = 0.80 }
 
 local db
 local defaults = {
@@ -490,6 +491,9 @@ local defaults = {
             foreverComboLocation = (EllesmereUI.IS_FOREVER == true) and "target" or nil,
             borderSize = 1,
             borderClassColored = false,
+            borderGradientEnabled = false,
+            borderGradientDir = "HORIZONTAL",
+            borderGradientColor = ns.UF_BorderGradientDefault,
             borderColor = { r = 0, g = 0, b = 0 },
             borderTexture = "solid",
             borderPowerSeam = false,  -- Border Options cog "Power Bar Seam" (opt-in)
@@ -731,6 +735,9 @@ local defaults = {
             powerBarOpacity = 100,
             borderSize = 1,
             borderClassColored = false,
+            borderGradientEnabled = false,
+            borderGradientDir = "HORIZONTAL",
+            borderGradientColor = ns.UF_BorderGradientDefault,
             borderRareColored = false,
             borderEliteColored = false,
             borderExcludeFriendly = false,
@@ -1214,6 +1221,9 @@ local defaults = {
             textSize = 12,
             borderSize = 1,
             borderClassColored = false,
+            borderGradientEnabled = false,
+            borderGradientDir = "HORIZONTAL",
+            borderGradientColor = ns.UF_BorderGradientDefault,
             borderRareColored = false,
             borderEliteColored = false,
             borderExcludeFriendly = false,
@@ -1374,6 +1384,9 @@ local defaults = {
             borderCustom = false,
             borderSize = 1,
             borderColor = { r = 0, g = 0, b = 0 },
+            borderGradientEnabled = false,
+            borderGradientDir = "HORIZONTAL",
+            borderGradientColor = ns.UF_BorderGradientDefault,
             borderTexture = "solid",
             highlightColor = { r = 1, g = 1, b = 1 },
             -- Boss Hover / Target border recolor (mirrors Raid Frames "Hover
@@ -1474,11 +1487,11 @@ local SOLID_BACKDROP = { bgFile = "Interface\\Buttons\\WHITE8X8" }
 -- locale's glyphs, else falls back to the system font. Do NOT re-decide locale fallback
 -- locally or locale clients could never use a custom font here.
 local cachedFontPath = (EllesmereUI.GetFontPath("unitFrames"))
-    or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
+    or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\EUI Highway.ttf"
 local cachedFontPaths = {}  -- per-unit font cache
 local function ResolveFontPath(unitKey)
     local gPath = EllesmereUI.GetFontPath("unitFrames")
-        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\Expressway.TTF"
+        or "Interface\\AddOns\\EllesmereUI\\media\\fonts\\EUI Highway.ttf"
     cachedFontPath = gPath
     for _, uKey in ipairs({"player", "target", "focus", "boss", "pet", "targettarget", "focustarget"}) do
         cachedFontPaths[uKey] = gPath
@@ -1774,9 +1787,9 @@ do
     end
 end
 
--- Cast bars reuse the unit's health bar texture. The cast bar stacks three textures
--- over the fill bounds (base fill + cast tint + shielded tint, all WHITE8X8 by
--- default), so apply to each. On ns to avoid the Lua 200-local cap.
+-- Cast bars reuse the unit's health bar texture: the base fill and the cast tint over
+-- it (the whole bar, masked to the fill) take it; the shielded tint keeps WHITE8X8
+-- (below). On ns to avoid the Lua 200-local cap.
 ns.ApplyCastBarTexture = function(castbar, texKey)
     if not castbar then return end
     ns.UF_TexBgCast(castbar, texKey)
@@ -1847,7 +1860,13 @@ ns.ApplyCastFillOpacity = function(castbar, settings)
             castbar._fillOp = nil
             if bgTex then
                 bgTex:ClearAllPoints()
-                bgTex:SetAllPoints(bgHost)
+                if castbar._blizzCast then
+                    -- Stock styles: the background spans the bar, not the icon slot.
+                    bgTex:SetPoint("TOPLEFT", castbar, "TOPLEFT", -1, 1)
+                    bgTex:SetPoint("BOTTOMRIGHT", castbar, "BOTTOMRIGHT", 1, -1)
+                else
+                    bgTex:SetAllPoints(bgHost)
+                end
             end
             -- Mid-cast restore: the tint's active/idle state comes from our own
             -- flag, never from reading the widget back (see _castTintOn).
@@ -1861,13 +1880,14 @@ ns.ApplyCastFillOpacity = function(castbar, settings)
     castbar._fillOp = op / 100
     local tex = castbar:GetStatusBarTexture()
     if bgTex and tex then
+        local edge = castbar._blizzCast and castbar or bgHost
         bgTex:ClearAllPoints()
         if castbar.GetReverseFill and castbar:GetReverseFill() then
-            bgTex:SetPoint("TOPLEFT", bgHost, "TOPLEFT", 0, 0)
+            bgTex:SetPoint("TOPLEFT", edge, "TOPLEFT", 0, 0)
             bgTex:SetPoint("BOTTOMRIGHT", tex, "BOTTOMLEFT", 0, 0)
         else
             bgTex:SetPoint("TOPLEFT", tex, "TOPRIGHT", 0, 0)
-            bgTex:SetPoint("BOTTOMRIGHT", bgHost, "BOTTOMRIGHT", 0, 0)
+            bgTex:SetPoint("BOTTOMRIGHT", edge, "BOTTOMRIGHT", 0, 0)
         end
     end
     -- Mid-cast application: retune the tint if it is currently active.
