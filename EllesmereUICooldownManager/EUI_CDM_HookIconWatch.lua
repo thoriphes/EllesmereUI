@@ -723,6 +723,11 @@ function ns.CdmSpellNotUsable(liveSid, requirePower)
     return not (usable or noPower)
 end
 
+-- Hidden Until Castable: missing power counts as unusable too.
+function ns.CdmSpellNotCastable(liveSid)
+    return ns.CdmSpellNotUsable(liveSid, true)
+end
+
 -- Hidden Outside Form/Stance: the spell's form requirement line, which Blizzard
 -- draws red while the current form or stance does not meet it. That answer
 -- changes only with the form, so it is kept per spell and form ID: once a pair
@@ -1187,7 +1192,7 @@ end
 -- evaluation (charge spells report isActive with charges left, GCD tail races).
 -- The OnUpdate script is installed ONCE per frame object: the hook fires per
 -- repaint, so per-arm work stays plain field writes, never closure creation.
-local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent, usable, form, stance, stanceOnly)
+local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent, usable, form, stance, stanceOnly, power)
     local pending = fd._cdStatePending
     if not pending then
         pending = CreateFrame("Frame")
@@ -1224,7 +1229,7 @@ local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent
             -- whatever its cooldown, so that read is skipped.
             if self.form then
                 onCD = ns.CdmSpellOutsideForm(liveSid)
-            elseif self.usable and ns.CdmSpellNotUsable(liveSid) then
+            elseif self.usable and ns.CdmSpellNotUsable(liveSid, self.power) then
                 onCD = true
             else
                 onCD = ns.CdmOnRealCD(frame, C_Spell.GetSpellCooldown(liveSid))
@@ -1270,6 +1275,7 @@ local function ArmCdStateEval(frame, fd, cse, cseShift, lowAlpha, hideUntilSpent
     pending.shift = cseShift
     pending.hideUntilSpent = hideUntilSpent
     pending.usable = usable
+    pending.power = power
     pending.form = form
     pending.stance = stance
     pending.stanceOnly = stanceOnly
@@ -1355,14 +1361,47 @@ end
 --  frame, which re-resolves each watched icon (an icon whose mode, spell or
 --  owner changed leaves the set) and re-arms the shared evaluator. The set
 --  drains itself, and an event unregisters once no icon needs it.
+--  Hidden Until Castable also hangs on the player's power, which moves on
+--  every frame while a resource regenerates or decays: its events only ask the
+--  castable icons, once a frame, and the pass re-arms the ones whose answer
+--  flipped.
 -------------------------------------------------------------------------------
 do
     local watch = setmetatable({}, { __mode = "k" })  -- icon frame -> the spell ID it was watched with
     local eventFrame, flushFrame
     local usableOn, formOn, auraOn, stanceOn, unitAuraOn = false, false, false, false, false
-    local flushedForm  -- the form ID the last pass evaluated
+    -- Hidden Until Castable: icon frame -> its last "cannot cast" answer, and
+    -- the icons whose answer flipped since the last pass.
+    local powerWatch = setmetatable({}, { __mode = "k" })
+    local powerDue = setmetatable({}, { __mode = "k" })
+    local powerOn = false
+    local flushedForm  -- the form ID the last full or aura pass evaluated
 
-    local function SyncEvents(usable, form, aura, stance)
+    -- Whether the icon's live spell cannot be cast now, power included (nil: no spell).
+    local function NotCastable(frame)
+        local fc = _ecmeFC[frame]
+        local sid = fc and fc.spellID
+        if not sid then return nil end
+        if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
+            sid = C_SpellBook.FindSpellOverrideByID(sid) or sid
+        end
+        return ns.CdmSpellNotCastable(sid)
+    end
+
+    local function SyncEvents(usable, form, aura, stance, power)
+        power = power == true
+        if power ~= powerOn then
+            powerOn = power
+            -- Every power type (rage, energy, mana, runic power, combo points...);
+            -- a Death Knight's runes come back through RUNE_POWER_UPDATE.
+            if power then
+                eventFrame:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
+                eventFrame:RegisterEvent("RUNE_POWER_UPDATE")
+            else
+                eventFrame:UnregisterEvent("UNIT_POWER_FREQUENT")
+                eventFrame:UnregisterEvent("RUNE_POWER_UPDATE")
+            end
+        end
         stance = stance == true
         if stance ~= stanceOn then
             stanceOn = stance
@@ -1418,12 +1457,29 @@ do
         end
     end
 
+    -- What was queued decides who is re-armed: a form, usability or stance bar
+    -- edge (full) every icon, an exception aura edge (aura) the icons whose
+    -- rules hang on one, a power event (power) the icons whose answer flipped.
     local function Flush(self)
         self:Hide()
-        local auraOnly = self.auraOnly
-        self.auraOnly = nil
-        flushedForm = ns.CdmCurrentFormID()
-        local usable, form, aura, stanceAny = false, false, false, false
+        local full, auraQ, powerQ = self.full, self.aura, self.power
+        self.full, self.aura, self.power = nil, nil, nil
+        if not (full or auraQ or powerQ) then full = true end
+        if powerQ then
+            -- One probe a frame, however many power events came.
+            local flipped
+            for f, was in pairs(powerWatch) do
+                local now = NotCastable(f)
+                if now ~= nil and now ~= was then
+                    powerWatch[f] = now
+                    powerDue[f] = true
+                    flipped = true
+                end
+            end
+            if not (full or auraQ or flipped) then return end
+        end
+        if full or auraQ then flushedForm = ns.CdmCurrentFormID() end
+        local usable, form, aura, stanceAny, power = false, false, false, false, false
         for frame in pairs(watch) do
             local fd = hookFrameData[frame]
             local fc = _ecmeFC[frame]
@@ -1441,6 +1497,15 @@ do
             if (m and (m.usable or m.form)) or stance then
                 watch[frame] = sid
                 local needsAura
+                if m and m.power then
+                    power = true
+                    -- a power pass asked it above
+                    if not powerQ or powerWatch[frame] == nil then
+                        powerWatch[frame] = NotCastable(frame)
+                    end
+                else
+                    powerWatch[frame] = nil
+                end
                 if m then
                     usable = usable or m.usable == true
                     form = form or m.form == true
@@ -1448,7 +1513,7 @@ do
                     aura = aura or needsAura == true
                 end
                 stanceAny = stanceAny or stance ~= nil
-                if not auraOnly or needsAura then
+                if full or (auraQ and needsAura) or powerDue[frame] then
                     if stance then
                         -- The icon's whole hide: its own mode beside the stance bar
                         -- (Hidden (On CD) with the cooldown never read when alone).
@@ -1459,36 +1524,45 @@ do
                             base, only = cse, false
                         end
                         ArmCdStateEval(frame, fd, base, shift, (ss and ss.cdStateLowerAlpha) or 0.5,
-                            ss and ss.chargeHideUntilSpent, us, fo, stance, only)
+                            ss and ss.chargeHideUntilSpent, us, fo, stance, only, m and m.power)
                     else
-                        ArmCdStateEval(frame, fd, m.base, m.shift, nil, nil, m.usable, m.form)
+                        ArmCdStateEval(frame, fd, m.base, m.shift, nil, nil, m.usable, m.form, nil, nil, m.power)
                     end
                 end
             else
                 watch[frame] = nil
+                powerWatch[frame] = nil
             end
         end
-        SyncEvents(usable, form, aura, stanceAny)
+        if powerQ then wipe(powerDue) end
+        SyncEvents(usable, form, aura, stanceAny, power)
     end
 
     -- Called wherever the mode is resolved for an icon (SetDesaturated hook,
     -- RefreshCDMIconAppearance); form = the icon runs Hidden Outside
     -- Form/Stance. Table reads only, once the icon is watched with its spell.
-    function ns.WatchCdUsable(frame, form, stance, usable)
+    function ns.WatchCdUsable(frame, form, stance, usable, power)
         local fc = _ecmeFC[frame]
         local sid = fc and fc.spellID
         local was = watch[frame]
         -- usable: the icon also runs Hidden Until Usable (implied by a plain call)
         local needUsable = usable or (not form and not stance)
         if was ~= nil and was == sid and (not form or formOn) and (not stance or stanceOn)
-            and (not needUsable or usableOn) then return end
+            and (not needUsable or usableOn) and (not power or powerWatch[frame] ~= nil) then return end
         watch[frame] = sid or true
+        if power then powerWatch[frame] = NotCastable(frame) or false end
         if not eventFrame then
             flushFrame = ns.TakeShell()
             flushFrame:Hide()
             flushFrame:SetScript("OnUpdate", Flush)
             eventFrame = ns.TakeShell()
             eventFrame:SetScript("OnEvent", function(_, event, _, updateInfo)
+                if event == "UNIT_POWER_FREQUENT" or event == "RUNE_POWER_UPDATE" then
+                    -- Hidden Until Castable: its icons are asked on the next frame (Flush).
+                    flushFrame.power = true
+                    flushFrame:Show()
+                    return
+                end
                 local overlay = event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW"
                     or event == "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE"
                 local auraOnly = overlay or (event == "UNIT_AURA" and ns.CdmCurrentFormID() == flushedForm)
@@ -1502,14 +1576,13 @@ do
                     ns.CdmRetryUnreadForms()
                 end
                 -- A queued form/usability edge keeps its full pass.
-                if not flushFrame:IsShown() then flushFrame.auraOnly = auraOnly
-                elseif not auraOnly then flushFrame.auraOnly = false end
+                if auraOnly then flushFrame.aura = true else flushFrame.full = true end
                 flushFrame:Show()
             end)
         end
         local needsAura = form and ns.CdmFormNeedsAura(sid)
         SyncEvents(usableOn or needUsable == true, formOn or form == true, auraOn or needsAura == true,
-            stanceOn or stance == true)
+            stanceOn or stance == true, powerOn or power == true)
     end
 
     -- A talent change can teach or drop an exception: each watched icon

@@ -1665,8 +1665,7 @@ local function BuildCDMLivePreview(parent, yOff)
                    and not (racialsUn and racialsUn[id])
                    and not (cdursUn and cdursUn[id])
                    and not (sdursUn and sdursUn[id])
-                   and not (groupsUn and groupsUn[id])
-                   and not (ns.CDM_AuraIconKeeps and ns.CDM_AuraIconKeeps(id)) then
+                   and not (groupsUn and groupsUn[id]) then
                     if not (IsPlayerSpell(id)
                         or IsPlayerSpell(NormalizeToBase(id))
                         or IsPlayerSpell(ResolveToLive(id))) then
@@ -1708,8 +1707,7 @@ local function BuildCDMLivePreview(parent, yOff)
                    and not (racialsFv and racialsFv[id])
                    and not (cdursFv and cdursFv[id])
                    and not (sdursFv and sdursFv[id])
-                   and not (groupsFv and groupsFv[id])
-                   and not (ns.CDM_AuraIconKeeps and ns.CDM_AuraIconKeeps(id)) then
+                   and not (groupsFv and groupsFv[id]) then
                     local base, live = NormalizeToBase(id), ResolveToLive(id)
                     if not (known(id) or known(base) or known(live)) then
                         if listedFv == nil then listedFv = ns.CDMForeverListedSet() or false end
@@ -2097,15 +2095,9 @@ local function BuildCDMLivePreview(parent, yOff)
                     local sid = slot._previewSpellID
                     local chargeInfo = sid and C_Spell.GetSpellCharges and C_Spell.GetSpellCharges(sid)
                     local maxC = chargeInfo and chargeInfo.maxCharges
-                    -- A custom CD/utility spell EUI draws itself has no Blizzard charge
-                    -- frame: the live icon shows a count only with its Show Charges
-                    -- opt-in, so match it. A Blizzard-tracked one draws Blizzard's frame.
-                    local sdSc = sid and not isBuffBar and not isCustomBuffBar and ns.GetBarSpellData(bd.key)
+                    -- A custom CD/utility spell shows its charges as a tracked one
+                    -- does (EUI_CDM_HookPresetCooldowns.lua, ns.PaintCustomSpellCount).
                     local showC = bd.showCharges ~= false
-                    if sdSc and sdSc.customSpellIDs and sdSc.customSpellIDs[sid]
-                       and not ns.IsCDMTrackedCooldown(sid) then
-                        showC = (sdSc.customSpellForceCount and sdSc.customSpellForceCount[sid]) or false
-                    end
                     if showC and maxC and maxC > 1 then
                         slot._stackText:SetText(tostring(maxC))
                         slot._stackText:Show()

@@ -11,16 +11,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  works while aura data is hidden from addon code. Under it the frame shows
 --  the entry's idle icon.
 --
---  Two kinds of entry:
---    * a custom buff spell ID on a cooldown or utility bar (the Add Buff
---      menu's Custom Spell ID, stored as a hosted-buff marker): drawn here
---      while no Blizzard frame or placeholder claims it, its idle icon grey,
---      as a hosted buff keeps its slot on such a bar;
---    * a spell ID a provider registered (ns.CDM_AuraIconProvider): a stand-in
---      for an entry Blizzard's Cooldown Manager fails to draw. No file
---      registers one at present. The drop pass and the repopulate keep such
---      an ID, and the options preview never dims it as unlearned
---      (ns.CDM_AuraIconKeeps).
+--  The entry: a custom buff spell ID on a cooldown or utility bar (the Add
+--  Buff menu's Custom Spell ID, stored as a hosted-buff marker), drawn here
+--  while no Blizzard frame or placeholder claims it, its idle icon grey, as a
+--  hosted buff keeps its slot on such a bar.
 --
 --  One slot per entry, moved between bars through its proxy: a frame of ours
 --  the slot button fills, parented to the host frame, so the slot takes the
@@ -28,15 +22,23 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  container, which then registers no events. The slot is built again only
 --  when its include set changes (engine buttons are never freed).
 --
---  Reached from: EUI_CDM_HookReanchor.lua (Phase 3 injection, and the end of
---  every reanchor), EUI_CDM_Icons.lua (RefreshCDMIconAppearance), and the
---  drop pass, the repopulate and the options preview (ns.CDM_AuraIconKeeps).
+--  Also the kept slots of buff bars (see "Kept slots" below): a custom buff
+--  spell ID on a buff bar that keeps every slot takes its place in the bar's
+--  order, with a slot of its own drawn over a placeholder.
+--
+--  Reached from: EUI_CDM_HookReanchor.lua (Phase 3 injection, the buff bar
+--  injection, and the end of every reanchor), EUI_CDM_Icons.lua
+--  (RefreshCDMIconAppearance) and ns._AuraCustomPoke (bar layout, opacity and
+--  visibility).
 -------------------------------------------------------------------------------
 local _, ns = ...
 local I = ns._hookInternals
 if not I or I.broken or not I._AC then return end
 local _AC, _presetFrames = I._AC, I._presetFrames
+local GetOrCreatePlaceholderFrame = I.GetOrCreatePlaceholderFrame
+local ResolveSpellSettings = I.ResolveSpellSettings
 local barDataByKey = ns.barDataByKey
+local cdmBarFrames = ns.cdmBarFrames
 local IsSecret = EllesmereUI.IsSecret
 
 local AKWorker = EllesmereUI.AuraKit.NewBuildWorker()
@@ -47,14 +49,15 @@ local SLOT_LEVEL = 14
 
 local entries = {}         -- provider key -> entry
 local placed = {}          -- entries attached since the last post-reanchor pass
-local byID = {}            -- spell ID -> the provider that draws it
-local pendingAliases = {}  -- providers whose Aliases have not been read yet
 local buffProviders = {}   -- custom buff spell ID -> its provider
 -- host frame -> the entry it holds (one frame per bar and entry)
 local hostEntry = setmetatable({}, { __mode = "k" })
+-- Kept slots on buff bars: every entry (entry -> true), and barKey -> spell
+-- ID -> entry
+local kept, keptByBar = {}, {}
 
 -------------------------------------------------------------------------------
---  Providers
+--  Providers (BuffProvider below)
 --
 --  provider = {
 --    key,           unique entry key
@@ -62,40 +65,7 @@ local hostEntry = setmetatable({}, { __mode = "k" })
 --    Include(),     -> the aura spell IDs (a set, never empty) and a signature
 --    Icon(),        -> the idle art
 --    Desaturate(),  -> whether the idle art is grey
---    Off(),         optional: true once the entry stands down
---    Aliases(),     optional: more spell IDs it draws, read once Blizzard's
---                   cooldown data has loaded
---    Placed(),      optional: after each reanchor that placed it
 --  }
--------------------------------------------------------------------------------
-function ns.CDM_AuraIconProvider(spellID, provider)
-    byID[spellID] = provider
-    if provider.Aliases then pendingAliases[#pendingAliases + 1] = provider end
-end
-
-local function ReadAliases()
-    if not ns._cdmDataLoaded then return end
-    for i = #pendingAliases, 1, -1 do
-        local p = table.remove(pendingAliases, i)
-        local ids = p.Aliases()
-        if ids then
-            for j = 1, #ids do
-                if byID[ids[j]] == nil then byID[ids[j]] = p end
-            end
-        end
-        -- What it read can widen the include set of an entry built earlier.
-        local E = entries[p.key]
-        if E then E.dirty = true end
-    end
-end
-
--- An assigned spell ID a provider draws: kept by the drop pass and the
--- repopulate, never dimmed as unlearned by the options preview.
-function ns.CDM_AuraIconKeeps(id)
-    if pendingAliases[1] then ReadAliases() end
-    return byID[id] ~= nil
-end
-
 -------------------------------------------------------------------------------
 --  The engine slot
 -------------------------------------------------------------------------------
@@ -106,6 +76,7 @@ local listening = false
 local events = ns.TakeShell()
 events:SetScript("OnEvent", function()
     for _, E in pairs(entries) do E.dirty = true end
+    for E in pairs(kept) do E.dirty = true end
     if ns.QueueReanchor then ns.QueueReanchor() end
 end)
 
@@ -156,9 +127,10 @@ local function HostSize(E)
     return w, h
 end
 
--- The slot's look: the bar's custom-aura look, cut for the host's size.
+-- The slot's look: the bar's custom-aura look, cut for the host's size. E.ci:
+-- a kept slot's Custom Icon (a file ID), drawn in place of the aura's icon.
 local function HostStyle(E, bd)
-    local style = _AC.BuildStyle(bd)
+    local style = _AC.BuildStyle(bd, E.ci)
     local w, h = HostSize(E)
     if w then
         style.width, style.height = w, h
@@ -173,6 +145,7 @@ local function StyleSig(E, bd)
     local w, h = HostSize(E)
     return _AC.StyleSig(bd) .. "|" .. tostring(bd.iconSize or 36) .. "|"
         .. tostring(w) .. "x" .. tostring(h)
+        .. (E.ci and ("|ci" .. E.ci) or "")
 end
 
 local function Restyle(E, barKey)
@@ -320,7 +293,6 @@ local function PaintIdle(f, provider)
 end
 
 local function Place(barKey, provider)
-    if provider.Off and provider.Off() then return nil end
     local f = HostFrame(barKey, provider.key)
     -- Attach first: the include read is what tells the idle paint whether
     -- the entry's spell is known.
@@ -332,15 +304,6 @@ end
 -------------------------------------------------------------------------------
 --  Phase 3 entry points
 -------------------------------------------------------------------------------
--- A positive spell ID no Blizzard frame claimed: the frame of the provider
--- that draws it, or nil.
-function ns.CDM_AuraIconFor(barKey, sid)
-    if pendingAliases[1] then ReadAliases() end
-    local p = byID[sid]
-    if not p then return nil end
-    return Place(barKey, p)
-end
-
 -- One provider per custom buff spell ID, made on first use. Its aura IDs are
 -- the spell's own forms (typed, override, base), as on a buff bar, and on WoW
 -- Forever every other rank of it (_AC.AddSpellForms).
@@ -373,6 +336,236 @@ function ns.CDM_AuraIconForBuff(barKey, sid)
     return Place(barKey, BuffProvider(sid))
 end
 
+-------------------------------------------------------------------------------
+--  Kept slots on buff bars
+--
+--  A custom buff spell ID with no duration of its own (the game tracks its
+--  aura) renders in the custom-aura strip at a buff bar's end (_AC): in
+--  restricted combat our code cannot tell whether the aura is up, so it can
+--  never make room for it inside the row. A buff bar that keeps every slot
+--  (Always Show Buffs or Keep Buffs in Same Place) never closes a gap, so
+--  there the custom takes its place in the bar's order instead: the buff bar
+--  injection lays out a placeholder for it exactly like an inactive Blizzard
+--  buff's (greyed, or drawn invisible, by the existing passes), and a slot of
+--  its own draws the aura over that placeholder while it is up. Nothing reads
+--  whether the aura is up, and the row stays put whatever it does.
+--
+--  The slot's proxy is placed by number like the strip's holder
+--  (EUI_CDM_HookPresetFrames.lua), never inside the bar's frame tree: a Keep
+--  in Place placeholder is drawn at alpha 0, which would hide a slot parented
+--  to it, and the bar's layout must stay free to move in combat. It follows
+--  the placeholder one coalesced frame after the placeholder or its bar moves,
+--  resizes, shows or hides, and takes the bar's alpha, as the holder does.
+-------------------------------------------------------------------------------
+-- A buff bar whose slots never close: every tracked buff holds its place
+-- whether it is up or not. FocusKick orders by nameplate state.
+function ns.CdmBuffBarKeepsSlots(bd)
+    return bd ~= nil and bd.barType == "buffs" and bd.key ~= ns.FOCUSKICK_BAR_KEY
+        and (bd.showInactiveBuffIcons or bd.hidePlaceholderIcon) and true or false
+end
+
+local keptHost = setmetatable({}, { __mode = "k" })    -- placeholder -> its entry
+local keptHooked = setmetatable({}, { __mode = "k" })  -- frames whose moves we follow
+local keptBarOf = setmetatable({}, { __mode = "k" })   -- bar frame -> its bar key
+local keptPlaced = {}  -- entries the running reanchor placed
+local keptDue = {}     -- entries to place on the next frame
+
+local follow = CreateFrame("Frame")
+follow:Hide()
+
+-- A frame that parents an engine container cannot show or hide in lockdown:
+-- in combat alpha stands in for a hide, and every slot is placed again once
+-- combat ends.
+local function AfterCombat()
+    for E in pairs(kept) do keptDue[E] = true end
+    follow:Show()
+end
+
+local function ProxyShown(E, on)
+    local proxy = E.proxy
+    if proxy:IsShown() == on then return end
+    if InCombatLockdown() then
+        if not on and E.alpha ~= 0 then
+            E.alpha = 0
+            proxy:SetAlpha(0)
+        end
+        ns.CombatQueue.Defer("CDMKeptAuraShown", AfterCombat)
+        return
+    end
+    proxy:SetShown(on)
+end
+
+local function KeptPlace(E)
+    local host, proxy = E.host, E.proxy
+    local barFrame = E.hostBar and cdmBarFrames[E.hostBar]
+    local show = (host and barFrame and host:IsVisible()) and true or false
+    local l, b, w, h
+    if show then
+        local ok
+        ok, l, b, w, h = pcall(host.GetRect, host)
+        show = ok and not (IsSecret(l) or IsSecret(b) or IsSecret(w) or IsSecret(h))
+            and type(l) == "number" and type(b) == "number"
+            and type(w) == "number" and type(h) == "number" and w > 0
+    end
+    if not show then
+        ProxyShown(E, false)
+        return
+    end
+    local s = host:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    l, b, w, h = l * s, b * s, w * s, h * s
+    if E.pl ~= l or E.pb ~= b or E.pw ~= w or E.ph ~= h then
+        E.pl, E.pb, E.pw, E.ph = l, b, w, h
+        proxy:ClearAllPoints()
+        proxy:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", l, b)
+        proxy:SetSize(w, h)
+    end
+    local strata = host:GetFrameStrata()
+    if E.strata ~= strata then
+        E.strata = strata
+        proxy:SetFrameStrata(strata)
+        E.level = nil
+    end
+    Level(E)
+    local a = barFrame._visHidden and 0
+        or ((ns.EffectiveBarAlpha and ns.EffectiveBarAlpha(barDataByKey[E.hostBar])) or 1)
+    if E.alpha ~= a then
+        E.alpha = a
+        proxy:SetAlpha(a)
+    end
+    ProxyShown(E, true)
+end
+
+follow:SetScript("OnUpdate", function(self)
+    self:Hide()
+    for E in pairs(keptDue) do
+        keptDue[E] = nil
+        KeptPlace(E)
+    end
+end)
+
+local function Due(E)
+    keptDue[E] = true
+    follow:Show()
+end
+
+local function DueOnBar(barKey)
+    local byBar = keptByBar[barKey]
+    if not byBar then return end
+    for _, E in pairs(byBar) do Due(E) end
+end
+
+local function OnKeptHostMoved(self)
+    local E = keptHost[self]
+    if E then Due(E) end
+end
+
+-- The layout resized the placeholder: the slot's look follows its size.
+local function OnKeptHostSized(self)
+    local E = keptHost[self]
+    if not E then return end
+    if E.container then Restyle(E, E.hostBar) end
+    Due(E)
+end
+
+local function OnKeptBarMoved(self)
+    local barKey = keptBarOf[self]
+    if barKey then DueOnBar(barKey) end
+end
+
+-- Hooks on frames of ours, installed once per frame.
+local function Follow(f, onMove, onSize)
+    if keptHooked[f] then return end
+    keptHooked[f] = true
+    hooksecurefunc(f, "SetPoint", onMove)
+    f:HookScript("OnSizeChanged", onSize)
+    f:HookScript("OnShow", onMove)
+    f:HookScript("OnHide", onMove)
+end
+
+local function KeptEntry(barKey, sid)
+    local byBar = keptByBar[barKey]
+    if not byBar then
+        byBar = {}
+        keptByBar[barKey] = byBar
+    end
+    local E = byBar[sid]
+    if E then return E end
+    E = {
+        provider = BuffProvider(sid),
+        styleKey = "cdm:keptaura:" .. barKey .. ":" .. sid,
+        identKey = "aura:" .. sid,
+    }
+    local proxy = CreateFrame("Frame", nil, UIParent)
+    proxy:Hide()
+    proxy:EnableMouse(false)
+    E.proxy = proxy
+    E.init = function(button, d)
+        _AC.InitExtra(button, d)
+        button:SetAllPoints(proxy)
+    end
+    byBar[sid] = E
+    kept[E] = true
+    return E
+end
+
+-- The buff bar injection (EUI_CDM_HookReanchor.lua), on a bar that keeps its
+-- slots: the placeholder that holds custom buff sid's place on barKey, with the
+-- slot that draws its aura following it. sd: the bar's spell data.
+function ns.CDM_KeptAuraFrame(barKey, sid, sd)
+    -- A per-spell Custom Icon draws in place of the aura's own icon, as in the
+    -- strip. Resolved only once anyone has set one.
+    local ci
+    if ns._cdmAnyCustomIcon and ResolveSpellSettings then
+        local ss = ResolveSpellSettings(nil, sid, sd, barKey)
+        ci = ss and ss.customIcon
+        if not (type(ci) == "number" and ci > 0) then ci = nil end
+    end
+    local E = KeptEntry(barKey, sid)
+    if not E.art or E.artCi ~= ci then
+        E.art = ci or (C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(sid))
+        E.artCi = ci
+    end
+    local ph = GetOrCreatePlaceholderFrame(barKey, sid, E.art, E.identKey)
+    -- Our own spell, never a viewer slot: the sort keys it "s"..sid.
+    ph.cooldownID = nil
+    if E.host ~= ph then
+        if E.host and keptHost[E.host] == E then keptHost[E.host] = nil end
+        E.host = ph
+        keptHost[ph] = E
+        Follow(ph, OnKeptHostMoved, OnKeptHostSized)
+    end
+    local barFrame = cdmBarFrames[barKey]
+    if barFrame and not keptBarOf[barFrame] then
+        keptBarOf[barFrame] = barKey
+        Follow(barFrame, OnKeptBarMoved, OnKeptBarMoved)
+    end
+    E.hostBar = barKey
+    keptPlaced[E] = true
+    Listen(true)
+    local ciChanged = E.ci ~= ci
+    E.ci = ci
+    if (not E.container or E.dirty) and not E.queued then
+        E.dirty = nil
+        local include, sig = E.provider.Include()
+        if not E.container or sig ~= E.sig then
+            E.queued = true
+            AKWorker:Queue(function()
+                E.queued = nil
+                Build(E, include, sig)
+                Due(E)
+            end, "cdm:keptaura")
+        end
+    end
+    if E.container and (ciChanged or E.styleBar ~= barKey) then Restyle(E, barKey) end
+    Due(E)
+    return ph
+end
+
+-- ns._AuraCustomPoke: the bar's layout, opacity or visibility changed.
+function ns.CDM_KeptAuraPoke(barKey)
+    if keptByBar[barKey] then DueOnBar(barKey) end
+end
+
 -- WoW Forever: the rank families were read again (ns.CDMRankFamily: a spell
 -- learned, talents, Blizzard's cooldown data): each custom buff's include set
 -- is read again at its next placement, and built again only if it changed.
@@ -385,22 +578,28 @@ function ns.CDM_AuraIconsRanksChanged()
             any = true
         end
     end
+    for E in pairs(kept) do
+        E.dirty = true
+        any = true
+    end
     if any and ns.QueueReanchor then ns.QueueReanchor() end
 end
 
 -------------------------------------------------------------------------------
 --  After every reanchor; on a bar's look change
 -------------------------------------------------------------------------------
--- Level the slots the pass placed (the reparent can move a host's level), run
--- their providers' checks, and let the listener go once nothing is placed.
+-- Level the slots the pass placed (the reparent can move a host's level), and
+-- let the listener go once nothing is placed.
 function ns.CDM_AuraIconsPlaced()
     local any = false
     for E in pairs(placed) do
         placed[E] = nil
         any = true
         Level(E)
-        local after = E.provider.Placed
-        if after then after() end
+    end
+    for E in pairs(keptPlaced) do
+        keptPlaced[E] = nil
+        any = true
     end
     if not any and listening then Listen(false) end
 end
@@ -411,6 +610,15 @@ function ns.CDM_AuraIconsRestyle(barKey)
         if E.container and E.hostBar == barKey then
             Restyle(E, barKey)
             Level(E)
+        end
+    end
+    local byBar = keptByBar[barKey]
+    if byBar then
+        for _, E in pairs(byBar) do
+            if E.container and E.hostBar == barKey then
+                Restyle(E, barKey)
+                Due(E)
+            end
         end
     end
 end

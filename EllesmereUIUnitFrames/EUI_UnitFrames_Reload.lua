@@ -1660,9 +1660,12 @@ ReloadFramesBody = function()
                 -- Size: an Advanced borderOverride.borderSize (style pick / slider
                 -- while the toggle is on) wins over borderSizeOverride, so that
                 -- switching the toggle off returns to exactly the pre-Advanced size.
+                -- The gradient (ns.UF_ApplyBorderGradient) starts from the same
+                -- resolved color and follows the resolved texture's painter.
                 -- ns.UF_FrameBorderPad mirrors this apply for size matching: change the two together.
+                local boss = unit:match("^boss%d$")
                 local bsrc = donorSettings
-                if unit:match("^boss%d$") then bsrc = ns.UF_BossBorderSettings() end
+                if boss then bsrc = ns.UF_BossBorderSettings() end
                 local ov = settings.borderAdvanced and settings.borderOverride
                 local bs = (ov and ov.borderSize) or settings.borderSizeOverride or bsrc.borderSize or 1
                 local bc = ns.ResolveMiniBorderValue(settings, "borderColor", bsrc) or { r = 0, g = 0, b = 0 }
@@ -1677,7 +1680,11 @@ ReloadFramesBody = function()
                     box, boy,
                     ns.ResolveMiniBorderValue(settings, "borderTextureShiftX", bsrc),
                     ns.ResolveMiniBorderValue(settings, "borderTextureShiftY", bsrc),
-                    "unitframes", bs, nil, bpx)
+                    "unitframes", bs, nil, bpx,
+                    ns.UF_KeepBorderGradient(bsrc, unit, frame))
+                if not boss then
+                    ns.UF_ApplyBorderGradient(frame.unifiedBorder, bsrc, unit, frame)
+                end
                 -- Show Behind. Mini borders never inherited it: the level comes from
                 -- the mini's own borderBehind (which nothing writes: above the bars),
                 -- as the portrait pass above computes it. Once the frame carries a
@@ -1889,8 +1896,8 @@ ReloadFramesBody = function()
             local src = isBoss and ns.UF_BossBorderSettings()
                 or (isMini and GetMiniDonorSettings(unit)) or GetSettingsForUnit(unit)
             local us = GetSettingsForUnit(unit)
-            if frame._euiWantedBorderColorChannel
-                or (src and (src.borderClassColored or ns.UF_ClassificationBorderEnabled(src, unit))) then
+            if frame._euiBorderColorSource or (src and (src.borderClassColored or ns.UF_ClassificationBorderEnabled(src, unit)
+                or ns.UF_KeepBorderGradient(src, unit))) then
                 ns.UF_SyncBorderColor(frame, unit, src)
             end
             local radius = (not frame._blizzArtFrame and src and src.cornerRadius) or 0
