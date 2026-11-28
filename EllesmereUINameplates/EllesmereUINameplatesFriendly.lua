@@ -87,7 +87,9 @@ end
 
 local function IsFriendlyNPCEnabled()
     local fp = FP()
-    return fp and (fp.showFriendlyNPCs == true)
+    -- ns._tfFriendlyNPCForced: Force Nameplate on Current Target is holding
+    -- friendly NPC plates on for the target; style them as if the toggle were on.
+    return fp and (fp.showFriendlyNPCs == true or ns._tfFriendlyNPCForced == true)
 end
 
 -- Per-unit gate for friendly NPC nameplates. Respects Blizzard's native interactable filter:
@@ -684,6 +686,7 @@ local function HideNPCOverlay(nameplate)
     local overlay = npcOverlays[nameplate]
     if not overlay then return end
     overlay:UnregisterAllEvents()
+    if overlay._tfHidden then overlay._tfHidden = nil; overlay:SetAlpha(1) end
     overlay:Hide()
     overlay.name:SetText("")
     overlay.title:Hide()
@@ -694,6 +697,19 @@ local function HideNPCOverlay(nameplate)
     overlay.unit = nil
     npcOverlays[nameplate] = nil
     table.insert(npcOverlayPool, overlay)
+end
+
+-- Force Nameplate on Current Target: hide / show one plate's name-only NPC
+-- overlay (the table is file-local). Flag-guarded; HideNPCOverlay resets it so
+-- a pooled overlay never comes back at alpha 0.
+function ns.TF_SetNPCOverlayHidden(nameplate, hidden)
+    local overlay = npcOverlays[nameplate]
+    if not overlay then return end
+    if hidden then
+        if not overlay._tfHidden then overlay._tfHidden = true; overlay:SetAlpha(0) end
+    elseif overlay._tfHidden then
+        overlay._tfHidden = nil; overlay:SetAlpha(1)
+    end
 end
 
 -- Drop our name from a plate and hand Blizzard's frame back. A no-op for a plate
@@ -732,7 +748,7 @@ local function PlateClaimed(unit)
     local fp = FP()
     if not fp then return false end
     if IsPetUnit(unit) then return fp.showFriendlyPets == true end
-    return fp.showFriendlyNPCs == true or MarkedNPCShown(unit)
+    return fp.showFriendlyNPCs == true or ns._tfFriendlyNPCForced == true or MarkedNPCShown(unit)
 end
 
 -- Whether our name goes on the plate we hold. A pet always takes its name (that
@@ -902,7 +918,8 @@ end
 function ns.FriendlyOverlayActive()
     if not IsNameOnlyMode() then return false end
     local fp = FP()
-    return fp ~= nil and (fp.showFriendlyNPCs == true or fp.showFriendlyPets == true)
+    return fp ~= nil and (fp.showFriendlyNPCs == true or ns._tfFriendlyNPCForced == true
+        or fp.showFriendlyPets == true)
 end
 
 -- The plate the target or the cursor was on at the last pass. The plate we stop
@@ -2278,6 +2295,8 @@ end
 
 function FriendlyFrame:ClearUnit()
     self:UnregisterAllEvents()
+    -- Force Nameplate on Current Target: pooled frames go back at full alpha.
+    if self._tfHidden then self._tfHidden = nil; self:SetAlpha(1) end
     self.name:SetText("")
     -- Clear sub text only if any was drawn (_subOff 4/nil = already empty).
     -- _subOff itself survives the pool round-trip: the next UpdateSubText
