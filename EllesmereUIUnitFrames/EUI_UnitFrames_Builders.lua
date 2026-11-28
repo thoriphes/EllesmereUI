@@ -65,18 +65,29 @@ function ns.UF_ClassificationBorderColor(settings, unit, unitKey)
     return ns.UF_ClassificationBorderRGB(settings, colorKey)
 end
 
-local function BaseBorderRGB(settings, unit, previewKey)
+local miniGradientUnits = { targettarget = true, focustarget = true, pet = true }
+
+-- unitKey (mini frames only): read key through the mini frame's own settings,
+-- so its Advanced border color/alpha/texture override the donor's
+-- (ns.ResolveMiniBorderValue). Any other unitKey reads settings as before.
+-- Class / classification coloring still follows the donor (settings).
+local function MiniBorderValue(settings, unitKey, key)
+    if miniGradientUnits[unitKey] then
+        return ns.ResolveMiniBorderValue(GetSettingsForUnit(unitKey), key, settings)
+    end
+    return settings[key]
+end
+
+local function BaseBorderRGB(settings, unit, previewKey, unitKey)
     if settings.borderClassColored and not ns.UF_Blizz() then
         if previewKey then return ns.UF_BorderColorSample(previewKey) end
         local ok, r, g, b = ns.ResolveBgClassColor(I.ClassColorSourceUnit(unit, unit))
         if ok then return r, g, b end
     end
-    local c = settings.borderColor
+    local c = MiniBorderValue(settings, unitKey, "borderColor")
     if c then return c.r, c.g, c.b end
     return 0, 0, 0
 end
-
-local miniGradientUnits = { targettarget = true, focustarget = true, pet = true }
 
 function ns.UF_BorderGradientUnit(unitKey)
     return unitKey == "player" or unitKey == "target" or unitKey == "focus"
@@ -88,9 +99,10 @@ function ns.UF_BorderGradientSettings(settings, unitKey)
     return settings
 end
 
-function ns.UF_BorderGradientPainter(settings)
+-- unitKey (optional): a mini frame's Advanced border texture picks the painter.
+function ns.UF_BorderGradientPainter(settings, unitKey)
     local getPainter = EllesmereUI.GetBorderGradientPainter
-    if getPainter then return getPainter(settings.borderTexture) end
+    if getPainter then return getPainter(MiniBorderValue(settings, unitKey, "borderTexture")) end
 end
 
 function ns.UF_BorderGradientRGB(settings)
@@ -100,7 +112,7 @@ end
 
 local function GradientPainter(settings, unitKey)
     local gradient = ns.UF_BorderGradientSettings(settings, unitKey)
-    if gradient.borderGradientEnabled then return ns.UF_BorderGradientPainter(settings), gradient end
+    if gradient.borderGradientEnabled then return ns.UF_BorderGradientPainter(settings, unitKey), gradient end
 end
 
 local function ActiveGradientPainter(border, settings, unitKey)
@@ -115,10 +127,12 @@ local function PaintGradient(paint, border, settings, r, g, b, a, endR, endG, en
     return paint(border, r, g, b, endR, endG, endB, a, direction)
 end
 
-local function BorderTint(paint, gradientSettings, border, settings, unit, previewKey, overrideR, overrideG, overrideB)
-    local a = settings.borderAlpha or 1
+-- unitKey: a mini frame's Advanced border color/alpha (MiniBorderValue) is the
+-- normal color and the gradient's start color.
+local function BorderTint(paint, gradientSettings, border, settings, unit, previewKey, unitKey, overrideR, overrideG, overrideB)
+    local a = MiniBorderValue(settings, unitKey, "borderAlpha") or 1
     if not paint and overrideR then return overrideR, overrideG, overrideB, a end
-    local r, g, b = BaseBorderRGB(settings, unit, previewKey)
+    local r, g, b = BaseBorderRGB(settings, unit, previewKey, unitKey)
     local gradient = paint and PaintGradient(paint, border, gradientSettings, r, g, b, a, overrideR, overrideG, overrideB)
     if overrideR then return overrideR, overrideG, overrideB, a, gradient end
     return r, g, b, a, gradient
@@ -141,7 +155,7 @@ local function PaintNormalBorder(frame, settings, unit)
     local border = frame.unifiedBorder
     local unitKey = frame._euiBaseUnit
     local paint, gradient = ActiveGradientPainter(border, settings, unitKey)
-    ns.UF_TintFrameBorder(frame, border, BorderTint(paint, gradient, border, settings, unit, nil,
+    ns.UF_TintFrameBorder(frame, border, BorderTint(paint, gradient, border, settings, unit, nil, unitKey,
         ns.UF_ClassificationBorderColor(settings, unit, unitKey)))
 end
 
@@ -150,7 +164,7 @@ function ns.UF_PaintBorderPreview(frame, border, settings, unitKey)
     local paint, gradient = ActiveGradientPainter(border, settings, unitKey)
     local r, g, b = ns.UF_ClassificationBorderColor(settings, unitKey, unitKey)
     if paint or r or settings.borderClassColored then
-        ns.UF_TintFrameBorder(frame, border, BorderTint(paint, gradient, border, settings, unitKey, unitKey, r, g, b))
+        ns.UF_TintFrameBorder(frame, border, BorderTint(paint, gradient, border, settings, unitKey, unitKey, unitKey, r, g, b))
     end
 end
 
@@ -176,7 +190,7 @@ ns.ApplyBossBorderState = function(self)
         local bossPreview = ns._bossPreviewActive and self._euiUnit == "player"
         local settings = ns.UF_BossBorderSettings()
         local paint, gradientSettings = ActiveGradientPainter(self.unifiedBorder, settings, "boss")
-        r, g, b, a, gradient = BorderTint(paint, gradientSettings, self.unifiedBorder, settings, self._euiUnit, bossPreview and "boss")
+        r, g, b, a, gradient = BorderTint(paint, gradientSettings, self.unifiedBorder, settings, self._euiUnit, bossPreview and "boss", "boss")
     end
     ns.UF_TintFrameBorder(self, self.unifiedBorder, r, g, b, a, gradient)
 end
@@ -197,9 +211,16 @@ local function FrameBorderEnter(self)
     -- Per-mini-frame opt-out: with "Show Highlight Border" off, a mini frame never
     -- recolors on hover even when the donor (main frame) highlight is enabled. (When the
     -- donor highlight is off we already returned above, so this has no effect then.)
-    if isMini and GetSettingsForUnit(unitKey).showHighlightBorder == false then return end
-    local hc = settings.highlightColor or { r = 1, g = 1, b = 1 }
-    local ha = settings.highlightAlpha or 1
+    local hc, ha = settings.highlightColor, settings.highlightAlpha
+    if isMini then
+        local own = GetSettingsForUnit(unitKey)
+        if own.showHighlightBorder == false then return end
+        -- Advanced borders: the mini frame may carry its own highlight color.
+        hc = ns.ResolveMiniBorderValue(own, "highlightColor", settings)
+        ha = ns.ResolveMiniBorderValue(own, "highlightAlpha", settings)
+    end
+    hc = hc or { r = 1, g = 1, b = 1 }
+    ha = ha or 1
     if self._euiBorderColorSource
         or ActiveGradientPainter(self.unifiedBorder, settings, unitKey) then
         self._euiBorderColorHover = true
@@ -214,7 +235,7 @@ function ns.UF_ApplyBorderGradient(border, settings, unitKey, frame)
     if frame and unitKey:match("^boss%d$") then ns.ApplyBossBorderState(frame); return end
     if frame and frame._euiBorderColorHover and FrameBorderEnter(frame) then return end
     local unit = frame and frame._euiUnit or unitKey
-    local r, g, b, a, gradient = BorderTint(paint, gradientSettings, border, settings, unit, nil,
+    local r, g, b, a, gradient = BorderTint(paint, gradientSettings, border, settings, unit, nil, unitKey,
         ns.UF_ClassificationBorderColor(settings, unit, unitKey))
     if not gradient then EllesmereUI.SetBorderStyleColor(border, r, g, b, a) end
 end
